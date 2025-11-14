@@ -1,0 +1,353 @@
+# =============================================================================
+# 工具链配置
+# =============================================================================
+# 设置ARM工具链路径
+GNU_INSTALL_ROOT := $(CURDIR)/gcc/gcc-arm-none-eabi-9-2020-q2-update-x86_64-linux/gcc-arm-none-eabi-9-2020-q2-update/bin/
+GNU_VERSION := 9.2.1
+GNU_PREFIX := arm-none-eabi
+
+# 确保工具链在PATH中
+export PATH := $(GNU_INSTALL_ROOT):$(PATH)
+
+# =============================================================================
+# 项目配置
+# =============================================================================
+PROJECT_NAME     := EPD-nRF52
+TARGETS          := nrf52811_xxaa
+OUTPUT_DIRECTORY := _build
+
+PROJ_DIR := $(CURDIR)
+SDK_ROOT := $(PROJ_DIR)/SDK/17.1.0_ddde560
+SD_PATH  := $(SDK_ROOT)/components/softdevice/s112
+
+$(OUTPUT_DIRECTORY)/nrf52811_xxaa.out: \
+  LINKER_SCRIPT  := $(SDK_ROOT)/gcc_nrf52.ld
+
+# Source files common to all targets
+SRC_FILES += \
+  $(SDK_ROOT)/components/ble/common/ble_advdata.c \
+  $(SDK_ROOT)/components/ble/common/ble_conn_params.c \
+  $(SDK_ROOT)/components/ble/common/ble_srv_common.c \
+  $(SDK_ROOT)/components/ble/ble_advertising/ble_advertising.c \
+  $(SDK_ROOT)/components/ble/nrf_ble_gatt/nrf_ble_gatt.c \
+  $(SDK_ROOT)/components/ble/ble_services/ble_dfu/ble_dfu.c \
+  $(SDK_ROOT)/components/ble/ble_services/ble_dfu/ble_dfu_unbonded.c \
+  $(SDK_ROOT)/components/libraries/atomic_fifo/nrf_atfifo.c \
+  $(SDK_ROOT)/components/libraries/atomic_flags/nrf_atflags.c \
+  $(SDK_ROOT)/components/libraries/atomic/nrf_atomic.c \
+  $(SDK_ROOT)/components/libraries/balloc/nrf_balloc.c \
+  $(SDK_ROOT)/components/libraries/bootloader/dfu/nrf_dfu_svci.c \
+  $(SDK_ROOT)/components/libraries/experimental_section_vars/nrf_section_iter.c \
+  $(SDK_ROOT)/components/libraries/fds/fds.c \
+  $(SDK_ROOT)/components/libraries/fstorage/nrf_fstorage.c \
+  $(SDK_ROOT)/components/libraries/fstorage/nrf_fstorage_sd.c \
+  $(SDK_ROOT)/components/libraries/memobj/nrf_memobj.c \
+  $(SDK_ROOT)/components/libraries/log/src/nrf_log_backend_rtt.c \
+  $(SDK_ROOT)/components/libraries/log/src/nrf_log_backend_serial.c \
+  $(SDK_ROOT)/components/libraries/log/src/nrf_log_default_backends.c \
+  $(SDK_ROOT)/components/libraries/log/src/nrf_log_frontend.c \
+  $(SDK_ROOT)/components/libraries/log/src/nrf_log_str_formatter.c \
+  $(SDK_ROOT)/components/libraries/pwr_mgmt/nrf_pwr_mgmt.c \
+  $(SDK_ROOT)/components/libraries/ringbuf/nrf_ringbuf.c \
+  $(SDK_ROOT)/components/libraries/scheduler/app_scheduler.c \
+  $(SDK_ROOT)/components/libraries/strerror/nrf_strerror.c \
+  $(SDK_ROOT)/components/libraries/sortlist/nrf_sortlist.c \
+  $(SDK_ROOT)/components/libraries/timer/app_timer2.c \
+  $(SDK_ROOT)/components/libraries/timer/drv_rtc.c \
+  $(SDK_ROOT)/components/libraries/util/app_error.c \
+  $(SDK_ROOT)/components/libraries/util/app_error_handler_gcc.c \
+  $(SDK_ROOT)/components/libraries/util/app_error_weak.c \
+  $(SDK_ROOT)/components/libraries/util/app_util_platform.c \
+  $(SDK_ROOT)/components/libraries/util/nrf_assert.c \
+  $(SDK_ROOT)/components/softdevice/common/nrf_sdh.c \
+  $(SDK_ROOT)/components/softdevice/common/nrf_sdh_ble.c \
+  $(SDK_ROOT)/components/softdevice/common/nrf_sdh_soc.c \
+  $(SDK_ROOT)/external/fprintf/nrf_fprintf.c \
+  $(SDK_ROOT)/external/fprintf/nrf_fprintf_format.c \
+  $(SDK_ROOT)/external/segger_rtt/SEGGER_RTT.c \
+  $(SDK_ROOT)/external/segger_rtt/SEGGER_RTT_Syscalls_GCC.c \
+  $(SDK_ROOT)/external/segger_rtt/SEGGER_RTT_printf.c \
+  $(SDK_ROOT)/modules/nrfx/soc/nrfx_atomic.c \
+  $(SDK_ROOT)/modules/nrfx/drivers/src/nrfx_clock.c \
+  $(SDK_ROOT)/modules/nrfx/drivers/src/nrfx_gpiote.c \
+  $(SDK_ROOT)/modules/nrfx/drivers/src/prs/nrfx_prs.c \
+  $(SDK_ROOT)/modules/nrfx/drivers/src/nrfx_spi.c \
+  $(SDK_ROOT)/modules/nrfx/drivers/src/nrfx_spim.c \
+  $(SDK_ROOT)/modules/nrfx/drivers/src/nrfx_wdt.c \
+  $(SDK_ROOT)/integration/nrfx/legacy/nrf_drv_clock.c \
+  $(SDK_ROOT)/integration/nrfx/legacy/nrf_drv_spi.c \
+  $(SDK_ROOT)/modules/nrfx/mdk/gcc_startup_nrf52811.S \
+  $(SDK_ROOT)/modules/nrfx/mdk/system_nrf52.c \
+  $(PROJ_DIR)/main.c \
+  $(PROJ_DIR)/EPD/EPD_config.c \
+  $(PROJ_DIR)/EPD/EPD_driver.c \
+  $(PROJ_DIR)/EPD/EPD_service.c \
+  $(PROJ_DIR)/EPD/UC81xx.c \
+  $(PROJ_DIR)/EPD/SSD16xx.c \
+  $(PROJ_DIR)/GUI/GUI.c \
+  $(PROJ_DIR)/GUI/Lunar.c \
+  $(PROJ_DIR)/GUI/fonts.c \
+  $(PROJ_DIR)/GUI/Adafruit_GFX.c \
+  $(PROJ_DIR)/GUI/u8g2_font.c
+
+# Include folders common to all targets
+INC_FOLDERS += \
+  $(SDK_ROOT)/components/toolchain/cmsis/include \
+  $(SDK_ROOT)/components/softdevice/common \
+  $(SDK_ROOT)/components/softdevice/s112/headers \
+  $(SDK_ROOT)/components/softdevice/s112/headers/nrf52 \
+  $(SDK_ROOT)/components/libraries/atomic \
+  $(SDK_ROOT)/components/libraries/atomic_fifo \
+  $(SDK_ROOT)/components/libraries/atomic_flags \
+  $(SDK_ROOT)/components/libraries/balloc \
+  $(SDK_ROOT)/components/libraries/bootloader \
+  $(SDK_ROOT)/components/libraries/bootloader/ble_dfu \
+  $(SDK_ROOT)/components/libraries/bootloader/dfu \
+  $(SDK_ROOT)/components/libraries/delay \
+  $(SDK_ROOT)/components/libraries/fstorage \
+  $(SDK_ROOT)/components/libraries/fds \
+  $(SDK_ROOT)/components/libraries/experimental_section_vars \
+  $(SDK_ROOT)/components/libraries/log \
+  $(SDK_ROOT)/components/libraries/log/src \
+  $(SDK_ROOT)/components/libraries/memobj \
+  $(SDK_ROOT)/components/libraries/mutex \
+  $(SDK_ROOT)/components/libraries/pwr_mgmt \
+  $(SDK_ROOT)/components/libraries/ringbuf \
+  $(SDK_ROOT)/components/libraries/sortlist \
+  $(SDK_ROOT)/components/libraries/scheduler \
+  $(SDK_ROOT)/components/libraries/strerror \
+  $(SDK_ROOT)/components/libraries/svc \
+  $(SDK_ROOT)/components/libraries/timer \
+  $(SDK_ROOT)/components/libraries/util \
+  $(SDK_ROOT)/components/ble/common \
+  $(SDK_ROOT)/components/ble/ble_advertising \
+  $(SDK_ROOT)/components/ble/nrf_ble_gatt \
+  $(SDK_ROOT)/components/ble/ble_services/ble_dfu \
+  $(SDK_ROOT)/external/fprintf \
+  $(SDK_ROOT)/external/segger_rtt \
+  $(SDK_ROOT)/integration/nrfx \
+  $(SDK_ROOT)/integration/nrfx/legacy \
+  $(SDK_ROOT)/modules/nrfx \
+  $(SDK_ROOT)/modules/nrfx/mdk \
+  $(SDK_ROOT)/modules/nrfx/drivers/include \
+  $(SDK_ROOT)/modules/nrfx/hal \
+  $(SDK_ROOT) \
+  $(PROJ_DIR)/EPD \
+  $(PROJ_DIR)/GUI \
+  $(PROJ_DIR)
+
+# Libraries common to all targets
+LIB_FILES += \
+
+# Optimization flags
+OPT = -Os -g3
+# Uncomment the line below to enable link time optimization
+#OPT += -flto
+
+# C flags common to all targets
+CFLAGS += $(OPT)
+CFLAGS += -DAPP_TIMER_V2
+CFLAGS += -DAPP_TIMER_V2_RTC1_ENABLED
+CFLAGS += -DCONFIG_GPIO_AS_PINRESET
+CFLAGS += -DDEVELOP_IN_NRF52840
+CFLAGS += -DFLOAT_ABI_SOFT
+CFLAGS += -DNRF52811_XXAA
+CFLAGS += -DNRFX_COREDEP_DELAY_US_LOOP_CYCLES=3
+CFLAGS += -DNRF_DFU_SVCI_ENABLED
+CFLAGS += -DNRF_DFU_TRANSPORT_BLE=1
+CFLAGS += -DNRF_SD_BLE_API_VERSION=7
+CFLAGS += -DS112
+CFLAGS += -DSOFTDEVICE_PRESENT
+CFLAGS += -mcpu=cortex-m4
+CFLAGS += -mthumb -mabi=aapcs
+CFLAGS += -Wall -Werror
+CFLAGS += -mfloat-abi=soft
+# keep every function in a separate section, this allows linker to discard unused ones
+CFLAGS += -ffunction-sections -fdata-sections -fno-strict-aliasing
+CFLAGS += -fno-builtin -fshort-enums
+
+# C++ flags common to all targets
+CXXFLAGS += $(OPT)
+
+# Assembler flags common to all targets
+ASMFLAGS += -g3
+ASMFLAGS += -mcpu=cortex-m4
+ASMFLAGS += -mthumb -mabi=aapcs
+ASMFLAGS += -mfloat-abi=soft
+ASMFLAGS += -DAPP_TIMER_V2
+ASMFLAGS += -DAPP_TIMER_V2_RTC1_ENABLED
+ASMFLAGS += -DCONFIG_GPIO_AS_PINRESET
+ASMFLAGS += -DDEVELOP_IN_NRF52840
+ASMFLAGS += -DFLOAT_ABI_SOFT
+ASMFLAGS += -DNRF52811_XXAA
+ASMFLAGS += -DNRFX_COREDEP_DELAY_US_LOOP_CYCLES=3
+ASMFLAGS += -DNRF_DFU_SVCI_ENABLED
+ASMFLAGS += -DNRF_DFU_TRANSPORT_BLE=1
+ASMFLAGS += -DNRF_SD_BLE_API_VERSION=7
+ASMFLAGS += -DS112
+ASMFLAGS += -DSOFTDEVICE_PRESENT
+
+# Linker flags
+LDFLAGS += $(OPT)
+LDFLAGS += -mthumb -mabi=aapcs -L$(SDK_ROOT)/modules/nrfx/mdk -T$(LINKER_SCRIPT)
+LDFLAGS += -mcpu=cortex-m4
+# let linker dump unused sections
+LDFLAGS += -Wl,--gc-sections
+# use newlib in nano version
+LDFLAGS += --specs=nano.specs
+
+nrf52811_xxaa: CFLAGS += -D__HEAP_SIZE=2048
+nrf52811_xxaa: CFLAGS += -D__STACK_SIZE=2048
+nrf52811_xxaa: ASMFLAGS += -D__HEAP_SIZE=2048
+nrf52811_xxaa: ASMFLAGS += -D__STACK_SIZE=2048
+
+# Add standard libraries at the very end of the linker input, after all objects
+# that may need symbols provided by these libraries.
+LIB_FILES += -lc -lnosys -lm
+
+TEMPLATE_PATH := $(SDK_ROOT)/components/toolchain/gcc
+
+include $(TEMPLATE_PATH)/Makefile.common
+
+$(foreach target, $(TARGETS), $(call define_target, $(target)))
+
+# =============================================================================
+# 便捷编译目标和工具
+# =============================================================================
+
+.PHONY: default help build clean rebuild flash flash_app flash_all flash_softdevice erase
+.PHONY: info size debug monitor sdk_config
+
+# 默认目标
+default: build
+
+# 构建项目（别名）
+build: nrf52811_xxaa
+	@echo "=== Build completed successfully ==="
+	@$(MAKE) --no-print-directory size
+
+ota: build
+	@echo "=== Generating OTA package ==="
+	@chmod +x tools/make-ota-nrf52.sh
+	@./tools/make-ota-nrf52.sh $(OUTPUT_DIRECTORY)/nrf52811_xxaa
+	@echo "OTA package generation completed"
+
+# 烧录完整固件（包含SoftDevice + Bootloader + App + Settings）
+flash_full: ota
+	@echo "=== Flashing complete firmware ==="
+	@echo "File: $(OUTPUT_DIRECTORY)/nrf52811_xxaa-full.hex"
+	nrfjprog -f nrf52 --program $(OUTPUT_DIRECTORY)/nrf52811_xxaa-full.hex --chiperase
+	nrfjprog -f nrf52 --reset
+	@echo "Complete firmware flash completed"
+
+
+# 清理构建文件
+cleanall:
+	@echo "=== Cleaning build files ==="
+	$(RM) $(OUTPUT_DIRECTORY)
+	@echo "Clean completed"
+
+# 重新构建
+rebuild: clean build
+	@echo "=== Rebuild completed ==="
+
+# 仅烧录应用程序
+flash_app: build
+	@echo "=== Flashing application ==="
+	@echo "File: $(OUTPUT_DIRECTORY)/nrf52811_xxaa.hex"
+	nrfjprog -f nrf52 --program $(OUTPUT_DIRECTORY)/nrf52811_xxaa.hex --sectorerase
+	nrfjprog -f nrf52 --reset
+	@echo "Flash completed"
+
+# 别名：flash 指向 flash_app
+flash: flash_app
+
+# 烧录SoftDevice和应用程序
+flash_all: flash_softdevice flash_app
+	@echo "=== Complete flash finished ==="
+
+# 烧录SoftDevice
+flash_softdevice:
+	@echo "=== Flashing SoftDevice ==="
+	@echo "File: s112_nrf52_7.2.0_softdevice.hex"
+	nrfjprog -f nrf52 --program $(SDK_ROOT)/components/softdevice/s112/hex/s112_nrf52_7.2.0_softdevice.hex --sectorerase
+	nrfjprog -f nrf52 --reset
+	@echo "SoftDevice flash completed"
+
+# 擦除所有Flash
+erase:
+	@echo "=== Erasing all flash ==="
+	nrfjprog -f nrf52 --eraseall
+	@echo "Erase completed"
+
+# 显示项目信息
+info:
+	@echo "=== Project Information ==="
+	@echo "Project Name: $(PROJECT_NAME)"
+	@echo "Target:       $(TARGETS)"
+	@echo "SDK Path:     $(SDK_ROOT)"
+	@echo "Output Dir:   $(OUTPUT_DIRECTORY)"
+	@echo "Toolchain:    $(GNU_INSTALL_ROOT)"
+	@echo "Source Files: $(words $(SRC_FILES)) files"
+	@echo "Include Dirs: $(words $(INC_FOLDERS)) directories"
+
+# 显示编译后的程序大小
+size: $(OUTPUT_DIRECTORY)/nrf52811_xxaa.out
+	@echo "=== Program Size Information ==="
+	@$(CROSS_COMPILE)size $(OUTPUT_DIRECTORY)/nrf52811_xxaa.out
+
+# 启动调试会话
+debug: $(OUTPUT_DIRECTORY)/nrf52811_xxaa.out
+	@echo "=== Starting GDB Debug Session ==="
+	@echo "Target file: $(OUTPUT_DIRECTORY)/nrf52811_xxaa.out"
+	$(CROSS_COMPILE)gdb $(OUTPUT_DIRECTORY)/nrf52811_xxaa.out
+
+# 启动RTT监视器（如果安装了JLink）
+monitor:
+	@echo "=== Starting RTT Monitor ==="
+	@if command -v JLinkRTTViewer >/dev/null 2>&1; then \
+	    JLinkRTTViewer; \
+	else \
+	    echo "JLinkRTTViewer not found. Please install J-Link Software."; \
+	fi
+
+# 打开SDK配置工具
+sdk_config:
+	@echo "=== Opening SDK Config Tool ==="
+	@if command -v java >/dev/null 2>&1; then \
+	    java -jar $(SDK_ROOT)/external_tools/cmsisconfig/CMSIS_Configuration_Wizard.jar $(SDK_ROOT)/sdk_config.h; \
+	else \
+	    echo "Java not found. Please edit sdk_config.h manually."; \
+	    echo "File location: $(SDK_ROOT)/sdk_config.h"; \
+	fi
+
+# 改进的帮助信息
+help:
+	@echo "=== $(PROJECT_NAME) Makefile Help ==="
+	@echo ""
+	@echo "Build targets:"
+	@echo "  build, make     - Build the project (default)"
+	@echo "  clean          - Clean build files"
+	@echo "  rebuild        - Clean and build"
+	@echo ""
+	@echo "Flash targets:"
+	@echo "  flash, flash_app - Flash application only"
+	@echo "  flash_softdevice - Flash SoftDevice only"
+	@echo "  flash_all       - Flash SoftDevice + application"
+	@echo "  erase          - Erase all flash"
+	@echo ""
+	@echo "Development tools:"
+	@echo "  debug          - Start GDB debug session"
+	@echo "  monitor        - Start RTT monitor"
+	@echo "  size           - Show program size"
+	@echo "  info           - Show project information"
+	@echo "  sdk_config     - Open SDK configuration tool"
+	@echo ""
+	@echo "Examples:"
+	@echo "  make           - Build project"
+	@echo "  make ota       - Build and generate OTA package"
+	@echo "  make flash_full - Flash complete firmware with bootloader"
+	@echo "  make clean     - Clean build files"
+	@echo "  make flash     - Build and flash to device"
+	@echo "  make rebuild   - Clean, build and show size"
+	@echo ""

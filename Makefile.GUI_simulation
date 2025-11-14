@@ -1,0 +1,110 @@
+# Makefile.GUI_simulation - Linux版本GUI仿真器 (修改版)
+
+# 编译GUI仿真器
+# make -f Makefile.GUI_simulation
+
+# 运行仿真器
+# make -f Makefile.GUI_simulation run
+
+# 或者直接运行
+# ./gui_emulator
+
+
+
+# 编译器设置
+CC = gcc
+CFLAGS = -Wall -IGUI -D__HEAP_SIZE=32768 -DGUI_SIMULATION -std=c99
+CFLAGS += $(shell pkg-config --cflags sdl2 SDL2_ttf)
+
+# 链接库设置
+LDFLAGS = $(shell pkg-config --libs sdl2 SDL2_ttf)
+LDFLAGS += -lm
+
+# 源文件定义 (使用Linux版本的emulator)
+SRCS = GUI/Adafruit_GFX.c \
+	   GUI/u8g2_font.c \
+	   GUI/fonts.c \
+	   GUI/GUI.c \
+	   GUI/Lunar.c \
+	   emulator_linux.c
+
+# 目标文件
+OBJS = $(SRCS:.c=.o)
+
+# 目标可执行文件
+TARGET = gui_emulator
+
+# =============================================================================
+# 构建目标
+# =============================================================================
+
+.PHONY: all clean rebuild run debug install check_deps info help
+
+# 默认目标
+all: check_deps $(TARGET)
+
+# 链接生成可执行文件
+$(TARGET): $(OBJS)
+	@echo "=== Linking $(TARGET) ==="
+	$(CC) -o $@ $^ $(LDFLAGS)
+	@echo "✓ Build completed successfully"
+
+# 编译源文件为目标文件
+%.o: %.c
+	@echo "Compiling $<..."
+	$(CC) $(CFLAGS) -c $< -o $@
+
+# 清理编译文件
+clean:
+	@echo "=== Cleaning build files ==="
+	rm -f $(OBJS) $(TARGET)
+	@echo "✓ Clean completed"
+
+# 重新构建
+rebuild: clean all
+
+# 运行仿真器
+run: $(TARGET)
+	@echo "=== Starting GUI Emulator ==="
+	./$(TARGET)
+
+# 检查依赖
+check_deps:
+	@echo "=== Checking Dependencies ==="
+	@if ! pkg-config --exists sdl2; then \
+	    echo "✗ SDL2 not found. Install with:"; \
+	    echo "  Ubuntu/Debian: sudo apt-get install libsdl2-dev"; \
+	    exit 1; \
+	else \
+	    echo "✓ SDL2 found: $$(pkg-config --modversion sdl2)"; \
+	fi
+	@if ! pkg-config --exists SDL2_ttf; then \
+	    echo "✗ SDL2_ttf not found. Install with:"; \
+	    echo "  Ubuntu/Debian: sudo apt-get install libsdl2-ttf-dev"; \
+	    exit 1; \
+	else \
+	    echo "✓ SDL2_ttf found: $$(pkg-config --modversion SDL2_ttf)"; \
+	fi
+	@if ! command -v $(CC) >/dev/null 2>&1; then \
+	    echo "✗ Compiler $(CC) not found"; \
+	    exit 1; \
+	else \
+	    echo "✓ Compiler found: $$($(CC) --version | head -1)"; \
+	fi
+
+# 帮助信息
+help:
+	@echo "=== GUI Emulator Makefile Help ==="
+	@echo ""
+	@echo "Build targets:"
+	@echo "  all (default) - Build the GUI emulator"
+	@echo "  clean        - Remove build files"
+	@echo "  rebuild      - Clean and build"
+	@echo "  run          - Build and run emulator"
+	@echo ""
+	@echo "Controls in emulator:"
+	@echo "  SPACE - Toggle mode (Clock/Calendar)"
+	@echo "  R     - Toggle color mode (BW/BWR)"
+	@echo "  W     - Change week start day"
+	@echo "  Arrow keys - Adjust date/month"
+	@echo "  ESC   - Exit emulator"
