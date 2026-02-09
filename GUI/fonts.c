@@ -2,10 +2,13 @@
 
 /*
   Fontname: -wenquanyi-wenquanyi bitmap song-bold-r-normal--12-120-75-75-P-119-ISO10646-1
+  字体名称: 文泉驿点阵宋体-粗体-正常--12-120-75-75-P-119-ISO10646-1
   Copyright: (null)
   Glyphs: 228/29895
+  字形数: 228/29895
   BBX Build Mode: 0
 */
+// 文泉驿9号字体（农历专用），包含中文字符和符号
 const uint8_t u8g2_font_wqy9_t_lunar[4315] U8G2_FONT_SECTION("u8g2_font_wqy9_t_lunar") = 
   "\344\0\3\3\4\4\3\4\5\14\14\0\376\10\376\12\377\1h\2\332\4# \5\0\314\13!\10\222\306"
   "\213CQ\0\42\10\65\375\13\11\213\0#\22\227D\34%\211\344\242$\21I$\27%\211\4\0$\17"
@@ -145,10 +148,13 @@ const uint8_t u8g2_font_wqy9_t_lunar[4315] U8G2_FONT_SECTION("u8g2_font_wqy9_t_l
 
 /*
   Fontname: -wenquanyi-wenquanyi bitmap song-bold-r-normal--16-160-75-75-P-80-iso10646-1
+  字体名称: 文泉驿点阵宋体-粗体-正常--16-160-75-75-P-80-iso10646-1
   Copyright: (null)
   Glyphs: 142/29889
+  字形数: 142/29889
   BBX Build Mode: 0
 */
+// 文泉驿12号字体（农历专用），包含中文字符和符号
 const uint8_t u8g2_font_wqy12_t_lunar[4830] U8G2_FONT_SECTION("u8g2_font_wqy12_t_lunar") = 
   "\216\0\4\3\5\5\3\4\6\20\20\0\376\13\375\14\374\0\0\0\0\0\253\60\16g\25S\231\221P\303"
   "o$\324\214\0\61\13f\25S\221\31!\322O\14\62\15g\25\323\250\220\241\221R\244W\7\63\21h"
@@ -304,10 +310,13 @@ const uint8_t u8g2_font_wqy12_t_lunar[4830] U8G2_FONT_SECTION("u8g2_font_wqy12_t
 
 /*
   Fontname: -Adobe-Helvetica-Bold-R-Normal--20-140-100-100-P-105-ISO10646-1
+  字体名称: Adobe Helvetica 粗体-正常--20-140-100-100-P-105-ISO10646-1
   Copyright: Copyright (c) 1984, 1987 Adobe Systems Incorporated. All Rights Reserved. Copyright (c) 1988, 1991 Digital Equipment Corporation. All Rights Reserved.
   Glyphs: 18/756
+  字形数: 18/756
   BBX Build Mode: 0
 */
+// Helvetica 14号粗体数字字体（仅包含数字和基本符号）
 const uint8_t u8g2_font_helvB14_tn[287] U8G2_FONT_SECTION("u8g2_font_helvB14_tn") = 
   "\22\0\3\3\4\4\2\5\5\11\21\0\375\16\374\16\374\0\0\0\0\1\2 \5\0\306\12*\17g\343"
   "\274\230$\42\251\315$\242X\4\0+\14\210\307=\261\332\341 \23\253\1,\11c\267\212\203\204\22\2"
@@ -321,10 +330,13 @@ const uint8_t u8g2_font_helvB14_tn[287] U8G2_FONT_SECTION("u8g2_font_helvB14_tn"
 
 /*
   Fontname: -Adobe-Helvetica-Bold-R-Normal--25-180-100-100-P-138-ISO10646-1
+  字体名称: Adobe Helvetica 粗体-正常--25-180-100-100-P-138-ISO10646-1
   Copyright: Copyright (c) 1984, 1987 Adobe Systems Incorporated. All Rights Reserved. Copyright (c) 1988, 1991 Digital Equipment Corporation. All Rights Reserved.
   Glyphs: 18/756
+  字形数: 18/756
   BBX Build Mode: 0
 */
+// Helvetica 18号粗体数字字体（仅包含数字和基本符号）
 const uint8_t u8g2_font_helvB18_tn[389] U8G2_FONT_SECTION("u8g2_font_helvB18_tn") = 
   "\22\0\4\3\4\5\3\5\5\15\26\0\375\23\373\23\373\0\0\0\0\1h \5\0\30-*\17x\312"
   "\365\210\311HH\34\214\320\210h\1+\16\314\32\177\211\352\352\340\301\224\250\256\0,\12c\334.\34H"

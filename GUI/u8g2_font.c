@@ -2,6 +2,7 @@
     U8g2_for_Adafruit_GFX.cpp
 
     Add unicode support and U8g2 fonts to Adafruit GFX libraries.
+    为 Adafruit GFX 库添加 Unicode 支持和 U8g2 字体
 
     U8g2 for Adafruit GFX Lib (https://github.com/olikraus/U8g2_for_Adafruit_GFX)
 
@@ -38,11 +39,13 @@
 
 #include <stddef.h>
 
+// 从字体数据中读取单个字节
 static uint8_t u8g2_font_get_byte(const uint8_t* font, uint8_t offset) {
     font += offset;
     return u8x8_pgm_read(font);
 }
 
+// 从字体数据中读取双字节（大端序）
 static uint16_t u8g2_font_get_word(const uint8_t* font, uint8_t offset) U8X8_NOINLINE;
 static uint16_t u8g2_font_get_word(const uint8_t* font, uint8_t offset) {
     uint16_t pos;
@@ -56,6 +59,8 @@ static uint16_t u8g2_font_get_word(const uint8_t* font, uint8_t offset) {
 
 /*========================================================================*/
 /* new font format */
+/* 新字体格式 */
+// 读取字体信息结构（从字体数据的头部读取元数据）
 void u8g2_read_font_info(u8g2_font_info_t* font_info, const uint8_t* font) {
     /* offset 0 */
     font_info->glyph_cnt = u8g2_font_get_byte(font, 0);
@@ -90,18 +95,24 @@ void u8g2_read_font_info(u8g2_font_info_t* font_info, const uint8_t* font) {
     font_info->start_pos_unicode = u8g2_font_get_word(font, 21);
 }
 
+// 获取字体边界框宽度
 uint8_t u8g2_GetFontBBXWidth(u8g2_font_t* u8g2) { return u8g2->font_info.max_char_width; /* new font info structure */ }
 
+// 获取字体边界框高度
 uint8_t u8g2_GetFontBBXHeight(u8g2_font_t* u8g2) {
     return u8g2->font_info.max_char_height; /* new font info structure */
 }
 
+// 获取字体边界框X偏移
 int8_t u8g2_GetFontBBXOffX(u8g2_font_t* u8g2) { return u8g2->font_info.x_offset; /* new font info structure */ }
 
+// 获取字体边界框Y偏移
 int8_t u8g2_GetFontBBXOffY(u8g2_font_t* u8g2) { return u8g2->font_info.y_offset; /* new font info structure */ }
 
+// 获取大写字母A的高度
 uint8_t u8g2_GetFontCapitalAHeight(u8g2_font_t* u8g2) { return u8g2->font_info.ascent_A; /* new font info structure */ }
 
+// 从压缩字体数据中读取无符号位
 static uint8_t u8g2_font_decode_get_unsigned_bits(u8g2_font_decode_t* f, uint8_t cnt) U8X8_NOINLINE;
 static uint8_t u8g2_font_decode_get_unsigned_bits(u8g2_font_decode_t* f, uint8_t cnt) {
     uint8_t val;
@@ -145,6 +156,7 @@ static uint8_t u8g2_font_decode_get_unsigned_bits(u8g2_font_decode_t* f, uint8_t
 
 */
 /* optimized */
+// 从压缩字体数据中读取有符号位
 static int8_t u8g2_font_decode_get_signed_bits(u8g2_font_decode_t* f, uint8_t cnt) U8X8_NOINLINE;
 static int8_t u8g2_font_decode_get_signed_bits(u8g2_font_decode_t* f, uint8_t cnt) {
     int8_t v, d;
@@ -157,6 +169,7 @@ static int8_t u8g2_font_decode_get_signed_bits(u8g2_font_decode_t* f, uint8_t cn
     // return (int8_t)u8g2_font_decode_get_unsigned_bits(f, cnt) - ((1<<cnt)>>1);
 }
 
+// 根据方向添加Y向量
 static int16_t u8g2_add_vector_y(int16_t dy, int8_t x, int8_t y, uint8_t dir) U8X8_NOINLINE;
 static int16_t u8g2_add_vector_y(int16_t dy, int8_t x, int8_t y, uint8_t dir) {
     switch (dir) {
@@ -176,6 +189,7 @@ static int16_t u8g2_add_vector_y(int16_t dy, int8_t x, int8_t y, uint8_t dir) {
     return dy;
 }
 
+// 根据方向添加X向量
 static int16_t u8g2_add_vector_x(int16_t dx, int8_t x, int8_t y, uint8_t dir) U8X8_NOINLINE;
 static int16_t u8g2_add_vector_x(int16_t dx, int8_t x, int8_t y, uint8_t dir) {
     switch (dir) {
@@ -199,12 +213,19 @@ static int16_t u8g2_add_vector_x(int16_t dx, int8_t x, int8_t y, uint8_t dir) {
     Description:
         Draw a run-length area of the glyph. "len" can have any size and the line
         length has to be wrapped at the glyph border.
+    描述：
+        绘制字形的游程长度区域。"len"可以是任意大小，线长度需要在字形边界处换行。
     Args:
         len:          Length of the line
+                      线的长度
         is_foreground     foreground/background?
+                          前景/背景？
         u8g2->font_decode.target_x    X position
+                                      X位置
         u8g2->font_decode.target_y    Y position
+                                      Y位置
         u8g2->font_decode.is_transparent  Transparent mode
+                                          透明模式
     Return:
         -
     Calls:
@@ -213,6 +234,7 @@ static int16_t u8g2_add_vector_x(int16_t dx, int8_t x, int8_t y, uint8_t dir) {
         u8g2_font_decode_glyph()
 */
 /* optimized */
+// 解码并绘制字形的游程长度数据
 static void u8g2_font_decode_len(u8g2_font_t* u8g2, uint8_t len, uint8_t is_foreground) {
     uint8_t cnt;     /* total number of remaining pixels, which have to be drawn */
     uint8_t rem;     /* remaining pixel to the right edge of the glyph */
@@ -276,6 +298,7 @@ static void u8g2_font_decode_len(u8g2_font_t* u8g2, uint8_t len, uint8_t is_fore
     decode->y = ly;
 }
 
+// 设置字形解码器（初始化解码状态）
 static void u8g2_font_setup_decode(u8g2_font_t* u8g2, const uint8_t* glyph_data) {
     u8g2_font_decode_t* decode = &(u8g2->font_decode);
     decode->decode_ptr = glyph_data;
@@ -294,13 +317,20 @@ static void u8g2_font_setup_decode(u8g2_font_t* u8g2, const uint8_t* glyph_data)
 /*
     Description:
         Decode and draw a glyph.
+    描述：
+        解码并绘制一个字形
     Args:
         glyph_data:           Pointer to the compressed glyph data of the font
+                              指向字体压缩字形数据的指针
         u8g2->font_decode.target_x    X position
+                                      X位置
         u8g2->font_decode.target_y    Y position
+                                      Y位置
         u8g2->font_decode.is_transparent  Transparent mode
+                                          透明模式
     Return:
         Width (delta x advance) of the glyph.
+        字形的宽度（X增量）
     Calls:
         u8g2_font_decode_len()
 */
@@ -346,16 +376,21 @@ static int8_t u8g2_font_decode_glyph(u8g2_font_t* u8g2, const uint8_t* glyph_dat
 /*
     Description:
         Find the starting point of the glyph data.
+    描述：
+        查找字形数据的起始位置
     Args:
         encoding: Encoding (ASCII or Unicode) of the glyph
+                  字形的编码（ASCII或Unicode）
     Return:
         Address of the glyph data or NULL, if the encoding is not avialable in the font.
+        字形数据的地址，如果字体中不存在该编码则返回NULL
 */
 const uint8_t* u8g2_font_get_glyph_data(u8g2_font_t* u8g2, uint16_t encoding) {
     const uint8_t* font = u8g2->font;
     font += 23;
 
     if (encoding <= 255) {
+        // ASCII 字符处理
         if (encoding >= 'a') {
             font += u8g2->font_info.start_pos_lower_a;
         } else if (encoding >= 'A') {
@@ -370,14 +405,17 @@ const uint8_t* u8g2_font_get_glyph_data(u8g2_font_t* u8g2, uint16_t encoding) {
             font += u8x8_pgm_read(font + 1);
         }
     } else {
+        // Unicode 字符处理
         uint16_t e;
         const uint8_t* unicode_lookup_table;
         /* support for the new unicode lookup table */
+        /* 支持新的 Unicode 查找表 */
 
         font += u8g2->font_info.start_pos_unicode;
         unicode_lookup_table = font;
 
         /* u8g2 issue 596: search for the glyph start in the unicode lookup table */
+        /* u8g2 issue 596: 在 Unicode 查找表中搜索字形起始位置 */
         do {
             font += u8g2_font_get_word(unicode_lookup_table, 0);
             e = u8g2_font_get_word(unicode_lookup_table, 2);
@@ -385,6 +423,7 @@ const uint8_t* u8g2_font_get_glyph_data(u8g2_font_t* u8g2, uint16_t encoding) {
         } while (e < encoding);
 
         /* variable "font" is now updated according to the lookup table */
+        /* 变量 "font" 现在已根据查找表更新 */
 
         for (;;) {
             e = u8x8_pgm_read(font);
@@ -400,6 +439,7 @@ const uint8_t* u8g2_font_get_glyph_data(u8g2_font_t* u8g2, uint16_t encoding) {
     return NULL;
 }
 
+// 绘制单个字形的内部实现
 static int16_t u8g2_font_draw_glyph(u8g2_font_t* u8g2, int16_t x, int16_t y, uint16_t encoding) {
     int16_t dx = 0;
     u8g2->font_decode.target_x = x;
@@ -415,6 +455,7 @@ static int16_t u8g2_font_draw_glyph(u8g2_font_t* u8g2, int16_t x, int16_t y, uin
 
 //========================================================
 
+// 检查字形是否存在
 uint8_t u8g2_IsGlyph(u8g2_font_t* u8g2, uint16_t requested_encoding) {
     /* updated to new code */
     if (u8g2_font_get_glyph_data(u8g2, requested_encoding) != NULL) return 1;
@@ -423,6 +464,9 @@ uint8_t u8g2_IsGlyph(u8g2_font_t* u8g2, uint16_t requested_encoding) {
 
 /* side effect: updates u8g2->font_decode and u8g2->glyph_x_offset */
 /* actually u8g2_GetGlyphWidth returns the glyph delta x and glyph width itself is set as side effect */
+/* 副作用：更新 u8g2->font_decode 和 u8g2->glyph_x_offset */
+/* 实际上 u8g2_GetGlyphWidth 返回字形的X增量，字形宽度本身作为副作用被设置 */
+// 获取字形宽度
 int8_t u8g2_GetGlyphWidth(u8g2_font_t* u8g2, uint16_t requested_encoding) {
     const uint8_t* glyph_data = u8g2_font_get_glyph_data(u8g2, requested_encoding);
     if (glyph_data == NULL) return 0;
@@ -435,16 +479,20 @@ int8_t u8g2_GetGlyphWidth(u8g2_font_t* u8g2, uint16_t requested_encoding) {
     return u8g2_font_decode_get_signed_bits(&(u8g2->font_decode), u8g2->font_info.bits_per_delta_x);
 }
 
+// 设置字体模式（透明/不透明）
 void u8g2_SetFontMode(u8g2_font_t* u8g2, uint8_t is_transparent) {
     u8g2->font_decode.is_transparent = is_transparent;  // new font procedures
 }
 
+// 设置字体方向（0/1/2/3 对应 0°/90°/180°/270°）
 void u8g2_SetFontDirection(u8g2_font_t* u8g2, uint8_t dir) { u8g2->font_decode.dir = dir; }
 
+// 绘制单个字形（公共接口）
 int16_t u8g2_DrawGlyph(u8g2_font_t* u8g2, int16_t x, int16_t y, uint16_t encoding) {
     return u8g2_font_draw_glyph(u8g2, x, y, encoding);
 }
 
+// 绘制字符串
 int16_t u8g2_DrawStr(u8g2_font_t* u8g2, int16_t x, int16_t y, const char* s) {
     int16_t sum, delta;
     sum = 0;
@@ -471,6 +519,7 @@ int16_t u8g2_DrawStr(u8g2_font_t* u8g2, int16_t x, int16_t y, const char* s) {
     return sum;
 }
 
+// 设置字体
 void u8g2_SetFont(u8g2_font_t* u8g2, const uint8_t* font) {
     if (u8g2->font != font) {
         u8g2->font = font;
@@ -480,6 +529,8 @@ void u8g2_SetFont(u8g2_font_t* u8g2, const uint8_t* font) {
     }
 }
 
+// 设置前景色
 void u8g2_SetForegroundColor(u8g2_font_t* u8g2, uint16_t fg) { u8g2->font_decode.fg_color = fg; }
 
+// 设置背景色
 void u8g2_SetBackgroundColor(u8g2_font_t* u8g2, uint16_t bg) { u8g2->font_decode.bg_color = bg; }

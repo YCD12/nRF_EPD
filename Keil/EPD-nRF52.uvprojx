@@ -10,7 +10,7 @@
       <TargetName>nRF52811_xxAA</TargetName>
       <ToolsetNumber>0x4</ToolsetNumber>
       <ToolsetName>ARM-ADS</ToolsetName>
-      <pCCUsed>5060960::V5.06 update 7 (build 960)::.\ARMCC</pCCUsed>
+      <pCCUsed>5060528::V5.06 update 5 (build 528)::ARMCC</pCCUsed>
       <uAC6>0</uAC6>
       <TargetOption>
         <TargetCommonOption>
@@ -415,14 +415,9 @@
               <FilePath>..\EPD\EPD_service.c</FilePath>
             </File>
             <File>
-              <FileName>UC81xx.c</FileName>
+              <FileName>UC8179.c</FileName>
               <FileType>1</FileType>
-              <FilePath>..\EPD\UC81xx.c</FilePath>
-            </File>
-            <File>
-              <FileName>SSD16xx.c</FileName>
-              <FileType>1</FileType>
-              <FilePath>..\EPD\SSD16xx.c</FilePath>
+              <FilePath>..\EPD\UC8179.c</FilePath>
             </File>
           </Files>
         </Group>
@@ -1172,14 +1167,9 @@
               <FilePath>..\EPD\EPD_service.c</FilePath>
             </File>
             <File>
-              <FileName>UC81xx.c</FileName>
+              <FileName>UC8179.c</FileName>
               <FileType>1</FileType>
-              <FilePath>..\EPD\UC81xx.c</FilePath>
-            </File>
-            <File>
-              <FileName>SSD16xx.c</FileName>
-              <FileType>1</FileType>
-              <FilePath>..\EPD\SSD16xx.c</FilePath>
+              <FilePath>..\EPD\UC8179.c</FilePath>
             </File>
           </Files>
         </Group>
