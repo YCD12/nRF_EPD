@@ -1,15 +1,15 @@
-UC8176 的数据手册中不包含 LUT 相关指令的说明，但是 UC8151 的手册里有，且格式是一样的，故把 UC8151 的手册也放了上来。
+The UC8176 datasheet does not include descriptions of LUT-related instructions, but the UC8151 manual does, and the format is the same, so the UC8151 manual has also been included.
 
-OTP 目录为从屏幕中读取出的 OTP 数据:
+The OTP directory contains OTP data read from the screens:
 
-- `bw.txt`: 黑白屏
-- `3c.txt`: 黑白红三色屏
+- `bw.txt`: Black & white screen
+- `3c.txt`: Black, white, and red 3-color screen
 
-可从 OTP 数据中提取屏幕内置的 LUT 波形作为参考，以方便自定义 LUT 波形。
+You can extract the built-in LUT waveforms from the OTP data as a reference to facilitate custom LUT waveforms.
 
-以下是从 OTP 中提取出的 LUT 波形例子（均已测试和本项目支持的 2 个屏幕不加载外部 LUT 时在 20 度左右室温下显示效果一致）：
+The following are examples of LUT waveforms extracted from OTP (all tested to match the display effect at room temperature around 20°C when the 2 screens supported by this project do not load external LUTs):
 
-**黑白屏：**
+**Black & White Screen:**
 
 ```c
 // OTP location: 0x300
@@ -65,7 +65,7 @@ static const unsigned char LUTBB[] = {
 };
 ```
 
-**三色屏：**
+**3-Color Screen:**
 
 ```c
 // OTP location: 0x400
@@ -121,9 +121,9 @@ static const unsigned char LUTB[] = {
 };
 ```
 
-使用以下 LUT 且把驱动设置为 BW 模式可把三色屏当作黑白屏使用，刷新时间能从 15s 降到 2-3s 左右：
-> - 有待继续优化，显示效果比默认三色的 LUT 淡一些
-> - 刷新时间应该还有优化的空间，理论上来说应该还可以做一个支持局刷的 LUT
+Using the following LUT and setting the driver to BW mode allows the 3-color screen to be used as a black & white screen, reducing refresh time from 15s to around 2-3s:
+> - Further optimization is needed; the display effect is slightly lighter than the default 3-color LUT
+> - There should be room for optimization of refresh time; theoretically, a LUT supporting partial refresh could also be created
 
 ```c
 // OTP location: 0x200, from bw.txt

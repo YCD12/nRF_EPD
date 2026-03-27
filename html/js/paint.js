@@ -226,12 +226,10 @@ class PaintManager {
 
     if (undoBtn) {
       undoBtn.disabled = this.historyStep <= 0;
-      undoBtn.setAttribute('aria-disabled', undoBtn.disabled ? 'true' : 'false');
     }
 
     if (redoBtn) {
       redoBtn.disabled = this.historyStep >= this.historyStack.length - 1;
-      redoBtn.setAttribute('aria-disabled', redoBtn.disabled ? 'true' : 'false');
     }
   }
 
@@ -313,7 +311,6 @@ class PaintManager {
     document.getElementById('toggle-schedule-cell-indicator-btn').addEventListener('click', () => {
       this.showScheduleCellIndicator = !this.showScheduleCellIndicator;
       document.getElementById('toggle-schedule-cell-indicator-btn').classList.toggle('primary', this.showScheduleCellIndicator);
-      document.getElementById('toggle-schedule-cell-indicator-btn').setAttribute('aria-pressed', this.showScheduleCellIndicator ? 'true' : 'false');
       if (this.scheduleData) {
         this.redrawAll();
       }
@@ -393,26 +390,22 @@ class PaintManager {
     document.getElementById('text-bold').addEventListener('click', () => {
       this.textBold = !this.textBold;
       document.getElementById('text-bold').classList.toggle('primary', this.textBold);
-      document.getElementById('text-bold').setAttribute('aria-pressed', this.textBold ? 'true' : 'false');
     });
 
     document.getElementById('text-italic').addEventListener('click', () => {
       this.textItalic = !this.textItalic;
       document.getElementById('text-italic').classList.toggle('primary', this.textItalic);
-      document.getElementById('text-italic').setAttribute('aria-pressed', this.textItalic ? 'true' : 'false');
     });
 
     // Add event listeners for todo bold and italic buttons
     document.getElementById('todo-bold').addEventListener('click', () => {
       this.todoBold = !this.todoBold;
       document.getElementById('todo-bold').classList.toggle('primary', this.todoBold);
-      document.getElementById('todo-bold').setAttribute('aria-pressed', this.todoBold ? 'true' : 'false');
     });
 
     document.getElementById('todo-italic').addEventListener('click', () => {
       this.todoItalic = !this.todoItalic;
       document.getElementById('todo-italic').classList.toggle('primary', this.todoItalic);
-      document.getElementById('todo-italic').setAttribute('aria-pressed', this.todoItalic ? 'true' : 'false');
     });
 
     document.getElementById('todo-color').addEventListener('change', (e) => {
@@ -422,7 +415,6 @@ class PaintManager {
     document.getElementById('toggle-todo-delete-btn').addEventListener('click', () => {
       this.showTodoDeleteButtons = !this.showTodoDeleteButtons;
       document.getElementById('toggle-todo-delete-btn').classList.toggle('primary', this.showTodoDeleteButtons);
-      document.getElementById('toggle-todo-delete-btn').setAttribute('aria-pressed', this.showTodoDeleteButtons ? 'true' : 'false');
       // Redraw all todo items with the new visibility state
       this.redrawAll();
     });
@@ -457,10 +449,6 @@ class PaintManager {
   }
 
   handleKeyboard(e) {
-    const target = e.target;
-    if (target && (target.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(target.tagName))) {
-      return;
-    }
     // Ctrl+Z or Cmd+Z for undo
     if ((e.ctrlKey || e.metaKey) && e.key === 'z' && !e.shiftKey) {
       e.preventDefault();
@@ -488,12 +476,6 @@ class PaintManager {
     document.getElementById('text-mode').classList.toggle('active', this.currentTool === 'text');
     document.getElementById('todo-mode').classList.toggle('active', this.currentTool === 'todo');
     document.getElementById('schedule-mode').classList.toggle('active', this.currentTool === 'schedule');
-
-    document.getElementById('brush-mode').setAttribute('aria-pressed', this.currentTool === 'brush' ? 'true' : 'false');
-    document.getElementById('eraser-mode').setAttribute('aria-pressed', this.currentTool === 'eraser' ? 'true' : 'false');
-    document.getElementById('text-mode').setAttribute('aria-pressed', this.currentTool === 'text' ? 'true' : 'false');
-    document.getElementById('todo-mode').setAttribute('aria-pressed', this.currentTool === 'todo' ? 'true' : 'false');
-    document.getElementById('schedule-mode').setAttribute('aria-pressed', this.currentTool === 'schedule' ? 'true' : 'false');
 
     document.getElementById('brush-color').disabled = this.currentTool === 'eraser' || this.currentTool === 'todo' || this.currentTool === 'schedule';
     document.getElementById('brush-size').disabled = this.currentTool === 'text' || this.currentTool === 'todo' || this.currentTool === 'schedule';

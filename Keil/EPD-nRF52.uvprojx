@@ -762,7 +762,7 @@
       <TargetName>flash_softdevice</TargetName>
       <ToolsetNumber>0x4</ToolsetNumber>
       <ToolsetName>ARM-ADS</ToolsetName>
-      <pCCUsed>5060960::V5.06 update 7 (build 960)::.\ARMCC</pCCUsed>
+      <pCCUsed>5060528::V5.06 update 5 (build 528)::ARMCC</pCCUsed>
       <uAC6>0</uAC6>
       <TargetOption>
         <TargetCommonOption>
@@ -800,8 +800,8 @@
             <NotGenerated>0</NotGenerated>
             <InvalidFlash>1</InvalidFlash>
           </TargetStatus>
-          <OutputDirectory>..\SDK\17.1.0_ddde560\components\softdevice\s112\hex\</OutputDirectory>
-          <OutputName>s112_nrf52_7.3.0_softdevice.hex</OutputName>
+          <OutputDirectory>.\_build_softdevice_nRF52\</OutputDirectory>
+          <OutputName>s112_nrf52_7.3.0_softdevice</OutputName>
           <CreateExecutable>1</CreateExecutable>
           <CreateLib>0</CreateLib>
           <CreateHexFile>1</CreateHexFile>
@@ -832,9 +832,9 @@
             <nStopB2X>0</nStopB2X>
           </BeforeMake>
           <AfterMake>
-            <RunUserProg1>0</RunUserProg1>
+            <RunUserProg1>1</RunUserProg1>
             <RunUserProg2>0</RunUserProg2>
-            <UserProg1Name></UserProg1Name>
+            <UserProg1Name>..\tools\stage-softdevice-nrf52.bat $L @L</UserProg1Name>
             <UserProg2Name></UserProg2Name>
             <UserProg1Dos16Mode>0</UserProg1Dos16Mode>
             <UserProg2Dos16Mode>0</UserProg2Dos16Mode>
@@ -1089,10 +1089,10 @@
             <v6WtE>0</v6WtE>
             <v6Rtti>0</v6Rtti>
             <VariousControls>
-              <MiscControls></MiscControls>
-              <Define>BLE_STACK_SUPPORT_REQD NRF51822 NRF_SD_BLE_API_VERSION=2 S130 NRF51 SOFTDEVICE_PRESENT SWI_DISABLE0</Define>
+              <MiscControls>--locale=english --reduce_paths</MiscControls>
+              <Define>APP_TIMER_V2 APP_TIMER_V2_RTC1_ENABLED CONFIG_GPIO_AS_PINRESET DEVELOP_IN_NRF52840 FLOAT_ABI_SOFT NRF52811_XXAA NRFX_COREDEP_DELAY_US_LOOP_CYCLES=3 NRF_DFU_SVCI_ENABLED NRF_DFU_TRANSPORT_BLE=1 NRF_SD_BLE_API_VERSION=7 S112 SOFTDEVICE_PRESENT __HEAP_SIZE=8192 __STACK_SIZE=2048</Define>
               <Undefine></Undefine>
-              <IncludePath></IncludePath>
+              <IncludePath>..\;..\EPD;..\GUI;..\SDK\17.1.0_ddde560;..\SDK\17.1.0_ddde560\components\ble\common;..\SDK\17.1.0_ddde560\components\ble\ble_advertising;..\SDK\17.1.0_ddde560\components\ble\nrf_ble_gatt;..\SDK\17.1.0_ddde560\components\ble\ble_services\ble_dfu;..\SDK\17.1.0_ddde560\components\libraries\atomic;..\SDK\17.1.0_ddde560\components\libraries\atomic_fifo;..\SDK\17.1.0_ddde560\components\libraries\atomic_flags;..\SDK\17.1.0_ddde560\components\libraries\balloc;..\SDK\17.1.0_ddde560\components\libraries\bootloader;..\SDK\17.1.0_ddde560\components\libraries\bootloader\ble_dfu;..\SDK\17.1.0_ddde560\components\libraries\bootloader\dfu;..\SDK\17.1.0_ddde560\components\libraries\delay;..\SDK\17.1.0_ddde560\components\libraries\fstorage;..\SDK\17.1.0_ddde560\components\libraries\fds;..\SDK\17.1.0_ddde560\components\libraries\experimental_section_vars;..\SDK\17.1.0_ddde560\components\libraries\log;..\SDK\17.1.0_ddde560\components\libraries\log\src;..\SDK\17.1.0_ddde560\components\libraries\memobj;..\SDK\17.1.0_ddde560\components\libraries\mutex;..\SDK\17.1.0_ddde560\components\libraries\pwr_mgmt;..\SDK\17.1.0_ddde560\components\libraries\ringbuf;..\SDK\17.1.0_ddde560\components\libraries\sortlist;..\SDK\17.1.0_ddde560\components\libraries\scheduler;..\SDK\17.1.0_ddde560\components\libraries\strerror;..\SDK\17.1.0_ddde560\components\libraries\svc;..\SDK\17.1.0_ddde560\components\libraries\timer;..\SDK\17.1.0_ddde560\components\libraries\util;..\SDK\17.1.0_ddde560\components\softdevice\common;..\SDK\17.1.0_ddde560\components\softdevice\s112\headers;..\SDK\17.1.0_ddde560\components\softdevice\s112\headers\nrf52;..\SDK\17.1.0_ddde560\components\toolchain\cmsis\include;..\SDK\17.1.0_ddde560\external\fprintf;..\SDK\17.1.0_ddde560\external\segger_rtt;..\SDK\17.1.0_ddde560\integration\nrfx;..\SDK\17.1.0_ddde560\integration\nrfx\legacy;..\SDK\17.1.0_ddde560\modules\nrfx;..\SDK\17.1.0_ddde560\modules\nrfx\mdk;..\SDK\17.1.0_ddde560\modules\nrfx\drivers\include;..\SDK\17.1.0_ddde560\modules\nrfx\hal</IncludePath>
             </VariousControls>
           </Cads>
           <Aads>
@@ -1107,10 +1107,10 @@
             <useXO>0</useXO>
             <ClangAsOpt>1</ClangAsOpt>
             <VariousControls>
-              <MiscControls></MiscControls>
-              <Define>BLE_STACK_SUPPORT_REQD NRF51822 NRF_SD_BLE_API_VERSION=2 S130 NRF51 SOFTDEVICE_PRESENT SWI_DISABLE0</Define>
+              <MiscControls>--cpreproc_opts=-DAPP_TIMER_V2,-DAPP_TIMER_V2_RTC1_ENABLED,-DCONFIG_GPIO_AS_PINRESET,-DDEVELOP_IN_NRF52840,-DFLOAT_ABI_SOFT,-DNRF52811_XXAA,-DNRFX_COREDEP_DELAY_US_LOOP_CYCLES=3,-DNRF_SD_BLE_API_VERSION=7,-DS112,-DSOFTDEVICE_PRESENT,-D__HEAP_SIZE=8192,-D__STACK_SIZE=2048</MiscControls>
+              <Define>APP_TIMER_V2 APP_TIMER_V2_RTC1_ENABLED CONFIG_GPIO_AS_PINRESET DEVELOP_IN_NRF52840 FLOAT_ABI_SOFT NRF52811_XXAA NRFX_COREDEP_DELAY_US_LOOP_CYCLES=3 NRF_DFU_SVCI_ENABLED NRF_DFU_TRANSPORT_BLE=1 NRF_SD_BLE_API_VERSION=7 S112 SOFTDEVICE_PRESENT __HEAP_SIZE=8192 __STACK_SIZE=2048</Define>
               <Undefine></Undefine>
-              <IncludePath></IncludePath>
+              <IncludePath>..\config;..\EPD;..\GUI;..\SDK\17.1.0_ddde560;..\SDK\17.1.0_ddde560\components\ble\common;..\SDK\17.1.0_ddde560\components\ble\ble_advertising;..\SDK\17.1.0_ddde560\components\ble\nrf_ble_gatt;..\SDK\17.1.0_ddde560\components\libraries\atomic;..\SDK\17.1.0_ddde560\components\libraries\atomic_fifo;..\SDK\17.1.0_ddde560\components\libraries\atomic_flags;..\SDK\17.1.0_ddde560\components\libraries\balloc;..\SDK\17.1.0_ddde560\components\libraries\delay;..\SDK\17.1.0_ddde560\components\libraries\fstorage;..\SDK\17.1.0_ddde560\components\libraries\fds;..\SDK\17.1.0_ddde560\components\libraries\experimental_section_vars;..\SDK\17.1.0_ddde560\components\libraries\log;..\SDK\17.1.0_ddde560\components\libraries\log\src;..\SDK\17.1.0_ddde560\components\libraries\memobj;..\SDK\17.1.0_ddde560\components\libraries\mutex;..\SDK\17.1.0_ddde560\components\libraries\pwr_mgmt;..\SDK\17.1.0_ddde560\components\libraries\ringbuf;..\SDK\17.1.0_ddde560\components\libraries\sortlist;..\SDK\17.1.0_ddde560\components\libraries\scheduler;..\SDK\17.1.0_ddde560\components\libraries\strerror;..\SDK\17.1.0_ddde560\components\libraries\timer;..\SDK\17.1.0_ddde560\components\libraries\util;..\SDK\17.1.0_ddde560\components\softdevice\common;..\SDK\17.1.0_ddde560\components\softdevice\s112\headers;..\SDK\17.1.0_ddde560\components\softdevice\s112\headers\nrf52;..\SDK\17.1.0_ddde560\components\toolchain\cmsis\include;..\SDK\17.1.0_ddde560\external\fprintf;..\SDK\17.1.0_ddde560\external\segger_rtt;..\SDK\17.1.0_ddde560\integration\nrfx;..\SDK\17.1.0_ddde560\integration\nrfx\legacy;..\SDK\17.1.0_ddde560\modules\nrfx;..\SDK\17.1.0_ddde560\modules\nrfx\mdk;..\SDK\17.1.0_ddde560\modules\nrfx\drivers\include;..\SDK\17.1.0_ddde560\modules\nrfx\hal</IncludePath>
             </VariousControls>
           </Aads>
           <LDads>

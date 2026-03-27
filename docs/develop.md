@@ -4,10 +4,10 @@
 > - 推荐使用 [Keil 5.36](https://img.anfulai.cn/bbs/96992/MDK536.EXE) 或以下版本（如遇到 pack 无法下载，可到群文件下载）
 > - `sdk10` 分支为旧版 SDK 代码，蓝牙协议栈占用的空间小一些，用于支持 128K Flash 芯片（不再更新）
 
-这里以 nRF51 版本项目为例 (`Keil/EPD-nRF51.uvprojx`)，项目配置有几个 `Target`：
+这里以当前 nRF52 工程 (`Keil/EPD-nRF52.uvprojx`) 为例，项目配置有几个 `Target`：
 
-- `nRF51822_xxAA`: 用于编译 256K Flash 固件
-- `flash_softdevice`: 刷蓝牙协议栈用（只需刷一次）
+- `nRF52811_xxAA`: 用于编译应用固件
+- `flash_softdevice`: 用于安全中转并烧录 SDK 自带的蓝牙协议栈（只需刷一次）
 
 烧录器可以使用 J-Link 或者 DAPLink（可使用 [RTTView](https://github.com/XIVN1987/RTTView) 查看 RTT 日志）。
 
@@ -15,9 +15,15 @@
 
 > **注意:** 这是自己编译代码的刷机流程。如不改代码，强烈建议到 [Releases](https://github.com/tsl0922/EPD-nRF5/releases) 下载编译好的固件，**不需要单独下载蓝牙协议栈**，且有 [刷机教程](https://b23.tv/AaphIZp) （没有 Keil 开发经验的，请不要给自己找麻烦去编译）
 
-1. 全部擦除 (Keil 擦除后刷不了的话，使用烧录器的上位机软件擦除试试)
-2. 切换到 `flash_softdevice`，下载蓝牙协议栈，**不要编译直接下载**（只需刷一次）
-3. 切换到 `nRF51822_xxAA`，先编译再下载
+1. 全部擦除（Keil 擦除后刷不了的话，使用烧录器的上位机软件擦除试试）
+2. 切换到 `flash_softdevice`，先执行一次 `Build`
+3. 该 target 会把 SDK 中的官方 `s112_nrf52_7.3.0_softdevice.hex` 复制到 `Keil/_build_softdevice_nRF52/`，不会再直接把 SDK 目录当成输出目录
+4. 对 `flash_softdevice` 执行 `Download`，刷入蓝牙协议栈（只需一次）
+5. 切换到 `nRF52811_xxAA`，编译并下载应用固件
+
+> **注意:**
+> - 不要再把 Keil 的输出目录指向 SDK 的 `softdevice` 目录。`Clean Target` 会删除 target 输出文件，这样会误删 SDK 原始 SoftDevice 文件。
+> - 如果 `flash_softdevice` 构建时报找不到 `s112_nrf52_7.3.0_softdevice.hex`，请先把该文件恢复到 `SDK/17.1.0_ddde560/components/softdevice/s112/hex/`。
 
 ### 晶振配置
 

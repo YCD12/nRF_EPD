@@ -17,9 +17,6 @@
     --dark-log-bg: #1e293b;
     --dark-input-bg: #334155;
     --dark-input-text: #f1f5f9;
-    --focus-ring: #f59e0b;
-    --focus-ring-offset: #ffffff;
-    --dark-fieldset-bg: #2a3344;
 }
 
 * {
@@ -44,7 +41,6 @@ button {
     white-space: nowrap;
     cursor: pointer;
     font-size: 0.9rem;
-    min-height: 40px;
 }
 
 button:disabled {
@@ -149,24 +145,6 @@ select:focus {
     outline: 0;
 }
 
-input:focus-visible,
-select:focus-visible,
-button:focus-visible,
-a:focus-visible,
-.tool-button:focus-visible {
-    outline: 3px solid var(--focus-ring);
-    outline-offset: 2px;
-}
-
-body.dark-mode input:focus-visible,
-body.dark-mode select:focus-visible,
-body.dark-mode button:focus-visible,
-body.dark-mode a:focus-visible,
-body.dark-mode .tool-button:focus-visible {
-    outline-color: var(--focus-ring);
-    outline-offset: 2px;
-}
-
 input[type=text]:disabled,
 input[type=number]:disabled,
 select:disabled {
@@ -178,18 +156,6 @@ select:disabled {
 
 label {
     margin-right: 4px;
-    white-space: nowrap;
-}
-
-.sr-only {
-    border: 0;
-    clip: rect(0 0 0 0);
-    height: 1px;
-    margin: -1px;
-    overflow: hidden;
-    padding: 0;
-    position: absolute;
-    width: 1px;
     white-space: nowrap;
 }
 
@@ -365,8 +331,8 @@ canvas.text-placement-mode {
 }
 
 .tool-button {
-    width: 44px;
-    height: 44px;
+    width: 36px;
+    height: 36px;
     font-size: 1.2rem;
     display: inline-flex;
     align-items: center;
@@ -409,7 +375,7 @@ canvas.text-placement-mode {
     }
 
     .canvas-tools.flex-container {
-        flex-direction: column;
+        flex-direction: row;
         flex-wrap: wrap;
         justify-content: center;
     }
@@ -417,12 +383,6 @@ canvas.text-placement-mode {
     .canvas-tools .flex-group {
         justify-content: center;
         width: 100%;
-    }
-
-    .tool-button {
-        width: 48px;
-        height: 48px;
-        margin-right: 0;
     }
 
     .log-container {

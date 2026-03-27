@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="zh-CN">
+<html lang="en">
 
 <head>
 	<meta charset="utf-8">
@@ -48,7 +48,7 @@
 					<button id="setDriverbutton" type="button" class="primary" onclick="setDriver()">确定</button>
 				</div>
 			</div>
-			<div class="log-container" id="log" role="log" aria-live="polite" aria-atomic="false" aria-relevant="additions text"></div>
+			<div class="log-container" id="log"></div>
 		</section>
 		<section class="section">
 			<h2>设备控制</h2>
@@ -73,7 +73,6 @@
 					<button id="clearscreenbutton" type="button" class="secondary" onclick="clearScreen()">清除屏幕</button>
 				</div>
 				<div class="flex-group right debug">
-					<label class="sr-only" for="cmdTXT">命令输入</label>
 					<input type="text" id="cmdTXT" value="">
 					<button id="sendcmdbutton" type="button" class="primary" onclick="sendcmd()">发送命令</button>
 				</div>
@@ -82,7 +81,6 @@
 		<section class="section">
 			<h2>蓝牙传图</h2>
 			<div class="flex-container">
-				<label class="sr-only" for="imageFile">选择图片</label>
 				<input type="file" id="imageFile" accept=".png,.jpg,.bmp,.webp,.jpeg" onchange="updateImage()">
 			</div>
 			<div class="flex-container options">
@@ -135,13 +133,13 @@
 				</div>
 				<div class="flex-group">
 					<label for="ditherStrength">抖动强度:</label>
-					<input type="range" min="0" max="5" step="0.1" value="1.0" id="ditherStrength" aria-describedby="ditherStrengthValue">
-					<output id="ditherStrengthValue" aria-live="polite">1.0</output>
+					<input type="range" min="0" max="5" step="0.1" value="1.0" id="ditherStrength">
+					<label id="ditherStrengthValue">1.0</label>
 				</div>
 				<div class="flex-group">
 					<label for="ditherContrast">对比度:</label>
-					<input type="range" min="0.5" max="2" step="0.1" value="1.2" id="ditherContrast" aria-describedby="ditherContrastValue">
-					<output id="ditherContrastValue" aria-live="polite">1.2</output>
+					<input type="range" min="0.5" max="2" step="0.1" value="1.2" id="ditherContrast">
+					<label id="ditherContrastValue">1.2</label>
 				</div>
 			</div>
 			<div class="flex-container options">
@@ -152,7 +150,7 @@
 					<input type="number" id="interleavedcount" value="50" min="0" max="500">
 				</div>
 			</div>
-			<div class="status-bar"><b>状态：</b><span id="status" role="status" aria-live="polite"></span></div>
+			<div class="status-bar"><b>状态：</b><span id="status"></span></div>
 			<div class="flex-container">
 				<div class="flex-group">
 					<button type="button" class="secondary debug" onclick="rotateCanvas()">旋转画布</button>
@@ -163,16 +161,16 @@
 			</div>
 			<div class="canvas-container">
 				<div class="canvas-title"></div>
-				<canvas id="canvas" width="400" height="300" role="img" aria-label="绘图区域" tabindex="0">您的浏览器不支持 Canvas。</canvas>
+				<canvas id="canvas" width="400" height="300"></canvas>
 				<div class="flex-container canvas-tools">
-					<div class="flex-group tool-buttons" role="toolbar" aria-label="绘图工具">
-						<button id="brush-mode" title="画笔" class="tool-button" aria-label="画笔" aria-pressed="false">✏️</button>
-						<button id="eraser-mode" title="橡皮擦" class="tool-button" aria-label="橡皮擦" aria-pressed="false">🧽</button>
-						<button id="text-mode" title="添加文字" class="tool-button" aria-label="添加文字" aria-pressed="false">T</button>
-						<button id="todo-mode" title="待办事项" class="tool-button" aria-label="待办事项" aria-pressed="false">☐</button>
-						<button id="schedule-mode" title="课表" class="tool-button" aria-label="课表" aria-pressed="false">📅</button>
-						<button id="undo-btn" title="撤销 (Ctrl+Z)" class="tool-button hide" aria-label="撤销">↶</button>
-						<button id="redo-btn" title="重做 (Ctrl+Y)" class="tool-button hide" aria-label="重做">↷</button>
+					<div class="flex-group tool-buttons">
+						<button id="brush-mode" title="画笔" class="tool-button">✏️</button>
+						<button id="eraser-mode" title="橡皮擦" class="tool-button">🧽</button>
+						<button id="text-mode" title="添加文字" class="tool-button">T</button>
+						<button id="todo-mode" title="待办事项" class="tool-button">☐</button>
+						<button id="schedule-mode" title="课表" class="tool-button">📅</button>
+						<button id="undo-btn" title="撤销 (Ctrl+Z)" class="tool-button hide">↶</button>
+						<button id="redo-btn" title="重做 (Ctrl+Y)" class="tool-button hide">↷</button>
 					</div>
 				</div>
 				<div class="flex-container canvas-tools">
@@ -222,15 +220,15 @@
 							<option value="Source Han Sans CN">思源黑体</option>
 							<option value="Source Han Serif SC">思源宋体</option>
 							<option value="WenQuanYi Micro Hei">文泉驿微米黑</option>
+							</optgroup>
 						</select>
 						<label for="font-size">大小:</label>
 						<input type="number" id="font-size" value="16" min="1" max="100">
 					</div>
 					<div class="flex-group text-tools">
-						<label class="sr-only" for="text-input">文字输入</label>
 						<input type="text" id="text-input" placeholder="输入文字" style="width:150px">
-						<button id="text-bold" title="粗体" aria-pressed="false">B</button>
-						<button id="text-italic" title="斜体" aria-pressed="false">I</button>
+						<button id="text-bold" title="粗体">B</button>
+						<button id="text-italic" title="斜体">I</button>
 						<button id="add-text-btn" class="primary">添加文字</button>
 					</div>
 					<div class="flex-group todo-tools">
@@ -269,7 +267,6 @@
 						<input type="number" id="todo-font-size" value="14" min="1" max="100" style="width:80px">
 					</div>
 					<div class="flex-group todo-tools">
-						<label class="sr-only" for="todo-input">待办项输入</label>
 						<input type="text" id="todo-input" placeholder="输入待办项" style="width:150px">
 						<label for="todo-color">颜色:</label>
 						<select id="todo-color">
@@ -280,9 +277,9 @@
 							<option value="#0000FF">蓝色</option>
 							<option value="#FFFFFF">白色</option>
 						</select>
-						<button id="todo-bold" title="粗体" aria-pressed="false">B</button>
-						<button id="todo-italic" title="斜体" aria-pressed="false">I</button>
-						<button id="toggle-todo-delete-btn" title="切换删除按钮显示" class="primary" aria-label="切换删除按钮显示" aria-pressed="true">✕</button>
+						<button id="todo-bold" title="粗体">B</button>
+						<button id="todo-italic" title="斜体">I</button>
+						<button id="toggle-todo-delete-btn" title="切换删除按钮显示" class="primary">✕</button>
 						<button id="add-todo-btn" class="primary">添加待办项</button>
 					</div>
 					<div class="flex-group schedule-tools">
@@ -302,39 +299,38 @@
 						</select>
 						<label for="schedule-font-size">大小:</label>
 						<input type="number" id="schedule-font-size" value="12" min="8" max="32" style="width:60px">
-						<button id="schedule-font-increase-btn" title="增大字体" aria-label="增大字体">A+</button>
-						<button id="schedule-font-decrease-btn" title="减小字体" aria-label="减小字体">A-</button>
+						<button id="schedule-font-increase-btn" title="增大字体">A+</button>
+						<button id="schedule-font-decrease-btn" title="减小字体">A-</button>
 						<label for="schedule-color">颜色:</label>
 						<select id="schedule-color">
 							<option value="#000000">黑色</option>
 							<option value="#FF0000">红色</option>
 							<option value="#0000FF">蓝色</option>
 						</select>
-						<button id="toggle-schedule-cell-indicator-btn" title="切换单元格选中提示" class="primary" aria-label="切换单元格选中提示" aria-pressed="true">▭</button>
+						<button id="toggle-schedule-cell-indicator-btn" title="切换单元格选中提示" class="primary">▭</button>
 						<button id="create-schedule-btn" class="primary">生成课表</button>
 					</div>
 					<div class="flex-group schedule-tools">
 						<label>位置/缩放:</label>
-						<button id="schedule-move-up-btn" title="上移" aria-label="上移">⇧</button>
-						<button id="schedule-move-down-btn" title="下移" aria-label="下移">⇩</button>
-						<button id="schedule-move-left-btn" title="左移" aria-label="左移">⇦</button>
-						<button id="schedule-move-right-btn" title="右移" aria-label="右移">⇨</button>
-						<button id="schedule-zoom-in-btn" title="放大" aria-label="放大">+</button>
-						<button id="schedule-zoom-out-btn" title="缩小" aria-label="缩小">-</button>
+						<button id="schedule-move-up-btn" title="上移">⇧</button>
+						<button id="schedule-move-down-btn" title="下移">⇩</button>
+						<button id="schedule-move-left-btn" title="左移">⇦</button>
+						<button id="schedule-move-right-btn" title="右移">⇨</button>
+						<button id="schedule-zoom-in-btn" title="放大">+</button>
+						<button id="schedule-zoom-out-btn" title="缩小">-</button>
 					</div>
 					<div class="flex-group schedule-tools">
-						<label class="sr-only" for="schedule-input">课程输入</label>
 						<input type="text" id="schedule-input" placeholder="输入课程" style="width:150px">
 						<button id="schedule-input-confirm-btn" class="primary">确定</button>
 						<button id="schedule-input-cancel-btn" class="secondary">取消</button>
 					</div>
 					<div class="flex-group crop-tools">
-						<button id="crop-zoom-in" title="放大" class="secondary" aria-label="放大">+</button>
-						<button id="crop-zoom-out" title="缩小" class="secondary" aria-label="缩小">-</button>
-						<button id="crop-move-left" title="左移" aria-label="左移">⇦</button>
-						<button id="crop-move-up" title="上移" aria-label="上移">⇧</button>
-						<button id="crop-move-down" title="下移" aria-label="下移">⇩</button>
-						<button id="crop-move-right" title="右移" aria-label="右移">⇨</button>
+						<button id="crop-zoom-in" title="放大" class="secondary">+</button>
+						<button id="crop-zoom-out" title="缩小" class="secondary">-</button>
+						<button id="crop-move-left" title="左移">⇦</button>
+						<button id="crop-move-up" title="上移">⇧</button>
+						<button id="crop-move-down" title="下移">⇩</button>
+						<button id="crop-move-right" title="右移">⇨</button>
 						<button class="primary" onclick="applyDither()">完成</button>
 					</div>
 				</div>

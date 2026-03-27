@@ -1,0 +1,137 @@
+diff --git a/Keil/EPD-nRF52.uvprojx b/Keil/EPD-nRF52.uvprojx
+--- a/Keil/EPD-nRF52.uvprojx
++++ b/Keil/EPD-nRF52.uvprojx
+@@ -762,7 +762,7 @@
+       <TargetName>flash_softdevice</TargetName>
+       <ToolsetNumber>0x4</ToolsetNumber>
+       <ToolsetName>ARM-ADS</ToolsetName>
+-      <pCCUsed>5060960::V5.06 update 7 (build 960)::.\ARMCC</pCCUsed>
++      <pCCUsed>5060528::V5.06 update 5 (build 528)::ARMCC</pCCUsed>
+       <uAC6>0</uAC6>
+       <TargetOption>
+         <TargetCommonOption>
+@@ -800,8 +800,8 @@
+             <NotGenerated>0</NotGenerated>
+             <InvalidFlash>1</InvalidFlash>
+           </TargetStatus>
+-          <OutputDirectory>..\SDK\17.1.0_ddde560\components\softdevice\s112\hex\</OutputDirectory>
+-          <OutputName>s112_nrf52_7.3.0_softdevice.hex</OutputName>
++          <OutputDirectory>.\_build_softdevice_nRF52\</OutputDirectory>
++          <OutputName>s112_nrf52_7.3.0_softdevice</OutputName>
+           <CreateExecutable>1</CreateExecutable>
+           <CreateLib>0</CreateLib>
+           <CreateHexFile>1</CreateHexFile>
+@@ -832,9 +832,9 @@
+             <nStopB2X>0</nStopB2X>
+           </BeforeMake>
+           <AfterMake>
+-            <RunUserProg1>0</RunUserProg1>
++            <RunUserProg1>1</RunUserProg1>
+             <RunUserProg2>0</RunUserProg2>
+-            <UserProg1Name></UserProg1Name>
++            <UserProg1Name>..\tools\stage-softdevice-nrf52.bat $L @L</UserProg1Name>
+             <UserProg2Name></UserProg2Name>
+             <UserProg1Dos16Mode>0</UserProg1Dos16Mode>
+             <UserProg2Dos16Mode>0</UserProg2Dos16Mode>
+@@ -1089,10 +1089,10 @@
+             <v6WtE>0</v6WtE>
+             <v6Rtti>0</v6Rtti>
+             <VariousControls>
+-              <MiscControls></MiscControls>
+-              <Define>BLE_STACK_SUPPORT_REQD NRF51822 NRF_SD_BLE_API_VERSION=2 S130 NRF51 SOFTDEVICE_PRESENT SWI_DISABLE0</Define>
++              <MiscControls>--locale=english --reduce_paths</MiscControls>
++              <Define>APP_TIMER_V2 APP_TIMER_V2_RTC1_ENABLED CONFIG_GPIO_AS_PINRESET DEVELOP_IN_NRF52840 FLOAT_ABI_SOFT NRF52811_XXAA NRFX_COREDEP_DELAY_US_LOOP_CYCLES=3 NRF_DFU_SVCI_ENABLED NRF_DFU_TRANSPORT_BLE=1 NRF_SD_BLE_API_VERSION=7 S112 SOFTDEVICE_PRESENT __HEAP_SIZE=8192 __STACK_SIZE=2048</Define>
+               <Undefine></Undefine>
+-              <IncludePath></IncludePath>
++              <IncludePath>..\;..\EPD;..\GUI;..\SDK\17.1.0_ddde560;..\SDK\17.1.0_ddde560\components\ble\common;..\SDK\17.1.0_ddde560\components\ble\ble_advertising;..\SDK\17.1.0_ddde560\components\ble\nrf_ble_gatt;..\SDK\17.1.0_ddde560\components\ble\ble_services\ble_dfu;..\SDK\17.1.0_ddde560\components\libraries\atomic;..\SDK\17.1.0_ddde560\components\libraries\atomic_fifo;..\SDK\17.1.0_ddde560\components\libraries\atomic_flags;..\SDK\17.1.0_ddde560\components\libraries\balloc;..\SDK\17.1.0_ddde560\components\libraries\bootloader;..\SDK\17.1.0_ddde560\components\libraries\bootloader\ble_dfu;..\SDK\17.1.0_ddde560\components\libraries\bootloader\dfu;..\SDK\17.1.0_ddde560\components\libraries\delay;..\SDK\17.1.0_ddde560\components\libraries\fstorage;..\SDK\17.1.0_ddde560\components\libraries\fds;..\SDK\17.1.0_ddde560\components\libraries\experimental_section_vars;..\SDK\17.1.0_ddde560\components\libraries\log;..\SDK\17.1.0_ddde560\components\libraries\log\src;..\SDK\17.1.0_ddde560\components\libraries\memobj;..\SDK\17.1.0_ddde560\components\libraries\mutex;..\SDK\17.1.0_ddde560\components\libraries\pwr_mgmt;..\SDK\17.1.0_ddde560\components\libraries\ringbuf;..\SDK\17.1.0_ddde560\components\libraries\sortlist;..\SDK\17.1.0_ddde560\components\libraries\scheduler;..\SDK\17.1.0_ddde560\components\libraries\strerror;..\SDK\17.1.0_ddde560\components\libraries\svc;..\SDK\17.1.0_ddde560\components\libraries\timer;..\SDK\17.1.0_ddde560\components\libraries\util;..\SDK\17.1.0_ddde560\components\softdevice\common;..\SDK\17.1.0_ddde560\components\softdevice\s112\headers;..\SDK\17.1.0_ddde560\components\softdevice\s112\headers\nrf52;..\SDK\17.1.0_ddde560\components\toolchain\cmsis\include;..\SDK\17.1.0_ddde560\external\fprintf;..\SDK\17.1.0_ddde560\external\segger_rtt;..\SDK\17.1.0_ddde560\integration\nrfx;..\SDK\17.1.0_ddde560\integration\nrfx\legacy;..\SDK\17.1.0_ddde560\modules\nrfx;..\SDK\17.1.0_ddde560\modules\nrfx\mdk;..\SDK\17.1.0_ddde560\modules\nrfx\drivers\include;..\SDK\17.1.0_ddde560\modules\nrfx\hal</IncludePath>
+             </VariousControls>
+           </Cads>
+           <Aads>
+@@ -1107,10 +1107,10 @@
+             <useXO>0</useXO>
+             <ClangAsOpt>1</ClangAsOpt>
+             <VariousControls>
+-              <MiscControls></MiscControls>
+-              <Define>BLE_STACK_SUPPORT_REQD NRF51822 NRF_SD_BLE_API_VERSION=2 S130 NRF51 SOFTDEVICE_PRESENT SWI_DISABLE0</Define>
++              <MiscControls>--cpreproc_opts=-DAPP_TIMER_V2,-DAPP_TIMER_V2_RTC1_ENABLED,-DCONFIG_GPIO_AS_PINRESET,-DDEVELOP_IN_NRF52840,-DFLOAT_ABI_SOFT,-DNRF52811_XXAA,-DNRFX_COREDEP_DELAY_US_LOOP_CYCLES=3,-DNRF_SD_BLE_API_VERSION=7,-DS112,-DSOFTDEVICE_PRESENT,-D__HEAP_SIZE=8192,-D__STACK_SIZE=2048</MiscControls>
++              <Define>APP_TIMER_V2 APP_TIMER_V2_RTC1_ENABLED CONFIG_GPIO_AS_PINRESET DEVELOP_IN_NRF52840 FLOAT_ABI_SOFT NRF52811_XXAA NRFX_COREDEP_DELAY_US_LOOP_CYCLES=3 NRF_DFU_SVCI_ENABLED NRF_DFU_TRANSPORT_BLE=1 NRF_SD_BLE_API_VERSION=7 S112 SOFTDEVICE_PRESENT __HEAP_SIZE=8192 __STACK_SIZE=2048</Define>
+               <Undefine></Undefine>
+-              <IncludePath></IncludePath>
++              <IncludePath>..\config;..\EPD;..\GUI;..\SDK\17.1.0_ddde560;..\SDK\17.1.0_ddde560\components\ble\common;..\SDK\17.1.0_ddde560\components\ble\ble_advertising;..\SDK\17.1.0_ddde560\components\ble\nrf_ble_gatt;..\SDK\17.1.0_ddde560\components\libraries\atomic;..\SDK\17.1.0_ddde560\components\libraries\atomic_fifo;..\SDK\17.1.0_ddde560\components\libraries\atomic_flags;..\SDK\17.1.0_ddde560\components\libraries\balloc;..\SDK\17.1.0_ddde560\components\libraries\delay;..\SDK\17.1.0_ddde560\components\libraries\fstorage;..\SDK\17.1.0_ddde560\components\libraries\fds;..\SDK\17.1.0_ddde560\components\libraries\experimental_section_vars;..\SDK\17.1.0_ddde560\components\libraries\log;..\SDK\17.1.0_ddde560\components\libraries\log\src;..\SDK\17.1.0_ddde560\components\libraries\memobj;..\SDK\17.1.0_ddde560\components\libraries\mutex;..\SDK\17.1.0_ddde560\components\libraries\pwr_mgmt;..\SDK\17.1.0_ddde560\components\libraries\ringbuf;..\SDK\17.1.0_ddde560\components\libraries\sortlist;..\SDK\17.1.0_ddde560\components\libraries\scheduler;..\SDK\17.1.0_ddde560\components\libraries\strerror;..\SDK\17.1.0_ddde560\components\libraries\timer;..\SDK\17.1.0_ddde560\components\libraries\util;..\SDK\17.1.0_ddde560\components\softdevice\common;..\SDK\17.1.0_ddde560\components\softdevice\s112\headers;..\SDK\17.1.0_ddde560\components\softdevice\s112\headers\nrf52;..\SDK\17.1.0_ddde560\components\toolchain\cmsis\include;..\SDK\17.1.0_ddde560\external\fprintf;..\SDK\17.1.0_ddde560\external\segger_rtt;..\SDK\17.1.0_ddde560\integration\nrfx;..\SDK\17.1.0_ddde560\integration\nrfx\legacy;..\SDK\17.1.0_ddde560\modules\nrfx;..\SDK\17.1.0_ddde560\modules\nrfx\mdk;..\SDK\17.1.0_ddde560\modules\nrfx\drivers\include;..\SDK\17.1.0_ddde560\modules\nrfx\hal</IncludePath>
+             </VariousControls>
+           </Aads>
+           <LDads>
+
+diff --git a/tools/stage-softdevice-nrf52.bat b/tools/stage-softdevice-nrf52.bat
+--- /dev/null
++++ b/tools/stage-softdevice-nrf52.bat
+@@ -0,0 +1,31 @@
++@echo off
++setlocal
++
++set "out_dir=%~1"
++set "out_name=%~2"
++set "src_hex=%~dp0..\SDK\17.1.0_ddde560\components\softdevice\s112\hex\s112_nrf52_7.3.0_softdevice.hex"
++set "dst_hex=%out_dir%%out_name%.hex"
++
++if "%out_dir%"=="" (
++    echo Error: missing output directory.
++    exit /b 1
++)
++
++if "%out_name%"=="" (
++    echo Error: missing output name.
++    exit /b 1
++)
++
++if not exist "%src_hex%" (
++    echo Error: SoftDevice hex not found:
++    echo   "%src_hex%"
++    exit /b 1
++)
++
++if not exist "%out_dir%" mkdir "%out_dir%"
++
++copy /Y "%src_hex%" "%dst_hex%" >nul
++if errorlevel 1 (
++    echo Error: failed to stage SoftDevice hex to:
++    echo   "%dst_hex%"
++    exit /b 1
++)
++
++echo Staged SoftDevice hex at "%dst_hex%"
++exit /b 0
+
+diff --git a/docs/develop.md b/docs/develop.md
+--- a/docs/develop.md
++++ b/docs/develop.md
+@@ -4,10 +4,10 @@
+ > - 推荐使用 [Keil 5.36](https://img.anfulai.cn/bbs/96992/MDK536.EXE) 或以下版本（如遇到 pack 无法下载，可到群文件下载）
+ > - `sdk10` 分支为旧版 SDK 代码，蓝牙协议栈占用的空间小一些，用于支持 128K Flash 芯片（不再更新）
+ 
+-这里以 nRF51 版本项目为例 (`Keil/EPD-nRF51.uvprojx`)，项目配置有几个 `Target`：
++这里以当前 nRF52 工程 (`Keil/EPD-nRF52.uvprojx`) 为例，项目配置有几个 `Target`：
+ 
+-- `nRF51822_xxAA`: 用于编译 256K Flash 固件
+-- `flash_softdevice`: 刷蓝牙协议栈用（只需刷一次）
++- `nRF52811_xxAA`: 用于编译应用固件
++- `flash_softdevice`: 用于安全中转并烧录 SDK 自带的蓝牙协议栈（只需刷一次）
+ 
+ 烧录器可以使用 J-Link 或者 DAPLink（可使用 [RTTView](https://github.com/XIVN1987/RTTView) 查看 RTT 日志）。
+ 
+@@ -15,9 +15,15 @@
+ 
+ > **注意:** 这是自己编译代码的刷机流程。如不改代码，强烈建议到 [Releases](https://github.com/tsl0922/EPD-nRF5/releases) 下载编译好的固件，**不需要单独下载蓝牙协议栈**，且有 [刷机教程](https://b23.tv/AaphIZp) （没有 Keil 开发经验的，请不要给自己找麻烦去编译）
+ 
+-1. 全部擦除 (Keil 擦除后刷不了的话，使用烧录器的上位机软件擦除试试)
+-2. 切换到 `flash_softdevice`，下载蓝牙协议栈，**不要编译直接下载**（只需刷一次）
+-3. 切换到 `nRF51822_xxAA`，先编译再下载
++1. 全部擦除（Keil 擦除后刷不了的话，使用烧录器的上位机软件擦除试试）
++2. 切换到 `flash_softdevice`，先执行一次 `Build`
++3. 该 target 会把 SDK 中的官方 `s112_nrf52_7.3.0_softdevice.hex` 复制到 `Keil/_build_softdevice_nRF52/`，不会再直接把 SDK 目录当成输出目录
++4. 对 `flash_softdevice` 执行 `Download`，刷入蓝牙协议栈（只需一次）
++5. 切换到 `nRF52811_xxAA`，编译并下载应用固件
++
++> **注意:**
++> - 不要再把 Keil 的输出目录指向 SDK 的 `softdevice` 目录。`Clean Target` 会删除 target 输出文件，这样会误删 SDK 原始 SoftDevice 文件。
++> - 如果 `flash_softdevice` 构建时报找不到 `s112_nrf52_7.3.0_softdevice.hex`，请先把该文件恢复到 `SDK/17.1.0_ddde560/components/softdevice/s112/hex/`。

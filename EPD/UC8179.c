@@ -1,48 +1,79 @@
 #include "EPD_driver.h"
 #include "nrf_log.h"
 
-// Partial refresh LUT tables for UC8179
-// 用于UC8179的局部刷新查找表(LUT)
-// Based on reference implementation: T1=30, T2=5, T3=0, T4=0
-// 基于参考实现: T1=30, T2=5, T3=0, T4=0
-// T3 and T4 must be 0 to avoid black flash during partial refresh!
-// T3和T4必须为0以避免局部刷新时出现黑色闪烁!
-// Temperature affects e-ink response: cold=slow, hot=fast
-// 温度影响电子墨水的响应速度: 低温=慢, 高温=快
-
-// Temperature thresholds (in Celsius)
-// 温度阈值(摄氏度)
-#define TEMP_LOW_THRESHOLD   10   // Below this: cold mode (longer pulses) // 低于此值:冷模式(更长脉冲)
-#define TEMP_HIGH_THRESHOLD  25   // Above this: hot mode (shorter pulses) // 高于此值:热模式(更短脉冲)
-
-// LUT parameters for different temperature ranges
-// 不同温度范围的LUT参数
-// Cold (<10°C): Ink responds slowly, need longer drive time
-// 低温(<10°C): 墨水响应慢,需要更长的驱动时间
-#define T1_PARTIAL_COLD  50   // longer charge balance for cold ink // 低温墨水需要更长的电荷平衡时间
-#define T2_PARTIAL_COLD  20   // longer extension for cold ink // 低温墨水需要更长的扩展时间
-
-// Normal (10-25°C): Standard parameters
-// 常温(10-25°C): 标准参数
-#define T1_PARTIAL_NORMAL 30  // charge balance pre-phase // 电荷平衡预相位
-#define T2_PARTIAL_NORMAL 10  // optional extension // 可选扩展时间
-
-// Hot (>25°C): Ink responds quickly, shorter drive time
-// 高温(>25°C): 墨水响应快,更短的驱动时间
-#define T1_PARTIAL_HOT   18   // shorter charge balance for hot ink // 高温墨水需要更短的电荷平衡时间
-#define T2_PARTIAL_HOT    6   // shorter extension for hot ink // 高温墨水需要更短的扩展时间
+// =============================================================================
+// 温度分段参数定义 - 每3度一档,共11档
+// Temperature tier parameters - 11 tiers with 3°C intervals
+// =============================================================================
 
 // T3 and T4 must always be 0 for partial refresh!
 // T3和T4在局部刷新时必须始终为0!
-#define T3_PARTIAL  0  // MUST BE 0 for partial refresh (not 30!) // 局部刷新时必须为0(不是30!)
-#define T4_PARTIAL  0  // MUST BE 0 for partial refresh (not 5!) // 局部刷新时必须为0(不是5!)
+#define T3_PARTIAL  0  // MUST BE 0 for partial refresh // 局刷时必须为0
+#define T4_PARTIAL  0  // MUST BE 0 for partial refresh // 局刷时必须为0
 
-// Temperature range enumeration
-// 温度范围枚举
+// LUT参数表 - 基于线性插值,从极冷到很热
+// 温度越低,T1/T2越大(驱动时间越长); 温度越高,T1/T2越小(驱动时间越短)
+// T1: 主驱动阶段  T2: 扩展稳定阶段
+
+// Tier 0: < 7°C (极冷/Very Cold)
+#define T1_TIER_0  56
+#define T2_TIER_0  22
+
+// Tier 1: 7-9°C (很冷/Cold)
+#define T1_TIER_1  52
+#define T2_TIER_1  20
+
+// Tier 2: 10-12°C (冷/Chilly)
+#define T1_TIER_2  48
+#define T2_TIER_2  18
+
+// Tier 3: 13-15°C (偏冷/Cool)
+#define T1_TIER_3  44
+#define T2_TIER_3  16
+
+// Tier 4: 16-18°C (凉爽/Mild Cool)
+#define T1_TIER_4  48   // 增加驱动时间(原40)
+#define T2_TIER_4  18   // 增加驱动时间(原14)
+
+// Tier 5: 19-21°C (微凉/Mild - 关键区间,解决20°C残影问题)
+// 大幅增加驱动时间以解决黑→白转换不完全的问题
+#define T1_TIER_5  50   // 大幅增加(原36),确保黑色完全擦除
+#define T2_TIER_5  18   // 大幅增加(原12),延长稳定时间
+
+// Tier 6: 22-24°C (适中/Moderate)
+#define T1_TIER_6  42   // 增加驱动时间(原32)
+#define T2_TIER_6  14   // 增加驱动时间(原10)
+
+// Tier 7: 25-27°C (偏暖/Warm)
+#define T1_TIER_7  36   // 增加驱动时间(原28)
+#define T2_TIER_7  12   // 增加驱动时间(原8)
+
+// Tier 8: 28-30°C (暖/Hot)
+#define T1_TIER_8  30   // 增加驱动时间(原24)
+#define T2_TIER_8  10   // 增加驱动时间(原7)
+
+// Tier 9: 31-33°C (热/Very Hot)
+#define T1_TIER_9  20
+#define T2_TIER_9  6
+
+// Tier 10: >= 34°C (很热/Extreme Hot)
+#define T1_TIER_10  16
+#define T2_TIER_10  5
+
+// Temperature range enumeration - 11 tiers
+// 温度范围枚举 - 11档
 typedef enum {
-    TEMP_RANGE_COLD,    // < 10°C  // 低温模式
-    TEMP_RANGE_NORMAL,  // 10-25°C // 常温模式
-    TEMP_RANGE_HOT      // > 25°C  // 高温模式
+    TEMP_TIER_0,   // < 7°C   极冷
+    TEMP_TIER_1,   // 7-9°C   很冷
+    TEMP_TIER_2,   // 10-12°C 冷
+    TEMP_TIER_3,   // 13-15°C 偏冷
+    TEMP_TIER_4,   // 16-18°C 凉爽
+    TEMP_TIER_5,   // 19-21°C 微凉 (20°C关键区间)
+    TEMP_TIER_6,   // 22-24°C 适中
+    TEMP_TIER_7,   // 25-27°C 偏暖
+    TEMP_TIER_8,   // 28-30°C 暖
+    TEMP_TIER_9,   // 31-33°C 热
+    TEMP_TIER_10   // >= 34°C 很热
 } temp_range_t;
 
 // LUT tables must be 42 bytes (6 data + 36 padding zeros)
@@ -88,95 +119,49 @@ typedef enum {
  * =============================================================================
  */
 
-// ============== COLD Temperature LUT (<10°C) ==============
-// ============== 低温LUT (<10°C) ==============
-// 低温时墨水响应慢,需要更长的驱动脉冲
-// LUTC: 通用LUT - 0x00表示保持当前状态不变
-static const uint8_t lut_LUTC_cold[42] = {
-    0x00, T1_PARTIAL_COLD, T2_PARTIAL_COLD, T3_PARTIAL, T4_PARTIAL, 1,
-    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
-};
-// LUTWW: 白→白 过渡 - 0x20波形保持白色
-static const uint8_t lut_LUTWW_cold[42] = {
-    0x20, T1_PARTIAL_COLD, T2_PARTIAL_COLD, T3_PARTIAL, T4_PARTIAL, 1,
-    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
-};
-// LUTKW: 黑→白 过渡 - 0x58波形将黑色像素变为白色
-static const uint8_t lut_LUTKW_cold[42] = {
-    0x58, T1_PARTIAL_COLD, T2_PARTIAL_COLD, T3_PARTIAL, T4_PARTIAL, 1,
-    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
-};
-// LUTWK: 白→黑 过渡 - 0xA8波形将白色像素变为黑色
-static const uint8_t lut_LUTWK_cold[42] = {
-    0xA8, T1_PARTIAL_COLD, T2_PARTIAL_COLD, T3_PARTIAL, T4_PARTIAL, 1,
-    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
-};
-// LUTKK: 黑→黑 过渡 - 0x00表示保持黑色
-static const uint8_t lut_LUTKK_cold[42] = {
-    0x00, T1_PARTIAL_COLD, T2_PARTIAL_COLD, T3_PARTIAL, T4_PARTIAL, 1,
-    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
-};
-// LUTBD: 边框LUT - 控制屏幕边框区域
-static const uint8_t lut_LUTBD_cold[42] = {
-    0x00, T1_PARTIAL_COLD, T2_PARTIAL_COLD, T3_PARTIAL, T4_PARTIAL, 1,
-    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+// =============================================================================
+// 宏定义: 生成LUT表数组 (避免重复代码)
+// Macro: Generate LUT table array (avoid repetitive code)
+// =============================================================================
+#define DEFINE_LUT_SET(tier) \
+static const uint8_t lut_LUTC_tier##tier[42] = { \
+    0x00, T1_TIER_##tier, T2_TIER_##tier, T3_PARTIAL, T4_PARTIAL, 1, \
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 \
+}; \
+static const uint8_t lut_LUTWW_tier##tier[42] = { \
+    0x20, T1_TIER_##tier, T2_TIER_##tier, T3_PARTIAL, T4_PARTIAL, 1, \
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 \
+}; \
+static const uint8_t lut_LUTKW_tier##tier[42] = { \
+    0x58, T1_TIER_##tier, T2_TIER_##tier, T3_PARTIAL, T4_PARTIAL, 1, \
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 \
+}; \
+static const uint8_t lut_LUTWK_tier##tier[42] = { \
+    0xA8, T1_TIER_##tier, T2_TIER_##tier, T3_PARTIAL, T4_PARTIAL, 1, \
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 \
+}; \
+static const uint8_t lut_LUTKK_tier##tier[42] = { \
+    0x00, T1_TIER_##tier, T2_TIER_##tier, T3_PARTIAL, T4_PARTIAL, 1, \
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 \
+}; \
+static const uint8_t lut_LUTBD_tier##tier[42] = { \
+    0x00, T1_TIER_##tier, T2_TIER_##tier, T3_PARTIAL, T4_PARTIAL, 1, \
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 \
 };
 
-// ============== NORMAL Temperature LUT (10-25°C) ==============
-// ============== 常温LUT (10-25°C) ==============
-// 常温时使用标准驱动参数
-static const uint8_t lut_LUTC_normal[42] = {
-    0x00, T1_PARTIAL_NORMAL, T2_PARTIAL_NORMAL, T3_PARTIAL, T4_PARTIAL, 1,
-    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
-};
-static const uint8_t lut_LUTWW_normal[42] = {
-    0x20, T1_PARTIAL_NORMAL, T2_PARTIAL_NORMAL, T3_PARTIAL, T4_PARTIAL, 1,
-    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
-};
-static const uint8_t lut_LUTKW_normal[42] = {
-    0x58, T1_PARTIAL_NORMAL, T2_PARTIAL_NORMAL, T3_PARTIAL, T4_PARTIAL, 1,
-    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
-};
-static const uint8_t lut_LUTWK_normal[42] = {
-    0xA8, T1_PARTIAL_NORMAL, T2_PARTIAL_NORMAL, T3_PARTIAL, T4_PARTIAL, 1,
-    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
-};
-static const uint8_t lut_LUTKK_normal[42] = {
-    0x00, T1_PARTIAL_NORMAL, T2_PARTIAL_NORMAL, T3_PARTIAL, T4_PARTIAL, 1,
-    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
-};
-static const uint8_t lut_LUTBD_normal[42] = {
-    0x00, T1_PARTIAL_NORMAL, T2_PARTIAL_NORMAL, T3_PARTIAL, T4_PARTIAL, 1,
-    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
-};
-
-// ============== HOT Temperature LUT (>25°C) ==============
-// ============== 高温LUT (>25°C) ==============
-// 高温时墨水响应快,可使用较短驱动脉冲以节省刷新时间
-static const uint8_t lut_LUTC_hot[42] = {
-    0x00, T1_PARTIAL_HOT, T2_PARTIAL_HOT, T3_PARTIAL, T4_PARTIAL, 1,
-    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
-};
-static const uint8_t lut_LUTWW_hot[42] = {
-    0x20, T1_PARTIAL_HOT, T2_PARTIAL_HOT, T3_PARTIAL, T4_PARTIAL, 1,
-    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
-};
-static const uint8_t lut_LUTKW_hot[42] = {
-    0x58, T1_PARTIAL_HOT, T2_PARTIAL_HOT, T3_PARTIAL, T4_PARTIAL, 1,
-    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
-};
-static const uint8_t lut_LUTWK_hot[42] = {
-    0xA8, T1_PARTIAL_HOT, T2_PARTIAL_HOT, T3_PARTIAL, T4_PARTIAL, 1,
-    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
-};
-static const uint8_t lut_LUTKK_hot[42] = {
-    0x00, T1_PARTIAL_HOT, T2_PARTIAL_HOT, T3_PARTIAL, T4_PARTIAL, 1,
-    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
-};
-static const uint8_t lut_LUTBD_hot[42] = {
-    0x00, T1_PARTIAL_HOT, T2_PARTIAL_HOT, T3_PARTIAL, T4_PARTIAL, 1,
-    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
-};
+// 生成11组LUT表 (Tier 0-10)
+// Generate 11 LUT table sets (Tier 0-10)
+DEFINE_LUT_SET(0)   // < 7°C   极冷
+DEFINE_LUT_SET(1)   // 7-9°C   很冷
+DEFINE_LUT_SET(2)   // 10-12°C 冷
+DEFINE_LUT_SET(3)   // 13-15°C 偏冷
+DEFINE_LUT_SET(4)   // 16-18°C 凉爽
+DEFINE_LUT_SET(5)   // 19-21°C 微凉 (20°C关键区间)
+DEFINE_LUT_SET(6)   // 22-24°C 适中
+DEFINE_LUT_SET(7)   // 25-27°C 偏暖
+DEFINE_LUT_SET(8)   // 28-30°C 暖
+DEFINE_LUT_SET(9)   // 31-33°C 热
+DEFINE_LUT_SET(10)  // >= 34°C 很热
 
 // LUT table set structure for easy selection
 // LUT表集合结构体,方便根据温度选择合适的LUT
@@ -189,35 +174,29 @@ typedef struct {
     const uint8_t *lutbd;  // 边框LUT指针
 } lut_set_t;
 
-// 低温LUT集合
-static const lut_set_t lut_cold = {
-    .lutc  = lut_LUTC_cold,
-    .lutww = lut_LUTWW_cold,
-    .lutkw = lut_LUTKW_cold,
-    .lutwk = lut_LUTWK_cold,
-    .lutkk = lut_LUTKK_cold,
-    .lutbd = lut_LUTBD_cold,
+// 宏定义: 生成LUT集合结构体
+#define DEFINE_LUT_STRUCT(tier) \
+static const lut_set_t lut_tier##tier = { \
+    .lutc  = lut_LUTC_tier##tier, \
+    .lutww = lut_LUTWW_tier##tier, \
+    .lutkw = lut_LUTKW_tier##tier, \
+    .lutwk = lut_LUTWK_tier##tier, \
+    .lutkk = lut_LUTKK_tier##tier, \
+    .lutbd = lut_LUTBD_tier##tier, \
 };
 
-// 常温LUT集合
-static const lut_set_t lut_normal = {
-    .lutc  = lut_LUTC_normal,
-    .lutww = lut_LUTWW_normal,
-    .lutkw = lut_LUTKW_normal,
-    .lutwk = lut_LUTWK_normal,
-    .lutkk = lut_LUTKK_normal,
-    .lutbd = lut_LUTBD_normal,
-};
-
-// 高温LUT集合
-static const lut_set_t lut_hot = {
-    .lutc  = lut_LUTC_hot,
-    .lutww = lut_LUTWW_hot,
-    .lutkw = lut_LUTKW_hot,
-    .lutwk = lut_LUTWK_hot,
-    .lutkk = lut_LUTKK_hot,
-    .lutbd = lut_LUTBD_hot,
-};
+// 生成11组LUT集合结构体
+DEFINE_LUT_STRUCT(0)
+DEFINE_LUT_STRUCT(1)
+DEFINE_LUT_STRUCT(2)
+DEFINE_LUT_STRUCT(3)
+DEFINE_LUT_STRUCT(4)
+DEFINE_LUT_STRUCT(5)
+DEFINE_LUT_STRUCT(6)
+DEFINE_LUT_STRUCT(7)
+DEFINE_LUT_STRUCT(8)
+DEFINE_LUT_STRUCT(9)
+DEFINE_LUT_STRUCT(10)
 
 /*
  * =============================================================================
@@ -282,17 +261,33 @@ int8_t UC8179_Read_Temp(epd_model_t* epd) {
  * @return 返回温度范围枚举值
  *
  * 功能说明:
- * 将连续的温度值映射到三个离散的温度范围,以便选择合适的LUT参数。
+ * 将连续的温度值映射到11个离散的温度范围,每3度一档,以便精确选择LUT参数。
  */
 // Determine temperature range based on current temperature
-// 根据当前温度确定温度范围
+// 根据当前温度确定温度范围 (11档,每3度一档)
 static temp_range_t UC8179_Get_Temp_Range(int8_t temperature) {
-    if (temperature < TEMP_LOW_THRESHOLD) {
-        return TEMP_RANGE_COLD;    // 低温模式
-    } else if (temperature > TEMP_HIGH_THRESHOLD) {
-        return TEMP_RANGE_HOT;     // 高温模式
+    if (temperature < 7) {
+        return TEMP_TIER_0;   // < 7°C   极冷
+    } else if (temperature < 10) {
+        return TEMP_TIER_1;   // 7-9°C   很冷
+    } else if (temperature < 13) {
+        return TEMP_TIER_2;   // 10-12°C 冷
+    } else if (temperature < 16) {
+        return TEMP_TIER_3;   // 13-15°C 偏冷
+    } else if (temperature < 19) {
+        return TEMP_TIER_4;   // 16-18°C 凉爽
+    } else if (temperature < 22) {
+        return TEMP_TIER_5;   // 19-21°C 微凉 (20°C关键区间)
+    } else if (temperature < 25) {
+        return TEMP_TIER_6;   // 22-24°C 适中
+    } else if (temperature < 28) {
+        return TEMP_TIER_7;   // 25-27°C 偏暖
+    } else if (temperature < 31) {
+        return TEMP_TIER_8;   // 28-30°C 暖
+    } else if (temperature < 34) {
+        return TEMP_TIER_9;   // 31-33°C 热
     } else {
-        return TEMP_RANGE_NORMAL;  // 常温模式
+        return TEMP_TIER_10;  // >= 34°C 很热
     }
 }
 
@@ -302,26 +297,50 @@ static temp_range_t UC8179_Get_Temp_Range(int8_t temperature) {
  * @return 返回对应温度范围的LUT集合指针
  *
  * 功能说明:
- * 根据环境温度自动选择最优的LUT参数集,确保不同温度下都有良好的刷新效果。
+ * 根据环境温度自动选择最优的LUT参数集(11档),确保不同温度下都有良好的刷新效果。
  * - 低温时选择长脉冲LUT,补偿墨水响应慢的问题
  * - 高温时选择短脉冲LUT,加快刷新速度
  */
-// Select appropriate LUT set based on temperature
-// 根据温度选择合适的LUT集合
+// Select appropriate LUT set based on temperature (11 tiers)
+// 根据温度选择合适的LUT集合 (11档)
 static const lut_set_t* UC8179_Select_LUT(int8_t temperature) {
     temp_range_t range = UC8179_Get_Temp_Range(temperature);
 
     switch (range) {
-        case TEMP_RANGE_COLD:
-            NRF_LOG_INFO("[EPD]: Using COLD temperature LUT (temp=%d°C)\n", temperature);
-            return &lut_cold;    // 返回低温LUT
-        case TEMP_RANGE_HOT:
-            NRF_LOG_INFO("[EPD]: Using HOT temperature LUT (temp=%d°C)\n", temperature);
-            return &lut_hot;     // 返回高温LUT
-        case TEMP_RANGE_NORMAL:
+        case TEMP_TIER_0:
+            NRF_LOG_INFO("[EPD]: Using Tier0 LUT (<7°C, T1=56, T2=22) temp=%d°C\n", temperature);
+            return &lut_tier0;
+        case TEMP_TIER_1:
+            NRF_LOG_INFO("[EPD]: Using Tier1 LUT (7-9°C, T1=52, T2=20) temp=%d°C\n", temperature);
+            return &lut_tier1;
+        case TEMP_TIER_2:
+            NRF_LOG_INFO("[EPD]: Using Tier2 LUT (10-12°C, T1=48, T2=18) temp=%d°C\n", temperature);
+            return &lut_tier2;
+        case TEMP_TIER_3:
+            NRF_LOG_INFO("[EPD]: Using Tier3 LUT (13-15°C, T1=44, T2=16) temp=%d°C\n", temperature);
+            return &lut_tier3;
+        case TEMP_TIER_4:
+            NRF_LOG_INFO("[EPD]: Using Tier4 LUT (16-18°C, T1=40, T2=14) temp=%d°C\n", temperature);
+            return &lut_tier4;
+        case TEMP_TIER_5:
+            NRF_LOG_INFO("[EPD]: Using Tier5 LUT (19-21°C, T1=36, T2=12) temp=%d°C\n", temperature);
+            return &lut_tier5;
+        case TEMP_TIER_6:
+            NRF_LOG_INFO("[EPD]: Using Tier6 LUT (22-24°C, T1=32, T2=10) temp=%d°C\n", temperature);
+            return &lut_tier6;
+        case TEMP_TIER_7:
+            NRF_LOG_INFO("[EPD]: Using Tier7 LUT (25-27°C, T1=28, T2=8) temp=%d°C\n", temperature);
+            return &lut_tier7;
+        case TEMP_TIER_8:
+            NRF_LOG_INFO("[EPD]: Using Tier8 LUT (28-30°C, T1=24, T2=7) temp=%d°C\n", temperature);
+            return &lut_tier8;
+        case TEMP_TIER_9:
+            NRF_LOG_INFO("[EPD]: Using Tier9 LUT (31-33°C, T1=20, T2=6) temp=%d°C\n", temperature);
+            return &lut_tier9;
+        case TEMP_TIER_10:
         default:
-            NRF_LOG_INFO("[EPD]: Using NORMAL temperature LUT (temp=%d°C)\n", temperature);
-            return &lut_normal;  // 返回常温LUT
+            NRF_LOG_INFO("[EPD]: Using Tier10 LUT (>=34°C, T1=16, T2=5) temp=%d°C\n", temperature);
+            return &lut_tier10;
     }
 }
 
