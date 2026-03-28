@@ -18,6 +18,7 @@ class PaintManager {
     this.dragOffsetY = 0;
     this.textBold = false;
     this.textItalic = false;
+    this.selectedEditingText = null; // For re-editing existing text elements
     this.todoItems = [];
     this.isTodoPlacementMode = false;
     this.selectedTodoItem = null;
@@ -40,6 +41,7 @@ class PaintManager {
     this.weekDays = ['周一', '周二', '周三', '周四', '周五', '周六', '周日'];
     this.selectedScheduleCell = null; // For editing schedule cells
     this.showScheduleCellIndicator = true; // Toggle for showing/hiding cell selection indicator
+    this.scheduleCellFontSizes = null; // 2D array for per-cell font sizes
 
     // Brush cursor indicator
     this.brushCursor = null;
@@ -318,35 +320,56 @@ class PaintManager {
 
     document.getElementById('schedule-input-confirm-btn').addEventListener('click', () => this.confirmScheduleInput());
     document.getElementById('schedule-input-cancel-btn').addEventListener('click', () => this.cancelScheduleInput());
-    document.getElementById('schedule-input').addEventListener('keypress', (e) => {
-      if (e.key === 'Enter') this.confirmScheduleInput();
-    });
 
-    // Schedule font size adjustment buttons
+    // Schedule font size adjustment buttons (context-aware: per-cell when selected, global otherwise)
     document.getElementById('schedule-font-increase-btn').addEventListener('click', () => {
-      this.scheduleFontSize = Math.min(this.scheduleFontSize + 1, 32);
-      document.getElementById('schedule-font-size').value = this.scheduleFontSize;
-      if (this.scheduleData) {
-        this.calculateScheduleDimensions();
+      if (this.selectedScheduleCell && this.scheduleCellFontSizes) {
+        const { row, col } = this.selectedScheduleCell;
+        this.scheduleCellFontSizes[row][col] = Math.min(this.scheduleCellFontSizes[row][col] + 1, 32);
+        document.getElementById('schedule-font-size').value = this.scheduleCellFontSizes[row][col];
         this.redrawAll();
+        this.saveScheduleToLocalStorage();
+      } else {
+        this.scheduleFontSize = Math.min(this.scheduleFontSize + 1, 32);
+        document.getElementById('schedule-font-size').value = this.scheduleFontSize;
+        if (this.scheduleData) {
+          this.calculateScheduleDimensions();
+          this.redrawAll();
+        }
       }
     });
 
     document.getElementById('schedule-font-decrease-btn').addEventListener('click', () => {
-      this.scheduleFontSize = Math.max(this.scheduleFontSize - 1, 8);
-      document.getElementById('schedule-font-size').value = this.scheduleFontSize;
-      if (this.scheduleData) {
-        this.calculateScheduleDimensions();
+      if (this.selectedScheduleCell && this.scheduleCellFontSizes) {
+        const { row, col } = this.selectedScheduleCell;
+        this.scheduleCellFontSizes[row][col] = Math.max(this.scheduleCellFontSizes[row][col] - 1, 6);
+        document.getElementById('schedule-font-size').value = this.scheduleCellFontSizes[row][col];
         this.redrawAll();
+        this.saveScheduleToLocalStorage();
+      } else {
+        this.scheduleFontSize = Math.max(this.scheduleFontSize - 1, 8);
+        document.getElementById('schedule-font-size').value = this.scheduleFontSize;
+        if (this.scheduleData) {
+          this.calculateScheduleDimensions();
+          this.redrawAll();
+        }
       }
     });
 
     // Schedule font size input change
     document.getElementById('schedule-font-size').addEventListener('change', (e) => {
-      this.scheduleFontSize = parseInt(e.target.value);
-      if (this.scheduleData) {
-        this.calculateScheduleDimensions();
+      const val = parseInt(e.target.value);
+      if (this.selectedScheduleCell && this.scheduleCellFontSizes) {
+        const { row, col } = this.selectedScheduleCell;
+        this.scheduleCellFontSizes[row][col] = Math.max(6, Math.min(32, val));
         this.redrawAll();
+        this.saveScheduleToLocalStorage();
+      } else {
+        this.scheduleFontSize = val;
+        if (this.scheduleData) {
+          this.calculateScheduleDimensions();
+          this.redrawAll();
+        }
       }
     });
 
@@ -586,9 +609,27 @@ class PaintManager {
     if (!this.currentTool) return;
 
     if (this.currentTool === 'text') {
-      // Check if we're clicking on a text element to drag
+      // Check if we're clicking on a text element to drag/edit
       const textElement = this.findTextElementAt(e);
       if (textElement) {
+        // Select for editing: populate UI fields
+        this.selectedEditingText = textElement;
+        document.getElementById('text-input').value = textElement.text;
+        const fontMatch = textElement.font.match(/(\d+)px\s+(.*)/);
+        if (fontMatch) {
+          document.getElementById('font-size').value = fontMatch[1];
+          document.getElementById('font-family').value = fontMatch[2];
+        }
+        this.textBold = /bold/.test(textElement.font);
+        this.textItalic = /italic/.test(textElement.font);
+        document.getElementById('text-bold').classList.toggle('primary', this.textBold);
+        document.getElementById('text-italic').classList.toggle('primary', this.textItalic);
+        document.getElementById('brush-color').value = textElement.color;
+        this.brushColor = textElement.color;
+        document.getElementById('add-text-btn').textContent = '更新文字';
+        this.redrawAll();
+
+        // Allow dragging
         this.isDraggingText = true;
         this.selectedTextElement = textElement;
 
@@ -732,6 +773,11 @@ class PaintManager {
   handleCanvasClick(e) {
     if (this.currentTool === 'text' && this.isTextPlacementMode) {
       this.placeText(e);
+    } else if (this.currentTool === 'text' && !this.isTextPlacementMode) {
+      // Click on empty area → deselect editing text
+      if (this.selectedEditingText && !this.findTextElementAt(e)) {
+        this.deselectEditingText();
+      }
     } else if (this.currentTool === 'todo' && this.isTodoPlacementMode) {
       this.placeTodo(e);
     } else if (this.currentTool === 'schedule') {
@@ -742,10 +788,16 @@ class PaintManager {
         const currentText = this.scheduleData[cell.row][cell.col];
         document.getElementById('schedule-input').value = currentText;
         document.getElementById('schedule-input').focus();
-        // Show the input buttons by making the second flex-group visible
+        // Show per-cell font size in the global font size input
+        if (this.scheduleCellFontSizes) {
+          document.getElementById('schedule-font-size').value = this.scheduleCellFontSizes[cell.row][cell.col];
+        }
+        // Redraw to show selection indicator
+        this.redrawAll();
+        // Show the input area
         const allScheduleTools = document.querySelectorAll('.schedule-tools');
-        if (allScheduleTools.length > 1) {
-          allScheduleTools[1].style.display = 'flex';
+        if (allScheduleTools.length > 2) {
+          allScheduleTools[2].style.display = 'flex';
         }
       }
     }
@@ -815,9 +867,14 @@ class PaintManager {
     // Redraw all other text elements (except the one being dragged)
     this.textElements.forEach(item => {
       if (item !== this.selectedTextElement) {
+        const m = this.getItemTransformMatrix(item);
+        this.ctx.save();
+        this.ctx.translate(item.x, item.y);
+        this.ctx.transform(m.a, m.b, m.c, m.d, 0, 0);
         this.ctx.font = item.font;
         this.ctx.fillStyle = item.color;
-        this.ctx.fillText(item.text, item.x, item.y);
+        this.ctx.fillText(item.text, 0, 0);
+        this.ctx.restore();
       }
     });
 
@@ -825,9 +882,14 @@ class PaintManager {
     this.redrawTodoItems();
 
     // Draw the dragged text element on top
+    const m = this.getItemTransformMatrix(this.selectedTextElement);
+    this.ctx.save();
+    this.ctx.translate(this.selectedTextElement.x, this.selectedTextElement.y);
+    this.ctx.transform(m.a, m.b, m.c, m.d, 0, 0);
     this.ctx.font = this.selectedTextElement.font;
     this.ctx.fillStyle = this.selectedTextElement.color;
-    this.ctx.fillText(this.selectedTextElement.text, this.selectedTextElement.x, this.selectedTextElement.y);
+    this.ctx.fillText(this.selectedTextElement.text, 0, 0);
+    this.ctx.restore();
   }
 
   dragTodo(e) {
@@ -867,22 +929,14 @@ class PaintManager {
     // Search through text elements in reverse order (top-most first)
     for (let i = this.textElements.length - 1; i >= 0; i--) {
       const text = this.textElements[i];
-
-      // Calculate text dimensions
-      this.ctx.font = text.font;
-      const textWidth = this.ctx.measureText(text.text).width;
-
-      // Extract font size correctly from the font string
-      const fontSizeMatch = text.font.match(/(\d+)px/);
-      const fontSize = fontSizeMatch ? parseInt(fontSizeMatch[1]) : 14;
-      const textHeight = fontSize * 1.2; // Approximate height
+      const bounds = this.getTextBounds(text, text.text);
 
       // Check if click is within text bounds (allowing for some margin)
       const margin = 5;
-      if (x >= text.x - margin &&
-        x <= text.x + textWidth + margin &&
-        y >= text.y - textHeight + margin &&
-        y <= text.y + margin) {
+      if (x >= bounds.minX - margin &&
+        x <= bounds.maxX + margin &&
+        y >= bounds.minY - margin &&
+        y <= bounds.maxY + margin) {
         return text;
       }
     }
@@ -900,22 +954,14 @@ class PaintManager {
     // Search through todo items in reverse order (top-most first)
     for (let i = this.todoItems.length - 1; i >= 0; i--) {
       const todo = this.todoItems[i];
-
-      // Calculate text dimensions
-      this.ctx.font = todo.font;
-      const textWidth = this.ctx.measureText(todo.text).width;
-
-      // Extract font size correctly from the font string
-      const fontSizeMatch = todo.font.match(/(\d+)px/);
-      const fontSize = fontSizeMatch ? parseInt(fontSizeMatch[1]) : 14;
-      const textHeight = fontSize * 1.2; // Approximate height
+      const bounds = this.getTextBounds(todo, todo.text);
 
       // Check if click is within todo bounds (allowing for some margin)
       const margin = 5;
-      if (x >= todo.x - margin &&
-        x <= todo.x + textWidth + margin &&
-        y >= todo.y - textHeight + margin &&
-        y <= todo.y + margin) {
+      if (x >= bounds.minX - margin &&
+        x <= bounds.maxX + margin &&
+        y >= bounds.minY - margin &&
+        y <= bounds.maxY + margin) {
         return todo;
       }
     }
@@ -934,15 +980,15 @@ class PaintManager {
     for (let i = this.todoItems.length - 1; i >= 0; i--) {
       const todo = this.todoItems[i];
 
-      if (!todo.deleteButtonX || !todo.deleteButtonY || !todo.deleteButtonSize) {
+      if (!Number.isFinite(todo.deleteButtonCenterX) ||
+        !Number.isFinite(todo.deleteButtonCenterY) ||
+        !Number.isFinite(todo.deleteButtonHitRadius)) {
         continue;
       }
 
-      // Check if click is within delete button bounds
-      if (x >= todo.deleteButtonX - 5 &&
-        x <= todo.deleteButtonX + 10 &&
-        y >= todo.deleteButtonY &&
-        y <= todo.deleteButtonY + todo.deleteButtonSize) {
+      const dx = x - todo.deleteButtonCenterX;
+      const dy = y - todo.deleteButtonCenterY;
+      if (dx * dx + dy * dy <= todo.deleteButtonHitRadius * todo.deleteButtonHitRadius) {
         return todo;
       }
     }
@@ -973,6 +1019,12 @@ class PaintManager {
   }
 
   startTextPlacement() {
+    // If editing an existing text element, update it
+    if (this.selectedEditingText) {
+      this.updateSelectedText();
+      return;
+    }
+
     const text = document.getElementById('text-input').value.trim();
     if (!text) {
       alert('请输入文字内容');
@@ -998,6 +1050,85 @@ class PaintManager {
     this.selectedTextElement = null;
     this.selectedTodoItem = null;
     this.draggingCanvasContext = null;
+
+    // Deselect editing text
+    if (this.selectedEditingText) {
+      this.selectedEditingText = null;
+      document.getElementById('text-input').value = '';
+      document.getElementById('add-text-btn').textContent = '添加文字';
+    }
+  }
+
+  updateSelectedText() {
+    if (!this.selectedEditingText) return;
+
+    const text = document.getElementById('text-input').value;
+    const fontFamily = document.getElementById('font-family').value;
+    const fontSize = document.getElementById('font-size').value;
+
+    let fontStyle = '';
+    if (this.textItalic) fontStyle += 'italic ';
+    if (this.textBold) fontStyle += 'bold ';
+
+    this.selectedEditingText.text = text;
+    this.selectedEditingText.font = `${fontStyle}${fontSize}px ${fontFamily}`;
+    this.selectedEditingText.color = this.brushColor;
+
+    // Remove if text is empty
+    if (!text.trim()) {
+      const index = this.textElements.indexOf(this.selectedEditingText);
+      if (index > -1) this.textElements.splice(index, 1);
+    }
+
+    this.redrawAll();
+    this.saveToHistory();
+    this.deselectEditingText();
+  }
+
+  getItemTransformMatrix(item) {
+    return {
+      a: item && Number.isFinite(item.a) ? item.a : 1,
+      b: item && Number.isFinite(item.b) ? item.b : 0,
+      c: item && Number.isFinite(item.c) ? item.c : 0,
+      d: item && Number.isFinite(item.d) ? item.d : 1
+    };
+  }
+
+  transformLocalPoint(item, localX, localY) {
+    const m = this.getItemTransformMatrix(item);
+    return {
+      x: item.x + m.a * localX + m.c * localY,
+      y: item.y + m.b * localX + m.d * localY
+    };
+  }
+
+  getTextBounds(item, text) {
+    this.ctx.font = item.font;
+    const textWidth = this.ctx.measureText(text).width;
+    const fontSizeMatch = item.font.match(/(\d+)px/);
+    const textHeight = (fontSizeMatch ? parseInt(fontSizeMatch[1]) : 14) * 1.2;
+    const corners = [
+      this.transformLocalPoint(item, 0, -textHeight),
+      this.transformLocalPoint(item, textWidth, -textHeight),
+      this.transformLocalPoint(item, textWidth, 0),
+      this.transformLocalPoint(item, 0, 0)
+    ];
+    const xs = corners.map(p => p.x);
+    const ys = corners.map(p => p.y);
+    return {
+      minX: Math.min(...xs),
+      maxX: Math.max(...xs),
+      minY: Math.min(...ys),
+      maxY: Math.max(...ys),
+      textWidth
+    };
+  }
+
+  deselectEditingText() {
+    this.selectedEditingText = null;
+    document.getElementById('text-input').value = '';
+    document.getElementById('add-text-btn').textContent = '添加文字';
+    this.redrawAll();
   }
 
   placeText(e) {
@@ -1022,7 +1153,11 @@ class PaintManager {
       x: x,
       y: y,
       font: `${fontStyle}${fontSize}px ${fontFamily}`,
-      color: this.brushColor
+      color: this.brushColor,
+      a: 1,
+      b: 0,
+      c: 0,
+      d: 1
     };
 
     // Add to our list of text elements
@@ -1050,10 +1185,32 @@ class PaintManager {
   redrawTextElements() {
     // Redraw all text elements after dithering
     this.textElements.forEach(item => {
+      const m = this.getItemTransformMatrix(item);
+      this.ctx.save();
+      this.ctx.translate(item.x, item.y);
+      this.ctx.transform(m.a, m.b, m.c, m.d, 0, 0);
       this.ctx.font = item.font;
       this.ctx.fillStyle = item.color;
-      this.ctx.fillText(item.text, item.x, item.y);
+      this.ctx.fillText(item.text, 0, 0);
+      this.ctx.restore();
     });
+
+    // Draw selection indicator for editing text
+    if (this.selectedEditingText) {
+      const item = this.selectedEditingText;
+      const bounds = this.getTextBounds(item, item.text);
+      const padding = 4;
+      this.ctx.strokeStyle = '#0000FF';
+      this.ctx.lineWidth = 1;
+      this.ctx.setLineDash([4, 3]);
+      this.ctx.strokeRect(
+        bounds.minX - padding,
+        bounds.minY - padding,
+        (bounds.maxX - bounds.minX) + padding * 2,
+        (bounds.maxY - bounds.minY) + padding * 2
+      );
+      this.ctx.setLineDash([]);
+    }
   }
 
   redrawLineSegments() {
@@ -1115,7 +1272,11 @@ class PaintManager {
       y: y,
       font: fontStyle,
       color: this.todoColor,
-      completed: false
+      completed: false,
+      a: 1,
+      b: 0,
+      c: 0,
+      d: 1
     };
 
     // Add to our list of todo items
@@ -1139,17 +1300,22 @@ class PaintManager {
   }
 
   drawTodoItem(todoItem) {
+    const m = this.getItemTransformMatrix(todoItem);
+    this.ctx.save();
+    this.ctx.translate(todoItem.x, todoItem.y);
+    this.ctx.transform(m.a, m.b, m.c, m.d, 0, 0);
+
     // Draw todo text
     this.ctx.font = todoItem.font;
     this.ctx.fillStyle = todoItem.color;
-    this.ctx.fillText(todoItem.text, todoItem.x, todoItem.y);
+    this.ctx.fillText(todoItem.text, 0, 0);
 
     // Only draw delete button if showTodoDeleteButtons is true
     if (this.showTodoDeleteButtons) {
       // Calculate delete button position
       const textWidth = this.ctx.measureText(todoItem.text).width;
-      const deleteButtonX = todoItem.x + textWidth + 5;
-      const deleteButtonY = todoItem.y;
+      const deleteButtonX = textWidth + 5;
+      const deleteButtonY = 0;
       const deleteButtonSize = 12;
 
       // Draw delete button "×"
@@ -1157,23 +1323,28 @@ class PaintManager {
       this.ctx.fillStyle = '#FF6B6B';
       this.ctx.fillText('×', deleteButtonX, deleteButtonY);
 
-      // Store delete button coordinates for hit detection
-      todoItem.deleteButtonX = deleteButtonX;
-      todoItem.deleteButtonY = deleteButtonY - deleteButtonSize;
-      todoItem.deleteButtonSize = deleteButtonSize + 5;
+      // Store transformed delete button center for hit detection
+      const hitPoint = this.transformLocalPoint(todoItem, deleteButtonX + 2, -deleteButtonSize / 2);
+      todoItem.deleteButtonCenterX = hitPoint.x;
+      todoItem.deleteButtonCenterY = hitPoint.y;
+      todoItem.deleteButtonHitRadius = 10;
+    } else {
+      todoItem.deleteButtonCenterX = null;
+      todoItem.deleteButtonCenterY = null;
+      todoItem.deleteButtonHitRadius = null;
     }
 
     // Draw strikethrough if completed
     if (todoItem.completed) {
       const textWidth = this.ctx.measureText(todoItem.text).width;
-      const strikeY = todoItem.y - 4;
       this.ctx.strokeStyle = '#000000';
       this.ctx.lineWidth = 1;
       this.ctx.beginPath();
-      this.ctx.moveTo(todoItem.x, strikeY);
-      this.ctx.lineTo(todoItem.x + textWidth, strikeY);
+      this.ctx.moveTo(0, -4);
+      this.ctx.lineTo(textWidth, -4);
       this.ctx.stroke();
     }
+    this.ctx.restore();
   }
 
   redrawTodoItems() {
@@ -1201,9 +1372,12 @@ class PaintManager {
 
     // Initialize schedule data (2D array: rows = classes + 1 (header), cols = days + 1 (time col))
     this.scheduleData = [];
+    this.scheduleCellFontSizes = [];
     for (let i = 0; i <= this.scheduleClasses; i++) {
       this.scheduleData[i] = [];
+      this.scheduleCellFontSizes[i] = [];
       for (let j = 0; j <= this.scheduleDays; j++) {
+        this.scheduleCellFontSizes[i][j] = this.scheduleFontSize;
         if (i === 0 && j === 0) {
           this.scheduleData[i][j] = ''; // Top-left corner - leave empty
         } else if (i === 0) {
@@ -1248,9 +1422,7 @@ class PaintManager {
     const cellHeight = this.scheduleCellHeight;
     const startX = this.scheduleStartX;
     const startY = this.scheduleStartY;
-    const font = `${this.scheduleFontSize}px ${this.scheduleFontFamily}`;
 
-    this.ctx.font = font;
     this.ctx.fillStyle = this.scheduleColor;
     this.ctx.strokeStyle = '#000000';
     this.ctx.lineWidth = 1;
@@ -1264,12 +1436,26 @@ class PaintManager {
         // Draw cell border
         this.ctx.strokeRect(x, y, cellWidth, cellHeight);
 
-        // Draw cell text
+        // Draw cell text with per-cell font size and multi-line support
         const text = this.scheduleData[i][j];
         if (text) {
-          const textX = x + cellWidth / 2 - this.ctx.measureText(text).width / 2;
-          const textY = y + cellHeight / 2 + this.scheduleFontSize / 3;
-          this.ctx.fillText(text, textX, textY);
+          const cellFontSize = (this.scheduleCellFontSizes && this.scheduleCellFontSizes[i] && this.scheduleCellFontSizes[i][j])
+            ? this.scheduleCellFontSizes[i][j] : this.scheduleFontSize;
+          const font = `${cellFontSize}px ${this.scheduleFontFamily}`;
+          this.ctx.font = font;
+          this.ctx.fillStyle = this.scheduleColor;
+
+          const lines = text.split('\n');
+          const lineHeight = cellFontSize * 1.2;
+          const totalTextHeight = lines.length * lineHeight;
+          const textStartY = y + (cellHeight - totalTextHeight) / 2 + cellFontSize * 0.85;
+
+          for (let l = 0; l < lines.length; l++) {
+            const lineText = lines[l];
+            const textX = x + (cellWidth - this.ctx.measureText(lineText).width) / 2;
+            const textY = textStartY + l * lineHeight;
+            this.ctx.fillText(lineText, textX, textY);
+          }
         }
       }
     }
@@ -1335,10 +1521,12 @@ class PaintManager {
   cancelScheduleInput() {
     this.selectedScheduleCell = null;
     document.getElementById('schedule-input').value = '';
+    // Restore global font size display
+    document.getElementById('schedule-font-size').value = this.scheduleFontSize;
     // Hide the input buttons
     const allScheduleTools = document.querySelectorAll('.schedule-tools');
-    if (allScheduleTools.length > 1) {
-      allScheduleTools[1].style.display = 'none';
+    if (allScheduleTools.length > 2) {
+      allScheduleTools[2].style.display = 'none';
     }
     // Redraw to remove the selection indicator
     if (this.scheduleData) {
@@ -1358,7 +1546,8 @@ class PaintManager {
         scheduleCellWidth: this.scheduleCellWidth,
         scheduleCellHeight: this.scheduleCellHeight,
         scheduleStartX: this.scheduleStartX,
-        scheduleStartY: this.scheduleStartY
+        scheduleStartY: this.scheduleStartY,
+        scheduleCellFontSizes: this.scheduleCellFontSizes
       };
       localStorage.setItem('scheduleCache', JSON.stringify(scheduleCache));
     } catch (e) {
@@ -1380,6 +1569,18 @@ class PaintManager {
       this.scheduleFontFamily = scheduleCache.scheduleFontFamily;
       this.scheduleFontSize = scheduleCache.scheduleFontSize;
       this.scheduleColor = scheduleCache.scheduleColor;
+      this.scheduleCellFontSizes = scheduleCache.scheduleCellFontSizes || null;
+
+      // Initialize scheduleCellFontSizes if missing (old cache compatibility)
+      if (!this.scheduleCellFontSizes && this.scheduleData) {
+        this.scheduleCellFontSizes = [];
+        for (let i = 0; i < this.scheduleData.length; i++) {
+          this.scheduleCellFontSizes[i] = [];
+          for (let j = 0; j < this.scheduleData[i].length; j++) {
+            this.scheduleCellFontSizes[i][j] = this.scheduleFontSize;
+          }
+        }
+      }
 
       // Recalculate dimensions based on current canvas size for proper adaptation
       this.calculateScheduleDimensions();
@@ -1409,10 +1610,162 @@ class PaintManager {
     }
   }
 
+  transformElements(transformType, oldWidth, oldHeight, newWidth, newHeight) {
+    const transformMatrix = (() => {
+      if (transformType === 'rotate90') return { a: 0, b: 1, c: -1, d: 0 };
+      if (transformType === 'mirror') return { a: -1, b: 0, c: 0, d: 1 };
+      if (transformType === 'flip') return { a: 1, b: 0, c: 0, d: -1 };
+      return { a: 1, b: 0, c: 0, d: 1 };
+    })();
+
+    const transformPoint = (x, y) => {
+      const maxX = Math.max(0, newWidth - 1);
+      const maxY = Math.max(0, newHeight - 1);
+      const clamp = (value, max) => Math.max(0, Math.min(value, max));
+      let mapped;
+      if (transformType === 'rotate90') {
+        mapped = { x: oldHeight - 1 - y, y: x };
+      } else if (transformType === 'mirror') {
+        mapped = { x: oldWidth - 1 - x, y: y };
+      } else if (transformType === 'flip') {
+        mapped = { x: x, y: oldHeight - 1 - y };
+      } else {
+        mapped = { x, y };
+      }
+      return {
+        x: clamp(mapped.x, maxX),
+        y: clamp(mapped.y, maxY)
+      };
+    };
+
+    const multiplyMatrix = (m1, m2) => {
+      return {
+        a: m1.a * m2.a + m1.c * m2.b,
+        b: m1.b * m2.a + m1.d * m2.b,
+        c: m1.a * m2.c + m1.c * m2.d,
+        d: m1.b * m2.c + m1.d * m2.d
+      };
+    };
+
+    const originalSelectedTextElement = this.selectedTextElement;
+    const originalSelectedEditingText = this.selectedEditingText;
+    const originalSelectedTodoItem = this.selectedTodoItem;
+    const textElementMap = new Map();
+    const todoItemMap = new Map();
+
+    this.textElements = this.textElements.map((item) => {
+      const p = transformPoint(item.x, item.y);
+      const currentMatrix = this.getItemTransformMatrix(item);
+      const transformedMatrix = multiplyMatrix(transformMatrix, currentMatrix);
+      const transformed = { ...item, x: p.x, y: p.y, ...transformedMatrix };
+      textElementMap.set(item, transformed);
+      return transformed;
+    });
+
+    this.todoItems = this.todoItems.map((item) => {
+      const p = transformPoint(item.x, item.y);
+      const currentMatrix = this.getItemTransformMatrix(item);
+      const transformedMatrix = multiplyMatrix(transformMatrix, currentMatrix);
+      const transformed = {
+        ...item,
+        x: p.x,
+        y: p.y,
+        ...transformedMatrix,
+        deleteButtonCenterX: null,
+        deleteButtonCenterY: null,
+        deleteButtonHitRadius: null
+      };
+      todoItemMap.set(item, transformed);
+      return transformed;
+    });
+
+    this.lineSegments = this.lineSegments.map((segment) => {
+      if (segment.type === 'dot') {
+        const p = transformPoint(segment.x, segment.y);
+        return { ...segment, x: p.x, y: p.y };
+      }
+      const p1 = transformPoint(segment.x1, segment.y1);
+      const p2 = transformPoint(segment.x2, segment.y2);
+      return { ...segment, x1: p1.x, y1: p1.y, x2: p2.x, y2: p2.y };
+    });
+
+    if (this.scheduleData) {
+      const oldRows = this.scheduleData.length;
+      const oldCols = this.scheduleData[0].length;
+      const oldTableWidth = oldCols * this.scheduleCellWidth;
+      const oldTableHeight = oldRows * this.scheduleCellHeight;
+
+      const mapScheduleCell = (row, col) => {
+        if (transformType === 'rotate90') {
+          return { row: col, col: oldRows - 1 - row };
+        }
+        if (transformType === 'mirror') {
+          return { row, col: oldCols - 1 - col };
+        }
+        if (transformType === 'flip') {
+          return { row: oldRows - 1 - row, col };
+        }
+        return { row, col };
+      };
+
+      const newRows = transformType === 'rotate90' ? oldCols : oldRows;
+      const newCols = transformType === 'rotate90' ? oldRows : oldCols;
+      const newScheduleData = Array.from({ length: newRows }, () => Array(newCols).fill(''));
+      const newCellFontSizes = Array.from({ length: newRows }, () => Array(newCols).fill(this.scheduleFontSize));
+
+      for (let row = 0; row < oldRows; row++) {
+        for (let col = 0; col < oldCols; col++) {
+          const mapped = mapScheduleCell(row, col);
+          newScheduleData[mapped.row][mapped.col] = this.scheduleData[row][col];
+          if (this.scheduleCellFontSizes && this.scheduleCellFontSizes[row]) {
+            newCellFontSizes[mapped.row][mapped.col] = this.scheduleCellFontSizes[row][col];
+          }
+        }
+      }
+
+      this.scheduleData = newScheduleData;
+      this.scheduleCellFontSizes = newCellFontSizes;
+      this.scheduleClasses = newRows - 1;
+      this.scheduleDays = newCols - 1;
+
+      if (transformType === 'rotate90') {
+        const oldStartX = this.scheduleStartX;
+        const oldStartY = this.scheduleStartY;
+        const oldCellWidth = this.scheduleCellWidth;
+        const oldCellHeight = this.scheduleCellHeight;
+        this.scheduleCellWidth = oldCellHeight;
+        this.scheduleCellHeight = oldCellWidth;
+        this.scheduleStartX = oldHeight - (oldStartY + oldTableHeight);
+        this.scheduleStartY = oldStartX;
+      } else if (transformType === 'mirror') {
+        this.scheduleStartX = oldWidth - (this.scheduleStartX + oldTableWidth);
+      } else if (transformType === 'flip') {
+        this.scheduleStartY = oldHeight - (this.scheduleStartY + oldTableHeight);
+      }
+
+      if (this.selectedScheduleCell) {
+        const mapped = mapScheduleCell(this.selectedScheduleCell.row, this.selectedScheduleCell.col);
+        this.selectedScheduleCell = { row: mapped.row, col: mapped.col };
+      }
+
+      // Keep schedule in visible area after transforms.
+      const newTableWidth = newCols * this.scheduleCellWidth;
+      const newTableHeight = newRows * this.scheduleCellHeight;
+      this.scheduleStartX = Math.max(0, Math.min(this.scheduleStartX, newWidth - newTableWidth));
+      this.scheduleStartY = Math.max(0, Math.min(this.scheduleStartY, newHeight - newTableHeight));
+      this.saveScheduleToLocalStorage();
+    }
+
+    this.selectedTextElement = originalSelectedTextElement ? (textElementMap.get(originalSelectedTextElement) || null) : null;
+    this.selectedEditingText = originalSelectedEditingText ? (textElementMap.get(originalSelectedEditingText) || null) : null;
+    this.selectedTodoItem = originalSelectedTodoItem ? (todoItemMap.get(originalSelectedTodoItem) || null) : null;
+  }
+
   clearElements() {
     this.textElements = [];
     this.lineSegments = [];
     this.todoItems = [];
     this.scheduleData = null; // Clear schedule data
+    this.scheduleCellFontSizes = null; // Clear per-cell font sizes
   }
 }
