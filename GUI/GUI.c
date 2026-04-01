@@ -16,6 +16,9 @@
     GFX_setFont(gfx, font);                       \
     GFX_printf(gfx, __VA_ARGS__);
 
+#define BATTERY_EMPTY_MV 2800
+#define BATTERY_FULL_MV 3300
+
 // 节日数据结构体
 // Festival data structure
 typedef struct {
@@ -216,17 +219,19 @@ static void DrawTimeSyncTip(Adafruit_GFX* gfx, gui_data_t* data) {
  * @param iw         图标宽度 | Icon width
  * @param voltage_mv 电压(毫伏) | Voltage in millivolts
  *
- * 电池电量计算：满电=3.6V，空电=2.0V
- * Battery level calculation: Full=3.6V, Empty=2.0V
+ * 电池百分比显示：满电=3.3V，空电=2.8V
+ * Battery percentage display: Full=3.3V, Empty=2.8V
  */
 static void DrawBattery(Adafruit_GFX* gfx, int16_t x, int16_t y, uint8_t iw, uint16_t voltage_mv) {
     x -= iw;  // 从右边界开始向左绘制 | Start drawing from right edge to left
-    // Calculate battery level percentage (0-100%)
-    // Full battery = 3.6V (3600mV), empty = 2.0V (2000mV) approximately
-    // 计算电池电量百分比(0-100%)
-    // 满电=3.6V(3600mV)，空电约2.0V(2000mV)
-    uint8_t level = (uint8_t)((voltage_mv * 100) / 3600);
-    if (level > 100) level = 100;  // Cap at 100% | 限制最大为100%
+    uint8_t fill_width = (iw > 4) ? (uint8_t)(iw - 4) : 0;
+    uint8_t level = 0;
+    if (voltage_mv >= BATTERY_FULL_MV) {
+        level = 100;
+    } else if (voltage_mv > BATTERY_EMPTY_MV) {
+        level = (uint8_t)(((uint32_t)(voltage_mv - BATTERY_EMPTY_MV) * 100) /
+                          (BATTERY_FULL_MV - BATTERY_EMPTY_MV));
+    }
 
     // Format voltage as "X.XV" directly (e.g., "3.3V")
     // 直接格式化电压为"X.XV"格式(如"3.3V")
@@ -242,7 +247,7 @@ static void DrawBattery(Adafruit_GFX* gfx, int16_t x, int16_t y, uint8_t iw, uin
     GFX_drawRect(gfx, x, y, iw, 10, GFX_BLACK);   // 黑色边框 | Black border
     GFX_fillRect(gfx, x + iw, y + 4, 2, 2, GFX_BLACK);  // 电池正极凸起 | Battery positive terminal
     // 根据电量绘制填充 | Draw fill based on battery level
-    GFX_fillRect(gfx, x + 2, y + 2, 16 * level / 100, 6, GFX_BLACK);
+    GFX_fillRect(gfx, x + 2, y + 2, (uint16_t)(fill_width * level / 100), 6, GFX_BLACK);
 }
 
 /**
@@ -1081,7 +1086,7 @@ static void DrawClock(Adafruit_GFX* gfx, tm_t* tm, struct Lunar_Date* Lunar, gui
         GFX_printf(gfx, "%s", JieQiStr[JQday % 24]);
     } else {
         GFX_setCursor(gfx, data->width - GFX_getUTF8Width(gfx, "离小暑") - padding, data->height - 68 + 30);
-        GFX_printf(gfx, "离%");
+        GFX_printf(gfx, "离");
         GFX_setTextColor(gfx, text_color, GFX_WHITE);
         GFX_printf(gfx, "%s", JieQiStr[JQday % 24]);
         GFX_setTextColor(gfx, GFX_BLACK, GFX_WHITE);

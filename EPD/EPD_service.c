@@ -369,13 +369,13 @@ static void epd_process_next_command(void* p_event_data, uint16_t event_size);
  *
  * @details 此函数处理完整的GUI更新过程,包括:
  *          1. 全刷/局刷决策
- *          2. 电压读取(缓存30分钟)
+ *          2. 电池电压在整屏刷新前更新
  *          3. GUI渲染
  *          4. 显示刷新
  *
  *          This function handles the complete GUI update process including:
  *          1. Full refresh vs partial refresh decision
- *          2. Voltage reading (cached for 30 minutes)
+ *          2. Refresh battery voltage before full-screen redraws
  *          3. GUI rendering
  *          4. Display refresh
  *
@@ -399,21 +399,18 @@ static void epd_gui_update(void* p_event_data, uint16_t event_size) {
 
     // ========================================================================
     // 电压读取缓存策略
-    // Voltage Reading Cache Strategy
+    // Battery Display Refresh Strategy
     // ========================================================================
-    // 每30分钟读取一次电压以节省电量
-    // Read voltage only every 30 minutes to save power
-    static uint32_t last_voltage_read = 0;
-    static uint16_t cached_voltage_mv = 3300;  // Default: 3.3V = 3300mV. 默认值: 3.3V
-    if (last_voltage_read == 0 || (event->timestamp - last_voltage_read) >= 1800) {
-        cached_voltage_mv = EPD_ReadVoltageAndCache();
-        last_voltage_read = event->timestamp;
-    }
+    // 电池数据只在整屏刷新前更新，或在每小时刷新边界触发的整屏局刷前更新
+    // Battery data is refreshed only before a full refresh, or before
+    // a boundary-triggered full-screen partial redraw of the GUI.
+    static uint16_t cached_voltage_mv = 3300;  // Default cached GUI battery value: 3.3V
+    display_mode_t mode = (display_mode_t)p_epd->config.display_mode;
 
     // 准备GUI数据
     // Prepare GUI data
     gui_data_t data = {
-        .mode = (display_mode_t)p_epd->config.display_mode,
+        .mode = mode,
         .color = epd->color,
         .width = epd->width,
         .height = epd->height,
@@ -454,7 +451,7 @@ static void epd_gui_update(void* p_event_data, uint16_t event_size) {
     // ========================================================================
     // Use partial refresh for supported ICs in clock mode or clock+calendar mode (UC8179, SSD1683)
     // 在时钟模式或时钟+日历模式下,对支持的芯片使用局部刷新
-    bool use_partial = ((data.mode == MODE_CLOCK || data.mode == MODE_CLOCK_CALENDAR) &&
+    bool use_partial = ((mode == MODE_CLOCK || mode == MODE_CLOCK_CALENDAR) &&
                        epd->drv->ic == EPD_DRIVER_IC_UC8179 &&
                        epd->drv->refresh_partial != NULL);
 
@@ -529,6 +526,9 @@ static void epd_gui_update(void* p_event_data, uint16_t event_size) {
             // ================================================================
             NRF_LOG_INFO("[EPD]: *** Performing FULL refresh (mode switch or periodic) ***\n");
 
+            cached_voltage_mv = EPD_ReadVoltageAndCache();
+            data.voltage_mv = cached_voltage_mv;
+
             // LED ON during full refresh
             // 全刷期间打开LED指示
             EPD_LED_ON();
@@ -599,6 +599,13 @@ static void epd_gui_update(void* p_event_data, uint16_t event_size) {
             }
             app_feed_wdt();  // Feed watchdog after clear_partial. 清除局刷区域后喂狗
 
+            // MODE_CLOCK refreshes battery data here only when an interval boundary
+            // falls back to a full-screen partial redraw, such as quiet-hours top-of-hour updates.
+            if (data.mode == MODE_CLOCK && at_refresh_boundary) {
+                cached_voltage_mv = EPD_ReadVoltageAndCache();
+                data.voltage_mv = cached_voltage_mv;
+            }
+
             // Write black data using partial image write
             // 使用局部图像写入写入黑色数据
             NRF_LOG_INFO("[EPD]: Drawing GUI for partial refresh (%d,%d,%d,%d)\n", partial_x, partial_y, partial_w, partial_h);
@@ -654,6 +661,9 @@ fallback_full_refresh:
         // - 不支持局刷的驱动芯片
         // ====================================================================
         NRF_LOG_INFO("[EPD]: === Using FULL refresh ===\n");
+
+        cached_voltage_mv = EPD_ReadVoltageAndCache();
+        data.voltage_mv = cached_voltage_mv;
 
         // LED ON during full refresh
         // 全刷期间打开LED指示
