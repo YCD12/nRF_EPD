@@ -1,45 +1,35 @@
 ## Supported Devices
 
-Theoretically, all electronic shelf labels (ESL) based on `nrf51822` / `nrf51802` / `nrf52811` / `nrf52810` are supported.
+当前设备说明按三层状态维护，便于后续逐步扩展：
 
-Below are several adapted ESL driver boards.
+- 已支持
+- 主线验证中
+- 预留适配项
 
-### Laowu 4.2-inch ESL, Black & White Version
+## 已支持
 
-- MCU: nrf51822
-- RAM: 16K
-- ROM: 128K
-- Driver: UC8176
-- Pin Config: `0508090A0B0C0D`
-- Wakeup Pin: `07`
+### Hema / Alibaba nRF52811 ESL
 
-![](images/1.jpg)
+- MCU: `nrf52811`
+- RAM: `24K`
+- ROM: `192K`
 
-### Laowu 4.2-inch ESL, Black White Red 3-Color Version
+## 主线验证中
 
-- MCU: nrf51802
-- RAM: 16K
-- ROM: 256K
-- Driver: UC8176
-- Pin Config: `0A0B0C0D0E0F10`
-- Wakeup Pin: `09`
-- LED Pins: `03/04/05` (Three LEDs available, choose one to use)
+### nRF52811 + 7.5-inch UC8179 BWR
 
-![](images/2.jpg)
+- MCU: `nrf52811`
+- Driver IC: `UC8179`
+- Color: 黑白红三色
+- Resolution: `800x480`
+- 说明：当前固件主线默认模型、时钟模式和局刷逻辑围绕这一组合维护
 
-### Sifei 52810
+## 预留适配项
 
-- MCU: nrf52810
-- RAM: 24K
-- ROM: 192K
+- 网页工具中保留的其他屏幕尺寸、驱动 IC 和颜色模式
+- 后续准备逐步接入主线固件的其他屏幕型号
 
-![](images/5.jpg)
+## Scope Note
 
-
-### Hema/Alibaba 52811
-
-- MCU: nrf52811
-- RAM: 24K
-- ROM: 192K
-
-![](images/6.jpg)
+- 旧版文档中出现过的 `nrf51822`、`nrf51802`、`nrf52810` 以及老五 4.2 等历史适配信息，已不再作为当前工程支持范围的一部分。
+- 如果后续需要重新启用历史硬件适配，建议单独整理为 `legacy` 或 `archive` 类型文档，避免与当前 `nRF52811` 主线工程混淆。

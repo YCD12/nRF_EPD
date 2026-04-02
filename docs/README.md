@@ -1,3 +1,13 @@
+## Reference Scope
+
+本文档是屏幕数据手册、OTP 与 LUT 研究笔记的汇总页，主要用于驱动分析和显示波形参考。
+
+请注意：
+
+- 它不等于当前主线工程的“支持设备清单”
+- 文中出现的屏幕类型、LUT 示例或历史资料，不应直接理解为当前 `nRF52811` 主线固件都已完整支持
+- 当前主线设备范围请以 [devices.md](devices.md) 和仓库首页 `README.md` 为准
+
 The UC8176 datasheet does not include descriptions of LUT-related instructions, but the UC8151 manual does, and the format is the same, so the UC8151 manual has also been included.
 
 The OTP directory contains OTP data read from the screens:
@@ -7,7 +17,7 @@ The OTP directory contains OTP data read from the screens:
 
 You can extract the built-in LUT waveforms from the OTP data as a reference to facilitate custom LUT waveforms.
 
-The following are examples of LUT waveforms extracted from OTP (all tested to match the display effect at room temperature around 20°C when the 2 screens supported by this project do not load external LUTs):
+The following are examples of LUT waveforms extracted from OTP and kept as display reference data. Around 20°C room temperature, these examples were verified to match the expected visual effect for the referenced screens when no external LUT is loaded:
 
 **Black & White Screen:**
 
