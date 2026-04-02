@@ -1,0 +1,11 @@
+# Keil/uVision local settings
+Keil/*.uvoptx
+Keil/*.uvguix.*
+
+# Keil generated logs and outputs
+Keil/_alog.txt
+Keil/Listings/
+Keil/_build_*/
+Keil/*_analysis.xlsx
+Keil/*_sort_by_flash.csv
+Keil/*_sort_by_ram.csv
