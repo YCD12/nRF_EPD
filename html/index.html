@@ -86,21 +86,11 @@
 			<h2>Nordic DFU 升级</h2>
 			<div class="flex-container">
 				<div class="flex-group">
-					<input type="file" id="dfuPackageFile" accept=".zip">
-					<button id="dfuStartButton" type="button" class="primary">选择设备并升级</button>
-					<button id="dfuManualPickButton" type="button" class="secondary" style="display:none;">手动选择DFU设备并继续</button>
-					<button id="dfuSelfCheckButton" type="button" class="secondary">环境自检</button>
+					<button id="openDfuPageButton" type="button" class="primary" onclick="openDfuPage()">进入 DFU 升级页</button>
 				</div>
 			</div>
 			<div class="dfu-hint">
-				请先选择 Nordic nRF Secure DFU 的固件包（.zip），再点击升级。若设备支持 Buttonless DFU，页面会自动切换到 DFU 模式并自动查找目标设备继续升级。
-			</div>
-			<div id="dfuStatus" class="dfu-status">状态：未选择 DFU 固件包</div>
-			<div id="dfuPrecheck" class="dfu-precheck" style="display:none;"></div>
-			<div id="dfuRetryInfo" class="dfu-retry-info" style="display:none;"></div>
-			<div id="dfuProgressWrap" class="dfu-progress-wrap" style="display:none;">
-				<div id="dfuProgressBar" class="dfu-progress-bar"></div>
-				<div id="dfuProgressText" class="dfu-progress-text"></div>
+				DFU 升级已拆分到独立页面。进入升级页前，如果主界面当前已连接设备，页面会先主动断开该连接，再跳转到专用 DFU 页面执行升级流程。跳转后会重新选择应用设备或 DfuTarg，避免主功能连接状态和升级流程互相干扰。
 			</div>
 		</section>
 		<section class="section">
@@ -392,8 +382,7 @@
 	<script type="text/javascript" src="js/paint.js?v=20260402b"></script>
 	<script type="text/javascript" src="js/crop.js?v=20260402b"></script>
 	<script type="text/javascript" src="js/ble_transfer.js?v=20260402b"></script>
-	<script type="text/javascript" src="js/main.js?v=20260402b"></script>
-	<script type="text/javascript" src="js/dfu.js?v=20260402b"></script>
+	<script type="text/javascript" src="js/main.js?v=20260402c"></script>
 </body>
 
 </html>

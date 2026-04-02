@@ -7,29 +7,39 @@
   const EPD_APP_SERVICE_UUID = '62750001-d828-918d-fb46-b6c11c675aec';
   const DFU_SERVICE_UUID = 0xFE59;
   const LITTLE_ENDIAN = true;
-  const PACKET_SIZE = 20;
+  const DEFAULT_PACKET_SIZE = 20;
+  const INITIAL_DFU_DISCOVERY_TIMEOUT_MS = 8000;
+  const NEXT_STAGE_DISCOVERY_TIMEOUT_MS = 12000;
+  const DFU_REBOOT_SETTLE_MS = 1600;
+  const DFU_RESPONSE_TIMEOUT_MS = 10000;
   const CONNECT_TIMEOUT_MS = 6000;
   const SERVICE_TIMEOUT_MS = 6000;
   const CHARS_TIMEOUT_MS = 5000;
   const AUTO_FIND_RETRY_INTERVAL_MS = 2500;
-  const AUTO_FIND_COUNTDOWN_TICK_MS = 250;
   const MANUAL_PICK_REQUIRED_ERROR = 'DFU_MANUAL_PICK_REQUIRED';
   const MANUAL_DFU_MODE_REQUIRED_ERROR = 'DFU_MANUAL_MODE_REQUIRED';
-  const DFU_MANUAL_NAME_FILTERS = [
+  const DFU_BOOTLOADER_PICK_CANCELLED_ERROR = 'DFU_BOOTLOADER_PICK_CANCELLED';
+  const DFU_BOOTLOADER_FILTERS = [
+    { services: [DFU_SERVICE_UUID] },
     { namePrefix: 'DfuTarg' },
     { namePrefix: 'Dfu' },
-    { namePrefix: 'DFU' },
+    { namePrefix: 'DFU' }
+  ];
+  const DFU_APP_FILTERS = [
+    { services: [EPD_APP_SERVICE_UUID] },
     { namePrefix: 'NRF_EPD' }
   ];
 
   const OP = {
     BUTTON_COMMAND: [0x01],
+    SET_PRN: [0x02],
     CREATE_COMMAND: [0x01, 0x01],
     CREATE_DATA: [0x01, 0x02],
     CALCULATE_CHECKSUM: [0x03],
     EXECUTE: [0x04],
     SELECT_COMMAND: [0x06, 0x01],
     SELECT_DATA: [0x06, 0x02],
+    GET_MTU: [0x07],
     RESPONSE: [0x60, 0x20]
   };
 
@@ -66,18 +76,50 @@
   let dfuPackage = null;
   let dfuBusy = false;
   let pendingManualSession = null;
-  let autoFindAbortRequested = false;
-  let manualTakeoverRequestedWhileBusy = false;
-  let queuedManualPick = false;
   let packageVersionHint = null;
-  const AUTO_FIND_ATTEMPTS = 3;
-  const AUTO_FIND_TIMEOUT_MS = 20000;
+  let manualBootloaderEntryRequired = false;
+
+  function getDfuPageState() {
+    return {
+      busy: !!dfuBusy,
+      hasPendingSession: !!pendingManualSession,
+      manualBootloaderEntryRequired: !!manualBootloaderEntryRequired
+    };
+  }
+
+  function notifyDfuPageStateChange() {
+    if (typeof window.onDfuPageStateChange !== 'function') return;
+    try {
+      window.onDfuPageStateChange(getDfuPageState());
+    } catch (_) { }
+  }
+
+  function setPendingManualSession(session) {
+    pendingManualSession = session || null;
+    notifyDfuPageStateChange();
+  }
+
+  function setManualBootloaderEntryRequired(required) {
+    manualBootloaderEntryRequired = !!required;
+    notifyDfuPageStateChange();
+  }
 
   function getErrorMessage(err) {
     if (!err) return '未知错误';
     if (typeof err === 'string') return err;
     if (err.message) return err.message;
     return String(err);
+  }
+
+  function isUserGestureError(err) {
+    const msg = getErrorMessage(err);
+    return /gesture|user activation|must be handling a user gesture|NotAllowedError/i.test(msg);
+  }
+
+  function isPickerCancelled(err) {
+    if (!err) return false;
+    if (err.name === 'NotFoundError') return true;
+    return /User cancelled|cancelled|canceled/i.test(getErrorMessage(err));
   }
 
   function emitLog(message) {
@@ -91,13 +133,6 @@
     if (!statusEl) return;
     statusEl.textContent = `状态：${message}`;
     statusEl.classList.toggle('error', !!isError);
-  }
-
-  function formatDuration(totalSeconds) {
-    const sec = Math.max(0, Math.floor(totalSeconds));
-    const mm = String(Math.floor(sec / 60)).padStart(2, '0');
-    const ss = String(sec % 60).padStart(2, '0');
-    return `${mm}:${ss}`;
   }
 
   function setDfuRetryInfo(text, isError) {
@@ -213,7 +248,7 @@
     const source = appImage || baseImage;
     const pkg = source ? estimatePackageVersion(source.initData) : packageVersionHint;
     if (source) packageVersionHint = pkg;
-    const currentText = current == null ? '设备版本: 未读取（请先连接设备）' : `设备版本: ${formatVersionValue(current)}`;
+    const currentText = current == null ? '设备版本: 当前页未读取（仅校验包版本）' : `设备版本: ${formatVersionValue(current)}`;
     const pkgText = pkg == null ? '包内应用版本: 未解析' : `包内应用版本(推测): ${formatVersionValue(pkg)}`;
     let warn = false;
     let extra = '';
@@ -261,6 +296,19 @@
     setTimeout(() => {
       btn.classList.remove('manual-pick-attention');
     }, 3200);
+  }
+
+  function makeManualPickError(message) {
+    const err = new Error(message);
+    err.code = MANUAL_PICK_REQUIRED_ERROR;
+    return err;
+  }
+
+  function resetPendingDfuSession() {
+    setPendingManualSession(null);
+    setDfuProgress(null);
+    setManualPickVisible(false);
+    setDfuRetryInfo('');
   }
 
   function setDfuProgress(state) {
@@ -438,10 +486,15 @@
       this.crc32 = crc32Fn;
       this.bluetooth = bluetooth || (navigator && navigator.bluetooth);
       this.delay = delayMs;
+      this.packetSize = DEFAULT_PACKET_SIZE;
       this.notifyFns = {};
       this.controlChar = null;
       this.packetChar = null;
       this.listeners = { log: [], progress: [] };
+      this.connectedDevice = null;
+      this.disconnectHandler = null;
+      this.connectedControlChar = null;
+      this.connectedButtonChar = null;
     }
 
     addEventListener(type, fn) {
@@ -519,10 +572,6 @@
       const lastTriedAt = new Map();
       this.log('正在自动查找 DFU 设备...');
       while (Date.now() - start < timeoutMs) {
-        if (autoFindAbortRequested) {
-          this.log('检测到手动接管请求，停止自动查找');
-          return null;
-        }
         const candidates = [];
         if (preferredDevice) candidates.push(preferredDevice);
         if (this.bluetooth && typeof this.bluetooth.getDevices === 'function') {
@@ -533,7 +582,6 @@
         }
 
         for (const dev of candidates) {
-          if (autoFindAbortRequested) return null;
           if (!dev || !dev.gatt) continue;
           const key = `${dev.id || ''}|${dev.name || ''}`;
           const now = Date.now();
@@ -557,7 +605,7 @@
       if (!target) return;
       const result = view.getUint8(2);
       if (result === 0x01) {
-        target.resolve(new DataView(view.buffer, 3));
+        target.resolve(new DataView(view.buffer, view.byteOffset + 3, Math.max(0, view.byteLength - 3)));
       } else {
         const err = (result === 0x0B)
           ? `Error: ${EXTENDED_ERROR_MSG[view.getUint8(3)] || 'Unknown extended error'}`
@@ -568,12 +616,65 @@
       delete this.notifyFns[operation];
     };
 
-    async connect(device) {
-      device.addEventListener('gattserverdisconnected', () => {
+    bindDisconnectHandler(device) {
+      if (!device) return;
+      if (this.connectedDevice && this.disconnectHandler) {
+        try {
+          this.connectedDevice.removeEventListener('gattserverdisconnected', this.disconnectHandler);
+        } catch (_) { }
+      }
+      this.disconnectHandler = () => {
+        const pending = this.notifyFns;
         this.notifyFns = {};
+        for (const key of Object.keys(pending)) {
+          const target = pending[key];
+          if (!target || typeof target.reject !== 'function') continue;
+          try {
+            target.reject(new Error('Device disconnected'));
+          } catch (_) { }
+        }
         this.controlChar = null;
         this.packetChar = null;
-      });
+        this.packetSize = DEFAULT_PACKET_SIZE;
+        this.connectedDevice = null;
+        this.connectedControlChar = null;
+        this.connectedButtonChar = null;
+      };
+      device.addEventListener('gattserverdisconnected', this.disconnectHandler);
+      this.connectedDevice = device;
+    }
+
+    bindNotificationHandler(characteristic, kind) {
+      if (!characteristic) return;
+      if (kind === 'control') {
+        if (this.connectedControlChar && this.connectedControlChar !== characteristic) {
+          try {
+            this.connectedControlChar.removeEventListener('characteristicvaluechanged', this.handleNotification);
+          } catch (_) { }
+        }
+        try {
+          characteristic.removeEventListener('characteristicvaluechanged', this.handleNotification);
+        } catch (_) { }
+        characteristic.addEventListener('characteristicvaluechanged', this.handleNotification);
+        this.connectedControlChar = characteristic;
+        return;
+      }
+      if (kind === 'button') {
+        if (this.connectedButtonChar && this.connectedButtonChar !== characteristic) {
+          try {
+            this.connectedButtonChar.removeEventListener('characteristicvaluechanged', this.handleNotification);
+          } catch (_) { }
+        }
+        try {
+          characteristic.removeEventListener('characteristicvaluechanged', this.handleNotification);
+        } catch (_) { }
+        characteristic.addEventListener('characteristicvaluechanged', this.handleNotification);
+        this.connectedButtonChar = characteristic;
+      }
+    }
+
+    async connect(device) {
+      this.bindDisconnectHandler(device);
       const chars = await this.gattConnect(device);
       this.log(`found ${chars.length} characteristic(s)`);
       this.packetChar = chars.find(c => c.uuid === PACKET_UUID);
@@ -586,21 +687,63 @@
         throw new Error('Control characteristic does not allow notifications');
       }
       await this.controlChar.startNotifications();
-      this.controlChar.addEventListener('characteristicvaluechanged', this.handleNotification);
+      this.bindNotificationHandler(this.controlChar, 'control');
       this.log('enabled control notifications');
+      await this.configureTransport();
       return device;
+    }
+
+    async configureTransport() {
+      try {
+        const prnView = new DataView(new ArrayBuffer(4));
+        prnView.setUint32(0, 0, LITTLE_ENDIAN);
+        await this.sendControl(OP.SET_PRN, prnView.buffer);
+        this.log('configured PRN=0');
+      } catch (err) {
+        this.log(`配置PRN失败，继续使用默认行为: ${getErrorMessage(err)}`);
+      }
+
+      try {
+        const resp = await this.sendControl(OP.GET_MTU);
+        const mtu = resp.getUint16(0, LITTLE_ENDIAN);
+        const negotiated = Math.max(DEFAULT_PACKET_SIZE, Math.min(244, mtu - 3));
+        this.packetSize = negotiated;
+        this.log(`transport mtu=${mtu}, packet size=${this.packetSize}`);
+      } catch (err) {
+        this.packetSize = DEFAULT_PACKET_SIZE;
+        this.log(`读取MTU失败，回退到${DEFAULT_PACKET_SIZE}字节分片: ${getErrorMessage(err)}`);
+      }
     }
 
     sendOperation(characteristic, operation, buffer) {
       return new Promise((resolve, reject) => {
+        let settled = false;
+        let timeoutId = null;
+        const finish = (fn, value) => {
+          if (settled) return;
+          settled = true;
+          if (timeoutId) clearTimeout(timeoutId);
+          delete this.notifyFns[operation[0]];
+          fn(value);
+        };
         const payload = new Uint8Array(operation.length + (buffer ? buffer.byteLength : 0));
         payload.set(operation);
         if (buffer) payload.set(new Uint8Array(buffer), operation.length);
-        this.notifyFns[operation[0]] = { resolve, reject };
+        this.notifyFns[operation[0]] = {
+          resolve: value => finish(resolve, value),
+          reject: err => finish(reject, err)
+        };
+        timeoutId = setTimeout(() => {
+          finish(reject, new Error(`DFU response timeout (${DFU_RESPONSE_TIMEOUT_MS}ms)`));
+        }, DFU_RESPONSE_TIMEOUT_MS);
         characteristic.writeValue(payload).catch(async (e) => {
           this.log(String(e));
-          await this.delayPromise(500);
-          await characteristic.writeValue(payload);
+          try {
+            await this.delayPromise(500);
+            await characteristic.writeValue(payload);
+          } catch (retryErr) {
+            finish(reject, retryErr);
+          }
         });
       });
     }
@@ -616,14 +759,33 @@
       return this.crc32(new Uint8Array(buffer)) === crcValue;
     }
 
-    async transferData(dataBuffer, offset, start = 0, objectName, totalBytes) {
-      const end = Math.min(start + PACKET_SIZE, dataBuffer.byteLength);
-      const packet = dataBuffer.slice(start, end);
+    async writePacket(packet) {
+      if (this.packetChar.properties.writeWithoutResponse &&
+        typeof this.packetChar.writeValueWithoutResponse === 'function') {
+        await this.packetChar.writeValueWithoutResponse(packet);
+        return;
+      }
       await this.packetChar.writeValue(packet);
-      if (this.delay > 0) await this.delayPromise(this.delay);
-      this.progress(objectName, totalBytes, offset + end);
-      if (end < dataBuffer.byteLength) {
-        await this.transferData(dataBuffer, offset, end, objectName, totalBytes);
+    }
+
+    async transferData(dataBuffer, offset, start = 0, objectName, totalBytes) {
+      let cursor = start;
+      while (cursor < dataBuffer.byteLength) {
+        const end = Math.min(cursor + this.packetSize, dataBuffer.byteLength);
+        const packet = dataBuffer.slice(cursor, end);
+        try {
+          await this.writePacket(packet);
+        } catch (err) {
+          if (this.packetSize > DEFAULT_PACKET_SIZE) {
+            this.log(`分片大小 ${this.packetSize} 写入失败，回退到 ${DEFAULT_PACKET_SIZE}: ${getErrorMessage(err)}`);
+            this.packetSize = DEFAULT_PACKET_SIZE;
+            continue;
+          }
+          throw err;
+        }
+        if (this.delay > 0) await this.delayPromise(this.delay);
+        this.progress(objectName, totalBytes, offset + end);
+        cursor = end;
       }
     }
 
@@ -674,7 +836,9 @@
       if (!buttonLess && !useFilters) {
         useFilters = [{ services: [u.service] }];
       }
-      const options = { optionalServices: [u.service] };
+      const optionalServices = [u.service];
+      if (EPD_APP_SERVICE_UUID !== u.service) optionalServices.push(EPD_APP_SERVICE_UUID);
+      const options = { optionalServices: optionalServices };
       if (useFilters) options.filters = useFilters;
       else options.acceptAllDevices = true;
       const device = await this.bluetooth.requestDevice(options);
@@ -683,6 +847,7 @@
     }
 
     async setDfuMode(device, uuids) {
+      this.bindDisconnectHandler(device);
       const chars = await this.gattConnect(device, uuids.service);
       this.log(`found ${chars.length} characteristic(s)`);
       if (this.hasDfuCharacteristics(chars, uuids)) return device;
@@ -694,11 +859,11 @@
       }
       await buttonChar.startNotifications();
       this.log('enabled buttonless notifications');
-      buttonChar.addEventListener('characteristicvaluechanged', this.handleNotification);
+      this.bindNotificationHandler(buttonChar, 'button');
       await this.sendOperation(buttonChar, OP.BUTTON_COMMAND);
       this.log('sent DFU mode');
 
-      // 等待应用模式断开，再自动定位切换后的DFU设备，尽量避免二次手动选择。
+      // 等待应用模式断开。unbonded buttonless DFU 后续应重新发现/重新选择 DfuTarg。
       await new Promise(resolve => {
         let done = false;
         const complete = () => {
@@ -710,57 +875,11 @@
         device.addEventListener('gattserverdisconnected', complete, { once: true });
         setTimeout(complete, 2500);
       });
-
-      for (let attempt = 1; attempt <= AUTO_FIND_ATTEMPTS; attempt++) {
-        if (autoFindAbortRequested) break;
-        this.log(`自动查找DFU设备，第 ${attempt}/${AUTO_FIND_ATTEMPTS} 轮`);
-        if (attempt >= 2) {
-          // 从第2轮开始强制确保手动接管按钮可见，避免偶发未刷新显示。
-          ensureManualPickVisible(`第${attempt}轮开始`);
-        }
-        setDfuStatus(`正在自动查找 DFU 设备（第 ${attempt}/${AUTO_FIND_ATTEMPTS} 轮）...`);
-        const roundStartAt = Date.now();
-        const timer = setInterval(() => {
-          const elapsedMs = Date.now() - roundStartAt;
-          const leftSec = Math.max(0, Math.ceil((AUTO_FIND_TIMEOUT_MS - elapsedMs) / 1000));
-          setDfuRetryInfo(`自动查找倒计时（第 ${attempt}/${AUTO_FIND_ATTEMPTS} 轮）：${formatDuration(leftSec)}`);
-        }, AUTO_FIND_COUNTDOWN_TICK_MS);
-        let autoFound = null;
-        try {
-          autoFound = await this.autoFindDfuTarget(device, uuids, AUTO_FIND_TIMEOUT_MS);
-        } finally {
-          clearInterval(timer);
-        }
-        if (autoFound) {
-          setDfuRetryInfo('');
-          return autoFound;
-        }
-        this.log(`第 ${attempt}/${AUTO_FIND_ATTEMPTS} 轮自动查找超时`);
-        if (attempt === 1) {
-          ensureManualPickVisible('第1轮超时');
-          setDfuRetryInfo('已完成第1轮自动查找。可点击“手动选择DFU设备并继续”随时接管。', false);
-          this.log('已提前开放手动接管按钮');
-          pulseManualPickButton();
-          if (typeof showToast === 'function') {
-            showToast('已开放手动接管：可点击“手动选择DFU设备并继续”');
-          }
-        }
-      }
-
-      if (autoFindAbortRequested) {
-        const manualAbortErr = new Error('用户请求手动接管DFU设备选择');
-        manualAbortErr.code = MANUAL_PICK_REQUIRED_ERROR;
-        throw manualAbortErr;
-      }
-
-      setDfuRetryInfo('自动查找失败：已完成 3 轮自动查找。', true);
-      this.log('自动查找失败：已完成 3 轮自动查找');
-      const manualErr = new Error('自动查找失败，需要用户手动选择DFU设备继续');
-      manualErr.code = MANUAL_PICK_REQUIRED_ERROR;
-      throw manualErr;
+      return null;
     }
 
     async switchToDfuModeOnly(device, uuids) {
+      this.bindDisconnectHandler(device);
       let chars = null;
       let connectedServiceName = '';
       try {
@@ -786,10 +905,10 @@
       }
       await buttonChar.startNotifications();
       this.log('enabled buttonless notifications');
-      buttonChar.addEventListener('characteristicvaluechanged', this.handleNotification);
+      this.bindNotificationHandler(buttonChar, 'button');
       await this.sendOperation(buttonChar, OP.BUTTON_COMMAND);
       this.log('sent DFU mode');
-      // 等待应用模式断开完成
+      // 等待应用模式断开完成。unbonded buttonless DFU 后续需要重新发现/重连 DfuTarg。
       await new Promise(resolve => {
         let done = false;
         const complete = () => {
@@ -848,20 +967,133 @@
     await dfu.update(device, image.initData, image.imageData);
   }
 
-  async function performDfuTransfer(dfu, device, baseImage, appImage) {
-    await updateOneImage(dfu, device, baseImage);
-    await updateOneImage(dfu, device, appImage);
+  function finalizeDfuSession() {
     setDfuStatus('DFU 升级完成');
     emitLog('DFU 升级完成');
     setDfuProgress(null);
     setDfuRetryInfo('');
     setManualPickVisible(false);
-    pendingManualSession = null;
-    queuedManualPick = false;
+    setPendingManualSession(null);
+    setManualBootloaderEntryRequired(false);
     if (typeof showToast === 'function') showToast('DFU升级完成');
     const fileEl = document.getElementById('dfuPackageFile');
     if (fileEl) fileEl.value = '';
     dfuPackage = null;
+  }
+
+  function getQueuedImages(baseImage, appImage) {
+    return [baseImage, appImage].filter(Boolean);
+  }
+
+  async function requestApplicationDevice(dfu) {
+    const connected = getConnectedMainDevice();
+    if (connected) {
+      emitLog(`复用当前已连接应用设备: ${connected.name || 'Unknown Device'}`);
+      return connected;
+    }
+    setDfuStatus('请在弹窗中选择应用设备...');
+    emitLog('未检测到现有连接，按官方 unbonded buttonless DFU 流程选择应用设备');
+    return dfu.requestDevice(false, DFU_APP_FILTERS);
+  }
+
+  async function requestBootloaderDevice(dfu) {
+    setDfuStatus('请在弹窗中选择 DFU 设备（如 DfuTarg）...');
+    emitLog('等待用户选择 DfuTarg/DFU Bootloader 设备');
+    return dfu.requestDevice(false, DFU_BOOTLOADER_FILTERS);
+  }
+
+  async function requestInitialDfuTarget(dfu) {
+    if (!manualBootloaderEntryRequired) {
+      return {
+        mode: 'application',
+        device: await requestApplicationDevice(dfu)
+      };
+    }
+
+    setDfuStatus('请先让设备进入 DfuTarg，再在弹窗中选择 DFU 设备...');
+    emitLog('当前会话已切换为“手动进入 DFU 模式”流程，直接选择 DfuTarg');
+    return {
+      mode: 'bootloader',
+      device: await requestBootloaderDevice(dfu)
+    };
+  }
+
+  async function tryResolveAuthorizedBootloaderDevice(dfu, preferredDevice, timeoutMs, phaseLabel) {
+    setDfuStatus(`正在查找已授权 DFU 设备（${phaseLabel}）...`);
+    emitLog(`尝试在已授权设备中查找 DFU 目标（${phaseLabel}）`);
+    setDfuRetryInfo(`正在等待 DfuTarg 出现（${Math.ceil(timeoutMs / 1000)} 秒）...`, false);
+    const found = await dfu.autoFindDfuTarget(preferredDevice, {
+      service: DFU_SERVICE_UUID,
+      control: CONTROL_UUID,
+      packet: PACKET_UUID
+    }, timeoutMs);
+    setDfuRetryInfo('');
+    return found;
+  }
+
+  async function resolveBootloaderAfterSwitch(dfu, preferredDevice) {
+    await dfu.delayPromise(DFU_REBOOT_SETTLE_MS);
+    const authorized = await tryResolveAuthorizedBootloaderDevice(
+      dfu,
+      preferredDevice,
+      INITIAL_DFU_DISCOVERY_TIMEOUT_MS,
+      '切换到 DFU'
+    );
+    if (authorized) return authorized;
+    try {
+      return await requestBootloaderDevice(dfu);
+    } catch (err) {
+      if (isUserGestureError(err)) {
+        throw makeManualPickError('浏览器要求再次确认 DfuTarg，请点击“手动选择DFU设备并继续”');
+      }
+      if (isPickerCancelled(err)) {
+        const cancelled = new Error('已取消选择DFU设备，可点击“手动选择DFU设备并继续”重试');
+        cancelled.code = DFU_BOOTLOADER_PICK_CANCELLED_ERROR;
+        throw cancelled;
+      }
+      throw err;
+    }
+  }
+
+  async function resolveBootloaderForRemainingImages(dfu, preferredDevice, nextImage) {
+    await dfu.delayPromise(DFU_REBOOT_SETTLE_MS);
+    const authorized = await tryResolveAuthorizedBootloaderDevice(
+      dfu,
+      preferredDevice,
+      NEXT_STAGE_DISCOVERY_TIMEOUT_MS,
+      `继续 ${nextImage.type}`
+    );
+    if (authorized) return authorized;
+    ensureManualPickVisible(`继续${nextImage.type}`);
+    pulseManualPickButton();
+    throw makeManualPickError(`设备已重启，请点击“手动选择DFU设备并继续”继续升级 ${nextImage.type}`);
+  }
+
+  async function performDfuTransfer(dfu, device, images) {
+    let activeDevice = device;
+    for (let index = 0; index < images.length; index++) {
+      const image = images[index];
+      setPendingManualSession({
+        dfu: dfu,
+        remainingImages: images.slice(index)
+      });
+      if (!activeDevice) {
+        ensureManualPickVisible(`等待${image.type}`);
+        throw makeManualPickError(`请点击“手动选择DFU设备并继续”继续升级 ${image.type}`);
+      }
+      await updateOneImage(dfu, activeDevice, image);
+      if (index < images.length - 1) {
+        const nextImage = images[index + 1];
+        setPendingManualSession({
+          dfu: dfu,
+          remainingImages: images.slice(index + 1)
+        });
+        setDfuStatus(`正在等待设备重启，准备继续升级 ${nextImage.type}...`);
+        emitLog(`当前镜像已完成，准备重新连接 DFU 设备继续 ${nextImage.type}`);
+        activeDevice = await resolveBootloaderForRemainingImages(dfu, activeDevice, nextImage);
+      }
+    }
+    finalizeDfuSession();
   }
 
   function getConnectedMainDevice() {
@@ -873,21 +1105,6 @@
     } catch (_) {
       return null;
     }
-  }
-
-  async function pickUpgradeTargetDevice(dfu) {
-    // 按约定流程：先用上方“连接”按钮连上设备，再点DFU。
-    const connected = getConnectedMainDevice();
-    if (connected) {
-      emitLog(`复用当前已连接设备: ${connected.name || 'Unknown Device'}`);
-      return connected;
-    }
-    setDfuStatus('请先使用上方“连接”按钮连接设备后，再执行DFU升级', true);
-    emitLog('未检测到上方已连接设备，已终止DFU流程');
-    if (typeof showToast === 'function') {
-      showToast('请先连接设备，再执行DFU升级', 3000);
-    }
-    return null;
   }
 
   async function startDfuUpgrade() {
@@ -909,15 +1126,13 @@
     const manualBtn = document.getElementById('dfuManualPickButton');
     const dfu = new LocalSecureDfu(makeCrc32());
     dfuBusy = true;
-    autoFindAbortRequested = false;
-    manualTakeoverRequestedWhileBusy = false;
-    queuedManualPick = false;
+    notifyDfuPageStateChange();
     if (startBtn) startBtn.disabled = true;
-    // 自动查找阶段需要允许用户点击“手动接管”按钮，所以这里不禁用 manualBtn
+    if (manualBtn) manualBtn.disabled = true;
     setDfuProgress(null);
     setDfuRetryInfo('');
     setManualPickVisible(false);
-    pendingManualSession = null;
+    setPendingManualSession(null);
 
     dfu.addEventListener('log', event => {
       if (event && event.message) emitLog(event.message);
@@ -938,148 +1153,125 @@
         }
       }
 
-      setDfuStatus('正在选择设备...');
-      emitLog('开始选择升级目标设备');
-      const selectedDevice = await pickUpgradeTargetDevice(dfu);
-      if (!selectedDevice) {
-        return;
-      }
-
-      setDfuStatus('正在切换 DFU 模式...');
-      emitLog('正在切换到 DFU 模式...');
-      pendingManualSession = {
+      const images = getQueuedImages(baseImage, appImage);
+      setPendingManualSession({
         dfu: dfu,
-        baseImage: baseImage,
-        appImage: appImage
-      };
-      let maybeDfuDevice = null;
-      try {
-        maybeDfuDevice = await dfu.switchToDfuModeOnly(selectedDevice, {
-          service: DFU_SERVICE_UUID,
-          button: BUTTON_UUID,
-          control: CONTROL_UUID,
-          packet: PACKET_UUID
-        });
-      } catch (switchErr) {
-        const switchMsg = getErrorMessage(switchErr);
-        if (switchMsg.includes('Unsupported device')) {
-          const manualModeErr = new Error(
-            '当前固件未暴露Buttonless DFU切换能力，请先手动让设备进入DFU模式(DfuTarg)后再继续。'
-          );
-          manualModeErr.code = MANUAL_DFU_MODE_REQUIRED_ERROR;
-          throw manualModeErr;
+        remainingImages: images.slice()
+      });
+
+      const target = await requestInitialDfuTarget(dfu);
+
+      if (target.mode === 'bootloader') {
+        setManualPickVisible(false);
+        await performDfuTransfer(dfu, target.device, images);
+      } else {
+        setDfuStatus('正在切换到 DFU 模式...');
+        emitLog('正在按 unbonded buttonless DFU 流程切换到 Bootloader...');
+        try {
+          const maybeDfuDevice = await dfu.switchToDfuModeOnly(target.device, {
+            service: DFU_SERVICE_UUID,
+            button: BUTTON_UUID,
+            control: CONTROL_UUID,
+            packet: PACKET_UUID
+          });
+          setManualPickVisible(false);
+          const dfuTargetDevice = maybeDfuDevice || await resolveBootloaderAfterSwitch(dfu, target.device);
+          await performDfuTransfer(dfu, dfuTargetDevice, images);
+        } catch (switchErr) {
+          const switchMsg = getErrorMessage(switchErr);
+          if (switchMsg.includes('Unsupported device')) {
+            const manualModeErr = new Error(
+              '当前固件未暴露Buttonless DFU切换能力，请先手动让设备进入DFU模式(DfuTarg)后，再重新点击“选择设备并升级”。'
+            );
+            manualModeErr.code = MANUAL_DFU_MODE_REQUIRED_ERROR;
+            throw manualModeErr;
+          }
+          throw switchErr;
         }
-        throw switchErr;
       }
-      setDfuRetryInfo('');
-      setManualPickVisible(false);
-
-      let dfuTargetDevice = maybeDfuDevice;
-      if (!dfuTargetDevice) {
-        setDfuStatus('请在弹窗中选择 DFU 设备（如 DfuTarg）...');
-        emitLog('等待用户手动选择 DFU 设备');
-        dfuTargetDevice = await dfu.requestDevice(false, DFU_MANUAL_NAME_FILTERS);
-      }
-
-      await performDfuTransfer(dfu, dfuTargetDevice, baseImage, appImage);
     } catch (err) {
       const errMsg = getErrorMessage(err);
       if (err && err.code === MANUAL_DFU_MODE_REQUIRED_ERROR) {
+        resetPendingDfuSession();
+        setManualBootloaderEntryRequired(true);
         setDfuStatus(getErrorMessage(err), true);
         emitLog('自动切DFU失败：固件不支持Buttonless切换，请手动让设备进入DfuTarg后再升级');
         if (typeof showToast === 'function') {
-          showToast('请先手动让设备进入DfuTarg，再点击升级', 3600);
+          showToast('请先手动让设备进入DfuTarg，再重新点击升级', 3600);
         }
       } else if (err && err.code === MANUAL_PICK_REQUIRED_ERROR) {
-        if (!pendingManualSession) {
-          pendingManualSession = {
-            dfu: dfu,
-            baseImage: dfuPackage ? dfuPackage.getBaseImage() : null,
-            appImage: dfuPackage ? dfuPackage.getAppImage() : null
-          };
+        ensureManualPickVisible('等待DfuTarg');
+        pulseManualPickButton();
+        setDfuStatus(errMsg, false);
+        emitLog(`等待用户手动选择 DFU 设备继续: ${errMsg}`);
+        if (typeof showToast === 'function') {
+          showToast(isUserGestureError(err) ? '浏览器要求再次确认 DfuTarg，请点击手动继续' : '请手动选择 DfuTarg 继续');
         }
-        ensureManualPickVisible('自动查找失败');
-        setDfuStatus('自动查找失败（可能是 DfuTarg 未授权），请点击“手动选择DFU设备并继续”');
-        emitLog('自动查找失败：可能无法访问未授权的 DfuTarg，等待用户手动选择继续');
-        if (manualTakeoverRequestedWhileBusy) {
-          pulseManualPickButton();
-          if (queuedManualPick) {
-            emitLog('检测到手动接管已排队，自动进入手动选择流程');
-            setDfuStatus('自动查找已停止，正在打开手动选择...');
-            setTimeout(() => { continueWithManualPick(true); }, 0);
-          } else if (typeof showToast === 'function') {
-            showToast('自动查找已停止，请再次点击“手动选择DFU设备并继续”');
-          }
-          manualTakeoverRequestedWhileBusy = false;
-        } else if (typeof showToast === 'function') {
-          showToast('自动查找失败，请手动选择 DfuTarg 继续');
+      } else if (err && err.code === DFU_BOOTLOADER_PICK_CANCELLED_ERROR) {
+        ensureManualPickVisible('取消选择DfuTarg');
+        setDfuStatus(errMsg, false);
+        emitLog(`DFU设备选择已取消，但会话仍可继续: ${errMsg}`);
+        if (typeof showToast === 'function') {
+          showToast('已取消DfuTarg选择，可点击“手动选择DFU设备并继续”重试');
         }
-      } else if (errMsg.includes('User cancelled')) {
+      } else if (isPickerCancelled(err)) {
+        resetPendingDfuSession();
         setDfuStatus('已取消设备选择');
         emitLog('DFU 已取消：用户关闭了设备选择窗口');
         if (typeof showToast === 'function') showToast('已取消设备选择');
       } else {
+        resetPendingDfuSession();
         setDfuStatus(`DFU 失败: ${errMsg}`, true);
         emitLog(`DFU 失败: ${errMsg}`);
         if (typeof showToast === 'function') showToast(`DFU失败: ${errMsg}`, 3600);
       }
     } finally {
       dfuBusy = false;
+      notifyDfuPageStateChange();
       if (startBtn) startBtn.disabled = false;
-      if (manualBtn) manualBtn.disabled = false;
+      if (manualBtn) manualBtn.disabled = !pendingManualSession;
     }
   }
 
-  async function continueWithManualPick(fromQueuedAuto = false) {
+  async function continueWithManualPick() {
     emitLog('收到手动接管按钮点击');
     if (dfuBusy) {
-      autoFindAbortRequested = true;
-      manualTakeoverRequestedWhileBusy = true;
-      queuedManualPick = true;
-      setDfuStatus('正在停止自动查找，已为你排队手动接管...');
-      emitLog('已请求停止自动查找，手动接管已排队');
+      setDfuStatus('DFU 正在执行，请稍候后再试');
       return;
     }
     if (!pendingManualSession || !pendingManualSession.dfu) {
       setDfuStatus('没有待继续的DFU会话，请先点击“选择设备并升级”');
-      queuedManualPick = false;
       return;
     }
 
     const startBtn = document.getElementById('dfuStartButton');
     const manualBtn = document.getElementById('dfuManualPickButton');
-    const { dfu, baseImage, appImage } = pendingManualSession;
+    const { dfu, remainingImages } = pendingManualSession;
     dfuBusy = true;
+    notifyDfuPageStateChange();
     if (startBtn) startBtn.disabled = true;
     if (manualBtn) manualBtn.disabled = true;
 
     try {
-      setDfuStatus('请手动选择 DFU 设备...');
-      emitLog('进入手动选择 DFU 设备流程');
-      // 手动兜底场景下优先按常见DFU名称过滤，避免只按服务UUID时看不到DfuTarg。
-      const device = await dfu.requestDevice(false, DFU_MANUAL_NAME_FILTERS);
-      queuedManualPick = false;
-      await performDfuTransfer(dfu, device, baseImage, appImage);
+      const device = await requestBootloaderDevice(dfu);
+      await performDfuTransfer(dfu, device, remainingImages || []);
     } catch (err) {
       const errMsg = getErrorMessage(err);
-      if (errMsg.includes('User cancelled')) {
-        if (fromQueuedAuto && /gesture|user activation|must be handling a user gesture|NotAllowedError/i.test(errMsg)) {
-          setDfuStatus('浏览器限制：请再点击一次“手动选择DFU设备并继续”');
-          emitLog('自动排队进入手动选择被浏览器手势策略拦截，请再点击一次按钮');
-          if (typeof showToast === 'function') showToast('请再点一次“手动选择DFU设备并继续”');
-        } else {
-          setDfuStatus('已取消手动选择');
-          emitLog('DFU 手动选择已取消');
-        }
+      if (isPickerCancelled(err)) {
+        ensureManualPickVisible('手动选择取消');
+        setDfuStatus('已取消手动选择，可再次点击继续');
+        emitLog('DFU 手动选择已取消，当前会话保留，可再次点击继续');
       } else {
+        resetPendingDfuSession();
         setDfuStatus(`DFU 失败: ${errMsg}`, true);
         emitLog(`DFU 失败: ${errMsg}`);
         if (typeof showToast === 'function') showToast(`DFU失败: ${errMsg}`, 3600);
       }
     } finally {
       dfuBusy = false;
+      notifyDfuPageStateChange();
       if (startBtn) startBtn.disabled = false;
-      if (manualBtn) manualBtn.disabled = false;
+      if (manualBtn) manualBtn.disabled = !pendingManualSession;
     }
   }
 
@@ -1180,5 +1372,29 @@
     setManualPickVisible(false);
     setDfuPrecheck('');
     setDfuStatus('未选择 DFU 固件包');
+  };
+
+  window.isDfuBusy = function () {
+    return !!dfuBusy;
+  };
+
+  window.getDfuPageState = function () {
+    return getDfuPageState();
+  };
+
+  window.resetDfuMode = function () {
+    if (dfuBusy || pendingManualSession) return false;
+    setManualBootloaderEntryRequired(false);
+    setDfuStatus('已恢复默认升级流程，请从应用设备重新开始');
+    emitLog('已恢复默认 DFU 流程：后续将先选择应用设备再切换到 DfuTarg');
+    return true;
+  };
+
+  window.abandonPendingDfuSession = function () {
+    if (dfuBusy || !pendingManualSession) return false;
+    resetPendingDfuSession();
+    setDfuStatus('已放弃当前可恢复会话');
+    emitLog('已放弃当前可恢复的 DFU 会话');
+    return true;
   };
 })();

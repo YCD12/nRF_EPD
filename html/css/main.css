@@ -179,6 +179,30 @@ label {
     margin: 1rem 0;
 }
 
+.page-header {
+    display: flex;
+    gap: 16px;
+    align-items: flex-start;
+    justify-content: space-between;
+    margin: 2rem 0 1.25rem 0;
+}
+
+.page-actions {
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+}
+
+.page-subtitle {
+    font-size: 0.95rem;
+    color: #64748b;
+    margin-top: -0.5rem;
+}
+
+.dfu-page {
+    max-width: 880px;
+}
+
 .footer .links {
     display: flex;
     align-items: center;
@@ -588,6 +612,11 @@ canvas.text-placement-mode {
 }
 
 @media (max-width: 768px) {
+    .page-header {
+        flex-direction: column;
+        margin-top: 1.5rem;
+    }
+
     .flex-container {
         flex-direction: column;
     }
@@ -801,4 +830,8 @@ body.dark-mode .dfu-progress-wrap {
 
 body.dark-mode .dfu-progress-text {
     color: var(--dark-text);
+}
+
+body.dark-mode .page-subtitle {
+    color: #cbd5e1;
 }

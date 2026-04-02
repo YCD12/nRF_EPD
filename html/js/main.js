@@ -21,6 +21,7 @@ let clearLogOnNextSuccessfulConnect = false;
 let lastWeekStartSent = null;
 let internalDisconnectInProgress = false;
 let internalDisconnectSuppressUntil = 0;
+const DFU_PAGE_HANDOFF_KEY = 'epd_dfu_page_handoff';
 
 const EpdCmd = {
   SET_PINS: 0x00,
@@ -563,6 +564,35 @@ function disconnect() {
   // 隐藏老款时钟按钮
   const legacyBtn = document.getElementById('legacyclockbutton');
   if (legacyBtn) legacyBtn.style.display = 'none';
+}
+
+async function openDfuPage() {
+  const handoff = {
+    source: 'index',
+    fromUrl: window.location.pathname,
+    createdAt: Date.now(),
+    hadConnectedDevice: !!(bleDevice && bleDevice.gatt && bleDevice.gatt.connected),
+    deviceName: bleDevice && bleDevice.name ? bleDevice.name : '',
+    disconnectedBeforeNavigate: false
+  };
+
+  try {
+    if (bleDevice && bleDevice.gatt && bleDevice.gatt.connected) {
+      internalDisconnectInProgress = true;
+      internalDisconnectSuppressUntil = Date.now() + 4000;
+      try {
+        bleDevice.gatt.disconnect();
+        handoff.disconnectedBeforeNavigate = true;
+      } catch (_) { }
+      await new Promise(resolve => setTimeout(resolve, 250));
+    }
+  } finally {
+    internalDisconnectInProgress = false;
+    try {
+      sessionStorage.setItem(DFU_PAGE_HANDOFF_KEY, JSON.stringify(handoff));
+    } catch (_) { }
+    window.location.href = 'dfu.html';
+  }
 }
 
 function updateDeviceFilterButton() {

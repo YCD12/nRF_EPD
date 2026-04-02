@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="zh-CN">
+
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Nordic DFU 升级</title>
+  <link rel="shortcut icon" type="image/png" href="favicon.png">
+  <link rel="stylesheet" href="css/main.css?v=20260402c">
+</head>
+
+<body>
+  <div class="main dfu-page">
+    <div class="page-header">
+      <div>
+        <h1>Nordic DFU 升级</h1>
+        <div class="page-subtitle">独立升级页面，按 Nordic 官方 unbonded buttonless DFU 流程引导完成升级。</div>
+      </div>
+      <div class="page-actions">
+        <button id="dfuBackButton" type="button" class="secondary">返回主界面</button>
+      </div>
+    </div>
+
+    <section class="section">
+      <h2>页面说明</h2>
+      <div class="device-info">
+        <b>进入方式：</b><span id="dfuEntrySource" class="device-badge">检测中</span>
+      </div>
+      <div id="dfuEntryNotice" class="dfu-hint" style="margin-top:0.75rem;"></div>
+      <div id="dfuFlowGuide" class="dfu-hint">
+        页面跳转不会继承浏览器中的 GATT 连接，所以从主界面跳到本页后，升级阶段会重新选择应用设备；切到 Bootloader 后，如果浏览器尚未持有 DfuTarg 授权，页面会提示你再次确认。
+      </div>
+    </section>
+
+    <section class="section">
+      <h2>升级流程</h2>
+      <div class="device-info">
+        <b>当前流程：</b><span id="dfuModeBadge" class="device-badge">默认流程</span>
+      </div>
+      <div id="dfuModeHint" class="dfu-hint" style="margin-top:0.75rem;"></div>
+      <div class="flex-container">
+        <div class="flex-group">
+          <input type="file" id="dfuPackageFile" accept=".zip">
+          <button id="dfuStartButton" type="button" class="primary">选择设备并升级</button>
+          <button id="dfuManualPickButton" type="button" class="secondary" style="display:none;">手动选择DFU设备并继续</button>
+          <button id="dfuAbandonSessionButton" type="button" class="secondary" disabled>放弃当前会话</button>
+          <button id="dfuResetModeButton" type="button" class="secondary" disabled>恢复默认流程</button>
+          <button id="dfuSelfCheckButton" type="button" class="secondary">环境自检</button>
+        </div>
+      </div>
+      <div class="dfu-hint">
+        建议顺序：1. 先点“环境自检”；2. 选择 Nordic nRF Secure DFU 固件包（.zip）；3. 点击“选择设备并升级”；4. 如页面提示，再选择 DfuTarg 继续。
+      </div>
+      <div id="dfuStatus" class="dfu-status">状态：未选择 DFU 固件包</div>
+      <div id="dfuPrecheck" class="dfu-precheck" style="display:none;"></div>
+      <div id="dfuRetryInfo" class="dfu-retry-info" style="display:none;"></div>
+      <div id="dfuProgressWrap" class="dfu-progress-wrap" style="display:none;">
+        <div id="dfuProgressBar" class="dfu-progress-bar"></div>
+        <div id="dfuProgressText" class="dfu-progress-text"></div>
+      </div>
+    </section>
+
+    <section class="section">
+      <h2>升级日志</h2>
+      <div class="flex-container">
+        <div class="flex-group">
+          <button id="dfuClearLogButton" type="button" class="secondary">清空日志</button>
+        </div>
+      </div>
+      <div class="log-container" id="log"></div>
+    </section>
+  </div>
+
+  <div id="toast" class="toast-message" style="display:none;"></div>
+  <script type="text/javascript" src="js/dfu.js?v=20260402c"></script>
+  <script type="text/javascript" src="js/dfu_page.js?v=20260402c"></script>
+</body>
+
+</html>
