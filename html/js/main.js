@@ -5,11 +5,13 @@ let canvas, ctx, textDecoder;
 let paintManager, cropManager;
 
 // APP版本号 (便于调试)
-const APP_VERSION = '2.0.3';
-const APP_BUILD_DATE = '2026-03-10';
+const APP_VERSION = '2.0.6';
+const APP_BUILD_DATE = '2026-04-02';
 const EPD_DEVICE_NAME_PREFIX = 'NRF_EPD';
 const SCAN_DURATION_MS = 5000;
 const LOG_CONSOLE_STORAGE_KEY = 'epd_log_to_console';
+const LOW_BATTERY_THRESHOLD_MV = 2800;
+const LOW_BATTERY_WARNING_TEXT = '电压过低，需要更换电池或充电，容易出现传图异常、屏幕异常';
 let enableDeviceFilter = true;
 let logToConsole = true;
 let toastTimer = null;
@@ -31,6 +33,7 @@ const EpdCmd = {
 
   SET_TIME: 0x20,
   SET_WEEK_START: 0x21,
+  SYNC_TIME_SILENT: 0x23,
 
   WRITE_IMG: 0x30, // v1.6
 
@@ -105,6 +108,37 @@ function resetVariables() {
   epdService = null;
   epdCharacteristic = null;
   msgIndex = 0;
+}
+
+function formatVoltageDisplay(voltageMv) {
+  return `${(voltageMv / 1000).toFixed(2)} V (${voltageMv} mV)`;
+}
+
+function updateBatteryVoltageDisplay(voltageMv = null, fallbackText = '未连接') {
+  const batteryVoltage = document.getElementById('batteryVoltage');
+  const batteryWarning = document.getElementById('batteryWarning');
+  if (!batteryVoltage) return;
+
+  if (typeof voltageMv === 'number' && Number.isFinite(voltageMv)) {
+    batteryVoltage.innerText = formatVoltageDisplay(voltageMv);
+    batteryVoltage.classList.toggle('low', voltageMv <= LOW_BATTERY_THRESHOLD_MV);
+    if (batteryWarning) {
+      if (voltageMv <= LOW_BATTERY_THRESHOLD_MV) {
+        batteryWarning.innerText = LOW_BATTERY_WARNING_TEXT;
+        batteryWarning.style.display = 'inline';
+      } else {
+        batteryWarning.innerText = '';
+        batteryWarning.style.display = 'none';
+      }
+    }
+  } else {
+    batteryVoltage.innerText = fallbackText;
+    batteryVoltage.classList.remove('low');
+    if (batteryWarning) {
+      batteryWarning.innerText = '';
+      batteryWarning.style.display = 'none';
+    }
+  }
 }
 
 async function write(cmd, data, withResponse = true) {
@@ -193,16 +227,17 @@ function getWeekStart() {
 }
 
 // 辅助函数：构建时间数据包
-function buildTimeData(mode) {
-  const timestamp = new Date().getTime() / 1000;
-  return new Uint8Array([
+function buildTimeData(mode = null) {
+  const timestamp = Math.floor(new Date().getTime() / 1000);
+  const payload = [
     (timestamp >> 24) & 0xFF,
     (timestamp >> 16) & 0xFF,
     (timestamp >> 8) & 0xFF,
     timestamp & 0xFF,
-    -(new Date().getTimezoneOffset() / 60),
-    mode
-  ]);
+    -(new Date().getTimezoneOffset() / 60)
+  ];
+  if (mode !== null && mode !== undefined) payload.push(mode);
+  return new Uint8Array(payload);
 }
 
 // 辅助函数：发送时间同步命令
@@ -232,6 +267,17 @@ async function sendTimeCommand(mode, modeName) {
     return true;
   }
   return false;
+}
+
+async function syncTimeOnConnect() {
+  if (appVersion < 0x21) {
+    addLog('当前固件不支持静默校时，已跳过自动时间同步');
+    return false;
+  }
+
+  const ok = await write(EpdCmd.SYNC_TIME_SILENT, buildTimeData());
+  addLog(ok ? '已自动同步当前时间到设备' : '自动时间同步失败');
+  return ok;
 }
 
 async function syncTime(mode) {
@@ -506,6 +552,7 @@ function disconnect() {
   const isInternalRetryDisconnect = internalDisconnectInProgress || Date.now() < internalDisconnectSuppressUntil;
   updateButtonStatus();
   resetVariables();
+  updateBatteryVoltageDisplay(null, '未连接');
   if (!isInternalRetryDisconnect) {
     clearLogOnNextSuccessfulConnect = true;
     lastWeekStartSent = null;
@@ -839,15 +886,22 @@ function handleNotify(value, idx) {
   } else {
     if (textDecoder == null) textDecoder = new TextDecoder();
     const msg = textDecoder.decode(data);
-    addLog(msg, '⇓');
     if (msg.startsWith('mtu=') && msg.length > 4) {
+      addLog(msg, '⇓');
       const mtuSize = parseInt(msg.substring(4));
       document.getElementById('mtusize').value = mtuSize;
       addLog(`MTU 已更新为: ${mtuSize}`);
+    } else if (msg.startsWith('v=') && msg.length > 2) {
+      const voltageMv = parseInt(msg.substring(2), 10);
+      if (!Number.isNaN(voltageMv)) {
+        updateBatteryVoltageDisplay(voltageMv);
+      }
     } else if (msg.startsWith('t=') && msg.length > 2) {
       const t = parseInt(msg.substring(2)) + new Date().getTimezoneOffset() * 60;
       addLog(`远端时间: ${new Date(t * 1000).toLocaleString()}`);
       addLog(`本地时间: ${new Date().toLocaleString()}`);
+    } else {
+      addLog(msg, '⇓');
     }
   }
 }
@@ -1006,12 +1060,16 @@ async function connect() {
       });
       // 给系统一点时间完成监听器挂载
       await new Promise(r => setTimeout(r, 200));
+      updateBatteryVoltageDisplay(null, '等待上报');
     } catch (e) {
       console.error(e);
       if (e.message) addLog("startNotifications: " + e.message);
     }
 
-    await write(EpdCmd.INIT);
+    const initOk = await write(EpdCmd.INIT);
+    if (initOk) {
+      await syncTimeOnConnect();
+    }
 
     // Initialize CRC transfer module if available
     if (typeof BleTransfer !== 'undefined') {
@@ -1417,6 +1475,7 @@ document.body.onload = () => {
   updateButtonStatus();
   updateFooterInfo();
   updateOrientationBadge();
+  updateBatteryVoltageDisplay();
   checkDebugMode();
   if (typeof initDfuPanel === 'function') {
     initDfuPanel();

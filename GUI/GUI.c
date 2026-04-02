@@ -2,6 +2,7 @@
 
 #include <stdio.h>
 
+#include "EPD_driver.h"
 #include "Lunar.h"
 #include "fonts.h"
 
@@ -16,7 +17,6 @@
     GFX_setFont(gfx, font);                       \
     GFX_printf(gfx, __VA_ARGS__);
 
-#define BATTERY_EMPTY_MV 2800
 #define BATTERY_FULL_MV 3300
 
 // 节日数据结构体
@@ -210,6 +210,64 @@ static void DrawTimeSyncTip(Adafruit_GFX* gfx, gui_data_t* data) {
 }
 
 /**
+ * @brief 绘制低电量提示页
+ *        Draw low battery warning page
+ *
+ * @param gfx  图形上下文指针 | Pointer to graphics context
+ * @param data GUI数据指针 | Pointer to GUI data
+ */
+static void DrawLowBatteryTip(Adafruit_GFX* gfx, gui_data_t* data) {
+    char voltage[12] = {0};
+    const uint8_t* voltage_font = (data->height >= 300) ? u8g2_font_helvB18_tn : u8g2_font_helvB14_tn;
+    const char* power_off_text = "power off";
+
+    uint16_t volts = data->voltage_mv / 1000;
+    uint16_t decivolts = (data->voltage_mv % 1000) / 100;
+    snprintf(voltage, sizeof(voltage), "%d.%dV", volts, decivolts);
+
+    int16_t body_w = data->width / 3;
+    int16_t body_h = data->height / 6;
+    if (body_w > 110) body_w = 110;
+    if (body_h > 55) body_h = 55;
+    if (body_w < 72) body_w = 72;
+    if (body_h < 34) body_h = 34;
+
+    int16_t terminal_w = body_w / 12;
+    int16_t terminal_h = body_h / 3;
+    int16_t body_x = (data->width - (body_w + terminal_w + 6)) / 2;
+    int16_t body_y = (data->height - body_h) / 2 - body_h / 6;
+    if (body_y < 10) body_y = 10;
+    int16_t fill_margin = 5;
+    int16_t inner_w = body_w - fill_margin * 2;
+    int16_t inner_h = body_h - fill_margin * 2;
+    int16_t fill_w = inner_w / 6;
+    if (fill_w < 6) fill_w = 6;
+
+    GFX_drawRoundRect(gfx, body_x, body_y, body_w, body_h, 8, GFX_BLACK);
+    GFX_fillRoundRect(gfx, body_x + body_w + 4, body_y + (body_h - terminal_h) / 2, terminal_w, terminal_h, 3, GFX_BLACK);
+    GFX_fillRect(gfx, body_x + fill_margin, body_y + fill_margin, fill_w, inner_h, GFX_BLACK);
+
+    GFX_setFont(gfx, voltage_font);
+    GFX_setTextColor(gfx, GFX_BLACK, GFX_WHITE);
+    int16_t voltage_w = GFX_getUTF8Width(gfx, voltage);
+    int16_t voltage_h = GFX_getFontHeight(gfx);
+    GFX_setCursor(gfx,
+                  body_x + (body_w - voltage_w) / 2,
+                  body_y + (body_h + voltage_h) / 2 - 2);
+    GFX_printf(gfx, "%s", voltage);
+
+    if (data->voltage_mv < CRITICAL_BATTERY_SHUTDOWN_MV) {
+        GFX_setFont(gfx, u8g2_font_wqy9_t_lunar);
+        int16_t text_w = GFX_getUTF8Width(gfx, power_off_text);
+        int16_t text_h = GFX_getFontHeight(gfx);
+        GFX_setCursor(gfx,
+                      body_x + (body_w - text_w) / 2,
+                      body_y + body_h + text_h + 10);
+        GFX_printf(gfx, "%s", power_off_text);
+    }
+}
+
+/**
  * @brief 绘制电池图标和电压显示
  *        Draw battery icon and voltage display
  *
@@ -228,9 +286,9 @@ static void DrawBattery(Adafruit_GFX* gfx, int16_t x, int16_t y, uint8_t iw, uin
     uint8_t level = 0;
     if (voltage_mv >= BATTERY_FULL_MV) {
         level = 100;
-    } else if (voltage_mv > BATTERY_EMPTY_MV) {
-        level = (uint8_t)(((uint32_t)(voltage_mv - BATTERY_EMPTY_MV) * 100) /
-                          (BATTERY_FULL_MV - BATTERY_EMPTY_MV));
+    } else if (voltage_mv > LOW_BATTERY_THRESHOLD_MV) {
+        level = (uint8_t)(((uint32_t)(voltage_mv - LOW_BATTERY_THRESHOLD_MV) * 100) /
+                          (BATTERY_FULL_MV - LOW_BATTERY_THRESHOLD_MV));
     }
 
     // Format voltage as "X.XV" directly (e.g., "3.3V")
@@ -1144,6 +1202,11 @@ void DrawGUI(gui_data_t* data, buffer_callback callback, void* callback_data) {
     do {
         // 填充白色背景 | Fill white background
         GFX_fillScreen(&gfx, GFX_WHITE);
+
+        if (data->voltage_mv <= LOW_BATTERY_THRESHOLD_MV) {
+            DrawLowBatteryTip(&gfx, data);
+            continue;
+        }
 
         // 计算农历日期 | Calculate lunar date
         LUNAR_SolarToLunar(&Lunar, tm.tm_year + YEAR0, tm.tm_mon + 1, tm.tm_mday);

@@ -47,7 +47,7 @@ void ble_epd_evt_handler(ble_evt_t const* p_ble_evt, void* p_context);
     static ble_epd_t _name; \
     NRF_SDH_BLE_OBSERVER(_name##_obs, BLE_EPD_BLE_OBSERVER_PRIO, ble_epd_evt_handler, &_name)
 
-#define APP_VERSION 0x20  // 应用程序版本号
+#define APP_VERSION 0x21  // 应用程序版本号
 
 // EPD服务的128位基础UUID (自定义服务)
 #define BLE_UUID_EPD_SVC_BASE \
@@ -77,6 +77,7 @@ enum EPD_CMDS {
     EPD_CMD_SET_WEEK_START = 0x21, /** < set week start day (0: Sunday, 1: Monday, ...). 设置周起始日(0:周日, 1:周一...) */
     EPD_CMD_SET_MODE = 0x22,       /** < set display mode (0: picture, 1: calendar, 2: clock, 3: clock+calendar). */
                                    /** < 设置显示模式 (0:图片, 1:日历, 2:时钟, 3:时钟+日历) */
+    EPD_CMD_SYNC_TIME_SILENT = 0x23, /** < sync time without immediate refresh. 静默校时(不立即刷新屏幕) */
 
     // 图像写入命令 (0x30-0x3F)
     EPD_CMD_WRITE_IMAGE = 0x30,      /**< write image data to EPD ram (legacy, no CRC). 写入图像数据到EPD RAM (旧版,无CRC校验) */
@@ -208,6 +209,8 @@ typedef struct {
     bool is_refreshing;           /**< Flag to indicate screen refresh is in progress. */
                                   /**< 标志屏幕刷新正在进行中。
                                    *   防止BLE断开时中断刷新过程 */
+    bool low_battery_screen_active; /**< Low-battery warning screen is currently shown. */
+                                    /**< 当前是否处于低电量警告页面，激活后暂停自动刷新。 */
 
     // 命令队列
     epd_cmd_queue_t cmd_queue;    /**< Command queue for sequential command execution. */

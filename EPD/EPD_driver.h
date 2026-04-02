@@ -194,7 +194,8 @@ void EPD_LED_BLINK(void); // Blink LED once (for BLE events, low battery) - LED�
  * 注意: 电压缓存在每次屏幕刷新时更新,因此低电量检测基于最近一次刷新时的电压
  * Note: Voltage cache is updated during each screen refresh, so low battery detection is based on the voltage from the most recent refresh
  */
-#define LOW_BATTERY_THRESHOLD_MV 2800  // Low battery voltage threshold (mV) - 低电量阈值(毫伏)
+#define LOW_BATTERY_THRESHOLD_MV 2800      // Low battery voltage threshold (mV) - 低电量阈值(毫伏)
+#define CRITICAL_BATTERY_SHUTDOWN_MV 2700  // Critical battery shutdown threshold (mV) - 临界关机阈值(毫伏)
 uint16_t EPD_ReadVoltage(void);  // Returns voltage in mV (e.g., 3300 for 3.3V) - 返回电压值(毫伏),例如3300表示3.3V
 uint16_t EPD_ReadVoltageAndCache(void);  // Read voltage and cache for low battery detection - 读取电压并缓存用于低电量检测
 bool EPD_IsLowBattery(void);  // Uses cached voltage, no ADC operation - 使用缓存电压,无需ADC操作

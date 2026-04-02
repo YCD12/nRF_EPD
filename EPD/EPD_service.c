@@ -97,6 +97,8 @@
 // CRC16 Calculation and Transfer Response Functions
 // ============================================================================
 
+#define LOW_BATTERY_POLL_INTERVAL_S 10  // Low-battery mode voltage polling interval in seconds | 低电量模式电压轮询周期(秒)
+
 /**@brief 计算CRC16-CCITT校验值
  *        Calculate CRC16-CCITT checksum
  *
@@ -401,10 +403,14 @@ static void epd_gui_update(void* p_event_data, uint16_t event_size) {
     // 电压读取缓存策略
     // Battery Display Refresh Strategy
     // ========================================================================
-    // 电池数据只在整屏刷新前更新，或在每小时刷新边界触发的整屏局刷前更新
-    // Battery data is refreshed only before a full refresh, or before
-    // a boundary-triggered full-screen partial redraw of the GUI.
+    // 每次GUI刷新前都采样一次电压:
+    // 1. 让网页端电压显示更及时
+    // 2. 低电量时可以立即切到低电量提示页
+    // Sample battery voltage before every GUI refresh so:
+    // 1. the web voltage report stays current
+    // 2. we can switch to the low-battery warning page immediately
     static uint16_t cached_voltage_mv = 3300;  // Default cached GUI battery value: 3.3V
+    cached_voltage_mv = EPD_ReadVoltageAndCache();
     display_mode_t mode = (display_mode_t)p_epd->config.display_mode;
 
     // 准备GUI数据
@@ -419,6 +425,14 @@ static void epd_gui_update(void* p_event_data, uint16_t event_size) {
         .temperature = epd->drv->read_temp(epd),
         .voltage_mv = cached_voltage_mv,
     };
+
+    bool low_battery = (cached_voltage_mv <= LOW_BATTERY_THRESHOLD_MV);
+    bool critical_battery = (cached_voltage_mv < CRITICAL_BATTERY_SHUTDOWN_MV);
+    p_epd->low_battery_screen_active = low_battery;
+
+    if (low_battery) {
+        NRF_LOG_WARNING("[EPD]: Low battery detected (%d mV), showing warning screen\n", cached_voltage_mv);
+    }
 
     // 获取BLE设备名称(SSID)
     // Get BLE device name (SSID)
@@ -453,7 +467,8 @@ static void epd_gui_update(void* p_event_data, uint16_t event_size) {
     // 在时钟模式或时钟+日历模式下,对支持的芯片使用局部刷新
     bool use_partial = ((mode == MODE_CLOCK || mode == MODE_CLOCK_CALENDAR) &&
                        epd->drv->ic == EPD_DRIVER_IC_UC8179 &&
-                       epd->drv->refresh_partial != NULL);
+                       epd->drv->refresh_partial != NULL &&
+                       !low_battery);
 
     if (use_partial) {
         NRF_LOG_INFO("[EPD]: === Using PARTIAL refresh for clock mode ===\n");
@@ -526,9 +541,6 @@ static void epd_gui_update(void* p_event_data, uint16_t event_size) {
             // ================================================================
             NRF_LOG_INFO("[EPD]: *** Performing FULL refresh (mode switch or periodic) ***\n");
 
-            cached_voltage_mv = EPD_ReadVoltageAndCache();
-            data.voltage_mv = cached_voltage_mv;
-
             // LED ON during full refresh
             // 全刷期间打开LED指示
             EPD_LED_ON();
@@ -599,13 +611,6 @@ static void epd_gui_update(void* p_event_data, uint16_t event_size) {
             }
             app_feed_wdt();  // Feed watchdog after clear_partial. 清除局刷区域后喂狗
 
-            // MODE_CLOCK refreshes battery data here only when an interval boundary
-            // falls back to a full-screen partial redraw, such as quiet-hours top-of-hour updates.
-            if (data.mode == MODE_CLOCK && at_refresh_boundary) {
-                cached_voltage_mv = EPD_ReadVoltageAndCache();
-                data.voltage_mv = cached_voltage_mv;
-            }
-
             // Write black data using partial image write
             // 使用局部图像写入写入黑色数据
             NRF_LOG_INFO("[EPD]: Drawing GUI for partial refresh (%d,%d,%d,%d)\n", partial_x, partial_y, partial_w, partial_h);
@@ -662,9 +667,6 @@ fallback_full_refresh:
         // ====================================================================
         NRF_LOG_INFO("[EPD]: === Using FULL refresh ===\n");
 
-        cached_voltage_mv = EPD_ReadVoltageAndCache();
-        data.voltage_mv = cached_voltage_mv;
-
         // LED ON during full refresh
         // 全刷期间打开LED指示
         EPD_LED_ON();
@@ -690,10 +692,22 @@ fallback_full_refresh:
     // (on_disconnect skipped this to avoid interrupting refresh)
     // 如果刷新期间BLE断开,现在将EPD置于睡眠状态
     // (on_disconnect跳过了此操作以避免中断刷新)
-    if (p_epd->conn_handle == BLE_CONN_HANDLE_INVALID) {
+    bool ble_disconnected = (p_epd->conn_handle == BLE_CONN_HANDLE_INVALID);
+    if (ble_disconnected) {
         NRF_LOG_INFO("[EPD]: Refresh complete, BLE disconnected - putting EPD to sleep\n");
+    }
+
+    if (critical_battery) {
+        NRF_LOG_ERROR("[EPD]: Critical battery warning displayed (%d mV), shutting down\n", cached_voltage_mv);
+    }
+
+    if ((ble_disconnected || critical_battery) && epd->drv->sleep) {
         epd->drv->sleep(epd);
         nrf_delay_ms(200);  // for sleep. 等待睡眠生效
+    }
+
+    if (critical_battery) {
+        sleep_mode_enter();
     }
 
     EPD_GPIO_Uninit();  // 释放GPIO / Release GPIO
@@ -852,6 +866,18 @@ static void epd_send_time(ble_epd_t* p_epd) {
     ble_epd_string_send(p_epd, (uint8_t*)buf, strlen(buf));
 }
 
+/**@brief 发送当前电池电压到BLE对端
+ *        Send current battery voltage to BLE peer
+ *
+ * @param[in] p_epd  EPD服务结构指针 / Pointer to EPD service structure
+ */
+static void epd_send_voltage(ble_epd_t* p_epd) {
+    char buf[16] = {0};
+    uint16_t voltage_mv = EPD_ReadVoltageAndCache();
+    snprintf(buf, sizeof(buf), "v=%u", voltage_mv);
+    ble_epd_string_send(p_epd, (uint8_t*)buf, strlen(buf));
+}
+
 /**@brief 发送MTU大小到BLE对端
  *        Send MTU size to BLE peer
  *
@@ -861,6 +887,30 @@ static void epd_send_mtu(ble_epd_t* p_epd) {
     char buf[10] = {0};
     snprintf(buf, sizeof(buf), "mtu=%d", p_epd->max_data_len);
     ble_epd_string_send(p_epd, (uint8_t*)buf, strlen(buf));
+}
+
+/**@brief 解析SET_TIME/SYNC_TIME_SILENT中的时间戳
+ *        Parse timestamp payload used by SET_TIME and SYNC_TIME_SILENT
+ *
+ * @details 载荷格式:
+ *          - [1..4]: Unix时间戳(大端序, UTC秒)
+ *          - [5]:    时区偏移(小时, int8_t, 可选, 默认+8)
+ *          Payload format:
+ *          - [1..4]: Unix timestamp (big-endian, UTC seconds)
+ *          - [5]:    Timezone offset in hours (int8_t, optional, defaults to +8)
+ *
+ * @param[in] p_data  命令数据 / Command payload
+ * @param[in] length  数据长度 / Payload length
+ *
+ * @return 本地时区修正后的时间戳 / Timestamp adjusted to local timezone
+ */
+static uint32_t epd_parse_time_payload(const uint8_t* p_data, uint16_t length) {
+    uint32_t parsed_timestamp = ((uint32_t)p_data[1] << 24) |
+                                ((uint32_t)p_data[2] << 16) |
+                                ((uint32_t)p_data[3] << 8) |
+                                (uint32_t)p_data[4];
+    int8_t timezone_hours = (length > 5) ? (int8_t)p_data[5] : 8;
+    return parsed_timestamp + (timezone_hours * 60 * 60);
 }
 
 /**@brief 执行单个命令(由队列处理器调用)
@@ -929,9 +979,11 @@ static void epd_execute_command(ble_epd_t* p_epd, uint8_t* p_data, uint16_t leng
                 p_epd->config.model_id = p_epd->epd->id;
                 epd_config_write(&p_epd->config);
             }
-            // 发送MTU和时间信息给对端 / Send MTU and time info to peer
+            // 发送MTU、时间和当前电压信息给对端
+            // Send MTU, current time, and current battery voltage to peer
             epd_send_mtu(p_epd);
             epd_send_time(p_epd);
+            epd_send_voltage(p_epd);
             app_feed_wdt();  // Feed watchdog after EPD init. EPD初始化后喂狗
             break;
 
@@ -1016,28 +1068,35 @@ static void epd_execute_command(ble_epd_t* p_epd, uint8_t* p_data, uint16_t leng
             NRF_LOG_DEBUG("time: %02x %02x %02x %02x\n", p_data[1], p_data[2], p_data[3], p_data[4]);
             if (length > 5) NRF_LOG_DEBUG("timezone: %d\n", (int8_t)p_data[5]);
 
-            // 解析时间戳 (大端序)
-            // Parse timestamp (big-endian)
-            uint32_t timestamp = (p_data[1] << 24) | (p_data[2] << 16) | (p_data[3] << 8) | p_data[4];
-            // 添加时区偏移(默认+8小时,即北京时间)
-            // Add timezone offset (default +8 hours, i.e. Beijing time)
-            timestamp += (length > 5 ? (int8_t)p_data[5] : 8) * 60 * 60;
+            uint32_t timestamp = epd_parse_time_payload(p_data, length);
             set_timestamp(timestamp);
 
-            // Only change mode if explicitly specified in command, otherwise keep current mode
-            // 只有命令中明确指定时才更改模式,否则保持当前模式
+            // Keep legacy behavior for compatibility:
+            // if mode is present, update it; regardless of whether mode is present,
+            // SET_TIME still triggers an immediate refresh.
+            // 保持旧协议行为以兼容历史客户端:
+            // 若带模式则更新模式; 无论是否带模式, SET_TIME 仍立即刷新。
             if (length > 6) {
                 // Note: auto_refresh=false because ble_epd_on_timer is called below
                 // 注意: auto_refresh=false因为下面会调用ble_epd_on_timer
                 epd_update_display_mode_with_refresh(p_epd, (display_mode_t)p_data[6], false);
             }
-            // Always force full refresh when receiving SET_TIME command
-            // This ensures display is fully updated with new time/mode
-            // 收到SET_TIME命令时总是强制全刷
-            // 这确保显示完全更新为新的时间/模式
             p_epd->force_full_refresh = true;
             ble_epd_on_timer(p_epd, timestamp, true);
             app_feed_wdt();  // Feed watchdog after set time. 设置时间后喂狗
+        } break;
+
+        // ====================================================================
+        // 静默校时命令 (0x23)
+        // Silent Time Sync Command
+        // ====================================================================
+        case EPD_CMD_SYNC_TIME_SILENT: {
+            if (length < 5) return;
+
+            uint32_t timestamp = epd_parse_time_payload(p_data, length);
+            set_timestamp(timestamp);
+            NRF_LOG_INFO("[EPD]: Time synced silently without immediate refresh\n");
+            app_feed_wdt();
         } break;
 
         // ====================================================================
@@ -1613,6 +1672,7 @@ uint32_t ble_epd_init(ble_epd_t* p_epd) {
     p_epd->is_notification_enabled = false;
     p_epd->force_full_refresh = false;  // Initialize force refresh flag. 初始化强制刷新标志
     p_epd->is_refreshing = false;       // Initialize refreshing flag. 初始化刷新中标志
+    p_epd->low_battery_screen_active = false;  // Low-battery page inactive by default. 默认未进入低电量页
 
     // Initialize command queue
     // 初始化命令队列
@@ -1705,6 +1765,35 @@ uint32_t ble_epd_string_send(ble_epd_t* p_epd, uint8_t* p_string, uint16_t lengt
  * @param[in] force_update  如果为true强制更新 / If true, force update regardless of mode
  */
 void ble_epd_on_timer(ble_epd_t* p_epd, uint32_t timestamp, bool force_update) {
+    // When the low-battery warning screen is active, suppress periodic screen refreshes.
+    // We still sample voltage every LOW_BATTERY_POLL_INTERVAL_S seconds so a critically low battery can power off
+    // and recovery can exit low-battery mode without forcing a redraw immediately.
+    // 低电量警告页激活后，停止周期性屏幕刷新。
+    // 仍然按 LOW_BATTERY_POLL_INTERVAL_S 周期采样电压：过低时直接关机，恢复时退出低电量模式，但不立即强制刷新。
+    if (p_epd->low_battery_screen_active && !force_update) {
+        if (timestamp % LOW_BATTERY_POLL_INTERVAL_S == 0) {
+            uint16_t voltage_mv = EPD_ReadVoltageAndCache();
+            if (voltage_mv < CRITICAL_BATTERY_SHUTDOWN_MV) {
+                NRF_LOG_ERROR("[EPD]: Critical battery detected in low-battery mode (%d mV), showing power-off screen\n", voltage_mv);
+                epd_gui_update_event_t event = {p_epd, timestamp};
+                uint32_t err_code = app_sched_event_put(&event, sizeof(epd_gui_update_event_t), epd_gui_update);
+                if (err_code != NRF_SUCCESS) {
+                    NRF_LOG_ERROR("[EPD]: Failed to schedule critical battery power-off screen: 0x%08x\n", err_code);
+                    sleep_mode_enter();
+                }
+                return;
+            }
+            if (voltage_mv > LOW_BATTERY_THRESHOLD_MV) {
+                NRF_LOG_INFO("[EPD]: Battery recovered to %d mV, leaving low-battery mode\n", voltage_mv);
+                p_epd->low_battery_screen_active = false;
+            }
+        }
+
+        if (p_epd->low_battery_screen_active) {
+            return;
+        }
+    }
+
     // Update calendar on 00:00:00, clock/clock_calendar on every minute
     // 日历在00:00:00更新,时钟/时钟+日历每分钟更新
     if (force_update || (p_epd->config.display_mode == MODE_CALENDAR && timestamp % 86400 == 0) ||

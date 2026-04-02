@@ -287,6 +287,32 @@ label {
     border-bottom: 1px dotted #AAA;
 }
 
+.device-info {
+    font-size: 0.9rem;
+    color: #475569;
+    margin-top: 0.75rem;
+}
+
+.device-badge {
+    display: inline-block;
+    padding: 0.18rem 0.55rem;
+    border-radius: 999px;
+    border: 1px solid var(--border-color);
+    background: #f8fafc;
+}
+
+.device-badge.low {
+    color: #b91c1c;
+    border-color: #fecaca;
+    background: #fef2f2;
+}
+
+.device-warning {
+    margin-left: 0.5rem;
+    color: #b91c1c;
+    font-weight: 600;
+}
+
 .orientation-hint {
     font-size: 85%;
     color: #666;
