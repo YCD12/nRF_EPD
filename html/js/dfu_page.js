@@ -20,6 +20,20 @@
     }, duration);
   }
 
+  function getLogLevel(logTXT) {
+    const text = String(logTXT || '');
+    if (/DFU 失败|失败:|超时|Error|异常|disconnected|断开|所选设备不是|不支持|无法|过大|拒绝/i.test(text)) {
+      return 'error';
+    }
+    if (/DFU 升级完成|transfer complete|written \d+ bytes|开始升级|transferring init|transferring firmware|found packet characteristic|found control characteristic|enabled control notifications|configured PRN=0|已确认 .* 为 DFU Bootloader/i.test(text)) {
+      return 'success';
+    }
+    if (/等待|重试|回退|兼容|尚未稳定|继续|未检测到|选择设备|切换到 Bootloader|尝试在已授权设备中查找 DFU 目标|正在自动查找 DFU 设备|固件包已加载|已选择设备|已取消|已阻止|恢复默认流程|手动接管按钮已强制显示|提示|预检查/i.test(text)) {
+      return 'warn';
+    }
+    return 'info';
+  }
+
   function addLog(logTXT, action = '') {
     const log = getDfuLog();
     if (!log) return;
@@ -31,7 +45,8 @@
 
     const logEntry = document.createElement('div');
     const timeSpan = document.createElement('span');
-    logEntry.className = 'log-line';
+    const level = getLogLevel(logTXT);
+    logEntry.className = `log-line log-${level}`;
     timeSpan.className = 'time';
     timeSpan.textContent = time;
     logEntry.appendChild(timeSpan);
@@ -53,8 +68,8 @@
       log.scrollTop = log.scrollHeight;
     }
 
-    const isErr = /失败|超时|Error|异常|disconnected|断开|warn|warning/i.test(logTXT);
-    if (isErr) console.warn('[DFU]', `${time}${action}${logTXT}`);
+    if (level === 'error') console.error('[DFU]', `${time}${action}${logTXT}`);
+    else if (level === 'warn') console.warn('[DFU]', `${time}${action}${logTXT}`);
     else console.log('[DFU]', `${time}${action}${logTXT}`);
   }
 
@@ -85,17 +100,19 @@
     const flowGuide = document.getElementById('dfuFlowGuide');
     const abandonBtn = document.getElementById('dfuAbandonSessionButton');
     const resetBtn = document.getElementById('dfuResetModeButton');
-    if (!badge || !hint || !flowGuide || !abandonBtn || !resetBtn) return;
+    const startBtn = document.getElementById('dfuStartButton');
+    if (!badge || !hint || !flowGuide || !abandonBtn || !resetBtn || !startBtn) return;
 
     abandonBtn.disabled = !!(state.busy || !state.hasPendingSession);
+    startBtn.textContent = state.hasPendingSession ? '继续升级' : '选择设备并升级';
 
     if (state.manualBootloaderEntryRequired) {
       badge.textContent = '手动 DfuTarg';
       hint.textContent = state.hasPendingSession
-        ? '当前存在待继续的 DFU 会话，请优先完成或放弃当前会话；下一次新的升级尝试会直接要求选择 DfuTarg。'
+        ? '当前存在待继续的 DFU 会话。此时点击“继续升级”或“手动选择DFU设备并继续”都会直接进入 DfuTarg 选择。'
         : '当前已切换到手动 DfuTarg 流程。请先让设备进入 DfuTarg，再点击“选择设备并升级”；如果想恢复默认 buttonless 流程，可点“恢复默认流程”。';
       flowGuide.textContent = state.hasPendingSession
-        ? '当前页面处于手动 DfuTarg 模式，且存在一个可恢复会话。此时不要刷新或直接离开页面；如果决定终止，可以点“放弃当前会话”，之后再决定是否恢复默认流程。'
+        ? '当前页面处于手动 DfuTarg 模式，且存在一个可恢复会话。不要再重新从应用设备开始；直接点“继续升级”或“手动选择DFU设备并继续”即可。'
         : '当前页面处于手动 DfuTarg 模式。页面不会再先选应用设备，而是要求你先把设备切到 DfuTarg，再直接选择 DFU 设备继续升级。';
       resetBtn.disabled = !!(state.busy || state.hasPendingSession);
       return;
@@ -103,9 +120,9 @@
 
     badge.textContent = '默认流程';
     hint.textContent = '当前按 Nordic 官方 unbonded buttonless DFU 流程执行：先选择应用设备，再切换到 DfuTarg。';
-    flowGuide.textContent = state.hasPendingSession
-      ? '当前仍有一个可恢复的 DFU 会话。建议优先继续或放弃这个会话；如果直接离开页面，这次可恢复状态会丢失。'
-      : '页面跳转不会继承浏览器中的 GATT 连接，所以从主界面跳到本页后，升级阶段会重新选择应用设备；切到 Bootloader 后，如果浏览器尚未持有 DfuTarg 授权，页面会提示你再次确认。';
+      flowGuide.textContent = state.hasPendingSession
+        ? '当前仍有一个可恢复的 DFU 会话。此时主按钮已切换为“继续升级”，点击后会直接继续选择 DFU 设备，不会重新走应用设备选择。'
+        : '页面跳转不会继承浏览器中的 GATT 连接，所以从主界面跳到本页后，升级阶段会重新选择应用设备；切到 Bootloader 后，即使系统蓝牙里已经显示 DfuTarg“已配对”，只要当前网页还没有该设备授权，页面仍会提示你再次手动确认。';
     resetBtn.disabled = true;
   }
 

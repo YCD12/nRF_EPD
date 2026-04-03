@@ -15,16 +15,19 @@
   const CONNECT_TIMEOUT_MS = 6000;
   const SERVICE_TIMEOUT_MS = 6000;
   const CHARS_TIMEOUT_MS = 5000;
+  const DFU_SERVICE_DISCOVERY_RETRY_MS = 900;
+  const DFU_OBJECT_EXECUTE_SETTLE_MS = 180;
+  const APP_FLASH_START_ADDR = 0x19000;
+  const APP_FLASH_SIZE_BYTES = 0x17000;
+  // Approximate spare DFU cache space for the current flash layout.
+  // This is only a heuristic for combo-package precheck and should be kept
+  // aligned with the linker/bootloader layout when the project changes.
+  const DFU_APP_CACHE_ESTIMATE_BYTES = 0x10C00;
   const AUTO_FIND_RETRY_INTERVAL_MS = 2500;
   const MANUAL_PICK_REQUIRED_ERROR = 'DFU_MANUAL_PICK_REQUIRED';
   const MANUAL_DFU_MODE_REQUIRED_ERROR = 'DFU_MANUAL_MODE_REQUIRED';
   const DFU_BOOTLOADER_PICK_CANCELLED_ERROR = 'DFU_BOOTLOADER_PICK_CANCELLED';
-  const DFU_BOOTLOADER_FILTERS = [
-    { services: [DFU_SERVICE_UUID] },
-    { namePrefix: 'DfuTarg' },
-    { namePrefix: 'Dfu' },
-    { namePrefix: 'DFU' }
-  ];
+  const DFU_BOOTLOADER_VALIDATION_ERROR = 'DFU_BOOTLOADER_VALIDATION_ERROR';
   const DFU_APP_FILTERS = [
     { services: [EPD_APP_SERVICE_UUID] },
     { namePrefix: 'NRF_EPD' }
@@ -168,6 +171,13 @@
     return `0x${v.toString(16)} (${v})`;
   }
 
+  function formatBytes(v) {
+    if (!Number.isFinite(v)) return '未知';
+    if (v >= 1024 * 1024) return `${(v / (1024 * 1024)).toFixed(2)} MB`;
+    if (v >= 1024) return `${(v / 1024).toFixed(2)} KB`;
+    return `${v} B`;
+  }
+
   function readCurrentDeviceVersion() {
     try {
       if (typeof appVersion !== 'undefined' && Number.isFinite(appVersion)) {
@@ -250,14 +260,35 @@
     if (source) packageVersionHint = pkg;
     const currentText = current == null ? '设备版本: 当前页未读取（仅校验包版本）' : `设备版本: ${formatVersionValue(current)}`;
     const pkgText = pkg == null ? '包内应用版本: 未解析' : `包内应用版本(推测): ${formatVersionValue(pkg)}`;
-    let warn = false;
-    let extra = '';
-    if (current != null && pkg != null && pkg < current) {
-      warn = true;
-      extra = ' | 预警: 包版本低于设备版本，可能被Bootloader拒绝(疑似降级)';
+    let downgradeWarn = false;
+    let capacityWarn = false;
+    let downgradeText = '';
+    let sizeError = '';
+    let sizeText = '';
+    let capacityHint = '';
+    if (appImage && appImage.imageData) {
+      const appSize = appImage.imageData.byteLength >>> 0;
+      sizeText = ` | 应用镜像: ${formatBytes(appSize)} / 上限 ${formatBytes(APP_FLASH_SIZE_BYTES)} (起始 0x${APP_FLASH_START_ADDR.toString(16)})`;
+      if (appSize > APP_FLASH_SIZE_BYTES) {
+        sizeError = ` | 错误: 应用镜像超过工程配置应用区上限，当前MCU无法容纳该固件`;
+      }
     }
-    setDfuPrecheck(`${currentText} | ${pkgText}${extra}`, warn);
-    return { current, pkg, warn };
+    if (baseImage && baseImage.imageData) {
+      const baseSize = baseImage.imageData.byteLength >>> 0;
+      capacityHint = ` | 基础镜像(${baseImage.type}): ${formatBytes(baseSize)}`;
+      if (baseSize > DFU_APP_CACHE_ESTIMATE_BYTES) {
+        capacityWarn = true;
+        capacityHint += ` | 提示: 该镜像已接近/超过当前工程常见可用 DFU 缓存估算 ${formatBytes(DFU_APP_CACHE_ESTIMATE_BYTES)}，能否放下还取决于设备当前固件实际占用`;
+      } else {
+        capacityHint += ` | 提示: 组合包是否能放下仍取决于设备当前固件实际占用，网页只能做近似预检查`;
+      }
+    }
+    if (current != null && pkg != null && pkg < current) {
+      downgradeWarn = true;
+      downgradeText = ' | 预警: 包版本低于设备版本，可能被Bootloader拒绝(疑似降级)';
+    }
+    setDfuPrecheck(`${currentText} | ${pkgText}${sizeText}${capacityHint}${downgradeText}${sizeError}`, !!(downgradeWarn || capacityWarn || sizeError));
+    return { current, pkg, downgradeWarn, capacityWarn, sizeError, capacityHint };
   }
 
   function setManualPickVisible(visible) {
@@ -487,6 +518,7 @@
       this.bluetooth = bluetooth || (navigator && navigator.bluetooth);
       this.delay = delayMs;
       this.packetSize = DEFAULT_PACKET_SIZE;
+      this.forceWriteWithResponse = false;
       this.notifyFns = {};
       this.controlChar = null;
       this.packetChar = null;
@@ -520,23 +552,45 @@
     }
 
     async gattConnect(device, serviceUUID = DFU_SERVICE_UUID) {
-      const server = device.gatt.connected
-        ? device.gatt
-        : await withTimeout(device.gatt.connect(), CONNECT_TIMEOUT_MS, `GATT连接超时(${CONNECT_TIMEOUT_MS}ms)`);
-      this.log('connected to gatt server');
-      const service = await withTimeout(
-        server.getPrimaryService(serviceUUID),
-        SERVICE_TIMEOUT_MS,
-        `获取DFU服务超时(${SERVICE_TIMEOUT_MS}ms)`
-      ).catch(() => {
-        throw new Error('Unable to find DFU service');
-      });
-      this.log('found DFU service');
-      return withTimeout(
-        service.getCharacteristics(),
-        CHARS_TIMEOUT_MS,
-        `获取DFU特征超时(${CHARS_TIMEOUT_MS}ms)`
-      );
+      const safeDisconnect = () => {
+        try {
+          if (device && device.gatt && device.gatt.connected) {
+            device.gatt.disconnect();
+          }
+        } catch (_) { }
+      };
+
+      let lastErr = null;
+      for (let attempt = 1; attempt <= 3; attempt++) {
+        try {
+          const server = device.gatt.connected
+            ? device.gatt
+            : await withTimeout(device.gatt.connect(), CONNECT_TIMEOUT_MS, `GATT连接超时(${CONNECT_TIMEOUT_MS}ms)`);
+          this.log('connected to gatt server');
+          const service = await withTimeout(
+            server.getPrimaryService(serviceUUID),
+            SERVICE_TIMEOUT_MS,
+            `获取DFU服务超时(${SERVICE_TIMEOUT_MS}ms)`
+          ).catch(() => {
+            throw new Error('Unable to find DFU service');
+          });
+          this.log('found DFU service');
+          return await withTimeout(
+            service.getCharacteristics(),
+            CHARS_TIMEOUT_MS,
+            `获取DFU特征超时(${CHARS_TIMEOUT_MS}ms)`
+          );
+        } catch (err) {
+          lastErr = err;
+          safeDisconnect();
+          if (attempt < 3) {
+            this.log(`Bootloader 尚未稳定，等待后重试服务发现（第 ${attempt}/3 次）: ${getErrorMessage(err)}`);
+            await this.delayPromise(DFU_SERVICE_DISCOVERY_RETRY_MS);
+            continue;
+          }
+        }
+      }
+      throw lastErr || new Error('Unable to find DFU service');
     }
 
     hasDfuCharacteristics(chars, uuids) {
@@ -610,7 +664,11 @@
         const err = (result === 0x0B)
           ? `Error: ${EXTENDED_ERROR_MSG[view.getUint8(3)] || 'Unknown extended error'}`
           : `Error: ${RESPONSE_MSG[result] || 'Unknown response error'}`;
-        this.log(`notify: ${err}`);
+        if (operation === OP.GET_MTU[0] && result === 0x02) {
+          this.log('Bootloader 未实现 MTU 查询，准备回退到 20 字节兼容分片');
+        } else {
+          this.log(`notify: ${err}`);
+        }
         target.reject(new Error(err));
       }
       delete this.notifyFns[operation];
@@ -636,6 +694,7 @@
         this.controlChar = null;
         this.packetChar = null;
         this.packetSize = DEFAULT_PACKET_SIZE;
+        this.forceWriteWithResponse = false;
         this.connectedDevice = null;
         this.connectedControlChar = null;
         this.connectedButtonChar = null;
@@ -711,7 +770,12 @@
         this.log(`transport mtu=${mtu}, packet size=${this.packetSize}`);
       } catch (err) {
         this.packetSize = DEFAULT_PACKET_SIZE;
-        this.log(`读取MTU失败，回退到${DEFAULT_PACKET_SIZE}字节分片: ${getErrorMessage(err)}`);
+        const msg = getErrorMessage(err);
+        if (/Opcode not supported/i.test(msg)) {
+          this.log(`设备未支持 MTU 查询，使用 ${DEFAULT_PACKET_SIZE} 字节兼容分片`);
+        } else {
+          this.log(`读取MTU失败，回退到${DEFAULT_PACKET_SIZE}字节分片: ${msg}`);
+        }
       }
     }
 
@@ -760,10 +824,23 @@
     }
 
     async writePacket(packet) {
-      if (this.packetChar.properties.writeWithoutResponse &&
-        typeof this.packetChar.writeValueWithoutResponse === 'function') {
-        await this.packetChar.writeValueWithoutResponse(packet);
-        return;
+      const canWriteWithoutResponse = !this.forceWriteWithResponse &&
+        this.packetChar.properties.writeWithoutResponse &&
+        typeof this.packetChar.writeValueWithoutResponse === 'function';
+      if (canWriteWithoutResponse) {
+        try {
+          await this.packetChar.writeValueWithoutResponse(packet);
+          return;
+        } catch (err) {
+          const msg = getErrorMessage(err);
+          const canFallbackToWriteWithResponse = this.packetChar.properties.write &&
+            typeof this.packetChar.writeValue === 'function' &&
+            /NotSupportedError|GATT operation failed|unknown reason/i.test(msg);
+          if (!canFallbackToWriteWithResponse) throw err;
+          this.forceWriteWithResponse = true;
+          this.delay = Math.max(this.delay, 12);
+          this.log(`writeWithoutResponse 不稳定，切换到 writeValue 模式: ${msg}`);
+        }
       }
       await this.packetChar.writeValue(packet);
     }
@@ -805,6 +882,7 @@
       }
       this.log(`written ${transferred} bytes`);
       await this.sendControl(OP.EXECUTE);
+      await this.delayPromise(Math.max(this.delay, DFU_OBJECT_EXECUTE_SETTLE_MS));
       if (end < buffer.byteLength) {
         await this.transferObject(buffer, createType, maxSize, transferred, objectName);
       } else {
@@ -825,15 +903,18 @@
       await this.transferObject(buffer, createType, maxSize, offset, objectName);
     }
 
-    async requestDevice(buttonLess, filters, uuids) {
+    async requestDevice(buttonLess, filters, uuids, pickerOptions) {
       const u = Object.assign({
         service: DFU_SERVICE_UUID,
         button: BUTTON_UUID,
         control: CONTROL_UUID,
         packet: PACKET_UUID
       }, uuids || {});
+      const opts = Object.assign({
+        allowAllDevices: false
+      }, pickerOptions || {});
       let useFilters = filters;
-      if (!buttonLess && !useFilters) {
+      if (!buttonLess && !useFilters && !opts.allowAllDevices) {
         useFilters = [{ services: [u.service] }];
       }
       const optionalServices = [u.service];
@@ -936,7 +1017,13 @@
         this.log('complete, disconnecting...');
       } catch (err) {
         if (this.delay === 0) {
-          this.log('DFU update failed, delay=0 -> retry with delay=10');
+          this.log('首轮高速传输未稳定，切换到兼容模式（delay=10ms）后重试');
+          try {
+            if (device && device.gatt && device.gatt.connected) {
+              device.gatt.disconnect();
+            }
+          } catch (_) { }
+          await this.delayPromise(DFU_SERVICE_DISCOVERY_RETRY_MS);
           this.delay = 10;
           await this.update(device, initData, firmwareData);
           return;
@@ -998,8 +1085,71 @@
 
   async function requestBootloaderDevice(dfu) {
     setDfuStatus('请在弹窗中选择 DFU 设备（如 DfuTarg）...');
-    emitLog('等待用户选择 DfuTarg/DFU Bootloader 设备');
-    return dfu.requestDevice(false, DFU_BOOTLOADER_FILTERS);
+    emitLog('等待用户选择 DfuTarg/DFU Bootloader 设备；为兼容部分浏览器，这里会显示全部蓝牙设备');
+    const device = await dfu.requestDevice(false, null, {
+      service: DFU_SERVICE_UUID,
+      control: CONTROL_UUID,
+      packet: PACKET_UUID
+    }, {
+      allowAllDevices: true
+    });
+    const targetName = device && device.name ? device.name : 'Unknown Device';
+    if (looksLikeBootloaderName(device)) {
+      emitLog(`已选择设备 ${targetName}，名称符合 DFU Bootloader，先执行一次宽松预校验`);
+      await dfu.delayPromise(700);
+      const quickCheck = await dfu.tryConnectAsDfu(device, {
+        service: DFU_SERVICE_UUID,
+        control: CONTROL_UUID,
+        packet: PACKET_UUID
+      });
+      if (quickCheck) {
+        emitLog(`已确认 ${targetName} 为 DFU Bootloader`);
+      } else {
+        emitLog(`名称符合 ${targetName}，但预校验未稳定通过；仍将继续尝试正式 DFU 连接`);
+      }
+      return device;
+    }
+
+    emitLog(`已选择设备 ${targetName}，名称不像 DfuTarg，正在校验其是否为 DFU Bootloader...`);
+    let isDfuTarget = false;
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      isDfuTarget = await dfu.tryConnectAsDfu(device, {
+        service: DFU_SERVICE_UUID,
+        control: CONTROL_UUID,
+        packet: PACKET_UUID
+      });
+      if (isDfuTarget) break;
+      emitLog(`校验 ${targetName} 不是可连接的 DFU Bootloader（第 ${attempt}/3 次）`);
+      if (attempt < 3) {
+        await dfu.delayPromise(900);
+      }
+    }
+    if (!isDfuTarget) {
+      const invalid = new Error(`所选设备 ${targetName} 不是 DFU Bootloader，请选择 DfuTarg 后重试`);
+      invalid.code = DFU_BOOTLOADER_VALIDATION_ERROR;
+      throw invalid;
+    }
+    emitLog(`已确认 ${targetName} 为 DFU Bootloader`);
+    return device;
+  }
+
+  function handleRecoverableBootloaderSelectionError(err) {
+    ensureManualPickVisible('等待DfuTarg');
+    pulseManualPickButton();
+    setDfuStatus(getErrorMessage(err), false);
+    emitLog(`DFU 设备选择仍可继续: ${getErrorMessage(err)}`);
+    if (typeof showToast === 'function') {
+      showToast('请选择名称为 DfuTarg 的 DFU 设备后重试', 3600);
+    }
+  }
+
+  function looksLikeBootloaderName(device) {
+    const name = device && device.name ? String(device.name) : '';
+    return /^DfuTarg$/i.test(name) || /^Dfu/i.test(name);
+  }
+
+  async function requestValidatedBootloaderDevice(dfu) {
+    return requestBootloaderDevice(dfu);
   }
 
   async function requestInitialDfuTarget(dfu) {
@@ -1020,8 +1170,8 @@
 
   async function tryResolveAuthorizedBootloaderDevice(dfu, preferredDevice, timeoutMs, phaseLabel) {
     setDfuStatus(`正在查找已授权 DFU 设备（${phaseLabel}）...`);
-    emitLog(`尝试在已授权设备中查找 DFU 目标（${phaseLabel}）`);
-    setDfuRetryInfo(`正在等待 DfuTarg 出现（${Math.ceil(timeoutMs / 1000)} 秒）...`, false);
+    emitLog(`尝试在当前网页已授权的设备中查找 DFU 目标（${phaseLabel}）`);
+    setDfuRetryInfo(`正在等待 DfuTarg 出现（${Math.ceil(timeoutMs / 1000)} 秒）... 如果系统里已显示“已配对”，但当前网页还未授权该 DfuTarg，稍后仍可能需要你手动再选一次。`, false);
     const found = await dfu.autoFindDfuTarget(preferredDevice, {
       service: DFU_SERVICE_UUID,
       control: CONTROL_UUID,
@@ -1041,10 +1191,10 @@
     );
     if (authorized) return authorized;
     try {
-      return await requestBootloaderDevice(dfu);
+      return await requestValidatedBootloaderDevice(dfu);
     } catch (err) {
       if (isUserGestureError(err)) {
-        throw makeManualPickError('浏览器要求再次确认 DfuTarg，请点击“手动选择DFU设备并继续”');
+        throw makeManualPickError('系统可能已经配对 DfuTarg，但当前网页尚未获得该设备授权，请点击“手动选择DFU设备并继续”并重新选择 DfuTarg');
       }
       if (isPickerCancelled(err)) {
         const cancelled = new Error('已取消选择DFU设备，可点击“手动选择DFU设备并继续”重试');
@@ -1112,6 +1262,12 @@
       setDfuStatus('DFU 正在执行，请稍候');
       return;
     }
+    if (pendingManualSession) {
+      setDfuStatus('检测到未完成的 DFU 会话，正在继续选择 DFU 设备...');
+      emitLog('检测到可恢复 DFU 会话，主按钮将直接继续升级流程');
+      await continueWithManualPick();
+      return;
+    }
     if (!dfuPackage) {
       setDfuStatus('请先选择 DFU 固件包(.zip)', true);
       if (typeof showToast === 'function') showToast('请先选择 DFU 固件包');
@@ -1146,7 +1302,14 @@
         throw new Error('固件包中未找到可升级镜像');
       }
       const precheck = updateVersionPrecheck(baseImage, appImage);
-      if (precheck.warn) {
+      if (precheck.sizeError) {
+        emitLog(`预检查失败：${precheck.sizeError.replace(/^ \| 错误: /, '')}`);
+        throw new Error(`固件包应用镜像过大，超过当前工程应用区上限 ${formatBytes(APP_FLASH_SIZE_BYTES)}，请减小固件或调整Flash布局后再升级`);
+      }
+      if (precheck.capacityWarn && precheck.capacityHint) {
+        emitLog(`预检查提示：${precheck.capacityHint.replace(/^ \| /, '')}`);
+      }
+      if (precheck.downgradeWarn) {
         emitLog('预检查提示：检测到疑似降级，设备可能拒绝升级');
         if (typeof showToast === 'function') {
           showToast('预警: 包版本低于设备版本，可能被拒绝', 3000);
@@ -1205,8 +1368,12 @@
         setDfuStatus(errMsg, false);
         emitLog(`等待用户手动选择 DFU 设备继续: ${errMsg}`);
         if (typeof showToast === 'function') {
-          showToast(isUserGestureError(err) ? '浏览器要求再次确认 DfuTarg，请点击手动继续' : '请手动选择 DfuTarg 继续');
+          showToast(isUserGestureError(err)
+            ? '系统已配对不代表网页已授权，请手动重新选择 DfuTarg'
+            : '请手动选择 DfuTarg 继续');
         }
+      } else if (err && err.code === DFU_BOOTLOADER_VALIDATION_ERROR) {
+        handleRecoverableBootloaderSelectionError(err);
       } else if (err && err.code === DFU_BOOTLOADER_PICK_CANCELLED_ERROR) {
         ensureManualPickVisible('取消选择DfuTarg');
         setDfuStatus(errMsg, false);
@@ -1253,11 +1420,13 @@
     if (manualBtn) manualBtn.disabled = true;
 
     try {
-      const device = await requestBootloaderDevice(dfu);
+      const device = await requestValidatedBootloaderDevice(dfu);
       await performDfuTransfer(dfu, device, remainingImages || []);
     } catch (err) {
       const errMsg = getErrorMessage(err);
-      if (isPickerCancelled(err)) {
+      if (err && err.code === DFU_BOOTLOADER_VALIDATION_ERROR) {
+        handleRecoverableBootloaderSelectionError(err);
+      } else if (isPickerCancelled(err)) {
         ensureManualPickVisible('手动选择取消');
         setDfuStatus('已取消手动选择，可再次点击继续');
         emitLog('DFU 手动选择已取消，当前会话保留，可再次点击继续');

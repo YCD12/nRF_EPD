@@ -271,6 +271,8 @@ label {
 
 .log-container .log-line {
     padding: 2px 0;
+    border-left: 3px solid transparent;
+    padding-left: 0.5rem;
 }
 
 .log-container .time,
@@ -287,6 +289,70 @@ label {
 .log-container .action {
     color: #666;
     margin-right: 0.5em;
+}
+
+.log-container .log-info {
+    color: inherit;
+}
+
+.log-container .log-warn {
+    background: rgba(245, 158, 11, 0.08);
+    border-left-color: #f59e0b;
+    color: #8a5a00;
+}
+
+.log-container .log-success {
+    background: rgba(22, 163, 74, 0.08);
+    border-left-color: #16a34a;
+    color: #166534;
+}
+
+.log-container .log-error {
+    background: rgba(220, 38, 38, 0.08);
+    border-left-color: #dc2626;
+    color: #991b1b;
+}
+
+.log-legend {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+    margin: 0 0 0.75rem;
+}
+
+.log-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+    padding: 0.2rem 0.55rem;
+    border-radius: 999px;
+    border: 1px solid var(--border-color);
+    font-size: 0.8rem;
+}
+
+.log-chip::before {
+    content: '';
+    width: 0.55rem;
+    height: 0.55rem;
+    border-radius: 50%;
+    background: currentColor;
+    opacity: 0.9;
+}
+
+.log-chip-info {
+    color: #475569;
+}
+
+.log-chip-warn {
+    color: #b45309;
+}
+
+.log-chip-success {
+    color: #15803d;
+}
+
+.log-chip-error {
+    color: #b91c1c;
 }
 
 .canvas-container canvas {
@@ -730,6 +796,42 @@ body.dark-mode .log-container .time {
 
 body.dark-mode .log-container .action {
     color: #03a9f4;
+}
+
+body.dark-mode .log-container .log-warn {
+    background: rgba(245, 158, 11, 0.15);
+    color: #fcd34d;
+}
+
+body.dark-mode .log-container .log-success {
+    background: rgba(34, 197, 94, 0.16);
+    color: #86efac;
+}
+
+body.dark-mode .log-container .log-error {
+    background: rgba(239, 68, 68, 0.16);
+    color: #fca5a5;
+}
+
+body.dark-mode .log-chip {
+    border-color: var(--dark-border);
+    background: rgba(255, 255, 255, 0.02);
+}
+
+body.dark-mode .log-chip-info {
+    color: #cbd5e1;
+}
+
+body.dark-mode .log-chip-warn {
+    color: #fcd34d;
+}
+
+body.dark-mode .log-chip-success {
+    color: #86efac;
+}
+
+body.dark-mode .log-chip-error {
+    color: #fca5a5;
 }
 
 body.dark-mode #orientationBadge {
