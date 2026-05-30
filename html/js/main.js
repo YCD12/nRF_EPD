@@ -5,13 +5,15 @@ let canvas, ctx, textDecoder;
 let paintManager, cropManager;
 
 // APP版本号 (便于调试)
-const APP_VERSION = '2.0.6';
-const APP_BUILD_DATE = '2026-04-02';
+const APP_VERSION = '2.0.7';
+const APP_BUILD_DATE = '2026-05-24';
 const EPD_DEVICE_NAME_PREFIX = 'NRF_EPD';
 const SCAN_DURATION_MS = 5000;
 const LOG_CONSOLE_STORAGE_KEY = 'epd_log_to_console';
 const LOW_BATTERY_THRESHOLD_MV = 2800;
-const LOW_BATTERY_WARNING_TEXT = '电压过低，需要更换电池或充电，容易出现传图异常、屏幕异常';
+const BATTERY_FULL_MV = 3300;
+const BATTERY_EMPTY_MV = LOW_BATTERY_THRESHOLD_MV;
+const LOW_BATTERY_WARNING_TEXT = '电量过低，需要更换电池或充电，容易出现传图异常、屏幕异常';
 let enableDeviceFilter = true;
 let logToConsole = true;
 let toastTimer = null;
@@ -21,6 +23,7 @@ let clearLogOnNextSuccessfulConnect = false;
 let lastWeekStartSent = null;
 let internalDisconnectInProgress = false;
 let internalDisconnectSuppressUntil = 0;
+window.latestBatteryVoltageMv = null;
 const DFU_PAGE_HANDOFF_KEY = 'epd_dfu_page_handoff';
 
 const EpdCmd = {
@@ -42,6 +45,12 @@ const EpdCmd = {
   WRITE_BLOCK: 0x31,
   QUERY_STATUS: 0x32,
   RESET_TRANSFER: 0x33,
+
+  RES_ERASE: 0x40,
+  RES_WRITE: 0x41,
+  RES_COMMIT: 0x42,
+  RES_STATUS: 0x43,
+  RES_READ: 0x44,
 
   SET_CONFIG: 0x90,
   SYS_RESET: 0x91,
@@ -111,8 +120,14 @@ function resetVariables() {
   msgIndex = 0;
 }
 
-function formatVoltageDisplay(voltageMv) {
-  return `${(voltageMv / 1000).toFixed(2)} V (${voltageMv} mV)`;
+function voltageToBatteryPercent(voltageMv) {
+  if (voltageMv >= BATTERY_FULL_MV) return 100;
+  if (voltageMv <= BATTERY_EMPTY_MV) return 0;
+  return Math.round(((voltageMv - BATTERY_EMPTY_MV) * 100) / (BATTERY_FULL_MV - BATTERY_EMPTY_MV));
+}
+
+function formatBatteryDisplay(voltageMv) {
+  return `${voltageToBatteryPercent(voltageMv)}% (${(voltageMv / 1000).toFixed(2)} V / ${voltageMv} mV)`;
 }
 
 function updateBatteryVoltageDisplay(voltageMv = null, fallbackText = '未连接') {
@@ -121,7 +136,8 @@ function updateBatteryVoltageDisplay(voltageMv = null, fallbackText = '未连接
   if (!batteryVoltage) return;
 
   if (typeof voltageMv === 'number' && Number.isFinite(voltageMv)) {
-    batteryVoltage.innerText = formatVoltageDisplay(voltageMv);
+    window.latestBatteryVoltageMv = voltageMv;
+    batteryVoltage.innerText = formatBatteryDisplay(voltageMv);
     batteryVoltage.classList.toggle('low', voltageMv <= LOW_BATTERY_THRESHOLD_MV);
     if (batteryWarning) {
       if (voltageMv <= LOW_BATTERY_THRESHOLD_MV) {
@@ -133,6 +149,7 @@ function updateBatteryVoltageDisplay(voltageMv = null, fallbackText = '未连接
       }
     }
   } else {
+    window.latestBatteryVoltageMv = null;
     batteryVoltage.innerText = fallbackText;
     batteryVoltage.classList.remove('low');
     if (batteryWarning) {
@@ -539,7 +556,8 @@ function downloadDataArray() {
 
 function updateButtonStatus(forceDisabled = false) {
   const connected = gattServer != null && gattServer.connected;
-  const status = forceDisabled ? 'disabled' : (connected ? null : 'disabled');
+  const resourceBusy = typeof ResourceManager !== 'undefined' && ResourceManager.isUpdating;
+  const status = (forceDisabled || resourceBusy) ? 'disabled' : (connected ? null : 'disabled');
   document.getElementById("reconnectbutton").disabled = (gattServer == null || gattServer.connected) ? 'disabled' : null;
   document.getElementById("sendcmdbutton").disabled = status;
   document.getElementById("calendarmodebutton").disabled = status;
@@ -547,6 +565,9 @@ function updateButtonStatus(forceDisabled = false) {
   document.getElementById("clearscreenbutton").disabled = status;
   document.getElementById("sendimgbutton").disabled = status;
   document.getElementById("setDriverbutton").disabled = status;
+  const dfuButton = document.getElementById("openDfuPageButton");
+  if (dfuButton) dfuButton.disabled = status;
+  if (typeof ResourceManager !== 'undefined') ResourceManager.updateUi();
 }
 
 function disconnect() {
@@ -554,6 +575,7 @@ function disconnect() {
   updateButtonStatus();
   resetVariables();
   updateBatteryVoltageDisplay(null, '未连接');
+  if (typeof ResourceManager !== 'undefined') ResourceManager.onDisconnect();
   if (!isInternalRetryDisconnect) {
     clearLogOnNextSuccessfulConnect = true;
     lastWeekStartSent = null;
@@ -867,6 +889,13 @@ function handleNotify(value, idx) {
     return;
   }
 
+  if (data.length >= 1 && (data[0] === 0xA2 || data[0] === 0xA3 || data[0] === 0xA4)) {
+    if (typeof ResourceManager !== 'undefined') {
+      ResourceManager.handleNotification(value);
+    }
+    return;
+  }
+
   if (idx == 0) {
     addLog(`收到配置：${bytes2hex(data)}`);
     const epdpins = document.getElementById("epdpins");
@@ -1104,6 +1133,11 @@ async function connect() {
     // Initialize CRC transfer module if available
     if (typeof BleTransfer !== 'undefined') {
       BleTransfer.init();
+    }
+
+    if (typeof ResourceManager !== 'undefined') {
+      ResourceManager.init();
+      await ResourceManager.checkOnConnect(appVersion);
     }
 
     if (clearLogOnNextSuccessfulConnect) {

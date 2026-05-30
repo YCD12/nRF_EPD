@@ -1,6 +1,9 @@
 #ifndef __FONTS_H
 #define __FONTS_H
 
+#include <stdint.h>
+
+#include "epd_ext_resources.h"
 #include "u8g2_font.h"
 
 /**
@@ -59,22 +62,17 @@ Traditional Chinese festivals
 Work/rest schedule
  */
 
-// 文泉驿9号点阵字体（农历专用）
-// WenQuanYi 9pt bitmap font (for lunar calendar)
+#ifdef EPD_INCLUDE_INTERNAL_FONT_PAYLOADS
 extern const uint8_t u8g2_font_wqy9_t_lunar[] U8G2_FONT_SECTION("u8g2_font_wqy9_t_lunar");
-
-// 文泉驿12号点阵字体（农历专用）
-// WenQuanYi 12pt bitmap font (for lunar calendar)
 extern const uint8_t u8g2_font_wqy12_t_lunar[] U8G2_FONT_SECTION("u8g2_font_wqy12_t_lunar");
-
-// 以下字库来自 u8g2，用于显示数字
-// Following fonts are from u8g2 library, used for displaying numbers
-
-// Helvetica 14号粗体数字字体（仅数字）
-// Helvetica Bold 14pt (numbers only)
 extern const uint8_t u8g2_font_helvB14_tn[] U8G2_FONT_SECTION("u8g2_font_helvB14_tn");
-
-// Helvetica 18号粗体数字字体（仅数字）
-// Helvetica Bold 18pt (numbers only)
 extern const uint8_t u8g2_font_helvB18_tn[] U8G2_FONT_SECTION("u8g2_font_helvB18_tn");
+#else
+#define U8G2_EXT_FONT_TOKEN(font_id) ((const uint8_t*)(0xF0000000UL | ((uint32_t)(font_id) << 16)))
+
+#define u8g2_font_wqy9_t_lunar  U8G2_EXT_FONT_TOKEN(EPD_EXT_FONT_WQY9_LUNAR)
+#define u8g2_font_wqy12_t_lunar U8G2_EXT_FONT_TOKEN(EPD_EXT_FONT_WQY12_LUNAR)
+#define u8g2_font_helvB14_tn    U8G2_EXT_FONT_TOKEN(EPD_EXT_FONT_HELVB14_TN)
+#define u8g2_font_helvB18_tn    U8G2_EXT_FONT_TOKEN(EPD_EXT_FONT_HELVB18_TN)
+#endif
 #endif
