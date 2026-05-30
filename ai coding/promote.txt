@@ -1,0 +1,809 @@
+# nRF_EPD 架构重构 Promote / Prompt 文件
+
+> 用途：把本文件作为 AI 编程助手、代码重构助手或后续开发任务的系统提示词 / 项目提示词使用。
+> 目标：围绕 nRF52811 + UC8179 7.5 寸 800x480 黑白红三色墨水屏，重构当前 nRF_EPD 项目架构，使 MCU 端成为极简 BLE 墨水屏显示终端，在保留 DFU 能力的前提下降低 Flash/RAM 占用。
+
+---
+
+## 1. 项目背景
+
+当前项目：`YCD12/nRF_EPD`
+
+当前仓库已经包含：
+
+- MCU 固件
+- EPD 驱动
+- GUI 目录，包括日历、时钟、字体、绘制逻辑
+- Web Bluetooth 控制台 `html/index.html`
+- 独立 DFU 页面 `html/dfu.html`
+- Keil 应用工程 `Keil/EPD-nRF52.uvprojx`
+- Secure DFU Bootloader 工程 `Keil/DFU-nRF52.uvprojx`
+- Nordic SDK 17.1.0
+- OTA 打包工具 `tools/make-ota-nrf52.bat`
+- Windows 模拟器 `emulator.c`
+
+当前主线硬件目标：
+
+- MCU：nRF52811
+- Flash：192 KB
+- RAM：24 KB
+- SoftDevice：S112，当前工程使用 `s112_nrf52_7.3.0`
+- 屏幕：7.5 寸 UC8179
+- 分辨率：800x480
+- 颜色：黑 / 白 / 红三色
+- 默认 model_id：0x07
+
+当前工程已有能力：
+
+- BLE Peripheral，设备名以 `NRF_EPD` 为基础
+- 自定义 EPD BLE 服务
+- 图片传输
+- 日历模式
+- 时钟模式
+- 时钟 + 日历模式
+- 电池电压采样与低电量保护
+- Watchdog
+- Buttonless DFU
+- 独立网页 DFU 页面
+
+---
+
+## 2. 最终产品目标
+
+本项目最终目标不是把完整 GUI 应用塞进 MCU，而是把 nRF52811 固件重构为：
+
+> 低功耗 BLE 墨水屏显示终端。
+
+核心思想：
+
+- Web 端 / 手机端负责生成 GUI、日历、时钟、节假日、字体排版、图片压缩。
+- MCU 端只负责接收、校验、存储、解释显示任务，并驱动 EPD 刷新。
+- 显示逻辑与硬件驱动解耦。
+- GUI 资产、日历规则、节假日数据不再固化进 MCU Flash。
+- MCU 端必须保留 DFU 升级能力。
+- 所有新增功能必须优先考虑 Flash/RAM 占用。
+
+总体架构：
+
+```text
+Web / Mobile / Browser
+  ├─ GUI 布局编辑
+  ├─ 日历 / 时钟 / 节假日计算
+  ├─ 中文字体渲染
+  ├─ 图片压缩 / 分块
+  ├─ BLE 传输
+  └─ DFU zip 下发
+
+BLE GATT
+  ├─ EPD Control Service
+  ├─ EPD Data Transfer
+  ├─ Status Notify
+  └─ Buttonless DFU
+
+nRF52811 MCU
+  ├─ BLE 外设
+  ├─ DFU 入口
+  ├─ FDS 持久化
+  ├─ 轻量协议解析
+  ├─ 极简 Layout / Bitmap 解释器
+  ├─ EPD UC8179 驱动
+  ├─ RTC / 定时唤醒
+  └─ 电池 / 低功耗管理
+
+UC8179 EPD Panel
+  └─ 800x480 黑白红三色显示
+```
+
+---
+
+## 3. 最高优先级约束
+
+开发时必须遵守以下约束。
+
+### 3.1 不允许破坏 DFU
+
+必须保留：
+
+- `ble_dfu_buttonless`
+- 应用进入 Bootloader 的能力
+- `html/dfu.html` 升级链路
+- `tools/make-ota-nrf52.bat` 生成 OTA zip 的能力
+- `Keil/DFU-nRF52.uvprojx` Bootloader 工程兼容性
+
+任何重构后都要验证：
+
+- 应用固件可编译
+- OTA zip 可生成
+- 设备可从应用态进入 DFU
+- `DfuTarg` 可被网页 DFU 页面识别
+- OTA 完成后应用能正常启动
+- FDS 中可保留或安全迁移用户配置
+
+### 3.2 不允许把复杂 GUI 放回 MCU
+
+MCU 端不得新增：
+
+- 完整中文字体库
+- 完整日历算法
+- 农历大表
+- 节假日数据库
+- 复杂布局引擎
+- JSON 解析库
+- LVGL 等完整 GUI 框架
+- 大图片常量数组
+- 完整 800x480 framebuffer
+
+### 3.3 优先控制 Flash / RAM
+
+nRF52811 资源极小，所有新增代码都必须按以下优先级评估：
+
+1. 是否影响 DFU 空间
+2. 是否增加 SoftDevice / BLE RAM 压力
+3. 是否引入 libc 重型函数
+4. 是否引入浮点 printf
+5. 是否引入大表 / 大数组
+6. 是否影响低功耗
+
+禁止无评估地引入：
+
+- `printf` 浮点格式
+- `mktime`
+- `strftime`
+- 大型 JSON 库
+- 通用压缩库
+- malloc/free 高频路径
+- 大栈数组
+
+---
+
+## 4. 当前工程重构方向
+
+当前工程包含 `EPD/` 和 `GUI/`。重构方向不是简单删除 GUI，而是把 GUI 职责迁移到网页端，并在 MCU 端保留极简解释器。
+
+### 4.1 当前目录职责调整
+
+建议目标目录：
+
+```text
+application/
+  main.c
+  app_ble.c
+  app_dfu.c
+  app_storage.c
+  app_protocol.c
+  app_renderer.c
+  app_power.c
+
+EPD/
+  epd_uc8179.c
+  epd_uc8179.h
+  epd_spi.c
+  epd_gpio.c
+  EPD_service.c
+  EPD_service.h
+
+protocol/
+  epd_proto.h
+  epd_cmd.h
+  epd_layout.h
+  epd_status.h
+
+storage/
+  epd_fds.c
+  epd_fds.h
+  epd_slot.c
+  epd_slot.h
+
+renderer/
+  epd_render.c
+  epd_render.h
+  epd_draw.c
+  epd_draw.h
+  epd_font_min.c
+  epd_font_min.h
+
+html/
+  index.html
+  dfu.html
+  js/
+    epd-layout-compiler.js
+    epd-ble-transfer.js
+    epd-render-preview.js
+    epd-dfu.js
+
+docs/
+  architecture.md
+  ble-protocol.md
+  storage-layout.md
+  dfu.md
+  flash-budget.md
+```
+
+如果不想一次性移动文件，可以先按逻辑拆分，在现有 `EPD/`、`GUI/` 中逐步迁移。
+
+### 4.2 模块边界
+
+必须保持以下边界：
+
+```text
+main.c
+  只负责系统初始化、主循环、调度、低功耗入口。
+  不直接解析 BLE payload。
+  不直接操作 EPD 绘图细节。
+  不直接操作 FDS record 细节。
+
+EPD_service
+  只负责 BLE GATT 收发、通知、命令分发。
+  不直接计算日历。
+  不直接画复杂 GUI。
+
+protocol
+  负责解析命令、TLV、chunk、CRC。
+  不依赖 EPD 硬件。
+  不依赖 BLE 栈细节。
+
+storage
+  负责 FDS 初始化、读写、双 slot、schema version、CRC。
+  不知道屏幕驱动细节。
+
+renderer
+  负责解释 layout / bitmap 指令并调用 draw 层。
+  不知道 BLE 传输来源。
+
+EPD driver
+  只负责 UC8179 初始化、写 RAM、刷新、休眠。
+  不知道 GUI、日历、节假日。
+
+html
+  负责 GUI 生成、日历计算、节假日、字体渲染、图片压缩、BLE 分包、DFU。
+```
+
+---
+
+## 5. MCU 端应保留的最小功能
+
+MCU 固件最终只保留：
+
+- BLE GAP / GATT 初始化
+- EPD 自定义 Service
+- Buttonless DFU Service
+- FDS 初始化与数据存储
+- 简单 TLV / command 解析
+- 分包接收与 CRC 校验
+- 双 slot 数据切换
+- UC8179 EPD 驱动
+- 简单绘图指令解释
+- 极小数字字体，可选
+- 时间戳保存和秒级递增
+- 电池电压采样
+- 低电量页面
+- WDT
+- 低功耗睡眠 / 唤醒
+
+MCU 固件不负责：
+
+- 中文排版
+- 节假日计算
+- 农历计算
+- 天气接口
+- 复杂日历 UI
+- 页面编辑
+- 大图像处理
+- 抖动算法
+- 多语言字体
+
+---
+
+## 6. Web 端新增职责
+
+Web 端是主要应用层，应逐步承接 MCU 端 GUI 逻辑。
+
+Web 端负责：
+
+- 布局编辑器
+- 日历生成
+- 时钟显示内容生成
+- 节假日 / 调休数据生成
+- 农历 / 节气文本生成
+- 字体渲染成 bitmap
+- 图片裁剪、缩放、抖动、旋转
+- 黑色层 / 红色层分离
+- RLE 压缩
+- Layout TLV 编译
+- BLE 分包传输
+- 断点续传
+- 状态查询
+- DFU zip 升级入口
+
+Web 端可以使用 JSON 作为内部配置格式，但发给 MCU 前必须编译成二进制格式。
+
+不要直接把 JSON 原文发给 MCU 解析。
+
+---
+
+## 7. 推荐 BLE 协议扩展
+
+当前协议已有：
+
+- `0x01` `EPD_CMD_INIT`
+- `0x20` `EPD_CMD_SET_TIME`
+- `0x21` `EPD_CMD_SET_WEEK_START`
+- `0x22` `EPD_CMD_SET_MODE`
+- `0x23` `EPD_CMD_SYNC_TIME_SILENT`
+- `0x31` `EPD_CMD_WRITE_BLOCK`
+- `0x32` `EPD_CMD_QUERY_STATUS`
+- `0x33` `EPD_CMD_RESET_TRANSFER`
+
+建议新增或统一为以下命令。保持旧命令兼容，新命令优先用于新架构。
+
+```c
+#define EPD_CMD_INIT                 0x01
+#define EPD_CMD_SET_TIME             0x20
+#define EPD_CMD_SET_WEEK_START       0x21
+#define EPD_CMD_SET_MODE             0x22
+#define EPD_CMD_SYNC_TIME_SILENT     0x23
+
+#define EPD_CMD_BEGIN_TRANSFER       0x30
+#define EPD_CMD_WRITE_BLOCK          0x31
+#define EPD_CMD_QUERY_STATUS         0x32
+#define EPD_CMD_RESET_TRANSFER       0x33
+#define EPD_CMD_END_TRANSFER         0x34
+#define EPD_CMD_APPLY_OBJECT         0x35
+#define EPD_CMD_REFRESH              0x36
+#define EPD_CMD_CLEAR                0x37
+#define EPD_CMD_GET_STORAGE_INFO     0x38
+#define EPD_CMD_ENTER_DFU            0x39
+```
+
+对象类型：
+
+```c
+#define EPD_OBJ_LAYOUT               0x01
+#define EPD_OBJ_BITMAP_BLACK         0x02
+#define EPD_OBJ_BITMAP_RED           0x03
+#define EPD_OBJ_TEXT_DATA            0x04
+#define EPD_OBJ_TIME_DATA            0x05
+#define EPD_OBJ_CONFIG               0x06
+#define EPD_OBJ_RENDER_SCRIPT        0x07
+```
+
+分包格式：
+
+```c
+typedef struct {
+    uint8_t  cmd;
+    uint8_t  object_type;
+    uint16_t transfer_id;
+    uint16_t seq;
+    uint16_t chunk_len;
+    uint32_t total_len;
+    uint32_t offset;
+    uint16_t chunk_crc16;
+    uint8_t  payload[];
+} epd_ble_chunk_t;
+```
+
+传输流程：
+
+```text
+BEGIN_TRANSFER
+WRITE_BLOCK seq=0
+WRITE_BLOCK seq=1
+WRITE_BLOCK seq=2
+...
+END_TRANSFER
+APPLY_OBJECT
+REFRESH
+```
+
+设计要求：
+
+- 每个 chunk 必须有 CRC16。
+- 整个 object 必须有 CRC32 或等价校验。
+- `END_TRANSFER` 校验通过前不得覆盖 active 数据。
+- 支持断点续传和缺块查询。
+- 旧 `WRITE_BLOCK + CRC16` 逻辑优先复用，不重复造轮子。
+
+---
+
+## 8. Layout Binary / TLV 设计
+
+Web 端可以保存 JSON，但 MCU 端只接收 TLV。
+
+### 8.1 Layout Header
+
+```c
+#define EPD_LAYOUT_MAGIC 0x4C445045u  // 'EPDL'
+
+#pragma pack(push, 1)
+typedef struct {
+    uint32_t magic;
+    uint16_t version;
+    uint16_t screen_w;
+    uint16_t screen_h;
+    uint8_t  color_mode;     // 1=BW, 2=BWR
+    uint8_t  flags;
+    uint16_t item_count;
+    uint32_t payload_len;
+    uint32_t crc32;
+} epd_layout_header_t;
+#pragma pack(pop)
+```
+
+### 8.2 TLV Item
+
+```c
+#pragma pack(push, 1)
+typedef struct {
+    uint8_t  type;
+    uint8_t  flags;
+    uint16_t length;
+    uint8_t  value[];
+} epd_tlv_t;
+#pragma pack(pop)
+```
+
+### 8.3 Item Type
+
+```c
+#define EPD_ITEM_CLEAR       0x01
+#define EPD_ITEM_BITMAP      0x02
+#define EPD_ITEM_TEXT_BITMAP 0x03
+#define EPD_ITEM_RECT        0x04
+#define EPD_ITEM_LINE        0x05
+#define EPD_ITEM_REFRESH     0x06
+#define EPD_ITEM_SLEEP       0x07
+```
+
+第一阶段只实现：
+
+- CLEAR
+- BITMAP
+- REFRESH
+- SLEEP
+
+第二阶段再实现：
+
+- RECT
+- LINE
+- TEXT_BITMAP
+- PARTIAL_REFRESH
+
+### 8.4 Bitmap Item
+
+```c
+#pragma pack(push, 1)
+typedef struct {
+    uint16_t x;
+    uint16_t y;
+    uint16_t w;
+    uint16_t h;
+    uint8_t  plane;       // 0=black, 1=red
+    uint8_t  format;      // 0=raw_1bpp, 1=rle_1bpp
+    uint16_t stride;
+    uint32_t data_len;
+    uint32_t crc32;
+    uint8_t  data[];
+} epd_bitmap_item_t;
+#pragma pack(pop)
+```
+
+注意：
+
+- 不要在 RAM 中保存完整 800x480 framebuffer。
+- 采用按行、按块、按 plane 流式写入 EPD RAM。
+- 黑色层和红色层分开传输。
+- raw_1bpp 必须先支持。
+- RLE 可以第二阶段支持。
+
+---
+
+## 9. FDS 存储设计
+
+FDS 只用于持久化小型配置、元数据和分块对象。
+
+禁止用 FDS 高频写秒级时间。
+
+建议 FDS 文件 ID：
+
+```c
+#define FDS_FILE_SYSTEM        0x1000
+#define FDS_FILE_CONFIG        0x1001
+#define FDS_FILE_SLOT_A        0x1002
+#define FDS_FILE_SLOT_B        0x1003
+#define FDS_FILE_STATUS        0x1004
+```
+
+建议 Record Key：
+
+```c
+#define REC_SCHEMA_VERSION     0x0001
+#define REC_DEVICE_CONFIG      0x0002
+#define REC_ACTIVE_SLOT        0x0003
+#define REC_SLOT_META          0x0010
+#define REC_SLOT_CHUNK_BASE    0x0100
+#define REC_LAST_TIME_DATA     0x0200
+#define REC_POWER_STATE        0x0300
+```
+
+Slot Meta：
+
+```c
+#pragma pack(push, 1)
+typedef struct {
+    uint32_t magic;
+    uint16_t schema_version;
+    uint16_t slot_id;
+    uint8_t  object_type;
+    uint8_t  state;           // EMPTY / WRITING / VALID / OLD
+    uint16_t chunk_count;
+    uint32_t total_len;
+    uint32_t object_crc32;
+    uint32_t created_at;
+} epd_slot_meta_t;
+#pragma pack(pop)
+```
+
+双 slot 写入流程：
+
+```text
+active = A
+new data -> B
+B state = WRITING
+write chunks
+verify chunks
+verify object crc
+B state = VALID
+active = B
+A state = OLD
+idle 后执行 fds_gc()
+```
+
+断电恢复：
+
+```text
+启动时读取 active_slot
+检查 meta magic / schema / state / crc
+如果 active slot 无效，尝试 fallback slot
+如果都无效，显示默认空白页或等待网页重新下发
+```
+
+FDS 使用要求：
+
+- 所有写入数据 4 字节对齐。
+- 大对象必须拆成多个 record。
+- record 大小不得接近 flash page 极限。
+- 不在中断中写 FDS。
+- DFU 前等待 FDS 队列完成。
+- schema version 变化时必须兼容旧数据或安全清理。
+
+---
+
+## 10. DFU 相关设计
+
+DFU 是硬约束，不能为了 GUI 功能牺牲升级能力。
+
+进入 DFU 前必须：
+
+```text
+1. 停止新的 BLE 图片 / layout 传输。
+2. 停止 EPD 刷新任务。
+3. 如果正在写 FDS，等待完成或标记 transfer aborted。
+4. 保存必要状态。
+5. 发送 Buttonless DFU 响应。
+6. 断开连接。
+7. 设置 GPREGRET / bootloader 标记。
+8. 进入 Bootloader。
+```
+
+升级后启动检查：
+
+```text
+1. 初始化 SoftDevice。
+2. 初始化 FDS。
+3. 读取 schema_version。
+4. 读取 active slot。
+5. 校验当前 layout / bitmap。
+6. 如果兼容，继续显示旧数据。
+7. 如果不兼容，清理旧数据并等待 Web 端重新下发。
+```
+
+Flash 控制目标：
+
+- App 固件尽量控制在 40 KB 以内。
+- Release 构建关闭 NRF_LOG。
+- 保留 Buttonless DFU 的必要代码。
+- 删除 MCU 端复杂 GUI 后，把 Flash 让给 DFU / BLE / FDS。
+
+---
+
+## 11. GUI 迁移计划
+
+### 第一阶段：保留现有功能，新增 Web 端全图下发
+
+目标：先跑通最小闭环。
+
+实现内容：
+
+- Web 端生成 800x480 黑白 / 黑白红画布。
+- Web 端把画布转成 black plane + red plane。
+- BLE 分块发送。
+- MCU 接收后写入 EPD。
+- 支持全屏刷新。
+- 保留现有时钟 / 日历模式作为兼容功能，但不新增复杂逻辑。
+- 验证 OTA 仍可用。
+
+验收：
+
+- `html/index.html` 可以传图。
+- UC8179 能显示 800x480 图像。
+- `html/dfu.html` 可以升级应用。
+- App Flash 明显下降或不继续上升。
+
+### 第二阶段：新增 Layout TLV
+
+实现内容：
+
+- Web 端把布局编译成 TLV。
+- MCU 支持 CLEAR / BITMAP / REFRESH。
+- FDS 双 slot 存储 layout。
+- 支持断点续传。
+- 支持状态查询。
+
+验收：
+
+- 断电后仍能显示上次 layout。
+- 传输中断后不会破坏旧画面数据。
+- CRC 错误时拒绝 apply。
+
+### 第三阶段：迁移日历 / 时钟
+
+实现内容：
+
+- Web 端生成日历 / 时钟显示内容。
+- 中文、节假日、农历、节气都在 Web 端生成。
+- MCU 不再内置大节假日表。
+- MCU 只保存最终显示字符串或文字 bitmap。
+
+验收：
+
+- MCU 端可以删除大部分 GUI/ 日历 / 字体代码。
+- Flash 明显下降。
+- DFU 包生成成功。
+
+### 第四阶段：局部刷新和低功耗优化
+
+实现内容：
+
+- 支持 dirty rect。
+- 支持时钟区域局刷。
+- 支持 Web 下发刷新策略。
+- 支持电池低电量时拒绝大刷新。
+- 优化广播、连接、睡眠策略。
+
+验收：
+
+- 时钟刷新不需要全屏刷新。
+- 低电量保护仍有效。
+- 长时间运行无 WDT 复位。
+
+---
+
+## 12. 代码生成要求
+
+AI 或开发者在修改代码时必须遵守：
+
+1. 只修改应用层、EPD、GUI、html、docs、tools 中必要文件。
+2. 不修改 Nordic SDK 源码，除非明确要求。
+3. 不破坏现有 BLE 命令兼容性。
+4. 新协议必须通过 version / feature flag 兼容旧网页。
+5. 不引入大型第三方库。
+6. 不使用动态内存作为核心路径。
+7. 不使用浮点 printf。
+8. 所有持久化数据必须有 magic、version、length、crc。
+9. 所有 BLE 长传输必须支持失败恢复。
+10. 所有新增模块必须有清晰头文件和职责边界。
+11. 编译后必须检查 `.map` 或 Keil size 输出。
+12. 每次功能新增后必须重新生成 OTA zip 并验证 DFU 流程。
+
+---
+
+## 13. 推荐新增文档
+
+建议补齐以下文档：
+
+```text
+docs/architecture.md
+  说明整体架构、职责边界、为什么 Web 端负责 GUI。
+
+docs/flash-budget.md
+  记录 SoftDevice、Bootloader、App、FDS 的 Flash 预算。
+
+docs/storage-layout.md
+  记录 FDS file id、record key、slot 结构、schema version。
+
+docs/layout-format.md
+  记录 Layout Header、TLV、Bitmap Item、CRC。
+
+docs/dfu.md
+  记录应用进入 DFU、网页升级、升级后数据兼容流程。
+
+docs/web-compiler.md
+  记录 Web 端 JSON 到 TLV / bitmap 的编译流程。
+```
+
+---
+
+## 14. 重要验收标准
+
+重构完成后，必须满足：
+
+- nRF52811 App 固件可以编译。
+- S112 SoftDevice 链路可用。
+- BLE 广播和连接正常。
+- EPD 初始化和刷新正常。
+- 800x480 UC8179 三色屏可显示 Web 下发内容。
+- FDS 可以保存 active layout / config。
+- 断电后可以恢复上次有效画面数据。
+- 传输失败不会破坏旧数据。
+- 低电量保护有效。
+- Buttonless DFU 可从网页触发。
+- OTA zip 可生成并升级成功。
+- MCU 端不再依赖复杂 GUI / 字体 / 节假日数据。
+- Web 端可以承担 GUI 生成职责。
+
+---
+
+## 15. 推荐对 AI 编程助手下达任务时的模板
+
+后续可以这样使用本文件：
+
+```text
+请基于 promote.txt 的架构约束修改当前 nRF_EPD 项目。
+本次只做第 X 阶段：<具体阶段>。
+必须保留 DFU、BLE 兼容和 UC8179 显示能力。
+不要修改 Nordic SDK。
+不要引入大型库。
+修改前先说明涉及文件和原因。
+修改后给出编译检查点、Flash/RAM 风险点、DFU 验证点。
+```
+
+示例任务 1：
+
+```text
+请按 promote.txt 第一阶段，新增 Web 端 800x480 black/red plane 传输，MCU 端复用现有 WRITE_BLOCK 接收并直接刷新 UC8179。不要迁移 FDS，不要删除旧 GUI。
+```
+
+示例任务 2：
+
+```text
+请按 promote.txt 第二阶段，新增 Layout Header 和 CLEAR/BITMAP/REFRESH 三种 TLV item，先只实现 raw_1bpp，不做 RLE。
+```
+
+示例任务 3：
+
+```text
+请按 promote.txt 第三阶段，分析 GUI/ 中哪些日历、节假日、字体代码可以迁移到 html/，并给出可删除清单和 Flash 预估收益。
+```
+
+---
+
+## 16. 当前不做的事情
+
+当前阶段不要做：
+
+- 不做完整 LVGL。
+- 不做完整文件系统。
+- 不做 MCU 端 JSON 解析。
+- 不做完整中文字库。
+- 不做 MCU 端节假日规则。
+- 不做完整 framebuffer。
+- 不做多屏幕型号大规模适配。
+- 不做复杂压缩算法。
+- 不做会影响 DFU 的大功能。
+
+---
+
+## 17. 一句话原则
+
+> Web 端负责“生成要显示什么”，MCU 端负责“可靠地把它显示出来”，DFU 永远优先于复杂 GUI。

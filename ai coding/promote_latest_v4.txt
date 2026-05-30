@@ -1,0 +1,1407 @@
+# nRF_EPD 最新 Promote / AI Coding 总控提示词 V4
+
+> 文件用途：本文件用于后续 AI Coding、人工重构、模块设计和代码审查。任何修改 nRF_EPD 项目的任务，都必须优先遵守本文件中的约束。
+>
+> 项目目标：将 nRF52811 固件从“完整 GUI 应用”收敛为“低功耗 BLE 墨水屏显示终端”，把 GUI、字体、日历、节假日、农历、图片合成等高层逻辑迁移到 Web / Mobile 端，同时保留 BLE、FDS 小状态、UC8179 驱动、Fallback Screen、低功耗和 Buttonless DFU。
+
+---
+
+## 0. 最高优先级规则
+
+### 0.1 DFU / Flash / RAM 优先级最高
+
+本项目的第一优先级不是 GUI 功能，而是：
+
+```text
+nRF52811 固件必须长期保持可 DFU 升级。
+```
+
+因此，任何 MCU 端新增功能都必须先满足：
+
+```text
+1. 不破坏 Secure DFU / Buttonless DFU。
+2. 不挤占 Bootloader / Bootloader Settings / MBR Params / FDS 保留区。
+3. 不让 App Flash 超过目标预算。
+4. 不让 RAM 因 framebuffer / 大 buffer / 大协议缓存而溢出。
+5. 不通过减少 DFU 或 FDS 保护区来换取 GUI 功能。
+```
+
+App Flash 控制目标：
+
+```text
+目标值：<= 40 KB
+警戒线：40 KB ~ 48 KB
+危险线：> 48 KB
+```
+
+如果 App size 超过 40 KB，必须 review 新增模块。如果超过 48 KB，禁止继续新增 MCU 功能，优先裁剪 GUI、字体、printf、调试、复杂协议、未使用代码。
+
+### 0.2 MCU 端定位
+
+nRF52811 MCU 不是完整 GUI 系统，而是：
+
+```text
+低功耗 BLE 墨水屏显示终端
+```
+
+MCU 端只负责：
+
+```text
+BLE 通信
+可靠传输协议
+FDS 小状态持久化
+UC8179 EPD 驱动
+极简 Render Engine
+Fallback Screen
+Battery / Power / Watchdog / Diagnostics
+Buttonless DFU 入口
+```
+
+MCU 端禁止负责：
+
+```text
+完整 GUI 框架
+完整 framebuffer
+完整中文字体
+完整日历计算
+完整节假日 / 调休 / 农历算法
+图片缩放 / PNG / JPG / BMP 解码
+复杂 JSON 解析
+复杂压缩算法
+Web 模板引擎
+响应式布局
+```
+
+### 0.3 Web / Mobile 端定位
+
+Web / Mobile 是完整应用层，负责：
+
+```text
+日历 / 时钟 / 节假日 / 农历 / 天气 / 主题
+旧 hard-coded UI 坐标模板化
+字体栅格化
+图片合成
+生成 800x480 black/red plane
+生成局部 bitmap block
+生成 small recipe，可选
+BLE 分包下发
+设备状态监控
+DFU 触发和升级入口
+```
+
+### 0.4 断电后不恢复旧画面
+
+项目明确不要求断电后恢复上一次完整画面。
+
+以下场景统一显示 Fallback Screen：
+
+```text
+冷启动
+断电重启
+WDT 复位
+DFU 后首次启动
+FDS schema 不兼容
+没有有效 active_mode
+上次传输未完成
+上次对象 CRC 错误
+Web 显式请求显示 fallback
+用户按键重置显示状态
+```
+
+Fallback Screen 必须显示：
+
+```text
+BLE 名称
+重新同步提示
+```
+
+推荐显示：
+
+```text
+Device: NRF_EPD_xxxx
+Status: Sync Required
+Open Web Tool and reconnect
+FW: x.y.z
+Battery: OK / Low
+```
+
+如需中文提示，只允许使用极小固定 bitmap，例如“请重新同步”，禁止引入完整中文字库。
+
+### 0.5 UI 坐标必须兼容旧 hard-coded 版本
+
+所有模式的新 Web 输出必须与旧 MCU hard-coded UI 的像素坐标一致。
+
+一致范围包括：
+
+```text
+元素 x/y 坐标
+元素 width/height
+线条位置
+日期格子位置
+时钟数字位置
+星期 / 日期 / 节假日显示区域
+图标位置
+红黑 plane 对应像素
+坐标原点
+旋转方向
+屏幕方向
+```
+
+MCU 端禁止做：
+
+```text
+自适应布局
+坐标修正
+动态重排
+自动换行
+字体排版
+不同模块重复旋转/坐标转换
+```
+
+Web 端必须把旧 hard-coded UI 提取为 golden template，并输出固定 800x480 物理像素结果。
+
+---
+
+## 1. 当前工程占用结论
+
+当前工程对象文件统计大致为：
+
+```text
+当前 App Flash 汇总：约 64,027 bytes
+当前 App RAM 汇总：约 14,308 bytes
+```
+
+主要 Flash 占用：
+
+```text
+fonts.o           9,821 B    -> 字体，应迁移 / 裁剪
+GUI.o             9,014 B    -> hard-coded GUI，应迁移到 Web 模板
+uc8179.o          4,886 B    -> EPD 驱动，保留但不能继续扩大
+adafruit_gfx.o    3,772 B    -> 绘图库，建议移除
+fds.o             3,614 B    -> FDS，保留
+EPD_Service.o     3,414 B    -> BLE/EPD 服务，保留并重构
+mc_w.l            3,076 B    -> 字体/库相关，裁剪
+printfa.o         2,340 B    -> printf / float printf，建议移除
+lunar.o           2,110 B    -> 农历/日历，应迁移到 Web
+```
+
+可裁剪空间估算：
+
+```text
+字体/字库：约 14.9 KB
+GUI + 农历：约 11.1 KB
+Adafruit_GFX：约 3.8 KB
+printf：约 2.3 KB
+合计：约 32.1 KB
+```
+
+规划目标：
+
+```text
+当前 App：约 64 KB
+裁剪后理论：约 32 KB
+新增 protocol / transfer / fallback / diagnostics 后：约 36 KB ~ 40 KB
+```
+
+---
+
+## 2. 最终系统架构
+
+```text
+Web / Mobile / Browser
+  ├─ Mode Template Manager
+  ├─ Legacy Pixel Compatibility Layer
+  ├─ Calendar / Clock / Holiday Generator
+  ├─ Font Rasterizer
+  ├─ Bitmap Composer
+  ├─ Layout / Recipe Compiler
+  ├─ BLE Transfer Client
+  ├─ Device Status Monitor
+  └─ DFU Client
+
+BLE GATT Layer
+  ├─ EPD Control Characteristic
+  ├─ EPD Data Characteristic
+  ├─ EPD Status Notify Characteristic
+  ├─ EPD Info Characteristic
+  └─ Buttonless DFU Service
+
+nRF52811 Firmware
+  ├─ boot_manager
+  ├─ ble_manager
+  ├─ protocol_parser
+  ├─ transfer_manager
+  ├─ storage_manager
+  ├─ render_engine
+  ├─ epd_uc8179_driver
+  ├─ fallback_screen
+  ├─ mode_manager
+  ├─ dfu_manager
+  ├─ power_manager
+  ├─ battery_manager
+  ├─ watchdog_manager
+  └─ diagnostics_manager
+
+UC8179 EPD Panel
+  └─ 800x480 black / white / red display
+```
+
+端到端流程：
+
+```text
+Web 选择显示模式
+  ↓
+Web 使用旧 hard-coded 坐标模板生成 UI
+  ↓
+Web 渲染中文、数字、节假日、农历、天气等为 bitmap
+  ↓
+Web 生成 black plane / red plane / block / small recipe
+  ↓
+Web 通过 BLE 发送 object header + chunks
+  ↓
+MCU 校验 magic/version/size/CRC/object_type/store_policy/坐标
+  ↓
+大对象：流式写 EPD，不写 FDS
+小对象：写 FDS 小状态 / 小 recipe
+  ↓
+Render Engine 调用 UC8179 driver 刷屏
+  ↓
+MCU 只更新 active_mode、last_sync_time、last_object_id 等小状态
+```
+
+---
+
+## 3. Flash / DFU / FDS 约束
+
+### 3.1 Flash 分区原则
+
+nRF52811 Flash 需要同时容纳：
+
+```text
+MBR
+SoftDevice S112
+Application App
+FDS / App Data
+Bootloader
+Bootloader Settings Page
+MBR Params Page，可选
+DFU 临时空间 / Bank
+```
+
+设计原则：
+
+```text
+1. 先给 SoftDevice / Bootloader / DFU / FDS 预留空间，再决定 App 功能。
+2. App 不能靠接近满容量运行，要留出 DFU 安全余量。
+3. FDS 每增加 1 page，DFU 可用空间减少约 4 KB。
+4. Bootloader 稳定后尽量冻结。
+5. SoftDevice 稳定后尽量冻结。
+6. 默认只做 Application DFU，不默认做 SoftDevice + Bootloader 联合升级。
+7. 优先按 Single-bank Application DFU 规划。
+```
+
+### 3.2 FDS 与 DFU 保护区
+
+默认：
+
+```text
+FDS_VIRTUAL_PAGES = 2
+FDS total size = 8 KB
+NRF_DFU_APP_DATA_AREA_SIZE = 8192 bytes
+```
+
+如果改为 3 pages：
+
+```text
+FDS_VIRTUAL_PAGES = 3
+FDS total size = 12 KB
+NRF_DFU_APP_DATA_AREA_SIZE = 12288 bytes
+必须重新验证 DFU zip 生成和实机 OTA。
+```
+
+硬规则：
+
+```text
+FDS_VIRTUAL_PAGES 必须与 NRF_DFU_APP_DATA_AREA_SIZE 匹配。
+禁止通过减小 NRF_DFU_APP_DATA_AREA_SIZE 来让大 App 放下。
+禁止让 DFU 擦除 FDS 小状态区域。
+```
+
+### 3.3 每次提交必须检查
+
+每次 AI Coding 或人工修改后，需要记录：
+
+```text
+SoftDevice version
+Application start address
+Application size
+RAM start
+RAM used
+Stack size
+Heap size
+FDS_VIRTUAL_PAGES
+NRF_DFU_APP_DATA_AREA_SIZE
+Bootloader start address
+Bootloader size
+Bootloader settings page
+DFU zip 是否能生成
+实机 OTA 是否通过
+```
+
+---
+
+## 4. FDS 存储设计
+
+### 4.1 FDS 定位
+
+FDS 只保存小型、低频、重启后必要的数据。
+
+FDS 是：
+
+```text
+设备配置存储
+模式状态存储
+传输元数据存储
+fallback 配置存储
+少量 diagnostics counter 存储
+small recipe 存储，可选
+```
+
+FDS 不是：
+
+```text
+图像仓库
+framebuffer
+文件系统
+字体库
+完整 Web 数据库
+完整画面恢复区
+```
+
+### 4.2 禁止写入 FDS 的内容
+
+```text
+完整 800x480 framebuffer
+完整 black plane，约 48 KB
+完整 red plane，约 48 KB
+完整三色画面，约 96 KB
+大图片
+完整中文字体
+整年日历 bitmap
+完整 JSON
+完整节假日数据库
+```
+
+### 4.3 推荐 FDS 文件/记录
+
+```c
+#define FDS_FILE_SYSTEM          0x1000
+#define FDS_FILE_DEVICE          0x1001
+#define FDS_FILE_MODE            0x1002
+#define FDS_FILE_TRANSFER        0x1003
+#define FDS_FILE_FALLBACK        0x1004
+#define FDS_FILE_DIAGNOSTIC      0x1005
+#define FDS_FILE_RECIPE_SMALL    0x1006
+
+#define REC_SCHEMA_VERSION       0x0001
+#define REC_DEVICE_CONFIG        0x0002
+#define REC_DEVICE_NAME          0x0003
+#define REC_ACTIVE_MODE          0x0010
+#define REC_LAST_SYNC            0x0011
+#define REC_LAST_OBJECT_ID       0x0012
+#define REC_TRANSFER_META        0x0020
+#define REC_FALLBACK_CONFIG      0x0030
+#define REC_DIAG_COUNTERS        0x0040
+#define REC_SMALL_RECIPE_META    0x0050
+#define REC_SMALL_RECIPE_DATA    0x0051
+```
+
+### 4.4 写入策略
+
+```text
+写新记录
+  ↓
+CRC 校验
+  ↓
+切换 active 标记
+  ↓
+旧记录延迟 GC
+```
+
+断电边界：
+
+```text
+写入中断：旧状态仍有效
+新状态 CRC 失败：忽略新状态
+active_mode 丢失：显示 fallback
+schema 不兼容：显示 fallback，等待 Web 重同步
+```
+
+---
+
+## 5. BLE 协议设计
+
+### 5.1 GATT 服务
+
+```text
+EPD Control Service
+EPD Data Service
+EPD Status Notify Service
+EPD Info Service
+Buttonless DFU Service
+```
+
+### 5.2 Characteristics
+
+```text
+EPD_CMD_CHAR       Web -> MCU：控制命令
+EPD_DATA_CHAR      Web -> MCU：数据 chunk
+EPD_STATUS_CHAR    MCU -> Web：状态通知
+EPD_INFO_CHAR      Web 读取设备信息
+DFU_CHAR           Web -> MCU：进入 DFU
+```
+
+### 5.3 对象头
+
+```c
+typedef struct {
+    uint32_t magic;          // 'EPDO'
+    uint16_t version;
+    uint16_t header_len;
+    uint32_t object_id;
+    uint8_t  object_type;
+    uint8_t  store_policy;
+    uint8_t  color_plane;
+    uint8_t  flags;
+    uint16_t screen_w;       // must be 800
+    uint16_t screen_h;       // must be 480
+    uint32_t total_len;
+    uint32_t crc32;
+    uint32_t meta_crc32;
+} epd_object_header_t;
+```
+
+### 5.4 object_type
+
+```c
+#define OBJ_FRAME_FULL          0x01
+#define OBJ_FRAME_BLOCK         0x02
+#define OBJ_RECIPE_SMALL        0x03
+#define OBJ_MODE_STATE          0x04
+#define OBJ_DEVICE_CONFIG       0x05
+#define OBJ_TIME_STATE          0x06
+#define OBJ_FALLBACK_CONFIG     0x07
+#define OBJ_ENTER_DFU           0x08
+```
+
+### 5.5 store_policy
+
+```c
+#define STORE_NONE              0x00  // 只显示，不保存
+#define STORE_STATE_ONLY        0x01  // 只保存状态 / 元数据
+#define STORE_SMALL_FDS         0x02  // 小对象写 FDS
+#define STORE_EXTERNAL_FLASH    0x03  // 预留，外部 Flash
+```
+
+默认策略：
+
+```text
+OBJ_FRAME_FULL      -> STORE_NONE 或 STORE_STATE_ONLY
+OBJ_FRAME_BLOCK     -> STORE_NONE 或 STORE_STATE_ONLY
+OBJ_RECIPE_SMALL    -> STORE_SMALL_FDS
+OBJ_MODE_STATE      -> STORE_STATE_ONLY
+OBJ_DEVICE_CONFIG   -> STORE_SMALL_FDS
+OBJ_TIME_STATE      -> STORE_STATE_ONLY
+```
+
+### 5.6 chunk 格式
+
+```c
+typedef struct {
+    uint32_t object_id;
+    uint32_t offset;
+    uint16_t seq;
+    uint16_t len;
+    uint32_t chunk_crc32;
+    uint8_t  payload[];
+} epd_chunk_t;
+```
+
+### 5.7 命令
+
+```c
+#define CMD_QUERY_INFO          0x01
+#define CMD_BEGIN_OBJECT        0x02
+#define CMD_WRITE_CHUNK         0x03
+#define CMD_END_OBJECT          0x04
+#define CMD_ABORT_OBJECT        0x05
+#define CMD_APPLY_OBJECT        0x06
+#define CMD_REFRESH             0x07
+#define CMD_CLEAR               0x08
+#define CMD_SHOW_FALLBACK       0x09
+#define CMD_ENTER_DFU           0x0A
+#define CMD_QUERY_STATUS        0x0B
+```
+
+### 5.8 协议错误必须处理
+
+```text
+BLE 断连
+chunk 丢失
+seq 跳号
+offset 不连续
+CRC 错误
+total_len 超限
+object_type 不支持
+store_policy 不支持
+screen_w/screen_h 不匹配
+坐标越界
+电量过低
+EPD busy 超时
+Watchdog 即将超时
+用户中途切换模式
+Web 重复发送 object_id
+新传输覆盖旧传输
+```
+
+处理原则：
+
+```text
+未 END_OBJECT 的对象不能 apply
+CRC 失败的对象不能 refresh
+大对象失败后丢弃，不写 FDS
+小对象失败后保持旧 FDS 状态
+任意异常不能影响 DFU 入口
+```
+
+---
+
+## 6. MCU 模块职责
+
+### 6.1 boot_manager
+
+职责：
+
+```text
+系统启动入口
+初始化 SoftDevice / BLE / FDS / EPD / Power
+判断启动原因
+决定是否显示 fallback
+```
+
+启动后默认显示 fallback，而不是恢复旧画面。
+
+### 6.2 ble_manager
+
+职责：
+
+```text
+BLE 广播
+GATT 初始化
+连接参数管理
+MTU / Data Length 配置
+Status Notify
+DFU Service 初始化
+```
+
+禁止：
+
+```text
+不处理 GUI 语义
+不解析日历/时钟
+不直接操作 EPD
+```
+
+### 6.3 protocol_parser
+
+职责：
+
+```text
+解析 command
+解析 object header
+解析 chunk header
+校验 magic/version/object_type/store_policy/尺寸/CRC
+转换为 transfer_manager 可处理的事件
+```
+
+禁止：
+
+```text
+不写 FDS
+不刷屏
+不做 GUI 布局
+```
+
+### 6.4 transfer_manager
+
+职责：
+
+```text
+管理对象传输状态机
+检查 chunk seq / offset / CRC
+统计接收进度
+大对象流式交给 render_engine / EPD
+小对象进入 staging buffer
+END_OBJECT 后做整体验证
+```
+
+状态机：
+
+```text
+IDLE
+RECEIVING
+VERIFYING
+READY_TO_APPLY
+APPLYING
+DONE
+ERROR
+```
+
+大对象策略：
+
+```text
+OBJ_FRAME_FULL / OBJ_FRAME_BLOCK 不进入 FDS。
+接收后流式写 EPD RAM 或行/块缓冲。
+中途失败直接丢弃。
+```
+
+小对象策略：
+
+```text
+OBJ_DEVICE_CONFIG / OBJ_RECIPE_SMALL 可进入 staging buffer。
+CRC 通过后写 FDS。
+```
+
+### 6.5 storage_manager
+
+职责：
+
+```text
+封装 FDS 初始化
+读写 device_config
+读写 active_mode
+读写 last_sync_time
+读写 fallback_config
+读写 diagnostics counters
+读写 small_recipe，可选
+schema 检查和迁移
+```
+
+禁止：
+
+```text
+不保存完整 framebuffer
+不保存完整图片
+不保存完整字体
+```
+
+### 6.6 render_engine
+
+定位：极简显示执行器，不是 GUI 框架。
+
+允许支持：
+
+```text
+clear
+write_full_plane_stream
+write_plane_block
+draw_bitmap_block
+refresh_full
+refresh_partial，可选
+sleep_panel
+show_fallback
+```
+
+禁止支持：
+
+```text
+复杂布局
+文本自动换行
+中文字体渲染
+图片缩放
+日历计算
+农历计算
+节假日计算
+复杂压缩解码
+```
+
+坐标越界默认拒绝整个对象，不做自动裁剪，避免 Web 与 MCU 显示不一致。
+
+### 6.7 epd_uc8179_driver
+
+职责：
+
+```text
+GPIO 初始化
+SPI 初始化
+RESET / DC / CS / BUSY 控制
+UC8179 初始化序列
+写 command
+写 data
+写 black plane RAM
+写 red plane RAM
+refresh
+sleep
+busy wait timeout
+```
+
+禁止：
+
+```text
+不处理 BLE
+不处理 FDS
+不处理 GUI
+不处理字体
+```
+
+如果需要坐标转换，必须集中在 driver 或 panel_mapper 一处完成，禁止多个模块各自转换。
+
+### 6.8 fallback_screen
+
+职责：
+
+```text
+生成并显示兜底页
+显示 BLE 名称
+显示同步提示
+显示固件版本 / 电量状态，可选
+```
+
+实现要求：
+
+```text
+资源极小
+不依赖 Web
+不依赖完整中文字库
+不使用完整 framebuffer
+不超过数 KB
+```
+
+### 6.9 mode_manager
+
+职责：
+
+```text
+保存 active_mode_id
+保存 last_sync_time
+保存 last_object_id
+处理模式切换状态
+```
+
+禁止：
+
+```text
+不保存模式完整 UI
+不保存日历完整数据
+不执行模式布局
+```
+
+模式切换由 Web 完成并下发最终显示对象。
+
+### 6.10 dfu_manager
+
+职责：
+
+```text
+处理 Buttonless DFU 入口
+处理 CMD_ENTER_DFU
+DFU 前 abort transfer
+等待 EPD refresh 完成或超时
+等待 FDS pending 完成或超时
+记录 entering_dfu 状态
+跳转 bootloader
+```
+
+DFU 后策略：
+
+```text
+不恢复旧画面
+显示 fallback
+等待 Web 重同步
+```
+
+### 6.11 power_manager
+
+职责：
+
+```text
+BLE idle 后低功耗
+EPD sleep
+系统 sleep
+按键/RTC 唤醒，可选
+```
+
+### 6.12 battery_manager
+
+职责：
+
+```text
+ADC 采样电池电压
+低电阈值判断
+刷新前低电保护
+DFU 前低电保护，可配置
+状态上报给 Web
+```
+
+### 6.13 watchdog_manager
+
+职责：
+
+```text
+BLE 长传输期间喂狗
+EPD busy wait 期间喂狗
+FDS pending wait 期间喂狗
+卡死后复位
+```
+
+复位后显示 fallback。
+
+### 6.14 diagnostics_manager
+
+职责：
+
+```text
+记录 last_error
+记录 boot_count
+记录 dfu_count
+记录 crc_error_count
+记录 epd_timeout_count
+记录 low_battery_count
+导出 device_status
+```
+
+---
+
+## 7. Web / Mobile 模块职责
+
+### 7.1 Mode Template Manager
+
+负责把旧 hard-coded UI 提取为模板：
+
+```text
+calendar.template.json
+clock.template.json
+clock_calendar.template.json
+fallback.template.json
+image_display.template.json
+```
+
+模板必须包含：
+
+```json
+{
+  "mode_id": 1,
+  "mode_name": "calendar",
+  "canvas": { "w": 800, "h": 480 },
+  "coordinate": {
+    "origin": "top_left",
+    "rotation": 0
+  },
+  "compatibility": {
+    "legacy": "hardcoded_v1",
+    "pixel_locked": true
+  },
+  "elements": []
+}
+```
+
+### 7.2 Legacy Pixel Compatibility Layer
+
+职责：
+
+```text
+保证 Web 输出与旧 MCU hard-coded 坐标一致
+提供 golden bitmap test
+提供 pixel diff report
+固定 800x480 输出，不受 CSS DPI / 浏览器缩放影响
+```
+
+### 7.3 Font Rasterizer
+
+职责：
+
+```text
+中文字体渲染
+大号数字渲染
+节假日/农历/天气文字渲染
+生成 1bpp bitmap block
+生成 black/red plane
+```
+
+### 7.4 Calendar / Clock / Holiday Generator
+
+职责：
+
+```text
+当前时间
+日期格式化
+星期计算
+月历生成
+节假日匹配
+调休匹配
+农历/节气，可选
+天气/提醒，可选
+```
+
+MCU 只接收最终 bitmap 或 small state。
+
+### 7.5 Bitmap Composer
+
+职责：
+
+```text
+生成 full_frame_black.bin
+生成 full_frame_red.bin
+生成局部 block
+检查坐标越界
+检查 plane 数据长度
+生成 manifest
+```
+
+### 7.6 BLE Transfer Client
+
+职责：
+
+```text
+连接设备
+读取设备信息
+协商 MTU
+发送 object header
+发送 chunks
+处理 notify status
+处理重试
+处理失败恢复
+触发 DFU
+```
+
+---
+
+## 8. 当前工程改造清单
+
+### 8.1 删除 / 迁移到 Web
+
+```text
+fonts.o
+u8g2_font.o
+mc_w.l
+mf_w.l
+gui.o 中的日历 / 时钟 / 复杂 UI
+lunar.o
+adafruit_gfx.o
+printfa.o
+float / double 相关依赖
+```
+
+处理顺序：
+
+```text
+1. 从 gui.c 中提取旧 hard-coded 坐标。
+2. 在 Web 端建立 golden template。
+3. Web 端生成等价像素输出。
+4. MCU 端删除 GUI 页面绘制逻辑。
+5. 移除字体/农历/Adafruit_GFX/printf 依赖。
+```
+
+### 8.2 保留但瘦身
+
+```text
+uc8179.o
+  - 只保留当前屏幕必要 LUT / 初始化序列
+  - 删除未用屏幕配置 / 测试图 / 重复表
+
+epd_driver.o
+  - 只保留 block / plane / refresh / sleep
+  - 不加入 GUI / 字体 / 日历
+
+epd_service.o
+  - 重构为 BLE service + protocol entry
+  - 不包含 GUI
+
+main.o
+  - 移除全局大 buffer
+  - 只做初始化和主循环
+```
+
+### 8.3 必须保留
+
+```text
+fds.o
+nrf_fstorage_sd.o
+nrf_fstorage.o
+ble_dfu.o
+ble_dfu_unbonded.o
+nrf_dfu_svci.o
+nrf_sdh.o
+nrf_sdh_ble.o
+nrf_ble_gatt.o
+ble_advdata.o
+ble_advertising.o
+ble_conn_params.o
+app_timer2.o
+nrfx_spi.o
+nrfx_gpiote.o
+nrf_pwr_mgmt.o
+nrfx_wdt.o
+drv_rtc.o
+```
+
+---
+
+## 9. RAM 约束
+
+禁止：
+
+```c
+uint8_t framebuffer[48000];
+uint8_t framebuffer_black[48000];
+uint8_t framebuffer_red[48000];
+uint8_t image_cache[大数组];
+char json_buffer[几 KB ~ 几十 KB];
+```
+
+允许：
+
+```text
+BLE chunk buffer：MTU 对齐，尽量小
+EPD row buffer：100~800 bytes 级别
+EPD block buffer：最多 1~4 KB
+小对象 staging buffer：仅用于 small recipe / config
+```
+
+当前 stack 约 10 KB，可后续通过 stack watermark 实测后评估是否降到 6 KB。不要盲目降低栈。
+
+---
+
+## 10. 错误码与状态
+
+错误码建议：
+
+```c
+#define ERR_OK                     0x0000
+#define ERR_UNSUPPORTED_CMD        0x0001
+#define ERR_UNSUPPORTED_OBJECT     0x0002
+#define ERR_CRC_FAIL               0x0003
+#define ERR_SEQ_FAIL               0x0004
+#define ERR_OFFSET_FAIL            0x0005
+#define ERR_OBJECT_TOO_LARGE       0x0006
+#define ERR_LOW_BATTERY            0x0007
+#define ERR_EPD_BUSY_TIMEOUT       0x0008
+#define ERR_FDS_WRITE_FAIL         0x0009
+#define ERR_DFU_BLOCKED            0x000A
+#define ERR_SCHEMA_MISMATCH        0x000B
+#define ERR_INVALID_SCREEN_SIZE    0x000C
+#define ERR_INVALID_COORDINATE     0x000D
+#define ERR_TRANSFER_ABORTED       0x000E
+```
+
+Web 可读取：
+
+```text
+firmware_version
+protocol_version
+device_name
+model_id
+panel_width
+panel_height
+color_capability
+dfu_available
+fds_status
+battery_mv
+last_error
+boot_count
+dfu_count
+crc_error_count
+epd_timeout_count
+low_battery_count
+```
+
+---
+
+## 11. 实际场景处理
+
+### 11.1 断电重启
+
+```text
+不恢复旧画面。
+显示 fallback。
+提示连接 Web 重新同步。
+```
+
+### 11.2 BLE 传输中断
+
+```text
+丢弃未完成对象。
+不更新 active_mode。
+不更新 last_object_id。
+Web 重连后重新传输。
+```
+
+### 11.3 Web 下发错误坐标
+
+```text
+MCU 检查越界。
+拒绝对象。
+不上屏。
+不自动裁剪。
+Web 修正模板。
+```
+
+### 11.4 Web 下发错误屏幕尺寸
+
+```text
+非 800x480 直接拒绝。
+返回 ERR_INVALID_SCREEN_SIZE。
+```
+
+### 11.5 DFU 后首次启动
+
+```text
+检查必要 FDS schema。
+不恢复旧画面。
+显示 fallback。
+等待 Web 重同步。
+```
+
+### 11.6 低电刷新
+
+```text
+刷新前检测低电，拒绝刷新。
+返回 ERR_LOW_BATTERY。
+```
+
+### 11.7 EPD BUSY 卡死
+
+```text
+busy wait 超时。
+记录 ERR_EPD_BUSY_TIMEOUT。
+喂狗或复位。
+复位后显示 fallback。
+```
+
+### 11.8 schema 升级
+
+```text
+兼容则迁移小状态。
+不兼容则清除运行状态。
+显示 fallback。
+等待 Web 重同步。
+```
+
+---
+
+## 12. 推荐工程结构
+
+```text
+application/
+  main.c
+  app_config.h
+  app_version.h
+
+ble/
+  ble_epd_service.c
+  ble_epd_service.h
+  ble_status_service.c
+  ble_status_service.h
+  ble_dfu_entry.c
+  ble_dfu_entry.h
+
+protocol/
+  epd_protocol.h
+  epd_protocol.c
+  epd_object.h
+  epd_error.h
+  epd_crc.c
+  epd_crc.h
+
+transfer/
+  transfer_manager.c
+  transfer_manager.h
+
+storage/
+  storage_manager.c
+  storage_manager.h
+  storage_records.h
+
+render/
+  render_engine.c
+  render_engine.h
+  fallback_screen.c
+  fallback_screen.h
+
+drivers/
+  epd_uc8179.c
+  epd_uc8179.h
+  epd_spi.c
+  epd_spi.h
+  battery_adc.c
+  battery_adc.h
+
+system/
+  power_manager.c
+  power_manager.h
+  watchdog_manager.c
+  watchdog_manager.h
+  diagnostics_manager.c
+  diagnostics_manager.h
+
+web/
+  templates/
+  compiler/
+  ble_client/
+  dfu_client/
+  pixel_tests/
+```
+
+---
+
+## 13. AI Coding 执行规则
+
+后续让 AI 修改项目时，必须先附带以下上下文：
+
+```text
+请基于 promote_latest_v4.txt 修改 nRF_EPD 项目。
+
+项目目标：
+- nRF52811 端是低功耗 BLE 墨水屏显示终端。
+- Web / Mobile 端负责 GUI、字体、日历、农历、节假日和图片合成。
+- MCU 端必须保持 DFU 可升级。
+
+硬性约束：
+1. 不要在 MCU 端新增完整 GUI 框架。
+2. 不要在 MCU 端新增完整中文字库。
+3. 不要在 MCU 端新增完整日历 / 农历 / 节假日算法。
+4. 不要把完整 800x480 bitmap 写入 FDS。
+5. 不要在 RAM 中创建完整 framebuffer。
+6. 不要破坏 Buttonless DFU。
+7. FDS 默认 2 pages，NRF_DFU_APP_DATA_AREA_SIZE = 8192。
+8. 所有模式 UI 像素坐标必须与旧 hard-coded 版本一致。
+9. 断电 / 重启 / DFU 后显示包含 BLE 名称的 fallback 页面。
+10. 大显示对象默认流式显示，小状态才写 FDS。
+11. 任意异常不能影响 DFU 入口。
+12. 每次改动后必须检查 App size / RAM / FDS / DFU。
+
+输出要求：
+- 修改文件列表
+- 核心代码说明
+- Flash/RAM size 风险
+- DFU 风险
+- 测试方法
+```
+
+---
+
+## 14. 模块接口建议
+
+### 14.1 transfer_manager.h
+
+```c
+typedef enum {
+    TRANSFER_IDLE,
+    TRANSFER_RECEIVING,
+    TRANSFER_VERIFYING,
+    TRANSFER_READY,
+    TRANSFER_APPLYING,
+    TRANSFER_DONE,
+    TRANSFER_ERROR
+} transfer_state_t;
+
+ret_code_t transfer_begin(const epd_object_header_t * header);
+ret_code_t transfer_write_chunk(const epd_chunk_t * chunk);
+ret_code_t transfer_end(uint32_t object_id);
+ret_code_t transfer_abort(uint32_t object_id);
+transfer_state_t transfer_get_state(void);
+```
+
+### 14.2 storage_manager.h
+
+```c
+ret_code_t storage_init(void);
+ret_code_t storage_load_device_config(device_config_t * cfg);
+ret_code_t storage_save_device_config(const device_config_t * cfg);
+ret_code_t storage_load_mode_state(mode_state_t * state);
+ret_code_t storage_save_mode_state(const mode_state_t * state);
+ret_code_t storage_save_fallback_config(const fallback_config_t * cfg);
+ret_code_t storage_clear_runtime_state(void);
+```
+
+### 14.3 render_engine.h
+
+```c
+ret_code_t render_init(void);
+ret_code_t render_clear(uint8_t color);
+ret_code_t render_write_plane_block(const plane_block_t * block);
+ret_code_t render_apply_full_frame(uint32_t object_id);
+ret_code_t render_refresh_full(void);
+ret_code_t render_show_fallback(const fallback_config_t * cfg);
+```
+
+### 14.4 dfu_manager.h
+
+```c
+ret_code_t dfu_prepare_enter(void);
+ret_code_t dfu_enter(void);
+bool dfu_is_allowed(void);
+```
+
+### 14.5 diagnostics_manager.h
+
+```c
+void diag_set_last_error(uint16_t error);
+uint16_t diag_get_last_error(void);
+void diag_inc_counter(uint16_t counter_id);
+ret_code_t diag_export_status(device_status_t * status);
+```
+
+---
+
+## 15. 最终验收标准
+
+### 15.1 功能验收
+
+```text
+BLE 可连接
+Web 可读取设备信息
+Web 可下发 full frame / block
+MCU 可校验并刷屏
+断电后显示 fallback
+DFU 可进入
+DFU 后显示 fallback
+FDS 小状态正常保存
+低电刷新保护正常
+EPD busy timeout 可恢复
+```
+
+### 15.2 资源验收
+
+```text
+App Flash <= 40 KB，或明确说明为何超过
+App Flash > 48 KB 不通过
+RAM 无完整 framebuffer
+FDS 默认 2 pages
+NRF_DFU_APP_DATA_AREA_SIZE 与 FDS 匹配
+DFU zip 可生成
+实机 OTA 可完成
+```
+
+### 15.3 UI 验收
+
+```text
+Web 端生成 800x480 固定像素输出
+固定线条 / 格子 / 图标坐标与旧 hard-coded UI 一致
+动态文本在旧预留区域内
+pixel diff test 可输出报告
+MCU 不做坐标修正
+```
+
+---
+
+## 16. 一句话总控结论
+
+```text
+nRF52811 端只做 BLE + DFU + FDS 小状态 + UC8179 显示执行；
+Web / Mobile 端负责所有 GUI、字体、日历、节假日和图片合成；
+大图流式显示，不进 FDS，不进 framebuffer；
+断电后显示带 BLE 名称的同步提示页；
+所有新 UI 输出必须与旧 hard-coded 坐标像素一致；
+任何 MCU 端新增功能都必须先通过 Flash / RAM / DFU 门禁。
+```
