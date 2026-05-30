@@ -51,7 +51,7 @@
 			</div>
 			<div class="log-container" id="log"></div>
 			<div class="device-info">
-				<b>设备电压：</b><span id="batteryVoltage" class="device-badge">未连接</span><span id="batteryWarning" class="device-warning" style="display:none;"></span>
+				<b>设备电量/电压：</b><span id="batteryVoltage" class="device-badge">未连接</span><span id="batteryWarning" class="device-warning" style="display:none;"></span>
 			</div>
 		</section>
 		<section class="section">
@@ -91,6 +91,49 @@
 			</div>
 			<div class="dfu-hint">
 				DFU 升级已拆分到独立页面。进入升级页前，如果主界面当前已连接设备，页面会先主动断开该连接，再跳转到专用 DFU 页面执行升级流程。跳转后会重新选择应用设备或 DfuTarg，避免主功能连接状态和升级流程互相干扰。
+			</div>
+		</section>
+		<section class="section">
+			<h2>外置 Flash 资源</h2>
+			<div class="resource-grid">
+				<div><b>Flash：</b><span id="resourceFlashStatus" class="device-badge">未连接</span></div>
+				<div><b>JEDEC：</b><span id="resourceJedec" class="device-badge">--</span></div>
+				<div><b>总空间：</b><span id="resourceTotalSpace" class="device-badge">--</span></div>
+				<div><b>剩余：</b><span id="resourceFreeSpace" class="device-badge">--</span></div>
+				<div><b>设备资源：</b><span id="resourceDeviceCrc" class="device-badge">--</span></div>
+				<div><b>网页资源：</b><span id="resourceBundleCrc" class="device-badge">--</span></div>
+			</div>
+			<div class="resource-status">
+				<b>校验：</b><span id="resourceCheckResult">等待检查</span>
+				<span id="resourceProgress" class="resource-progress"></span>
+			</div>
+			<div class="flex-container">
+				<div class="flex-group">
+					<button id="checkResourceButton" type="button" class="secondary" onclick="checkExternalResources()">检查资源</button>
+					<button id="updateResourceButton" type="button" class="primary" onclick="updateExternalResources()" disabled>更新资源</button>
+					<button id="clearResourceButton" type="button" class="danger" onclick="clearExternalFlash()" disabled>强制清空全部</button>
+				</div>
+			</div>
+			<div class="ui-editor">
+				<h3>UI 模板编辑</h3>
+				<div class="flex-container">
+					<div class="flex-group">
+						<label for="uiModeSelect">模式:</label>
+						<select id="uiModeSelect" onchange="UIEditor.selectMode(this.value)"></select>
+						<label for="uiComponentSelect">组件:</label>
+						<select id="uiComponentSelect" onchange="UIEditor.selectComponent(parseInt(this.value, 10))"></select>
+						<button id="uiApplyButton" type="button" class="secondary" onclick="UIEditor.applyToBundle()">保存到资源包</button>
+					</div>
+				</div>
+				<div class="flex-container">
+					<canvas id="uiEditorCanvas" width="800" height="480" style="width:400px;height:240px;border:1px solid #d9e1ef;background:#fff"></canvas>
+					<div class="flex-group ui-fields">
+						<label>X:<input id="uiX" type="number" onchange="UIEditor.updateSelectedFromInputs()"></label>
+						<label>Y:<input id="uiY" type="number" onchange="UIEditor.updateSelectedFromInputs()"></label>
+						<label>W:<input id="uiW" type="number" onchange="UIEditor.updateSelectedFromInputs()"></label>
+						<label>H:<input id="uiH" type="number" onchange="UIEditor.updateSelectedFromInputs()"></label>
+					</div>
+				</div>
 			</div>
 		</section>
 		<section class="section">
@@ -382,7 +425,10 @@
 	<script type="text/javascript" src="js/paint.js?v=20260402b"></script>
 	<script type="text/javascript" src="js/crop.js?v=20260402b"></script>
 	<script type="text/javascript" src="js/ble_transfer.js?v=20260402b"></script>
-	<script type="text/javascript" src="js/main.js?v=20260402c"></script>
+	<script type="text/javascript" src="js/resource_bundle.js?v=20260524h"></script>
+	<script type="text/javascript" src="js/resource_manager.js?v=20260524h"></script>
+	<script type="text/javascript" src="js/ui_editor.js?v=20260524a"></script>
+	<script type="text/javascript" src="js/main.js?v=20260524h"></script>
 </body>
 
 </html>

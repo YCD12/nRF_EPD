@@ -37,12 +37,97 @@
 
 #include "u8g2_font.h"
 
+#include <stdbool.h>
 #include <stddef.h>
+#include <stdint.h>
+
+#include "epd_ext_resources.h"
+
+extern void app_feed_wdt(void);
+
+#define U8G2_EXT_FONT_TOKEN_BASE 0xF0000000UL
+#define U8G2_EXT_FONT_TOKEN_MASK 0xFF000000UL
+/* u8g2 binary-searches inside external font payloads. Keep a modest block
+ * cache so CJK glyph rendering avoids byte-at-a-time SPI reads while leaving
+ * enough RAM margin on nRF52811. */
+#define U8G2_EXT_FONT_CACHE_SIZE 256U
+
+typedef struct {
+    bool valid;
+    uint16_t font_id;
+    uint32_t base_offset;
+    size_t length;
+    uint8_t data[U8G2_EXT_FONT_CACHE_SIZE];
+} u8g2_ext_font_cache_t;
+
+static u8g2_ext_font_cache_t m_u8g2_ext_font_cache;
+
+static bool u8g2_font_external_ref(const uint8_t* font, uint16_t* font_id, uint32_t* offset) {
+    uintptr_t value = (uintptr_t)font;
+
+    if ((value & U8G2_EXT_FONT_TOKEN_MASK) != U8G2_EXT_FONT_TOKEN_BASE) {
+        return false;
+    }
+
+    if (font_id != NULL) {
+        *font_id = (uint16_t)((value >> 16) & 0xFFU);
+    }
+    if (offset != NULL) {
+        *offset = (uint32_t)(value & 0xFFFFU);
+    }
+    return true;
+}
+
+static uint8_t u8g2_font_read_byte(const uint8_t* font) {
+    uint16_t font_id = 0;
+    uint32_t offset = 0;
+    epd_ext_resource_entry_t entry;
+    ret_code_t ret;
+
+    if (!u8g2_font_external_ref(font, &font_id, &offset)) {
+        return u8x8_pgm_read(font);
+    }
+
+    if (!m_u8g2_ext_font_cache.valid ||
+        m_u8g2_ext_font_cache.font_id != font_id ||
+        offset < m_u8g2_ext_font_cache.base_offset ||
+        offset >= m_u8g2_ext_font_cache.base_offset + m_u8g2_ext_font_cache.length) {
+        uint32_t base_offset = offset & ~(uint32_t)(U8G2_EXT_FONT_CACHE_SIZE - 1U);
+        size_t chunk_len = U8G2_EXT_FONT_CACHE_SIZE;
+
+        ret = epd_ext_resource_get_info(EPD_EXT_RES_TYPE_FONT, font_id, &entry);
+        if (ret != NRF_SUCCESS || base_offset >= entry.length) {
+            return 0;
+        }
+        if (chunk_len > (size_t)(entry.length - base_offset)) {
+            chunk_len = (size_t)(entry.length - base_offset);
+        }
+
+        ret = epd_ext_resource_read(EPD_EXT_RES_TYPE_FONT, font_id, base_offset,
+                                    m_u8g2_ext_font_cache.data, chunk_len);
+        if (ret != NRF_SUCCESS) {
+            m_u8g2_ext_font_cache.valid = false;
+            return 0;
+        }
+
+        m_u8g2_ext_font_cache.valid = true;
+        m_u8g2_ext_font_cache.font_id = font_id;
+        m_u8g2_ext_font_cache.base_offset = base_offset;
+        m_u8g2_ext_font_cache.length = chunk_len;
+
+        /* Cache miss requires an SPI read to external Flash. Drawing a CJK
+         * page can incur hundreds of misses; feed the watchdog so a slow
+         * paint pass cannot trigger a reset. */
+        app_feed_wdt();
+    }
+
+    return m_u8g2_ext_font_cache.data[offset - m_u8g2_ext_font_cache.base_offset];
+}
 
 // 从字体数据中读取单个字节
 static uint8_t u8g2_font_get_byte(const uint8_t* font, uint8_t offset) {
     font += offset;
-    return u8x8_pgm_read(font);
+    return u8g2_font_read_byte(font);
 }
 
 // 从字体数据中读取双字节（大端序）
@@ -50,10 +135,10 @@ static uint16_t u8g2_font_get_word(const uint8_t* font, uint8_t offset) U8X8_NOI
 static uint16_t u8g2_font_get_word(const uint8_t* font, uint8_t offset) {
     uint16_t pos;
     font += offset;
-    pos = u8x8_pgm_read(font);
+    pos = u8g2_font_read_byte(font);
     font++;
     pos <<= 8;
-    pos += u8x8_pgm_read(font);
+    pos += u8g2_font_read_byte(font);
     return pos;
 }
 
@@ -120,7 +205,7 @@ static uint8_t u8g2_font_decode_get_unsigned_bits(u8g2_font_decode_t* f, uint8_t
     uint8_t bit_pos_plus_cnt;
 
     // val = *(f->decode_ptr);
-    val = u8x8_pgm_read(f->decode_ptr);
+    val = u8g2_font_read_byte(f->decode_ptr);
 
     val >>= bit_pos;
     bit_pos_plus_cnt = bit_pos;
@@ -130,7 +215,7 @@ static uint8_t u8g2_font_decode_get_unsigned_bits(u8g2_font_decode_t* f, uint8_t
         s -= bit_pos;
         f->decode_ptr++;
         // val |= *(f->decode_ptr) << (8-bit_pos);
-        val |= u8x8_pgm_read(f->decode_ptr) << (s);
+        val |= u8g2_font_read_byte(f->decode_ptr) << (s);
         // bit_pos -= 8;
         bit_pos_plus_cnt -= 8;
     }
@@ -398,11 +483,11 @@ const uint8_t* u8g2_font_get_glyph_data(u8g2_font_t* u8g2, uint16_t encoding) {
         }
 
         for (;;) {
-            if (u8x8_pgm_read(font + 1) == 0) break;
-            if (u8x8_pgm_read(font) == encoding) {
+            if (u8g2_font_read_byte(font + 1) == 0) break;
+            if (u8g2_font_read_byte(font) == encoding) {
                 return font + 2; /* skip encoding and glyph size */
             }
-            font += u8x8_pgm_read(font + 1);
+            font += u8g2_font_read_byte(font + 1);
         }
     } else {
         // Unicode 字符处理
@@ -426,14 +511,14 @@ const uint8_t* u8g2_font_get_glyph_data(u8g2_font_t* u8g2, uint16_t encoding) {
         /* 变量 "font" 现在已根据查找表更新 */
 
         for (;;) {
-            e = u8x8_pgm_read(font);
+            e = u8g2_font_read_byte(font);
             e <<= 8;
-            e |= u8x8_pgm_read(font + 1);
+            e |= u8g2_font_read_byte(font + 1);
             if (e == 0) break;
             if (e == encoding) {
                 return font + 3; /* skip encoding and glyph size */
             }
-            font += u8x8_pgm_read(font + 2);
+            font += u8g2_font_read_byte(font + 2);
         }
     }
     return NULL;

@@ -91,6 +91,7 @@
 #include "nrf_pwr_mgmt.h"
 #include "sdk_macros.h"
 #include "Lunar.h"
+#include "epd_ext_resources.h"
 
 // ============================================================================
 // CRC16计算和传输响应函数
@@ -171,6 +172,100 @@ static void send_transfer_status(ble_epd_t* p_epd) {
     NRF_LOG_INFO("[EPD]: Transfer status sent: total=%d, received=%d, session=%d, active=%d\n",
                  p_epd->transfer_ctx.total_blocks, p_epd->transfer_ctx.received_blocks,
                  p_epd->transfer_ctx.session_id, p_epd->transfer_ctx.transfer_active);
+}
+
+static uint32_t epd_parse_u24_le(const uint8_t* data) {
+    return ((uint32_t)data[0]) | ((uint32_t)data[1] << 8) | ((uint32_t)data[2] << 16);
+}
+
+static uint32_t epd_parse_u32_le(const uint8_t* data) {
+    return ((uint32_t)data[0]) | ((uint32_t)data[1] << 8) |
+           ((uint32_t)data[2] << 16) | ((uint32_t)data[3] << 24);
+}
+
+static void epd_write_u32_le(uint8_t* data, uint32_t value) {
+    data[0] = (uint8_t)(value & 0xFF);
+    data[1] = (uint8_t)((value >> 8) & 0xFF);
+    data[2] = (uint8_t)((value >> 16) & 0xFF);
+    data[3] = (uint8_t)((value >> 24) & 0xFF);
+}
+
+static ret_code_t epd_resources_ensure_ready(void) {
+    ret_code_t ret = epd_ext_resources_init();
+    if (ret == NRF_ERROR_INVALID_DATA ||
+        ret == NRF_ERROR_INVALID_LENGTH ||
+        ret == NRF_ERROR_INVALID_ADDR ||
+        ret == NRF_ERROR_NOT_FOUND) {
+        return NRF_SUCCESS;
+    }
+    return ret;
+}
+
+static bool epd_resources_manifest_ready(void) {
+    epd_ext_resource_status_t status;
+    ret_code_t ret = epd_ext_resources_get_status(&status);
+
+    return (ret == NRF_SUCCESS && status.flash_ready && status.manifest_valid);
+}
+
+static void send_resource_op_response(ble_epd_t* p_epd, uint8_t cmd, uint16_t seq, ret_code_t ret) {
+    uint8_t rsp[8];
+    rsp[0] = EPD_RSP_RESOURCE_OP;
+    rsp[1] = cmd;
+    rsp[2] = (uint8_t)(seq & 0xFF);
+    rsp[3] = (uint8_t)(seq >> 8);
+    epd_write_u32_le(&rsp[4], (uint32_t)ret);
+    ble_epd_string_send(p_epd, rsp, sizeof(rsp));
+}
+
+static void send_resource_status(ble_epd_t* p_epd, ret_code_t init_ret) {
+    epd_ext_resource_status_t status;
+    ret_code_t ret = epd_ext_resources_get_status(&status);
+    uint8_t rsp[20];
+
+    if (ret != NRF_SUCCESS) {
+        memset(&status, 0, sizeof(status));
+    }
+
+    rsp[0] = EPD_RSP_RESOURCE_STATUS;
+    rsp[1] = status.flash_ready ? 1 : 0;
+    rsp[2] = status.manifest_valid ? 1 : 0;
+    rsp[3] = (uint8_t)(status.resource_count & 0xFF);
+    rsp[4] = (uint8_t)(status.resource_count >> 8);
+    rsp[5] = status.jedec_id.manufacturer_id;
+    rsp[6] = status.jedec_id.memory_type;
+    rsp[7] = status.jedec_id.capacity;
+    epd_write_u32_le(&rsp[8], status.manifest_crc32);
+    epd_write_u32_le(&rsp[12], (ret == NRF_SUCCESS) ? (uint32_t)init_ret : (uint32_t)ret);
+    rsp[16] = (uint8_t)((status.flash_total_bytes / 1024UL) & 0xFF);
+    rsp[17] = (uint8_t)((status.flash_total_bytes / 1024UL) >> 8);
+    rsp[18] = (uint8_t)((status.resource_free_bytes / 1024UL) & 0xFF);
+    rsp[19] = (uint8_t)((status.resource_free_bytes / 1024UL) >> 8);
+    ble_epd_string_send(p_epd, rsp, sizeof(rsp));
+}
+
+static void send_resource_read_response(ble_epd_t* p_epd, uint16_t seq, uint32_t address,
+                                        ret_code_t ret, const uint8_t* payload, uint8_t payload_len) {
+    uint8_t rsp[BLE_EPD_MAX_DATA_LEN];
+    uint16_t crc = 0;
+    uint16_t rsp_len = 10;
+
+    rsp[0] = EPD_RSP_RESOURCE_READ;
+    rsp[1] = (uint8_t)(seq & 0xFF);
+    rsp[2] = (uint8_t)(seq >> 8);
+    rsp[3] = (uint8_t)ret;
+    rsp[4] = (uint8_t)(address & 0xFF);
+    rsp[5] = (uint8_t)((address >> 8) & 0xFF);
+    rsp[6] = (uint8_t)((address >> 16) & 0xFF);
+    rsp[7] = payload_len;
+    if (ret == NRF_SUCCESS && payload_len > 0 && payload != NULL) {
+        memcpy(&rsp[8], payload, payload_len);
+        crc = crc16_compute(payload, payload_len);
+    }
+    rsp[8 + payload_len] = (uint8_t)(crc & 0xFF);
+    rsp[9 + payload_len] = (uint8_t)(crc >> 8);
+    rsp_len += payload_len;
+    ble_epd_string_send(p_epd, rsp, rsp_len);
 }
 
 // nRF52811默认引脚配置
@@ -354,7 +449,12 @@ static bool is_urgent_command(uint8_t cmd) {
             // CRC transfer commands need immediate execution for timely ACK response
             cmd == EPD_CMD_WRITE_BLOCK ||
             cmd == EPD_CMD_QUERY_STATUS ||
-            cmd == EPD_CMD_RESET_TRANSFER);
+            cmd == EPD_CMD_RESET_TRANSFER ||
+            cmd == EPD_CMD_RES_ERASE ||
+            cmd == EPD_CMD_RES_WRITE ||
+            cmd == EPD_CMD_RES_COMMIT ||
+            cmd == EPD_CMD_RES_STATUS ||
+            cmd == EPD_CMD_RES_READ);
 }
 
 // 异步命令处理的前向声明
@@ -412,6 +512,7 @@ static void epd_gui_update(void* p_event_data, uint16_t event_size) {
     static uint16_t cached_voltage_mv = 3300;  // Default cached GUI battery value: 3.3V
     cached_voltage_mv = EPD_ReadVoltageAndCache();
     display_mode_t mode = (display_mode_t)p_epd->config.display_mode;
+    bool use_partial = false;
 
     // 准备GUI数据
     // Prepare GUI data
@@ -440,6 +541,19 @@ static void epd_gui_update(void* p_event_data, uint16_t event_size) {
     uint32_t err_code = sd_ble_gap_device_name_get((uint8_t*)data.ssid, &dev_name_len);
     if (err_code == NRF_SUCCESS && dev_name_len > 0) data.ssid[dev_name_len] = '\0';
 
+    if (!epd_resources_manifest_ready()) {
+        NRF_LOG_WARNING("[EPD]: External resources missing/invalid — drawing sync hint");
+        EPD_LED_OFF();
+        if (epd->drv && epd->drv->refresh && epd->drv->write_image) {
+            app_feed_wdt();
+            DrawResourceMissingScreen(&data, (buffer_callback)epd->drv->write_image, epd);
+            app_feed_wdt();
+            epd->drv->refresh(epd);
+            app_feed_wdt();
+        }
+        goto finish_refresh;
+    }
+
     // DrawGUI(&data, (buffer_callback)epd->drv->write_image, epd);
     // epd->drv->refresh(epd);
 
@@ -465,10 +579,10 @@ static void epd_gui_update(void* p_event_data, uint16_t event_size) {
     // ========================================================================
     // Use partial refresh for supported ICs in clock mode or clock+calendar mode (UC8179, SSD1683)
     // 在时钟模式或时钟+日历模式下,对支持的芯片使用局部刷新
-    bool use_partial = ((mode == MODE_CLOCK || mode == MODE_CLOCK_CALENDAR) &&
-                       epd->drv->ic == EPD_DRIVER_IC_UC8179 &&
-                       epd->drv->refresh_partial != NULL &&
-                       !low_battery);
+    use_partial = ((mode == MODE_CLOCK || mode == MODE_CLOCK_CALENDAR) &&
+                   epd->drv->ic == EPD_DRIVER_IC_UC8179 &&
+                   epd->drv->refresh_partial != NULL &&
+                   !low_battery);
 
     if (use_partial) {
         NRF_LOG_INFO("[EPD]: === Using PARTIAL refresh for clock mode ===\n");
@@ -684,6 +798,9 @@ fallback_full_refresh:
         NRF_LOG_INFO("[EPD]: === Full refresh complete ===\n");
     }
 
+finish_refresh:
+    app_feed_wdt();
+
     // ========================================================================
     // 刷新后处理
     // Post-refresh handling
@@ -704,6 +821,14 @@ fallback_full_refresh:
     if ((ble_disconnected || critical_battery) && epd->drv->sleep) {
         epd->drv->sleep(epd);
         nrf_delay_ms(200);  // for sleep. 等待睡眠生效
+    }
+
+    if (ble_disconnected || critical_battery) {
+        ret_code_t flash_sleep_ret = epd_ext_resources_sleep();
+        if (flash_sleep_ret != NRF_SUCCESS) {
+            NRF_LOG_WARNING("[EPD]: External resource flash sleep failed: %lu",
+                            (unsigned long)flash_sleep_ret);
+        }
     }
 
     if (critical_battery) {
@@ -773,6 +898,12 @@ static void on_disconnect(ble_epd_t* p_epd, ble_evt_t* p_ble_evt) {
         p_epd->epd->drv->sleep(p_epd->epd);
         nrf_delay_ms(200);  // for sleep. 等待睡眠生效
         EPD_GPIO_Uninit();
+    }
+
+    ret_code_t flash_sleep_ret = epd_ext_resources_sleep();
+    if (flash_sleep_ret != NRF_SUCCESS) {
+        NRF_LOG_WARNING("[EPD]: External resource flash sleep on disconnect failed: %lu",
+                        (unsigned long)flash_sleep_ret);
     }
     app_feed_wdt();  // Feed watchdog after disconnect operations. 断开操作后喂狗
 }
@@ -855,6 +986,42 @@ static void epd_switch_from_clock_mode(ble_epd_t* p_epd) {
     }
 }
 
+static size_t epd_append_char(char* out, size_t out_size, size_t pos, char value) {
+    if (out_size > 0 && pos < out_size - 1) {
+        out[pos] = value;
+    }
+    return pos + 1;
+}
+
+static size_t epd_append_uint(char* out, size_t out_size, size_t pos, uint32_t value) {
+    char digits[10];
+    uint8_t len = 0;
+
+    do {
+        digits[len++] = (char)('0' + (value % 10));
+        value /= 10;
+    } while (value != 0 && len < sizeof(digits));
+
+    while (len > 0) {
+        pos = epd_append_char(out, out_size, pos, digits[--len]);
+    }
+    return pos;
+}
+
+static size_t epd_make_prefixed_uint(char* out, size_t out_size, const char* prefix, uint32_t value) {
+    size_t pos = 0;
+
+    while (*prefix != '\0') {
+        pos = epd_append_char(out, out_size, pos, *prefix++);
+    }
+    pos = epd_append_uint(out, out_size, pos, value);
+
+    if (out_size > 0) {
+        out[(pos < out_size) ? pos : (out_size - 1)] = '\0';
+    }
+    return (pos < out_size) ? pos : (out_size - 1);
+}
+
 /**@brief 发送当前时间到BLE对端
  *        Send current time to BLE peer
  *
@@ -862,8 +1029,8 @@ static void epd_switch_from_clock_mode(ble_epd_t* p_epd) {
  */
 static void epd_send_time(ble_epd_t* p_epd) {
     char buf[20] = {0};
-    snprintf(buf, 20, "t=%" PRIu32, timestamp());
-    ble_epd_string_send(p_epd, (uint8_t*)buf, strlen(buf));
+    size_t len = epd_make_prefixed_uint(buf, sizeof(buf), "t=", timestamp());
+    ble_epd_string_send(p_epd, (uint8_t*)buf, len);
 }
 
 /**@brief 发送当前电池电压到BLE对端
@@ -874,8 +1041,8 @@ static void epd_send_time(ble_epd_t* p_epd) {
 static void epd_send_voltage(ble_epd_t* p_epd) {
     char buf[16] = {0};
     uint16_t voltage_mv = EPD_ReadVoltageAndCache();
-    snprintf(buf, sizeof(buf), "v=%u", voltage_mv);
-    ble_epd_string_send(p_epd, (uint8_t*)buf, strlen(buf));
+    size_t len = epd_make_prefixed_uint(buf, sizeof(buf), "v=", voltage_mv);
+    ble_epd_string_send(p_epd, (uint8_t*)buf, len);
 }
 
 /**@brief 发送MTU大小到BLE对端
@@ -885,8 +1052,8 @@ static void epd_send_voltage(ble_epd_t* p_epd) {
  */
 static void epd_send_mtu(ble_epd_t* p_epd) {
     char buf[10] = {0};
-    snprintf(buf, sizeof(buf), "mtu=%d", p_epd->max_data_len);
-    ble_epd_string_send(p_epd, (uint8_t*)buf, strlen(buf));
+    size_t len = epd_make_prefixed_uint(buf, sizeof(buf), "mtu=", p_epd->max_data_len);
+    ble_epd_string_send(p_epd, (uint8_t*)buf, len);
 }
 
 /**@brief 解析SET_TIME/SYNC_TIME_SILENT中的时间戳
@@ -949,15 +1116,23 @@ static void epd_execute_command(ble_epd_t* p_epd, uint8_t* p_data, uint16_t leng
         // ====================================================================
         case EPD_CMD_SET_PINS:
             if (length < 8) return;
-            // 设置各个引脚 / Set each pin
-            p_epd->config.mosi_pin = p_data[1];   // MOSI引脚
-            p_epd->config.sclk_pin = p_data[2];   // SCLK引脚
-            p_epd->config.cs_pin = p_data[3];     // CS片选引脚
-            p_epd->config.dc_pin = p_data[4];     // DC数据/命令引脚
-            p_epd->config.rst_pin = p_data[5];    // RST复位引脚
-            p_epd->config.busy_pin = p_data[6];   // BUSY忙信号引脚
-            p_epd->config.bs_pin = p_data[7];     // BS引脚
-            if (length > 8) p_epd->config.en_pin = p_data[8];  // EN使能引脚(可选)
+            {
+                epd_config_t candidate = p_epd->config;
+                candidate.mosi_pin = p_data[1];
+                candidate.sclk_pin = p_data[2];
+                candidate.cs_pin = p_data[3];
+                candidate.dc_pin = p_data[4];
+                candidate.rst_pin = p_data[5];
+                candidate.busy_pin = p_data[6];
+                candidate.bs_pin = p_data[7];
+                if (length > 8) candidate.en_pin = p_data[8];
+
+                if (EPD_GPIO_Config_Conflicts_With_Ext_Flash(&candidate)) {
+                    NRF_LOG_ERROR("[EPD]: SET_PINS rejected: P0.12-P0.15 reserved for external Flash");
+                    return;
+                }
+                p_epd->config = candidate;
+            }
             epd_config_write(&p_epd->config);
 
             // 重新初始化GPIO / Reinitialize GPIO
@@ -1127,7 +1302,10 @@ static void epd_execute_command(ble_epd_t* p_epd, uint8_t* p_data, uint16_t leng
         // ====================================================================
         case EPD_CMD_SET_MODE:
             if (length < 2) return;
-            if (p_data[1] <= MODE_CLOCK) {  // MODE_CLOCK is now max value (3)
+            if (p_data[1] == MODE_PICTURE ||
+                (p_data[1] <= 15 &&
+                 p_epd->epd != NULL &&
+                 GUI_ModeExists(p_data[1], p_epd->epd->width, p_epd->epd->height))) {
                 display_mode_t new_mode = (display_mode_t)p_data[1];
                 NRF_LOG_INFO("[EPD]: CMD_SET_MODE: switching to mode %d\n", new_mode);
 
@@ -1290,6 +1468,134 @@ static void epd_execute_command(ble_epd_t* p_epd, uint8_t* p_data, uint16_t leng
             p_epd->transfer_ctx.transfer_active = false;
             NRF_LOG_INFO("[EPD]: Transfer state reset, session_id=%d\n", p_epd->transfer_ctx.session_id);
             break;
+
+        // ====================================================================
+        // 外置Flash资源擦除命令 (0x40)
+        // External Resource Flash Erase Command
+        // Format: [cmd][address24_le][length32_le]
+        // ====================================================================
+        case EPD_CMD_RES_ERASE: {
+            ret_code_t ret;
+            uint32_t address;
+            uint32_t erase_len;
+
+            if (length < 8) {
+                send_resource_op_response(p_epd, EPD_CMD_RES_ERASE, 0, NRF_ERROR_INVALID_LENGTH);
+                break;
+            }
+
+            address = epd_parse_u24_le(&p_data[1]);
+            erase_len = epd_parse_u32_le(&p_data[4]);
+            ret = epd_resources_ensure_ready();
+            if (ret == NRF_SUCCESS) {
+                ret = epd_ext_resource_erase(address, erase_len);
+            }
+            send_resource_op_response(p_epd, EPD_CMD_RES_ERASE, 0, ret);
+            app_feed_wdt();
+        } break;
+
+        // ====================================================================
+        // 外置Flash资源分片写入命令 (0x41)
+        // External Resource Flash Chunk Write Command
+        // Format: [cmd][seq16_le][address24_le][payload][crc16_le(payload)]
+        // ====================================================================
+        case EPD_CMD_RES_WRITE: {
+            ret_code_t ret;
+            uint16_t seq;
+            uint32_t address;
+            uint8_t* payload;
+            uint16_t payload_len;
+            uint16_t recv_crc;
+            uint16_t calc_crc;
+
+            if (length < 8) {
+                send_resource_op_response(p_epd, EPD_CMD_RES_WRITE, 0, NRF_ERROR_INVALID_LENGTH);
+                break;
+            }
+
+            seq = (uint16_t)p_data[1] | ((uint16_t)p_data[2] << 8);
+            address = epd_parse_u24_le(&p_data[3]);
+            payload = &p_data[6];
+            payload_len = length - 8;
+            recv_crc = (uint16_t)p_data[length - 2] | ((uint16_t)p_data[length - 1] << 8);
+            calc_crc = crc16_compute(payload, payload_len);
+
+            if (calc_crc != recv_crc) {
+                send_resource_op_response(p_epd, EPD_CMD_RES_WRITE, seq, NRF_ERROR_INVALID_DATA);
+                break;
+            }
+
+            ret = epd_resources_ensure_ready();
+            if (ret == NRF_SUCCESS) {
+                ret = epd_ext_resource_write(address, payload, payload_len);
+            }
+            send_resource_op_response(p_epd, EPD_CMD_RES_WRITE, seq, ret);
+            app_feed_wdt();
+        } break;
+
+        // ====================================================================
+        // 外置Flash资源manifest提交命令 (0x42)
+        // External Resource Manifest Commit Command
+        // ====================================================================
+        case EPD_CMD_RES_COMMIT: {
+            ret_code_t ret = epd_resources_ensure_ready();
+            if (ret == NRF_SUCCESS) {
+                ret = epd_ext_resource_commit_staging();
+            }
+            if (ret == NRF_SUCCESS && p_epd->epd != NULL) {
+                ret_code_t ui_ret = GUI_ReloadUICache(p_epd->epd->width, p_epd->epd->height);
+                if (ui_ret != NRF_SUCCESS) {
+                    NRF_LOG_WARNING("[EPD]: UI cache reload after resource commit failed: %lu",
+                                    (unsigned long)ui_ret);
+                }
+            }
+            send_resource_op_response(p_epd, EPD_CMD_RES_COMMIT, 0, ret);
+            app_feed_wdt();
+        } break;
+
+        // ====================================================================
+        // 外置Flash资源状态查询命令 (0x43)
+        // External Resource Status Query Command
+        // ====================================================================
+        case EPD_CMD_RES_STATUS: {
+            ret_code_t ret = epd_resources_ensure_ready();
+            send_resource_status(p_epd, ret);
+            app_feed_wdt();
+        } break;
+
+        // ====================================================================
+        // 外置Flash资源原始读取命令 (0x44)
+        // External Resource Raw Read Command
+        // Format: [cmd][seq16_le][address24_le][length]
+        // ====================================================================
+        case EPD_CMD_RES_READ: {
+            uint8_t buffer[BLE_EPD_MAX_DATA_LEN];
+            ret_code_t ret;
+            uint16_t seq;
+            uint32_t address;
+            uint8_t read_len;
+            uint16_t max_payload = p_epd->max_data_len > 10 ? (p_epd->max_data_len - 10) : 0;
+
+            if (length < 7) {
+                send_resource_read_response(p_epd, 0, 0, NRF_ERROR_INVALID_LENGTH, NULL, 0);
+                break;
+            }
+
+            seq = (uint16_t)p_data[1] | ((uint16_t)p_data[2] << 8);
+            address = epd_parse_u24_le(&p_data[3]);
+            read_len = p_data[6];
+            if (read_len > max_payload || read_len > sizeof(buffer)) {
+                send_resource_read_response(p_epd, seq, address, NRF_ERROR_INVALID_LENGTH, NULL, 0);
+                break;
+            }
+
+            ret = epd_resources_ensure_ready();
+            if (ret == NRF_SUCCESS) {
+                ret = epd_ext_resource_read_raw(address, buffer, read_len);
+            }
+            send_resource_read_response(p_epd, seq, address, ret, buffer, (ret == NRF_SUCCESS) ? read_len : 0);
+            app_feed_wdt();
+        } break;
 
         // ====================================================================
         // 设置配置命令 (0x90)
@@ -1683,6 +1989,13 @@ uint32_t ble_epd_init(ble_epd_t* p_epd) {
     epd_config_init(&p_epd->config);
     epd_config_read(&p_epd->config);
 
+    ret_code_t resource_ret = epd_ext_resources_init();
+    if (resource_ret != NRF_SUCCESS) {
+        NRF_LOG_ERROR("[EPD]: External resource flash init failed, ret=%lu "
+                      "(LUT/font/lunar reads will be unavailable)",
+                      (unsigned long)resource_ret);
+    }
+
     // write default config
     // 如果配置为空,写入默认配置
     if (epd_config_empty(&p_epd->config)) {
@@ -1704,6 +2017,22 @@ uint32_t ble_epd_init(ble_epd_t* p_epd) {
     EPD_GPIO_Init();
     p_epd->epd = epd_init((epd_model_id_t)p_epd->config.model_id);
     EPD_GPIO_Uninit();
+
+    if (resource_ret == NRF_SUCCESS && p_epd->epd != NULL) {
+        ret_code_t ui_ret = GUI_ReloadUICache(p_epd->epd->width, p_epd->epd->height);
+        if (ui_ret != NRF_SUCCESS) {
+            NRF_LOG_WARNING("[EPD]: UI cache preload failed: %lu", (unsigned long)ui_ret);
+        }
+        app_feed_wdt();
+    }
+
+    if (resource_ret == NRF_SUCCESS) {
+        ret_code_t flash_sleep_ret = epd_ext_resources_sleep();
+        if (flash_sleep_ret != NRF_SUCCESS) {
+            NRF_LOG_WARNING("[EPD]: External resource flash sleep after init failed: %lu",
+                            (unsigned long)flash_sleep_ret);
+        }
+    }
 
     // blink LED on start
     // 启动时闪烁LED
@@ -1794,11 +2123,15 @@ void ble_epd_on_timer(ble_epd_t* p_epd, uint32_t timestamp, bool force_update) {
         }
     }
 
-    // Update calendar on 00:00:00, clock/clock_calendar on every minute
-    // 日历在00:00:00更新,时钟/时钟+日历每分钟更新
-    if (force_update || (p_epd->config.display_mode == MODE_CALENDAR && timestamp % 86400 == 0) ||
-        (p_epd->config.display_mode == MODE_CLOCK && timestamp % 60 == 0) ||
-        (p_epd->config.display_mode == MODE_CLOCK_CALENDAR && timestamp % 60 == 0)) {
+    uint8_t update_policy = GUI_UPDATE_MANUAL;
+    if (p_epd->epd != NULL && p_epd->config.display_mode != MODE_PICTURE) {
+        update_policy = GUI_GetModeUpdatePolicy((uint8_t)p_epd->config.display_mode,
+                                                p_epd->epd->width, p_epd->epd->height);
+    }
+
+    if (force_update ||
+        (update_policy == GUI_UPDATE_DAILY && timestamp % 86400 == 0) ||
+        (update_policy == GUI_UPDATE_MINUTE && timestamp % 60 == 0)) {
         // 通过app_scheduler调度GUI更新
         // Schedule GUI update via app_scheduler
         epd_gui_update_event_t event = {p_epd, timestamp};

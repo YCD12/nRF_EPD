@@ -47,7 +47,7 @@ void ble_epd_evt_handler(ble_evt_t const* p_ble_evt, void* p_context);
     static ble_epd_t _name; \
     NRF_SDH_BLE_OBSERVER(_name##_obs, BLE_EPD_BLE_OBSERVER_PRIO, ble_epd_evt_handler, &_name)
 
-#define APP_VERSION 0x21  // 应用程序版本号
+#define APP_VERSION 0x22  // 应用程序版本号
 
 // EPD服务的128位基础UUID (自定义服务)
 #define BLE_UUID_EPD_SVC_BASE \
@@ -85,6 +85,13 @@ enum EPD_CMDS {
     EPD_CMD_QUERY_STATUS = 0x32,     /**< query transfer status for resume. 查询传输状态用于断点续传 */
     EPD_CMD_RESET_TRANSFER = 0x33,   /**< reset transfer state. 重置传输状态 */
 
+    // 外置Flash资源管理命令 (0x40-0x4F)
+    EPD_CMD_RES_ERASE = 0x40,        /**< erase external resource flash range. 擦除外置资源区 */
+    EPD_CMD_RES_WRITE = 0x41,        /**< write external resource flash chunk. 写入外置资源分片 */
+    EPD_CMD_RES_COMMIT = 0x42,       /**< commit staging manifest. 提交staging manifest */
+    EPD_CMD_RES_STATUS = 0x43,       /**< query external resource status. 查询外置资源状态 */
+    EPD_CMD_RES_READ = 0x44,         /**< read external resource raw flash. 读取外置资源Flash */
+
     // 系统配置和控制命令 (0x90-0x9F) - 这些是紧急命令,会绕过队列立即执行
     EPD_CMD_SET_CONFIG = 0x90, /**< set full EPD config. 设置完整EPD配置 */
     EPD_CMD_SYS_RESET = 0x91,  /**< MCU reset. MCU复位 (紧急命令) */
@@ -98,6 +105,9 @@ enum EPD_CMDS {
  */
 #define EPD_RSP_BLOCK_ACK       0xA0  /**< Block ACK/NACK response. 块确认/否认响应 */
 #define EPD_RSP_STATUS          0xA1  /**< Transfer status response. 传输状态响应 */
+#define EPD_RSP_RESOURCE_STATUS 0xA2  /**< External resource status response. 外置资源状态响应 */
+#define EPD_RSP_RESOURCE_OP     0xA3  /**< External resource operation response. 外置资源操作响应 */
+#define EPD_RSP_RESOURCE_READ   0xA4  /**< External resource read response. 外置资源读取响应 */
 
 /**
  * 传输配置常量
@@ -116,8 +126,8 @@ enum EPD_CMDS {
  * 2. 缓冲BLE快速发送的多个命令
  * 3. 支持长时间操作(如刷新)期间接收新命令
  */
-#define EPD_CMD_QUEUE_SIZE 8  /**< Command queue size (max 8 pending commands). 命令队列大小(最多8个待处理命令) */
-#define EPD_CMD_MAX_DATA_LEN 256  /**< Maximum command data length. 单个命令的最大数据长度 */
+#define EPD_CMD_QUEUE_SIZE 4  /**< Command queue size (max 4 pending normal commands). 普通命令队列大小 */
+#define EPD_CMD_MAX_DATA_LEN BLE_EPD_MAX_DATA_LEN  /**< Maximum command data length. 单个命令的最大数据长度 */
 
 /**@brief Command queue item structure.
  *        命令队列项结构

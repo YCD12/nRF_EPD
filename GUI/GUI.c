@@ -1,14 +1,11 @@
 #include "GUI.h"
 
-#include <stdio.h>
+#include <string.h>
 
 #include "EPD_driver.h"
+#include "../EPD/epd_ext_resources.h"
 #include "Lunar.h"
 #include "fonts.h"
-
-// 计算数组元素个数的宏定义
-// Macro to calculate array size
-#define ARRAY_SIZE(arr) (sizeof(arr) / sizeof((arr)[0]))
 
 // 带样式的printf宏，简化设置前景色、背景色、字体的操作
 // Styled printf macro to simplify setting foreground, background color and font
@@ -18,6 +15,98 @@
     GFX_printf(gfx, __VA_ARGS__);
 
 #define BATTERY_FULL_MV 3300
+#define BATTERY_EMPTY_MV LOW_BATTERY_THRESHOLD_MV
+
+#define UI_BUNDLE_MAGIC 0x314C4955UL
+#define UI_BUNDLE_VERSION 1U
+#define UI_BUNDLE_HEADER_SIZE 28U
+#define UI_BUNDLE_MODE_SIZE 16U
+#define UI_BUNDLE_COMPONENT_SIZE 24U
+#define UI_CACHE_MAX_MODES 8U
+#define UI_RENDER_COMPONENT_CACHE_MAX 24U
+#define UI_PARTIAL_COMPONENT_CACHE_MAX 2U
+#define MONTH_HOLIDAY_MARK_MAX 48U
+
+#define UI_MODE_LOW_BATTERY 250U
+
+#define UI_TIME_SCALE_MIN 1
+#define UI_TIME_SCALE_MAX 10
+#define UI_TIME_DIGITS_MIN 1
+#define UI_TIME_DIGITS_MAX 10
+
+#define UI_UPDATE_MANUAL GUI_UPDATE_MANUAL
+#define UI_UPDATE_DAILY GUI_UPDATE_DAILY
+#define UI_UPDATE_MINUTE GUI_UPDATE_MINUTE
+
+#define UI_FLAG_PARTIAL_ONLY 0x01U
+#define UI_TEXT_FLAG_RIGHT_ALIGN 0x02U
+#define UI_TEXT_FLAG_ZERO_PAD 0x04U
+#define UI_TEXT_FLAG_WITH_ZODIAC 0x08U
+#define UI_TEXT_FLAG_WEEK_LEADING_SPACE 0x10U
+
+typedef enum {
+    UI_COMP_WEEK_HEADER = 2,
+    UI_COMP_MONTH_GRID = 3,
+    UI_COMP_TIME_7SEG = 4,
+    UI_COMP_BATTERY = 5,
+    UI_COMP_LINE = 6,
+    UI_COMP_LOW_BATTERY_TIP = 10,
+    UI_COMP_TIME_SYNC_TIP = 11,
+    UI_COMP_TEXT_FIELD = 12,
+} ui_component_type_t;
+
+typedef enum {
+    UI_TEXT_DATE_YMD = 1,
+    UI_TEXT_LUNAR_DATE = 2,
+    UI_TEXT_TEMPERATURE = 3,
+    UI_TEXT_LUNAR_YEAR = 4,
+    UI_TEXT_WEEK_NUMBER = 5,
+    UI_TEXT_JIEQI = 6,
+    UI_TEXT_WEEKDAY = 7,
+    UI_TEXT_TEMP_SSID = 8,
+    UI_TEXT_SSID = 9,
+} ui_text_data_id_t;
+
+typedef struct {
+    uint16_t version;
+    uint16_t width;
+    uint16_t height;
+    uint8_t mode_count;
+    uint8_t component_count;
+    uint16_t mode_offset;
+    uint16_t component_offset;
+    uint16_t string_offset;
+    uint16_t string_length;
+} ui_bundle_header_t;
+
+typedef struct {
+    uint8_t mode_id;
+    uint8_t update_policy;
+    uint8_t component_start;
+    uint8_t component_count;
+    uint16_t partial_x;
+    uint16_t partial_y;
+    uint16_t partial_w;
+    uint16_t partial_h;
+    uint16_t flags;
+} ui_mode_record_t;
+
+typedef struct {
+    uint8_t type;
+    uint8_t data_id;
+    uint8_t font_id;
+    uint8_t flags;
+    int16_t x;
+    int16_t y;
+    int16_t w;
+    int16_t h;
+    uint16_t fg;
+    uint16_t bg;
+    int16_t p0;
+    int16_t p1;
+    int16_t p2;
+    uint16_t text_offset;
+} ui_component_record_t;
 
 // 节日数据结构体
 // Festival data structure
@@ -27,53 +116,139 @@ typedef struct {
     char name[10];      // 节日名称(3x3+1) 最多3个汉字 | Festival name (max 3 Chinese characters)
 } Festival;
 
-// 公历节日数据表
-// Gregorian calendar festivals data table
-static const Festival festivals[] = {
-    {1, 1, "元旦节"},  {2, 14, "情人节"}, {3, 8, "妇女节"},  {3, 12, "植树节"},  {4, 1, "愚人节"},
-    {5, 1, "劳动节"},  {5, 4, "青年节"},  {6, 1, "儿童节"},  {7, 1, "建党节"},   {8, 1, "建军节"},
-    {9, 10, "教师节"}, {10, 1, "国庆节"}, {11, 1, "万圣节"}, {12, 24, "平安夜"}, {12, 25, "圣诞节"},
-};
+typedef struct {
+    char label[10];
+    uint8_t is_festival;
+    uint8_t has_holiday_mark;
+    uint8_t holiday_work;
+} month_day_render_cache_t;
 
-// 农历节日数据表
-// Lunar calendar festivals data table
-static const Festival festivals_lunar[] = {
-    {1, 1, "春节"},    {1, 15, "元宵节"}, {2, 2, "龙抬头"},  {5, 5, "端午节"},  {7, 7, "七夕节"}, {7, 15, "中元节"},
-    {8, 15, "中秋节"}, {9, 9, "重阳节"},  {10, 1, "寒衣节"}, {12, 8, "腊八节"}, {12, 30, "除夕"},
-};
+typedef struct {
+    bool valid;
+    uint16_t year;
+    uint8_t month;
+    uint8_t days;
+    month_day_render_cache_t days_cache[31];
+} month_render_cache_t;
 
-// 放假和调休数据，每年更新
-// Holiday and workday adjustment data, updated annually
-// 数据格式：0xWMMDD，其中W为工作日标志(1表示需要上班，0表示放假)，MM为月份，DD为日期
-// Data format: 0xWMMDD, where W is workday flag (1=work, 0=holiday), MM is month, DD is day
-#define HOLIDAY_YEAR 2026
-static const uint16_t holidays[] = {
-    0x0101, 0x0102, 0x0103, 0x1104, 0x120E, 0x020F, 0x0210, 0x0211, 0x0212, 0x0213, 0x0214, 0x0215, 0x0216,
-    0x0217, 0x121C, 0x0404, 0x0405, 0x0406, 0x0501, 0x0502, 0x0503, 0x0504, 0x0505, 0x1509, 0x0613, 0x0614,
-    0x0615, 0x0919, 0x091A, 0x091B, 0x1914, 0x0A01, 0x0A02, 0x0A03, 0x0A04, 0x0A05, 0x0A06, 0x0A07, 0x1A0A,
-};
+extern void app_feed_wdt(void);
 
-/**
- * @brief 查询指定日期是否为法定节假日或调休工作日
- *        Query if a specific date is a legal holiday or adjusted workday
- *
- * @param mon  月份(1-12) | Month (1-12)
- * @param day  日期(1-31) | Day (1-31)
- * @param work 输出参数：true表示调休需上班，false表示放假 | Output: true=work, false=holiday
- * @return true 该日期在节假日表中 | Date found in holiday table
- * @return false 该日期为普通工作日 | Date is a normal working day
- */
-static bool GetHoliday(uint8_t mon, uint8_t day, bool* work) {
-    for (uint8_t i = 0; i < ARRAY_SIZE(holidays); i++) {
-        // 提取月份：从高8位取低4位 | Extract month from bits 8-11
-        // 提取日期：取低8位 | Extract day from low 8 bits
-        if (((holidays[i] >> 8) & 0xF) == mon && (holidays[i] & 0xFF) == day) {
-            // 提取工作日标志：取最高4位 | Extract workday flag from bits 12-15
-            *work = ((holidays[i] >> 12) & 0xF) > 0;
-            return true;
-        }
+static bool m_ui_cache_valid;
+static uint16_t m_ui_cache_width;
+static uint16_t m_ui_cache_height;
+static ui_bundle_header_t m_ui_cached_header;
+static ui_mode_record_t m_ui_cached_modes[UI_CACHE_MAX_MODES];
+static bool m_ui_partial_cache_valid;
+static uint8_t m_ui_partial_cache_mode_id;
+static uint16_t m_ui_partial_cache_width;
+static uint16_t m_ui_partial_cache_height;
+static ui_mode_record_t m_ui_partial_cached_mode;
+static ui_component_record_t m_ui_partial_cached_components[UI_PARTIAL_COMPONENT_CACHE_MAX];
+static uint8_t m_ui_partial_cached_count;
+static month_render_cache_t m_month_render_cache;
+
+static void DrawTimeSyncTip(Adafruit_GFX* gfx, gui_data_t* data);
+static void DrawLowBatteryTip(Adafruit_GFX* gfx, gui_data_t* data);
+static void DrawBattery(Adafruit_GFX* gfx, int16_t x, int16_t y, uint8_t iw, uint16_t voltage_mv);
+static void DrawWeekHeaderArea(Adafruit_GFX* gfx, int16_t x, int16_t y, int16_t area_w, int16_t area_h,
+                               gui_data_t* data);
+static void DrawMonthDaysArea(Adafruit_GFX* gfx, int16_t x, int16_t y, int16_t area_w, int16_t area_h,
+                              tm_t* tm, gui_data_t* data);
+static void DrawTime(Adafruit_GFX* gfx, tm_t* tm, int16_t x, int16_t y, uint16_t cS, uint16_t nD);
+
+static uint8_t BatteryPercentFromMv(uint16_t voltage_mv) {
+    if (voltage_mv >= BATTERY_FULL_MV) {
+        return 100;
     }
-    return false;
+    if (voltage_mv <= BATTERY_EMPTY_MV) {
+        return 0;
+    }
+    return (uint8_t)(((uint32_t)(voltage_mv - BATTERY_EMPTY_MV) * 100U +
+                      (BATTERY_FULL_MV - BATTERY_EMPTY_MV) / 2U) /
+                     (BATTERY_FULL_MV - BATTERY_EMPTY_MV));
+}
+
+static void BatteryPercentToText(uint8_t percent, char* text, size_t text_size) {
+    if (text == NULL || text_size < 3) {
+        return;
+    }
+
+    if (percent >= 100 && text_size >= 5) {
+        text[0] = '1';
+        text[1] = '0';
+        text[2] = '0';
+        text[3] = '%';
+        text[4] = '\0';
+    } else if (percent >= 10 && text_size >= 4) {
+        text[0] = (char)('0' + percent / 10);
+        text[1] = (char)('0' + percent % 10);
+        text[2] = '%';
+        text[3] = '\0';
+    } else {
+        text[0] = (char)('0' + percent);
+        text[1] = '%';
+        text[2] = '\0';
+    }
+}
+
+static void BatteryStatusToText(uint16_t voltage_mv, char* text, size_t text_size) {
+    uint8_t percent;
+    size_t len;
+    uint16_t volts;
+    uint16_t decivolts;
+
+    if (text == NULL || text_size < 10) {
+        return;
+    }
+
+    percent = BatteryPercentFromMv(voltage_mv);
+    BatteryPercentToText(percent, text, text_size);
+    len = strlen(text);
+    if (len + 5 >= text_size) {
+        return;
+    }
+
+    volts = voltage_mv / 1000;
+    decivolts = (voltage_mv % 1000) / 100;
+    text[len++] = ' ';
+    text[len++] = (char)('0' + volts);
+    text[len++] = '.';
+    text[len++] = (char)('0' + decivolts);
+    text[len++] = 'V';
+    text[len] = '\0';
+}
+
+static uint8_t GetFestivalCount(uint16_t resource_id) {
+    epd_ext_resource_entry_t entry;
+
+    if (epd_ext_resource_get_info(EPD_EXT_RES_TYPE_HOLIDAY, resource_id, &entry) != NRF_SUCCESS) {
+        return 0;
+    }
+    return (uint8_t)(entry.length / sizeof(Festival));
+}
+
+static bool ReadFestival(uint16_t resource_id, uint8_t index, Festival* festival) {
+    if (festival == NULL) {
+        return false;
+    }
+    return epd_ext_resource_read(EPD_EXT_RES_TYPE_HOLIDAY, resource_id,
+                                 (uint32_t)index * sizeof(Festival), festival, sizeof(Festival)) == NRF_SUCCESS;
+}
+
+static bool ReadHolidayHeader(uint16_t* year, uint16_t* count) {
+    uint16_t header[2];
+
+    if (year == NULL || count == NULL) {
+        return false;
+    }
+    if (epd_ext_resource_read(EPD_EXT_RES_TYPE_HOLIDAY, EPD_EXT_HOLIDAY_ADJUSTMENTS,
+                              0, header, sizeof(header)) != NRF_SUCCESS) {
+        return false;
+    }
+
+    *year = header[0];
+    *count = header[1];
+    return true;
 }
 
 /**
@@ -97,11 +272,16 @@ static bool GetHoliday(uint8_t mon, uint8_t day, bool* work) {
  */
 static bool GetFestival(uint16_t year, uint8_t mon, uint8_t day, uint8_t week, struct Lunar_Date* Lunar,
                         char* festival) {
+    Festival item;
+    uint8_t festival_count;
+
     // 农历节日
     // Lunar calendar festivals
-    for (uint8_t i = 0; i < ARRAY_SIZE(festivals_lunar); i++) {
-        if (Lunar->Month == festivals_lunar[i].month && Lunar->Date == festivals_lunar[i].day) {
-            strcpy(festival, festivals_lunar[i].name);
+    festival_count = GetFestivalCount(EPD_EXT_HOLIDAY_LUNAR_FESTIVALS);
+    for (uint8_t i = 0; i < festival_count; i++) {
+        if (ReadFestival(EPD_EXT_HOLIDAY_LUNAR_FESTIVALS, i, &item) &&
+            Lunar->Month == item.month && Lunar->Date == item.day) {
+            strcpy(festival, item.name);
             return true;
         }
     }
@@ -142,9 +322,10 @@ static bool GetFestival(uint16_t year, uint8_t mon, uint8_t day, uint8_t week, s
 
     // 公历节日
     // Gregorian calendar festivals
-    for (uint8_t i = 0; i < ARRAY_SIZE(festivals); i++) {
-        if (mon == festivals[i].month && day == festivals[i].day) {
-            strcpy(festival, festivals[i].name);
+    festival_count = GetFestivalCount(EPD_EXT_HOLIDAY_SOLAR_FESTIVALS);
+    for (uint8_t i = 0; i < festival_count; i++) {
+        if (ReadFestival(EPD_EXT_HOLIDAY_SOLAR_FESTIVALS, i, &item) && mon == item.month && day == item.day) {
+            strcpy(festival, item.name);
             return true;
         }
     }
@@ -159,7 +340,7 @@ static bool GetFestival(uint16_t year, uint8_t mon, uint8_t day, uint8_t week, s
         // Calculate solar term index: 2 per month, if day>=15 then it's the 2nd one
         uint8_t JQ = (mon - 1) * 2;
         if (day >= 15) JQ++;
-        strcpy(festival, JieQiStr[JQ]);
+        LUNAR_GetJieQiName(JQ, festival, 10);
         if (JQ == 6)  // 清明
             // 清明既是节气又是节日，需要加"节"字 | Qingming is both solar term and festival
             strcat(festival, "节");
@@ -168,6 +349,88 @@ static bool GetFestival(uint16_t year, uint8_t mon, uint8_t day, uint8_t week, s
     }
 
     return false;
+}
+
+static void month_cache_copy_label(month_day_render_cache_t* cache, const char* label) {
+    strncpy(cache->label, label, sizeof(cache->label) - 1U);
+    cache->label[sizeof(cache->label) - 1U] = '\0';
+}
+
+static const month_render_cache_t* PrepareMonthRenderCache(uint16_t year, uint8_t month) {
+    uint8_t month_days;
+    uint16_t holiday_year = 0;
+    uint16_t holiday_count = 0;
+    uint16_t holiday_marks[MONTH_HOLIDAY_MARK_MAX];
+    bool holiday_marks_valid = false;
+
+    if (m_month_render_cache.valid &&
+        m_month_render_cache.year == year &&
+        m_month_render_cache.month == month) {
+        return &m_month_render_cache;
+    }
+
+    month_days = thisMonthMaxDays((uint8_t)year, month);
+    if (month_days == 0 || month_days > 31) {
+        m_month_render_cache.valid = false;
+        return NULL;
+    }
+
+    memset(&m_month_render_cache, 0, sizeof(m_month_render_cache));
+    m_month_render_cache.year = year;
+    m_month_render_cache.month = month;
+    m_month_render_cache.days = month_days;
+    if (ReadHolidayHeader(&holiday_year, &holiday_count) &&
+        holiday_year == year &&
+        holiday_count <= MONTH_HOLIDAY_MARK_MAX) {
+        bool read_ok = true;
+        for (uint16_t i = 0; i < holiday_count; i++) {
+            if (epd_ext_resource_read(EPD_EXT_RES_TYPE_HOLIDAY, EPD_EXT_HOLIDAY_ADJUSTMENTS,
+                                      4U + (uint32_t)i * sizeof(holiday_marks[0]),
+                                      &holiday_marks[i], sizeof(holiday_marks[0])) != NRF_SUCCESS) {
+                read_ok = false;
+                break;
+            }
+        }
+        holiday_marks_valid = read_ok;
+    }
+
+    for (uint8_t day = 1; day <= month_days; day++) {
+        month_day_render_cache_t* cache = &m_month_render_cache.days_cache[day - 1U];
+        struct Lunar_Date day_lunar;
+        char label[10] = {0};
+        uint8_t actual_week = (uint8_t)((get_first_day_week(year, month) + day - 1U) % 7U);
+
+        app_feed_wdt();
+        LUNAR_SolarToLunar(&day_lunar, year, month, day);
+
+        if (GetFestival(year, month, day, actual_week, &day_lunar, label)) {
+            cache->is_festival = 1U;
+            month_cache_copy_label(cache, label);
+        } else if (day_lunar.Date == 1) {
+            char leap_name[4];
+            char month_name[7];
+            strcpy(label, LUNAR_GetLeapName(day_lunar.IsLeap, leap_name, sizeof(leap_name)));
+            strcat(label, LUNAR_GetMonthName(day_lunar.Month, month_name, sizeof(month_name)));
+            month_cache_copy_label(cache, label);
+        } else {
+            month_cache_copy_label(cache, LUNAR_GetDateName(day_lunar.Date, label, sizeof(label)));
+        }
+
+        if (holiday_marks_valid) {
+            for (uint16_t i = 0; i < holiday_count; i++) {
+                uint16_t value = holiday_marks[i];
+                if (((value >> 8) & 0xF) != month || (value & 0xFF) != day) {
+                    continue;
+                }
+                cache->has_holiday_mark = 1U;
+                cache->holiday_work = (((value >> 12) & 0xF) > 0) ? 1U : 0U;
+                break;
+            }
+        }
+    }
+
+    m_month_render_cache.valid = true;
+    return &m_month_render_cache;
 }
 
 /**
@@ -217,13 +480,11 @@ static void DrawTimeSyncTip(Adafruit_GFX* gfx, gui_data_t* data) {
  * @param data GUI数据指针 | Pointer to GUI data
  */
 static void DrawLowBatteryTip(Adafruit_GFX* gfx, gui_data_t* data) {
-    char voltage[12] = {0};
-    const uint8_t* voltage_font = (data->height >= 300) ? u8g2_font_helvB18_tn : u8g2_font_helvB14_tn;
+    char battery_text[12] = {0};
+    const uint8_t* battery_font = (data->height >= 300) ? u8g2_font_helvB18_tn : u8g2_font_helvB14_tn;
     const char* power_off_text = "power off";
 
-    uint16_t volts = data->voltage_mv / 1000;
-    uint16_t decivolts = (data->voltage_mv % 1000) / 100;
-    snprintf(voltage, sizeof(voltage), "%d.%dV", volts, decivolts);
+    BatteryStatusToText(data->voltage_mv, battery_text, sizeof(battery_text));
 
     int16_t body_w = data->width / 3;
     int16_t body_h = data->height / 6;
@@ -247,14 +508,14 @@ static void DrawLowBatteryTip(Adafruit_GFX* gfx, gui_data_t* data) {
     GFX_fillRoundRect(gfx, body_x + body_w + 4, body_y + (body_h - terminal_h) / 2, terminal_w, terminal_h, 3, GFX_BLACK);
     GFX_fillRect(gfx, body_x + fill_margin, body_y + fill_margin, fill_w, inner_h, GFX_BLACK);
 
-    GFX_setFont(gfx, voltage_font);
+    GFX_setFont(gfx, battery_font);
     GFX_setTextColor(gfx, GFX_BLACK, GFX_WHITE);
-    int16_t voltage_w = GFX_getUTF8Width(gfx, voltage);
-    int16_t voltage_h = GFX_getFontHeight(gfx);
+    int16_t battery_w = GFX_getUTF8Width(gfx, battery_text);
+    int16_t battery_h = GFX_getFontHeight(gfx);
     GFX_setCursor(gfx,
-                  body_x + (body_w - voltage_w) / 2,
-                  body_y + (body_h + voltage_h) / 2 - 2);
-    GFX_printf(gfx, "%s", voltage);
+                  body_x + (body_w - battery_w) / 2,
+                  body_y + (body_h + battery_h) / 2 - 2);
+    GFX_printf(gfx, "%s", battery_text);
 
     if (data->voltage_mv < CRITICAL_BATTERY_SHUTDOWN_MV) {
         GFX_setFont(gfx, u8g2_font_wqy9_t_lunar);
@@ -268,14 +529,14 @@ static void DrawLowBatteryTip(Adafruit_GFX* gfx, gui_data_t* data) {
 }
 
 /**
- * @brief 绘制电池图标和电压显示
- *        Draw battery icon and voltage display
+ * @brief 绘制电池图标和电量显示
+ *        Draw battery icon and battery level display
  *
  * @param gfx        图形上下文指针 | Pointer to graphics context
  * @param x          右边界X坐标 | Right edge X coordinate
  * @param y          Y坐标 | Y coordinate
  * @param iw         图标宽度 | Icon width
- * @param voltage_mv 电压(毫伏) | Voltage in millivolts
+ * @param voltage_mv 电压(毫伏)，内部换算为电量百分比 | Voltage in millivolts, displayed as battery percentage
  *
  * 电池百分比显示：满电=3.3V，空电=2.8V
  * Battery percentage display: Full=3.3V, Empty=2.8V
@@ -283,23 +544,15 @@ static void DrawLowBatteryTip(Adafruit_GFX* gfx, gui_data_t* data) {
 static void DrawBattery(Adafruit_GFX* gfx, int16_t x, int16_t y, uint8_t iw, uint16_t voltage_mv) {
     x -= iw;  // 从右边界开始向左绘制 | Start drawing from right edge to left
     uint8_t fill_width = (iw > 4) ? (uint8_t)(iw - 4) : 0;
-    uint8_t level = 0;
-    if (voltage_mv >= BATTERY_FULL_MV) {
-        level = 100;
-    } else if (voltage_mv > LOW_BATTERY_THRESHOLD_MV) {
-        level = (uint8_t)(((uint32_t)(voltage_mv - LOW_BATTERY_THRESHOLD_MV) * 100) /
-                          (BATTERY_FULL_MV - LOW_BATTERY_THRESHOLD_MV));
-    }
+    uint8_t level = BatteryPercentFromMv(voltage_mv);
+    char battery_text[5] = {0};
 
-    // Format voltage as "X.XV" directly (e.g., "3.3V")
-    // 直接格式化电压为"X.XV"格式(如"3.3V")
-    uint16_t volts = voltage_mv / 1000;           // 整数部分(伏特) | Integer part (volts)
-    uint16_t millivolts = (voltage_mv % 1000) / 100;  // 小数部分(0.1V) | Decimal part
+    BatteryPercentToText(level, battery_text, sizeof(battery_text));
 
-    // 绘制电压文字 | Draw voltage text
+    // 绘制电量文字 | Draw battery percentage text
     GFX_setFont(gfx, u8g2_font_wqy9_t_lunar);
-    GFX_setCursor(gfx, x - GFX_getUTF8Width(gfx, "3.2V") - 2, y + 9);
-    GFX_printf(gfx, "%d.%dV", volts, millivolts);
+    GFX_setCursor(gfx, x - GFX_getUTF8Width(gfx, "100%") - 2, y + 9);
+    GFX_printf(gfx, "%s", battery_text);
     // 绘制电池外框 | Draw battery outline
     GFX_fillRect(gfx, x, y, iw, 10, GFX_WHITE);   // 白色填充 | White fill
     GFX_drawRect(gfx, x, y, iw, 10, GFX_BLACK);   // 黑色边框 | Black border
@@ -397,57 +650,6 @@ static uint8_t GetWeekOfYear(uint8_t year, uint8_t mon, uint8_t mday, uint8_t wd
 }
 
 /**
- * @brief 绘制日期头部信息(用于MODE_CALENDAR模式)
- *        Draw date header information (for MODE_CALENDAR mode)
- *
- * @param gfx   图形上下文 | Graphics context
- * @param x     起始X坐标 | Start X coordinate
- * @param y     起始Y坐标 | Start Y coordinate
- * @param tm    公历时间结构体 | Gregorian time structure
- * @param Lunar 农历日期结构体 | Lunar date structure
- * @param data  GUI数据 | GUI data
- *
- * 显示内容(Display content)：
- * - 第1行：年月(红色数字+黑色汉字) + 农历日期 + ISO周数
- * - 第2行：农历干支年 + 生肖
- * - 右上角：电池图标+电压 + WiFi名称
- */
-static void DrawDateHeader(Adafruit_GFX* gfx, int16_t x, int16_t y, tm_t* tm, struct Lunar_Date* Lunar,
-                           gui_data_t* data) {
-    // 绘制公历年月(大字体) | Draw Gregorian year and month (large font)
-    GFX_setCursor(gfx, x, y - 2);
-    GFX_printf_styled(gfx, GFX_RED, GFX_WHITE, u8g2_font_helvB18_tn, "%d", tm->tm_year + YEAR0);
-    GFX_printf_styled(gfx, GFX_BLACK, GFX_WHITE, u8g2_font_wqy12_t_lunar, "年");
-    GFX_printf_styled(gfx, GFX_RED, GFX_WHITE, u8g2_font_helvB18_tn, "%d", tm->tm_mon + 1);
-    GFX_printf_styled(gfx, GFX_BLACK, GFX_WHITE, u8g2_font_wqy12_t_lunar, "月");
-
-    int16_t tx = gfx->tx;  // 记录当前文字位置 | Save current text position
-    int16_t ty = y;
-
-    // 绘制农历日期和周数 | Draw lunar date and week number
-    GFX_setFont(gfx, u8g2_font_wqy9_t_lunar);
-    GFX_setCursor(gfx, tx, ty);
-    if (Lunar->IsLeap) GFX_printf(gfx, " ");  // 闰月前加空格对齐 | Add space for leap month alignment
-    GFX_printf(gfx, "%s%s%s", Lunar_MonthLeapString[Lunar->IsLeap], Lunar_MonthString[Lunar->Month],
-               Lunar_DateString[Lunar->Date]);
-    GFX_setTextColor(gfx, GFX_RED, GFX_WHITE);
-    GFX_printf(gfx, " [%d周]", GetWeekOfYear(tm->tm_year, tm->tm_mon, tm->tm_mday, tm->tm_wday));
-
-    // 绘制农历干支年和生肖 | Draw lunar stem-branch year and zodiac
-    GFX_setCursor(gfx, tx, ty - 14);
-    GFX_setTextColor(gfx, GFX_BLACK, GFX_WHITE);
-    GFX_printf(gfx, " %s%s年", Lunar_StemStrig[LUNAR_GetStem(Lunar)], Lunar_BranchStrig[LUNAR_GetBranch(Lunar)]);
-    GFX_setTextColor(gfx, GFX_RED, GFX_WHITE);
-    GFX_printf(gfx, " [%s]", Lunar_ZodiacString[LUNAR_GetZodiac(Lunar)]);
-
-    // 绘制右侧信息：电池和WiFi名称 | Draw right side info: battery and WiFi name
-    GFX_setTextColor(gfx, GFX_BLACK, GFX_WHITE);
-    DrawBattery(gfx, data->width - 10 - 2, data->height > 300 ? 16 : 6, 20, data->voltage_mv);
-    GFX_setCursor(gfx, data->width - GFX_getUTF8Width(gfx, data->ssid) - 10, y);
-    GFX_printf(gfx, "%s", data->ssid);
-}
-
-/**
  * @brief 绘制星期头部栏
  *        Draw week header bar
  *
@@ -459,13 +661,18 @@ static void DrawDateHeader(Adafruit_GFX* gfx, int16_t x, int16_t y, tm_t* tm, st
  * 显示7个星期标签，周末(周六/周日)用红色背景显示
  * Displays 7 weekday labels, weekends (Sat/Sun) shown with red background
  */
-static void DrawWeekHeader(Adafruit_GFX* gfx, int16_t x, int16_t y, gui_data_t* data) {
+static void DrawWeekHeaderArea(Adafruit_GFX* gfx, int16_t x, int16_t y, int16_t area_w, int16_t area_h,
+                               gui_data_t* data) {
+    if (area_w <= 0) area_w = data->width - 2 * x;
+    if (area_h <= 0) area_h = data->height > 300 ? 32 : 24;
+
     GFX_setFont(gfx, data->height > 300 ? u8g2_font_wqy12_t_lunar : u8g2_font_wqy9_t_lunar);
-    uint8_t w = (data->width - 2 * x) / 7;  // 每列宽度 | Width per column
-    uint8_t h = data->height > 300 ? 32 : 24;  // 行高 | Row height
-    uint8_t r = (data->width - 2 * x) % 7;     // 剩余像素分配给最后一列 | Remaining pixels for last column
+    uint8_t w = (uint8_t)(area_w / 7);  // 每列宽度 | Width per column
+    uint8_t h = (uint8_t)area_h;        // 行高 | Row height
+    uint8_t r = (uint8_t)(area_w % 7);  // 剩余像素分配给最后一列 | Remaining pixels for last column
     uint8_t fh = (h - GFX_getFontHeight(gfx)) / 2 + GFX_getFontAscent(gfx) + 1;  // 垂直居中 | Vertical center
-    int16_t cw = GFX_getUTF8Width(gfx, Lunar_DayString[0]);
+    char day_name[4];
+    int16_t cw = GFX_getUTF8Width(gfx, LUNAR_GetDayName(0, day_name, sizeof(day_name)));
     for (int i = 0; i < 7; i++) {
         // 根据一周起始日设置调整显示顺序 | Adjust display order based on week start setting
         uint8_t day = (data->week_start + i) % 7;
@@ -473,7 +680,7 @@ static void DrawWeekHeader(Adafruit_GFX* gfx, int16_t x, int16_t y, gui_data_t* 
         GFX_fillRect(gfx, x + i * w, y, i == 6 ? (w + r) : w, h, bg);
         GFX_setTextColor(gfx, GFX_WHITE, bg);
         GFX_setCursor(gfx, x + (w - cw) / 2 + i * w, y + fh);
-        GFX_printf(gfx, "%s", Lunar_DayString[day]);
+        GFX_printf(gfx, "%s", LUNAR_GetDayName(day, day_name, sizeof(day_name)));
     }
 }
 
@@ -496,21 +703,28 @@ static void DrawWeekHeader(Adafruit_GFX* gfx, int16_t x, int16_t y, gui_data_t* 
  * - 当天用红色圆圈高亮显示 | Current day highlighted with red circle
  * - 周末日期用红色显示 | Weekends shown in red
  */
-static void DrawMonthDays(Adafruit_GFX* gfx, int16_t x, int16_t y, tm_t* tm, struct Lunar_Date* Lunar,
-                          gui_data_t* data) {
+static void DrawMonthDaysArea(Adafruit_GFX* gfx, int16_t x, int16_t y, int16_t area_w, int16_t area_h,
+                              tm_t* tm, gui_data_t* data) {
+    uint16_t year = tm->tm_year + YEAR0;
+    uint8_t month = tm->tm_mon + 1;
+    const month_render_cache_t* month_cache = PrepareMonthRenderCache(year, month);
+
     // 获取本月1号是星期几 | Get which day of week is the 1st day of month
-    uint8_t firstDayWeek = get_first_day_week(tm->tm_year + YEAR0, tm->tm_mon + 1);
+    uint8_t firstDayWeek = get_first_day_week(year, month);
     // 根据用户设置的一周起始日调整首日位置 | Adjust first day position based on user's week start setting
     int8_t adjustedFirstDay = (firstDayWeek - data->week_start + 7) % 7;
     // 获取本月天数 | Get number of days in this month
-    uint8_t monthMaxDays = thisMonthMaxDays(tm->tm_year + YEAR0, tm->tm_mon + 1);
+    uint8_t monthMaxDays = (month_cache != NULL) ? month_cache->days : thisMonthMaxDays((uint8_t)year, month);
     // 计算需要的行数 | Calculate required rows
     // 公式：1 + (总天数 - 第一周剩余天数 + 6) / 7
     uint8_t monthDayRows = 1 + (monthMaxDays - (7 - adjustedFirstDay) + 6) / 7;
 
+    if (area_w <= 0) area_w = data->width - x - 10;
+    if (area_h <= 0) area_h = data->height - y - 10;
+
     // 计算每个单元格的宽度和高度 | Calculate cell width and height
-    int16_t bw = (data->width - x - 10) / 7;
-    int16_t bh = (data->height - y - 10) / monthDayRows;
+    int16_t bw = area_w / 7;
+    int16_t bh = area_h / monthDayRows;
     bool large = data->height > 300;
 
     // 大屏幕绘制网格分隔线(虚线) | Draw grid lines (dotted) for large screens
@@ -525,18 +739,16 @@ static void DrawMonthDays(Adafruit_GFX* gfx, int16_t x, int16_t y, tm_t* tm, str
 
     // 遍历绘制每一天 | Iterate through each day of the month
     for (uint8_t i = 0; i < monthMaxDays; i++) {
-        uint16_t year = tm->tm_year + YEAR0;
-        uint8_t month = tm->tm_mon + 1;
+        app_feed_wdt();
+
         uint8_t day = i + 1;
+        const month_day_render_cache_t* day_cache = (month_cache != NULL) ? &month_cache->days_cache[i] : NULL;
 
         // actualWeek: 实际星期几(0=周日) | Actual day of week (0=Sunday)
         int16_t actualWeek = (firstDayWeek + i) % 7;
         // displayWeek: 根据用户设置调整后的显示列 | Display column after user setting adjustment
         int16_t displayWeek = (adjustedFirstDay + i) % 7;
         bool weekend = (actualWeek == 0) || (actualWeek == 6);
-
-        // 计算该天的农历日期 | Calculate lunar date for this day
-        LUNAR_SolarToLunar(Lunar, year, month, day);
 
         // 计算日期圆圈的半径和位置 | Calculate circle radius and position for date
         int16_t cr = large ? 13 : 10;  // 圆圈半径 | Circle radius
@@ -558,33 +770,18 @@ static void DrawMonthDays(Adafruit_GFX* gfx, int16_t x, int16_t y, tm_t* tm, str
         GFX_printf(gfx, "%d", day);
 
         // 准备节日/农历信息 | Prepare festival/lunar information
-        char festival_buf[10] = {0};
-        const char* festival;
+        const char* festival = (day_cache != NULL && day_cache->label[0] != '\0') ? day_cache->label : "--";
         GFX_setFont(gfx, large ? u8g2_font_wqy12_t_lunar : u8g2_font_wqy9_t_lunar);
         GFX_setFontMode(gfx, 1);  // transparent | 透明模式
-        if (GetFestival(year, month, day, actualWeek, Lunar, festival_buf)) {
-            // 有节日：显示节日名称 | Has festival: show festival name
-            festival = festival_buf;
+        if (day_cache != NULL && day_cache->is_festival != 0U) {
             if (day != tm->tm_mday) GFX_setTextColor(gfx, GFX_RED, GFX_WHITE);  // 节日用红色 | Festivals in red
-        } else {
-            if (Lunar->Date == 1) {
-                // 农历初一：显示月份 | Lunar 1st day: show month name
-                // snprintf优化：仅在需要合成字符串时使用 | snprintf optimization: only use when composing strings
-                snprintf(festival_buf, sizeof(festival_buf), "%s%s", Lunar_MonthLeapString[Lunar->IsLeap],
-                         Lunar_MonthString[Lunar->Month]);
-                festival = festival_buf;
-            } else {
-                // 普通日子：直接使用指针，避免复制 | Normal day: use direct pointer, avoid copying
-                festival = Lunar_DateString[Lunar->Date];  // Direct pointer, no copy
-            }
         }
         // 绘制节日/农历文字 | Draw festival/lunar text
         GFX_setCursor(gfx, bx + (2 * cr - GFX_getUTF8Width(gfx, festival)) / 2, gfx->ty + GFX_getFontHeight(gfx) + 3);
         GFX_printf(gfx, "%s", festival);
 
         // 绘制放假/调休标记 | Draw holiday/workday marker
-        bool work = false;
-        if (year == HOLIDAY_YEAR && GetHoliday(month, day, &work)) {
+        if (day_cache != NULL && day_cache->has_holiday_mark != 0U) {
             // 如果是当天，在红色圆圈内绘制白底红圈标记 | If current day, draw white-filled red circle marker
             if (day == tm->tm_mday) {
                 uint16_t rx = bx + (large ? 36 : 27);
@@ -595,30 +792,13 @@ static void DrawMonthDays(Adafruit_GFX* gfx, int16_t x, int16_t y, tm_t* tm, str
             }
             GFX_setFont(gfx, u8g2_font_wqy9_t_lunar);
             // 调休上班用黑色，休假用红色 | Workday in black, holiday in red
-            GFX_setTextColor(gfx, work ? GFX_BLACK : GFX_RED, GFX_WHITE);
+            GFX_setTextColor(gfx, day_cache->holiday_work ? GFX_BLACK : GFX_RED, GFX_WHITE);
             GFX_setCursor(gfx, bx + (large ? 31 : 22), by + 3);
-            GFX_printf(gfx, "%s", work ? "班" : "休");
+            GFX_printf(gfx, "%s", day_cache->holiday_work ? "班" : "休");
         }
-    }
-}
 
-/**
- * @brief 绘制完整日历界面(MODE_CALENDAR模式)
- *        Draw complete calendar interface (MODE_CALENDAR mode)
- *
- * @param gfx   图形上下文 | Graphics context
- * @param tm    公历时间 | Gregorian time
- * @param Lunar 农历日期 | Lunar date
- * @param data  GUI数据 | GUI data
- *
- * 组合调用三个子函数绘制完整月历
- * Combines three sub-functions to draw complete monthly calendar
- */
-static void DrawCalendar(Adafruit_GFX* gfx, tm_t* tm, struct Lunar_Date* Lunar, gui_data_t* data) {
-    bool large = data->height > 300;
-    DrawDateHeader(gfx, 10, large ? 38 : 28, tm, Lunar, data);  // 绘制头部 | Draw header
-    DrawWeekHeader(gfx, 10, large ? 44 : 32, data);             // 绘制星期栏 | Draw week header
-    DrawMonthDays(gfx, 10, large ? 84 : 64, tm, Lunar, data);   // 绘制日历主体 | Draw calendar body
+        app_feed_wdt();
+    }
 }
 
 // clang-format off
@@ -674,8 +854,8 @@ static void DrawTime(Adafruit_GFX* gfx, tm_t* tm, int16_t x, int16_t y, uint16_t
     Draw7Number(gfx, tm->tm_hour, x, y, cS, GFX_BLACK, GFX_WHITE, nD);
     x += (nD * (11 * cS + 2) - 2 * cS) + 2 * cS;
     // 绘制冒号(两个方块) | Draw colon (two squares)
-    GFX_fillRect(gfx, x, y + 4.5 * cS + 1, 2 * cS, 2 * cS, GFX_BLACK);
-    GFX_fillRect(gfx, x, y + 13.5 * cS + 3, 2 * cS, 2 * cS, GFX_BLACK);
+    GFX_fillRect(gfx, x, y + (9 * cS) / 2 + 1, 2 * cS, 2 * cS, GFX_BLACK);
+    GFX_fillRect(gfx, x, y + (27 * cS) / 2 + 3, 2 * cS, 2 * cS, GFX_BLACK);
     x += 4 * cS;
     // 绘制分钟 | Draw minutes
     Draw7Number(gfx, tm->tm_min, x, y, cS, GFX_BLACK, GFX_WHITE, nD);
@@ -717,443 +897,657 @@ static uint16_t s_time_window_y = 0;                      // local Y inside TIME
 static uint16_t s_time_window_w = TIME_REFRESH_WIDTH;    // width of current refresh window | 当前刷新窗口的宽度
 static uint16_t s_time_window_h = TIME_REFRESH_HEIGHT;   // height of current refresh window | 当前刷新窗口的高度
 
-// Draw calendar on the right side of the split screen (starting at x=SPLIT_RIGHT_START)
-// 在分屏的右侧绘制日历(从x=SPLIT_RIGHT_START开始)
-/**
- * @brief 在分屏右侧绘制日历界面
- *        Draw calendar interface on right side of split screen
- *
- * @param gfx   图形上下文 | Graphics context
- * @param tm    公历时间 | Gregorian time
- * @param Lunar 农历日期 | Lunar date
- * @param data  GUI数据 | GUI data
- *
- * 布局特点(Layout features)：
- * - 从x=392px开始，宽度408px | Starts at x=392px, width 408px
- * - 垂直分隔线连接时钟侧 | Vertical separator line connecting clock side
- * - 顶部显示WiFi名称和电池信息 | Top shows WiFi name and battery info
- * - 标准月历布局：星期头+日期网格 | Standard calendar layout: week header + date grid
- */
-static void DrawCalendar_Right(Adafruit_GFX* gfx, tm_t* tm, struct Lunar_Date* Lunar, gui_data_t* data) {
-    int16_t offset_x = SPLIT_RIGHT_START;  // 右侧起始X坐标 | Right side start X
-    int16_t right_width = data->width - SPLIT_RIGHT_START;  // 右侧宽度 | Right side width
-    bool large = data->height > 300;
+static void ui_draw_date_ymd(Adafruit_GFX* gfx, int16_t x, int16_t y, tm_t* tm, uint8_t flags) {
+    const char* fmt = (flags & UI_TEXT_FLAG_ZERO_PAD) ? "%02d" : "%d";
 
-    // Draw vertical separator line (shortened to match reserved bottom area)
-    // Line from y=70 to y=420 (60px margin at top and bottom)
-    // 绘制垂直分隔线(缩短以匹配保留的底部区域)
-    // 线从y=70到y=420(顶部和底部各60px边距)
-    int16_t separator_top = 70;
-    int16_t separator_bottom = large ? 420 : data->height - 10;
-    GFX_drawFastVLine(gfx, offset_x - 2, separator_top, separator_bottom - separator_top, GFX_BLACK);
-
-    // Top header: BT name on left, battery+voltage on right (same line)
-    // Use wqy9 font for both to ensure consistent alignment
-    // 顶部头：左侧蓝牙名称，右侧电池+电压(同一行)
-    // 两者都使用wqy9字体以确保一致对齐
-    int16_t header_y = large ? 86 : 78;  // +60 for top margin | 顶部边距+60
-
-    // Set text color before drawing battery (DrawBattery doesn't set its own color)
-    // 在绘制电池前设置文字颜色(DrawBattery不设置自己的颜色)
-    GFX_setTextColor(gfx, GFX_BLACK, GFX_WHITE);
-
-    // Battery icon + voltage on right side
-    // DrawBattery uses wqy9 font, battery icon height=10, voltage text baseline at y+9
-    // 右侧电池图标+电压
-    // DrawBattery使用wqy9字体，电池图标高度=10，电压文字基线在y+9
-    DrawBattery(gfx, data->width - 10 - 2, header_y - 9, 20, data->voltage_mv);
-
-    // BT name on left side of calendar area (use wqy9 to match voltage font)
-    // 日历区域左侧的蓝牙名称(使用wqy9以匹配电压字体)
-    GFX_setFont(gfx, u8g2_font_wqy9_t_lunar);
-    GFX_setTextColor(gfx, GFX_BLACK, GFX_WHITE);
-    GFX_setCursor(gfx, offset_x + 8, header_y);
-    GFX_printf(gfx, "%s", data->ssid);
-
-    // Week header for right side - positioned below the header
-    // 右侧的星期头 - 位于头部下方
-    int16_t week_y = large ? 96 : 86;  // +60 for top margin | 顶部边距+60
-    int16_t week_x = offset_x + 5;
-    GFX_setFont(gfx, large ? u8g2_font_wqy12_t_lunar : u8g2_font_wqy9_t_lunar);
-    uint8_t w = (right_width - 10) / 7;  // 每列宽度 | Width per column
-    uint8_t h = large ? 32 : 24;         // 星期头高度 | Week header height
-    uint8_t r = (right_width - 10) % 7;  // 剩余像素 | Remaining pixels
-    uint8_t fh = (h - GFX_getFontHeight(gfx)) / 2 + GFX_getFontAscent(gfx) + 1;
-    int16_t cw = GFX_getUTF8Width(gfx, Lunar_DayString[0]);
-    for (int i = 0; i < 7; i++) {
-        uint8_t day = (data->week_start + i) % 7;
-        uint16_t bg = (day == 0 || day == 6) ? GFX_RED : GFX_BLACK;
-        GFX_fillRect(gfx, week_x + i * w, week_y, i == 6 ? (w + r) : w, h, bg);
-        GFX_setTextColor(gfx, GFX_WHITE, bg);
-        GFX_setCursor(gfx, week_x + (w - cw) / 2 + i * w, week_y + fh);
-        GFX_printf(gfx, "%s", Lunar_DayString[day]);
-    }
-
-    // Month days for right side - positioned below week header
-    int16_t days_x = offset_x + 5;
-    int16_t days_y = large ? 136 : 116;  // +60 for top margin
-
-    uint8_t firstDayWeek = get_first_day_week(tm->tm_year + YEAR0, tm->tm_mon + 1);
-    int8_t adjustedFirstDay = (firstDayWeek - data->week_start + 7) % 7;
-    uint8_t monthMaxDays = thisMonthMaxDays(tm->tm_year + YEAR0, tm->tm_mon + 1);
-    uint8_t monthDayRows = 1 + (monthMaxDays - (7 - adjustedFirstDay) + 6) / 7;
-
-    // Match clock side layout - leave bottom area reserved (y=420-480)
-    // Content area: y=60 to y=420 (360px height with 60px top/bottom margins)
-    int16_t calendar_bottom = large ? 420 : data->height - 10;  // Leave 60px at bottom
-    int16_t bw = (right_width - 10) / 7;
-    int16_t bh = (calendar_bottom - days_y) / monthDayRows;
-
-    if (large) {
-        for (uint8_t i = 1; i < monthDayRows; i++)
-            GFX_drawDottedLine(gfx, days_x, days_y + i * bh, days_x + 7 * bw - 1, days_y + i * bh, GFX_BLACK, 1, 5);
-        for (uint8_t i = 1; i < 7; i++)
-            GFX_drawDottedLine(gfx, days_x + i * bw, days_y, days_x + i * bw, days_y + monthDayRows * bh - 1, GFX_BLACK, 1, 5);
-    }
-
-    struct Lunar_Date dayLunar;
-    for (uint8_t i = 0; i < monthMaxDays; i++) {
-        uint16_t year = tm->tm_year + YEAR0;
-        uint8_t month = tm->tm_mon + 1;
-        uint8_t day = i + 1;
-
-        int16_t actualWeek = (firstDayWeek + i) % 7;
-        int16_t displayWeek = (adjustedFirstDay + i) % 7;
-        bool weekend = (actualWeek == 0) || (actualWeek == 6);
-
-        LUNAR_SolarToLunar(&dayLunar, year, month, day);
-
-        int16_t cr = large ? 13 : 10;
-        int16_t bx = days_x + (bw - 2 * cr) / 2 + displayWeek * bw;
-        int16_t by = days_y + (bh - 2 * cr) / 2 + (i + adjustedFirstDay) / 7 * bh + 3;
-
-        if (day == tm->tm_mday) {
-            GFX_fillCircle(gfx, bx + cr, by + cr - 3, 2 * cr, GFX_RED);
-            GFX_setTextColor(gfx, GFX_WHITE, GFX_RED);
-        } else {
-            GFX_setTextColor(gfx, weekend ? GFX_RED : GFX_BLACK, GFX_WHITE);
-        }
-
-        GFX_setFont(gfx, large ? u8g2_font_helvB18_tn : u8g2_font_helvB14_tn);
-        GFX_setCursor(gfx, bx + (2 * cr - GFX_getUTF8Widthf(gfx, "%d", day)) / 2, by - (cr - GFX_getFontHeight(gfx)));
-        GFX_printf(gfx, "%d", day);
-
-        char festival_buf[10] = {0};
-        const char* festival;
-        GFX_setFont(gfx, large ? u8g2_font_wqy12_t_lunar : u8g2_font_wqy9_t_lunar);
-        GFX_setFontMode(gfx, 1);
-        if (GetFestival(year, month, day, actualWeek, &dayLunar, festival_buf)) {
-            festival = festival_buf;
-            if (day != tm->tm_mday) GFX_setTextColor(gfx, GFX_RED, GFX_WHITE);
-        } else {
-            if (dayLunar.Date == 1) {
-                snprintf(festival_buf, sizeof(festival_buf), "%s%s", Lunar_MonthLeapString[dayLunar.IsLeap],
-                         Lunar_MonthString[dayLunar.Month]);
-                festival = festival_buf;
-            } else {
-                festival = Lunar_DateString[dayLunar.Date];  // Direct pointer, no copy
-            }
-        }
-        GFX_setCursor(gfx, bx + (2 * cr - GFX_getUTF8Width(gfx, festival)) / 2, gfx->ty + GFX_getFontHeight(gfx) + 3);
-        GFX_printf(gfx, "%s", festival);
-
-        bool work = false;
-        if (year == HOLIDAY_YEAR && GetHoliday(month, day, &work)) {
-            if (day == tm->tm_mday) {
-                uint16_t rx = bx + (large ? 36 : 27);
-                uint16_t ry = by - 2;
-                uint8_t cr2 = large ? 10 : 8;
-                GFX_fillCircle(gfx, rx, ry, cr2, GFX_WHITE);
-                GFX_drawCircle(gfx, rx, ry, cr2, GFX_RED);
-            }
-            GFX_setFont(gfx, u8g2_font_wqy9_t_lunar);
-            GFX_setTextColor(gfx, work ? GFX_BLACK : GFX_RED, GFX_WHITE);
-            GFX_setCursor(gfx, bx + (large ? 31 : 22), by + 3);
-            GFX_printf(gfx, "%s", work ? "班" : "休");
-        }
-    }
+    GFX_setCursor(gfx, x, y);
+    GFX_printf_styled(gfx, GFX_BLACK, GFX_WHITE, u8g2_font_helvB18_tn, "%d", tm->tm_year + YEAR0);
+    GFX_printf_styled(gfx, GFX_BLACK, GFX_WHITE, u8g2_font_wqy12_t_lunar, "年");
+    GFX_printf_styled(gfx, GFX_BLACK, GFX_WHITE, u8g2_font_helvB18_tn, fmt, tm->tm_mon + 1);
+    GFX_printf_styled(gfx, GFX_BLACK, GFX_WHITE, u8g2_font_wqy12_t_lunar, "月");
+    GFX_printf_styled(gfx, GFX_BLACK, GFX_WHITE, u8g2_font_helvB18_tn, fmt, tm->tm_mday);
+    GFX_printf_styled(gfx, GFX_BLACK, GFX_WHITE, u8g2_font_wqy12_t_lunar, "日");
 }
 
-// Draw clock on the left side of the split screen (for partial refresh)
-// width_limit: the width of the left area (should be SPLIT_LEFT_WIDTH)
-// Layout: Top line at y=68 (aligned with calendar week header bottom)
-//         Time display centered between top line and bottom line
-//         Bottom line at y=300, bottom info below, leaving space for future content
-// 在分屏的左侧绘制时钟(用于局部刷新)
-// width_limit: 左侧区域的宽度(应该是SPLIT_LEFT_WIDTH)
-// 布局：顶部线在y=68(与日历星期头底部对齐)
-//       时间显示在顶部线和底部线之间居中
-//       底部线在y=300，底部信息在下方，为未来内容留出空间
-/**
- * @brief 在分屏左侧绘制时钟界面
- *        Draw clock interface on left side of split screen
- *
- * @param gfx         图形上下文 | Graphics context
- * @param tm          公历时间 | Gregorian time
- * @param Lunar       农历日期 | Lunar date
- * @param data        GUI数据 | GUI data
- * @param width_limit 左侧区域宽度 | Left area width
- *
- * 布局设计(Layout design)：
- * - 上下各60px边距 | 60px margin at top and bottom
- * - 顶部：年月日 + 农历日期 + 温度 | Top: YMD + lunar date + temperature
- * - 中部：大号7段数码管时间显示 | Middle: Large 7-segment time display
- * - 底部：干支年/生肖 + 周数 + 节气倒计时 | Bottom: Stem-branch year + week number + solar term countdown
- * - 只使用黑色(局部刷新不支持彩色) | Only use black (partial refresh doesn't support color)
- */
-static void DrawClock_Left(Adafruit_GFX* gfx, tm_t* tm, struct Lunar_Date* Lunar, gui_data_t* data, uint16_t width_limit) {
-    // Use black for partial refresh (no red support)
-    // 局部刷新使用黑色(不支持红色)
-    uint16_t text_color = GFX_BLACK;
+static int16_t ui_temperature_width(Adafruit_GFX* gfx, int8_t temperature, const char* suffix) {
+    int8_t temp = temperature;
+    int16_t digit_width;
+    int16_t width;
 
-    int16_t padding = 15;
-
-    // Layout constants for compact design with 60px top/bottom margins
-    // Content area: y=60 to y=420 (360px height)
-    // 紧凑设计的布局常量，上下各60px边距
-    // 内容区域：y=60到y=420 (高度360px)
-    int16_t top_line_y = 128;      // Aligned with calendar week header bottom (+60) | 与日历星期头底部对齐
-    int16_t bottom_line_y = 360;   // Moved up to leave space at bottom (+60) | 上移以在底部留空间
-    int16_t bottom_info_y1 = 380;  // First line of bottom info (+60) | 底部信息第一行
-    int16_t bottom_info_y2 = 404;  // Second line of bottom info (+60) | 底部信息第二行
-
-    // === Line 1: Year/Month/Day with larger font ===
-    // Use helvB18 for numbers and wqy12 for Chinese characters
-    // === 第1行：年/月/日，使用大字体 ===
-    // 数字使用helvB18，汉字使用wqy12
-    GFX_setCursor(gfx, padding, 92);  // +60 for top margin | 顶部边距+60
-    GFX_setTextColor(gfx, text_color, GFX_WHITE);
     GFX_setFont(gfx, u8g2_font_helvB18_tn);
-    GFX_printf(gfx, "%d", tm->tm_year + YEAR0);
-    GFX_setFont(gfx, u8g2_font_wqy12_t_lunar);
-    GFX_printf(gfx, "年");
-    GFX_setFont(gfx, u8g2_font_helvB18_tn);
-    GFX_printf(gfx, "%d", tm->tm_mon + 1);
-    GFX_setFont(gfx, u8g2_font_wqy12_t_lunar);
-    GFX_printf(gfx, "月");
-    GFX_setFont(gfx, u8g2_font_helvB18_tn);
-    GFX_printf(gfx, "%d", tm->tm_mday);
-    GFX_setFont(gfx, u8g2_font_wqy12_t_lunar);
-    GFX_printf(gfx, "日");
-
-    // === Line 2: Lunar date on left, Temperature on right ===
-    // === 第2行：左侧农历日期，右侧温度 ===
-    GFX_setFont(gfx, u8g2_font_wqy12_t_lunar);
-    GFX_setCursor(gfx, padding, 115);  // +60 for top margin | 顶部边距+60
-    GFX_printf(gfx, "%s%s%s", Lunar_MonthLeapString[Lunar->IsLeap],
-               Lunar_MonthString[Lunar->Month], Lunar_DateString[Lunar->Date]);
-
-    // Temperature on right side with larger number font
-    // 右侧温度，数字使用大字体
-    GFX_setFont(gfx, u8g2_font_helvB18_tn);
-    // Calculate temperature number width without snprintf
-    // 计算温度数字宽度，不使用snprintf(优化性能)
-    int8_t temp = data->temperature;
-    int16_t digit_width = GFX_getUTF8Width(gfx, "0");
-    int16_t temp_num_width = digit_width;  // At least one digit | 至少一位数字
+    digit_width = GFX_getUTF8Width(gfx, "0");
+    width = digit_width;
     if (temp < 0) {
-        temp_num_width += GFX_getUTF8Width(gfx, "-");  // 负号宽度 | Minus sign width
+        width += GFX_getUTF8Width(gfx, "-");
         temp = -temp;
     }
-    if (temp >= 10) temp_num_width += digit_width;  // 十位 | Tens digit
-    if (temp >= 100) temp_num_width += digit_width;  // 百位(不太可能) | Hundreds digit (unlikely)
-    GFX_setFont(gfx, u8g2_font_wqy12_t_lunar);
-    int16_t degree_width = GFX_getUTF8Width(gfx, "℃");
-    int16_t total_temp_width = temp_num_width + degree_width;
+    if (temp >= 10) width += digit_width;
+    if (temp >= 100) width += digit_width;
 
+    GFX_setFont(gfx, u8g2_font_wqy12_t_lunar);
+    width += GFX_getUTF8Width(gfx, suffix);
+    return width;
+}
+
+static void ui_draw_temperature(Adafruit_GFX* gfx, int16_t x, int16_t y, int16_t w, gui_data_t* data, uint8_t flags) {
+    if ((flags & UI_TEXT_FLAG_RIGHT_ALIGN) && w > 0) {
+        x += w - ui_temperature_width(gfx, data->temperature, "℃");
+    }
+
+    GFX_setTextColor(gfx, GFX_BLACK, GFX_WHITE);
     GFX_setFont(gfx, u8g2_font_helvB18_tn);
-    GFX_setCursor(gfx, width_limit - padding - total_temp_width, 115);  // +60 for top margin | 顶部边距+60
+    GFX_setCursor(gfx, x, y);
     GFX_printf(gfx, "%d", data->temperature);
     GFX_setFont(gfx, u8g2_font_wqy12_t_lunar);
     GFX_printf(gfx, "℃");
-
-    // Top horizontal line (aligned with calendar week header bottom)
-    // 顶部水平线(与日历星期头底部对齐)
-    GFX_drawFastHLine(gfx, padding, top_line_y, width_limit - 2 * padding, GFX_BLACK);
-
-    // === Center: Time display ===
-    // === 中部：时间显示 ===
-    uint16_t cS = 6;  // Scale factor for 7-segment display | 7段数码管缩放因子
-    uint16_t nD = 2;  // Number of digits | 数字位数
-    uint16_t time_width = 2 * (nD * (11 * cS + 2) - 2 * cS) + 4 * cS;  // 272
-    uint16_t time_height = 20 * cS + 4;  // 124
-
-    // Center time between top line and bottom line
-    // 在顶部线和底部线之间居中时间
-    int16_t available_height = bottom_line_y - top_line_y;
-    int16_t time_x = (TIME_REFRESH_WIDTH - time_width) / 2;
-    int16_t time_y = top_line_y + (available_height - time_height) / 2;
-    DrawTime(gfx, tm, time_x, time_y, cS, nD);
-
-    // Bottom horizontal line (moved up)
-    // 底部水平线(上移)
-    GFX_drawFastHLine(gfx, padding, bottom_line_y, width_limit - 2 * padding, GFX_BLACK);
-
-    // === Bottom section: Left side - Lunar year + Week number ===
-    // Use wqy12 font for bottom text
-    // === 底部区域：左侧 - 农历干支年 + 周数 ===
-    // 底部文字使用wqy12字体
-    GFX_setFont(gfx, u8g2_font_wqy12_t_lunar);
-    GFX_setTextColor(gfx, text_color, GFX_WHITE);
-
-    // Left column: Lunar year on first line, Week number on second line
-    // 左列：第一行农历干支年，第二行周数
-    GFX_setCursor(gfx, padding, bottom_info_y1);
-    GFX_printf(gfx, "%s%s年", Lunar_StemStrig[LUNAR_GetStem(Lunar)], Lunar_BranchStrig[LUNAR_GetBranch(Lunar)]);
-
-    GFX_setCursor(gfx, padding, bottom_info_y2);
-    GFX_printf(gfx, "%d周", GetWeekOfYear(tm->tm_year, tm->tm_mon, tm->tm_mday, tm->tm_wday));
-
-    // === Bottom section: Right side - Next solar term countdown ===
-    // === 底部区域：右侧 - 下一个节气倒计时 ===
-    uint8_t days_to_jieqi = 0;
-    uint8_t next_jieqi = GetJieQiStr(tm->tm_year + YEAR0, tm->tm_mon + 1, tm->tm_mday, &days_to_jieqi);
-
-    if (days_to_jieqi == 0) {
-        // Today is the solar term - show only solar term name
-        // 今天就是节气日 - 只显示节气名称
-        const char* jq_str = JieQiStr[next_jieqi % 24];
-        GFX_setCursor(gfx, width_limit - padding - GFX_getUTF8Width(gfx, jq_str), bottom_info_y1);
-        GFX_printf(gfx, "%s", jq_str);
-    } else {
-        // Right column: "离xx" on first line, "还有xx天" on second line
-        // 右列：第一行"离xx"，第二行"还有xx天"
-        const char* jq_name = JieQiStr[next_jieqi % 24];
-        int16_t jq_width = GFX_getUTF8Width(gfx, "离") + GFX_getUTF8Width(gfx, jq_name);
-        GFX_setCursor(gfx, width_limit - padding - jq_width, bottom_info_y1);
-        GFX_printf(gfx, "离%s", jq_name);
-
-        // Calculate width for "还有X天" - estimate digit width using "8" as reference
-        // 计算"还有X天"的宽度 - 使用"8"作为参考估算数字宽度(避免snprintf)
-        int16_t days_width = GFX_getUTF8Width(gfx, "还有") + GFX_getUTF8Width(gfx, "8") +
-                             (days_to_jieqi >= 10 ? GFX_getUTF8Width(gfx, "8") : 0) + GFX_getUTF8Width(gfx, "天");
-        GFX_setCursor(gfx, width_limit - padding - days_width, bottom_info_y2);
-        GFX_printf(gfx, "还有%d天", days_to_jieqi);
-    }
-
 }
 
-// Draw the full split screen with both clock and calendar (for initial full refresh)
-// 绘制完整的分屏界面，包含时钟和日历(用于初始的全屏刷新)
-/**
- * @brief 绘制完整的分屏时钟+日历界面(MODE_CLOCK_CALENDAR模式)
- *        Draw complete split screen clock + calendar interface (MODE_CLOCK_CALENDAR mode)
- *
- * @param gfx   图形上下文 | Graphics context
- * @param tm    公历时间 | Gregorian time
- * @param Lunar 农历日期 | Lunar date
- * @param data  GUI数据 | GUI data
- *
- * 布局(Layout)：
- * - 左侧(0-392px)：时钟显示，支持后续局部刷新 | Left (0-392px): Clock, supports partial refresh
- * - 右侧(392-800px)：月历显示，保持静态 | Right (392-800px): Calendar, remains static
- * - 中间有垂直分隔线 | Vertical separator line in middle
- * - 顶部和底部有装饰横线 | Decorative horizontal lines at top and bottom
- *
- * 该函数用于首次全屏刷新，之后时钟部分使用DrawGUI_ClockOnly进行局部刷新
- * This function is used for initial full refresh, then clock part uses DrawGUI_ClockOnly for partial refresh
- */
-static void DrawClockCalendar_Full(Adafruit_GFX* gfx, tm_t* tm, struct Lunar_Date* Lunar, gui_data_t* data) {
-    // Draw horizontal lines at top and bottom of screen (30 pixels from edges)
-    // 在屏幕顶部和底部绘制水平线(距边缘30像素)
-    GFX_fillRect(gfx, 15, 45, data->width - 30, 2, GFX_BLACK);                 // Top line (2px thick) | 顶部线(2px粗)
-    GFX_fillRect(gfx, 15, data->height - 45, data->width - 30, 2, GFX_BLACK);  // Bottom line (2px thick) | 底部线(2px粗)
+static void ui_draw_jieqi(Adafruit_GFX* gfx, int16_t x, int16_t y1, int16_t y2, int16_t w, tm_t* tm) {
+    char jq_name[7];
+    uint8_t days = 0;
+    uint8_t jieqi = GetJieQiStr(tm->tm_year + YEAR0, tm->tm_mon + 1, tm->tm_mday, &days);
+    const char* jq_str;
+    int16_t text_w;
 
-    // Draw calendar on the right side
-    // 在右侧绘制日历
-    DrawCalendar_Right(gfx, tm, Lunar, data);
+    if (jieqi == 0xFF) return;
 
-    // Draw clock on the left side (full color for initial draw)
-    // 在左侧绘制时钟(初次绘制使用全彩色)
-    DrawClock_Left(gfx, tm, Lunar, data, SPLIT_LEFT_WIDTH);
-}
-
-/**
- * @brief 绘制全屏时钟界面(MODE_CLOCK模式)
- *        Draw full screen clock interface (MODE_CLOCK mode)
- *
- * @param gfx   图形上下文 | Graphics context
- * @param tm    公历时间 | Gregorian time
- * @param Lunar 农历日期 | Lunar date
- * @param data  GUI数据 | GUI data
- *
- * 注意：此模式也支持局部刷新，因此只使用黑色而不使用红色
- * Note: This mode also supports partial refresh, so only use black instead of red
- */
-static void DrawClock(Adafruit_GFX* gfx, tm_t* tm, struct Lunar_Date* Lunar, gui_data_t* data) {
-    // For partial refresh (clock mode), use black instead of red
-    // because partial refresh only supports black/white
-    // 为了支持局部刷新(时钟模式)，使用黑色代替红色
-    // 因为局部刷新只支持黑白两色
-    uint16_t text_color = GFX_BLACK;  // Changed from GFX_RED to GFX_BLACK | 从GFX_RED改为GFX_BLACK
-
-    uint8_t padding = data->height > 300 ? 100 : 40;
-    GFX_setCursor(gfx, padding, 36);
-    GFX_printf_styled(gfx, text_color, GFX_WHITE, u8g2_font_helvB18_tn, "%d", tm->tm_year + YEAR0);
-    GFX_printf_styled(gfx, GFX_BLACK, GFX_WHITE, u8g2_font_wqy12_t_lunar, "年");
-    GFX_printf_styled(gfx, text_color, GFX_WHITE, u8g2_font_helvB18_tn, "%02d", tm->tm_mon + 1);
-    GFX_printf_styled(gfx, GFX_BLACK, GFX_WHITE, u8g2_font_wqy12_t_lunar, "月");
-    GFX_printf_styled(gfx, text_color, GFX_WHITE, u8g2_font_helvB18_tn, "%02d", tm->tm_mday);
-    GFX_printf_styled(gfx, GFX_BLACK, GFX_WHITE, u8g2_font_wqy12_t_lunar, "日 ");
-
-    GFX_setCursor(gfx, padding, 58);
-    GFX_setFont(gfx, u8g2_font_wqy9_t_lunar);
-    GFX_printf(gfx, "星期%s", Lunar_DayString[tm->tm_wday]);
-    GFX_setCursor(gfx, 138, 58);
-    GFX_printf(gfx, "%s%s%s", Lunar_MonthLeapString[Lunar->IsLeap], Lunar_MonthString[Lunar->Month],
-               Lunar_DateString[Lunar->Date]);
-
-    DrawBattery(gfx, data->width - padding, 25, 20, data->voltage_mv);
-
-    char ssid[5] = {0};
-    int16_t ssid_len = strlen(data->ssid);
-    int16_t sw = GFX_getUTF8Width(gfx, "25℃[1234]");
-    memcpy(ssid, &data->ssid[ssid_len - 4], 4);
-    GFX_setCursor(gfx, data->width - padding - sw - 2, 58);
-    GFX_setFont(gfx, u8g2_font_wqy9_t_lunar);
-    GFX_printf(gfx, "%d℃[%s]", data->temperature, ssid);
-
-    GFX_drawFastHLine(gfx, padding - 10, 68, data->width - 2 * (padding - 10), GFX_BLACK);
-
-    uint16_t cS = data->height / 45;
-    uint16_t nD = 2;
-    uint16_t time_width = 2 * (nD * (11 * cS + 2) - 2 * cS) + 4 * cS;
-    uint16_t time_height = 20 * cS + 4;
-    int16_t time_x = (data->width - time_width) / 2;
-    int16_t time_y = (68 + (data->height - 68)) / 2 - time_height / 2;
-    DrawTime(gfx, tm, time_x, time_y, cS, nD);
-
-    GFX_drawFastHLine(gfx, padding - 10, data->height - 68, data->width - 2 * (padding - 10), GFX_BLACK);
-
-    GFX_setCursor(gfx, padding, data->height - 68 + 30);
     GFX_setFont(gfx, u8g2_font_wqy12_t_lunar);
-    GFX_printf(gfx, "%s%s", Lunar_StemStrig[LUNAR_GetStem(Lunar)], Lunar_BranchStrig[LUNAR_GetBranch(Lunar)]);
-    GFX_setTextColor(gfx, text_color, GFX_WHITE);
-    GFX_printf(gfx, "%s", Lunar_ZodiacString[LUNAR_GetZodiac(Lunar)]);
     GFX_setTextColor(gfx, GFX_BLACK, GFX_WHITE);
-    GFX_printf(gfx, "年");
-
-    GFX_setCursor(gfx, padding, data->height - 68 + 30 + 20);
-    GFX_printf(gfx, " %d周", GetWeekOfYear(tm->tm_year, tm->tm_mon, tm->tm_mday, tm->tm_wday));
-
-    uint8_t day = 0;
-    uint8_t JQday = GetJieQiStr(tm->tm_year + YEAR0, tm->tm_mon + 1, tm->tm_mday, &day);
-    if (day == 0) {
-        GFX_setCursor(gfx, data->width - GFX_getUTF8Width(gfx, "小暑") - padding, data->height - 68 + 30);
-        GFX_setTextColor(gfx, text_color, GFX_WHITE);
-        GFX_printf(gfx, "%s", JieQiStr[JQday % 24]);
-    } else {
-        GFX_setCursor(gfx, data->width - GFX_getUTF8Width(gfx, "离小暑") - padding, data->height - 68 + 30);
-        GFX_printf(gfx, "离");
-        GFX_setTextColor(gfx, text_color, GFX_WHITE);
-        GFX_printf(gfx, "%s", JieQiStr[JQday % 24]);
-        GFX_setTextColor(gfx, GFX_BLACK, GFX_WHITE);
-        // Calculate width without snprintf: "还有" + digits + "天"
-        int16_t day_width = GFX_getUTF8Width(gfx, "还有") + GFX_getUTF8Width(gfx, "天");
-        day_width += GFX_getUTF8Width(gfx, "0") * ((day >= 10) ? 2 : 1);
-        GFX_setCursor(gfx, data->width - day_width - padding, data->height - 68 + 30 + 20);
-        GFX_printf(gfx, "还有%d天", day);
+    jq_str = LUNAR_GetJieQiName(jieqi % 24, jq_name, sizeof(jq_name));
+    if (days == 0) {
+        text_w = GFX_getUTF8Width(gfx, jq_str);
+        GFX_setCursor(gfx, x + w - text_w, y1);
+        GFX_printf(gfx, "%s", jq_str);
+        return;
     }
+
+    text_w = GFX_getUTF8Width(gfx, "离") + GFX_getUTF8Width(gfx, jq_str);
+    GFX_setCursor(gfx, x + w - text_w, y1);
+    GFX_printf(gfx, "离%s", jq_str);
+
+    text_w = GFX_getUTF8Width(gfx, "还有") + GFX_getUTF8Width(gfx, "天");
+    text_w += GFX_getUTF8Width(gfx, "0") * ((days >= 10) ? 2 : 1);
+    GFX_setCursor(gfx, x + w - text_w, y2);
+    GFX_printf(gfx, "还有%d天", days);
+}
+
+static const uint8_t* ui_text_font(uint8_t font_id) {
+    return (font_id == 9U) ? u8g2_font_wqy9_t_lunar : u8g2_font_wqy12_t_lunar;
+}
+
+static char* ui_append_text(char* dst, char* end, const char* src) {
+    while (dst < end && *src != '\0') {
+        *dst++ = *src++;
+    }
+    if (dst <= end) {
+        *dst = '\0';
+    }
+    return dst;
+}
+
+static char* ui_append_uint(char* dst, char* end, uint16_t value) {
+    char tmp[5];
+    uint8_t len = 0;
+
+    do {
+        tmp[len++] = (char)('0' + (value % 10U));
+        value /= 10U;
+    } while (value != 0U && len < sizeof(tmp));
+
+    while (len != 0U && dst < end) {
+        *dst++ = tmp[--len];
+    }
+    if (dst <= end) {
+        *dst = '\0';
+    }
+    return dst;
+}
+
+static char* ui_append_int8(char* dst, char* end, int8_t value) {
+    uint8_t magnitude;
+
+    if (value < 0) {
+        if (dst < end) *dst++ = '-';
+        magnitude = (uint8_t)(-value);
+    } else {
+        magnitude = (uint8_t)value;
+    }
+    return ui_append_uint(dst, end, magnitude);
+}
+
+static bool ui_build_text_field(const ui_component_record_t* comp, tm_t* tm,
+                                struct Lunar_Date* Lunar, gui_data_t* data,
+                                char* text, size_t text_len, const uint8_t** font) {
+    char* dst = text;
+    char* end = text + text_len - 1U;
+    char name_a[7];
+    char name_b[7];
+    char name_c[7];
+    size_t ssid_len;
+
+    if (text == NULL || text_len == 0U || font == NULL) return false;
+    text[0] = '\0';
+    *font = ui_text_font(comp->font_id);
+
+    switch (comp->data_id) {
+        case UI_TEXT_LUNAR_DATE:
+            if (Lunar == NULL) return false;
+            dst = ui_append_text(dst, end, LUNAR_GetLeapName(Lunar->IsLeap, name_a, sizeof(name_a)));
+            dst = ui_append_text(dst, end, LUNAR_GetMonthName(Lunar->Month, name_b, sizeof(name_b)));
+            (void)ui_append_text(dst, end, LUNAR_GetDateName(Lunar->Date, name_c, sizeof(name_c)));
+            return true;
+
+        case UI_TEXT_LUNAR_YEAR:
+            if (Lunar == NULL) return false;
+            dst = ui_append_text(dst, end, LUNAR_GetStemName(LUNAR_GetStem(Lunar), name_a, sizeof(name_a)));
+            dst = ui_append_text(dst, end, LUNAR_GetBranchName(LUNAR_GetBranch(Lunar), name_b, sizeof(name_b)));
+            if (comp->flags & UI_TEXT_FLAG_WITH_ZODIAC) {
+                dst = ui_append_text(dst, end, LUNAR_GetZodiacName(LUNAR_GetZodiac(Lunar), name_c, sizeof(name_c)));
+            }
+            (void)ui_append_text(dst, end, "年");
+            return true;
+
+        case UI_TEXT_WEEK_NUMBER:
+            if (comp->flags & UI_TEXT_FLAG_WEEK_LEADING_SPACE) dst = ui_append_text(dst, end, " ");
+            dst = ui_append_uint(dst, end, GetWeekOfYear(tm->tm_year, tm->tm_mon, tm->tm_mday, tm->tm_wday));
+            (void)ui_append_text(dst, end, "周");
+            return true;
+
+        case UI_TEXT_WEEKDAY:
+            dst = ui_append_text(dst, end, "星期");
+            (void)ui_append_text(dst, end, LUNAR_GetDayName(tm->tm_wday, name_a, sizeof(name_a)));
+            *font = u8g2_font_wqy9_t_lunar;
+            return true;
+
+        case UI_TEXT_TEMP_SSID:
+            ssid_len = strlen(data->ssid);
+            dst = ui_append_int8(dst, end, data->temperature);
+            dst = ui_append_text(dst, end, "℃[");
+            if (ssid_len > 4U) {
+                dst = ui_append_text(dst, end, &data->ssid[ssid_len - 4U]);
+            } else {
+                dst = ui_append_text(dst, end, data->ssid);
+            }
+            (void)ui_append_text(dst, end, "]");
+            *font = u8g2_font_wqy9_t_lunar;
+            return true;
+
+        case UI_TEXT_SSID:
+            (void)ui_append_text(dst, end, data->ssid);
+            *font = u8g2_font_wqy9_t_lunar;
+            return true;
+
+        default:
+            return false;
+    }
+}
+
+static void ui_draw_text_buffer(Adafruit_GFX* gfx, int16_t x, int16_t y, int16_t w,
+                                uint8_t flags, const uint8_t* font, const char* text) {
+    GFX_setFont(gfx, font);
+    GFX_setTextColor(gfx, GFX_BLACK, GFX_WHITE);
+    if ((flags & UI_TEXT_FLAG_RIGHT_ALIGN) && w > 0) {
+        x += w - GFX_getUTF8Width(gfx, text);
+    }
+    GFX_setCursor(gfx, x, y);
+    (void)GFX_write(gfx, text, strlen(text));
+}
+
+static void ui_render_text_field(Adafruit_GFX* gfx, const ui_component_record_t* comp,
+                                 tm_t* tm, struct Lunar_Date* Lunar, gui_data_t* data,
+                                 int16_t x, int16_t y, int16_t y2) {
+    char text[32];
+    const uint8_t* font;
+    uint8_t flags = comp->flags;
+    int16_t width = comp->w;
+
+    switch (comp->data_id) {
+        case UI_TEXT_DATE_YMD:
+            ui_draw_date_ymd(gfx, x, y, tm, comp->flags);
+            return;
+        case UI_TEXT_TEMPERATURE:
+            ui_draw_temperature(gfx, x, y, comp->w, data, comp->flags);
+            return;
+        case UI_TEXT_JIEQI:
+            ui_draw_jieqi(gfx, x, y, y2, comp->w, tm);
+            return;
+        default:
+            break;
+    }
+
+    if (ui_build_text_field(comp, tm, Lunar, data, text, sizeof(text), &font)) {
+        if (comp->data_id == UI_TEXT_TEMP_SSID) {
+            flags |= UI_TEXT_FLAG_RIGHT_ALIGN;
+            if (width > 2) width -= 2;
+        }
+        ui_draw_text_buffer(gfx, x, y, width, flags, font, text);
+    }
+}
+
+static uint16_t ui_read_u16(const uint8_t* data) {
+    return (uint16_t)data[0] | ((uint16_t)data[1] << 8);
+}
+
+static int16_t ui_read_i16(const uint8_t* data) {
+    return (int16_t)ui_read_u16(data);
+}
+
+static uint32_t ui_read_u32(const uint8_t* data) {
+    return ((uint32_t)data[0]) | ((uint32_t)data[1] << 8) |
+           ((uint32_t)data[2] << 16) | ((uint32_t)data[3] << 24);
+}
+
+static ret_code_t ui_bundle_read(uint32_t offset, void* data, size_t length) {
+    return epd_ext_resource_read(EPD_EXT_RES_TYPE_UI, EPD_EXT_UI_BUNDLE, offset, data, length);
+}
+
+static bool ui_range_fits(uint32_t offset, uint32_t count, uint32_t item_size, uint32_t limit) {
+    if (offset > limit) return false;
+    if (item_size != 0 && count > ((limit - offset) / item_size)) return false;
+    return true;
+}
+
+static bool ui_rect_fits_screen(int32_t x, int32_t y, int32_t w, int32_t h,
+                                uint16_t screen_w, uint16_t screen_h) {
+    if (x < 0 || y < 0 || w <= 0 || h <= 0) return false;
+    if ((uint32_t)x >= screen_w || (uint32_t)y >= screen_h) return false;
+    if ((uint32_t)w > (uint32_t)screen_w - (uint32_t)x) return false;
+    if ((uint32_t)h > (uint32_t)screen_h - (uint32_t)y) return false;
+    return true;
+}
+
+static bool ui_partial_rect_valid(const ui_bundle_header_t* header, const ui_mode_record_t* mode) {
+    if (mode->partial_w == 0 && mode->partial_h == 0) return true;
+    if (mode->partial_w < 8 || mode->partial_h == 0) return false;
+    return ui_rect_fits_screen(mode->partial_x, mode->partial_y, mode->partial_w, mode->partial_h,
+                               header->width, header->height);
+}
+
+static uint16_t ui_clamp_u16(int16_t value, uint16_t min_value, uint16_t max_value) {
+    if (value < (int16_t)min_value) return min_value;
+    if (value > (int16_t)max_value) return max_value;
+    return (uint16_t)value;
+}
+
+static bool ui_component_valid(const ui_bundle_header_t* header, const ui_component_record_t* comp) {
+    if (header == NULL || comp == NULL) return false;
+    if (header->string_length == 0 || comp->text_offset >= header->string_length) return false;
+
+    switch (comp->type) {
+        case UI_COMP_WEEK_HEADER:
+        case UI_COMP_MONTH_GRID:
+        case UI_COMP_LINE:
+        case UI_COMP_LOW_BATTERY_TIP:
+        case UI_COMP_TIME_SYNC_TIP:
+            return ui_rect_fits_screen(comp->x, comp->y, comp->w, comp->h, header->width, header->height);
+
+        case UI_COMP_TEXT_FIELD:
+            if (!ui_rect_fits_screen(comp->x, comp->y, comp->w, comp->h, header->width, header->height)) {
+                return false;
+            }
+            if (comp->data_id < UI_TEXT_DATE_YMD || comp->data_id > UI_TEXT_SSID) return false;
+            return comp->p0 <= 0 || comp->p0 < (int16_t)header->height;
+
+        case UI_COMP_TIME_7SEG:
+            if (!ui_rect_fits_screen(comp->x, comp->y, comp->w, comp->h, header->width, header->height)) {
+                return false;
+            }
+            return comp->p0 >= UI_TIME_SCALE_MIN && comp->p0 <= UI_TIME_SCALE_MAX &&
+                   comp->p1 >= UI_TIME_DIGITS_MIN && comp->p1 <= UI_TIME_DIGITS_MAX;
+
+        case UI_COMP_BATTERY:
+            if (comp->w < 4 || comp->w > 80 || comp->h <= 0 || comp->h > 40) return false;
+            if (comp->x < comp->w || comp->x + 2 > (int16_t)header->width) return false;
+            return comp->y >= 0 && comp->y + 12 <= (int16_t)header->height;
+
+        default:
+            return false;
+    }
+}
+
+static ret_code_t ui_read_header(ui_bundle_header_t* header, uint16_t screen_w, uint16_t screen_h) {
+    uint8_t raw[UI_BUNDLE_HEADER_SIZE];
+    uint32_t magic;
+    epd_ext_resource_entry_t entry;
+    uint32_t mode_end;
+    uint32_t component_end;
+    ret_code_t ret;
+
+    if (header == NULL) return NRF_ERROR_NULL;
+
+    ret = epd_ext_resource_get_info(EPD_EXT_RES_TYPE_UI, EPD_EXT_UI_BUNDLE, &entry);
+    if (ret != NRF_SUCCESS) return ret;
+    if (entry.length < UI_BUNDLE_HEADER_SIZE) return NRF_ERROR_INVALID_LENGTH;
+
+    ret = ui_bundle_read(0, raw, sizeof(raw));
+    if (ret != NRF_SUCCESS) return ret;
+
+    magic = ui_read_u32(&raw[0]);
+    if (magic != UI_BUNDLE_MAGIC) return NRF_ERROR_INVALID_DATA;
+
+    header->version = ui_read_u16(&raw[4]);
+    header->width = ui_read_u16(&raw[6]);
+    header->height = ui_read_u16(&raw[8]);
+    header->mode_count = raw[10];
+    header->component_count = raw[11];
+    header->mode_offset = ui_read_u16(&raw[12]);
+    header->component_offset = ui_read_u16(&raw[14]);
+    header->string_offset = ui_read_u16(&raw[16]);
+    header->string_length = ui_read_u16(&raw[18]);
+
+    if (header->version != UI_BUNDLE_VERSION ||
+        header->width != screen_w || header->height != screen_h ||
+        header->mode_count == 0 || header->component_count == 0 ||
+        header->string_length == 0 ||
+        header->mode_offset < UI_BUNDLE_HEADER_SIZE ||
+        header->component_offset < header->mode_offset ||
+        header->string_offset < header->component_offset) {
+        return NRF_ERROR_INVALID_DATA;
+    }
+
+    if (!ui_range_fits(header->mode_offset, header->mode_count, UI_BUNDLE_MODE_SIZE, entry.length) ||
+        !ui_range_fits(header->component_offset, header->component_count, UI_BUNDLE_COMPONENT_SIZE, entry.length) ||
+        !ui_range_fits(header->string_offset, header->string_length, 1U, entry.length)) {
+        return NRF_ERROR_INVALID_LENGTH;
+    }
+
+    mode_end = header->mode_offset + (uint32_t)header->mode_count * UI_BUNDLE_MODE_SIZE;
+    component_end = header->component_offset + (uint32_t)header->component_count * UI_BUNDLE_COMPONENT_SIZE;
+    if (mode_end > header->component_offset || component_end > header->string_offset) {
+        return NRF_ERROR_INVALID_DATA;
+    }
+
+    return NRF_SUCCESS;
+}
+
+static ret_code_t ui_read_mode_at(const ui_bundle_header_t* header, uint8_t index, ui_mode_record_t* mode) {
+    uint8_t raw[UI_BUNDLE_MODE_SIZE];
+    ret_code_t ret;
+
+    if (header == NULL || mode == NULL) return NRF_ERROR_NULL;
+    if (index >= header->mode_count) return NRF_ERROR_NOT_FOUND;
+
+    ret = ui_bundle_read(header->mode_offset + (uint32_t)index * UI_BUNDLE_MODE_SIZE, raw, sizeof(raw));
+    if (ret != NRF_SUCCESS) return ret;
+
+    mode->mode_id = raw[0];
+    mode->update_policy = raw[1];
+    mode->component_start = raw[2];
+    mode->component_count = raw[3];
+    mode->partial_x = ui_read_u16(&raw[4]);
+    mode->partial_y = ui_read_u16(&raw[6]);
+    mode->partial_w = ui_read_u16(&raw[8]);
+    mode->partial_h = ui_read_u16(&raw[10]);
+    mode->flags = ui_read_u16(&raw[12]);
+
+    if ((uint16_t)mode->component_start + mode->component_count > header->component_count) {
+        return NRF_ERROR_INVALID_DATA;
+    }
+    if (!ui_partial_rect_valid(header, mode)) {
+        return NRF_ERROR_INVALID_DATA;
+    }
+
+    return NRF_SUCCESS;
+}
+
+static ret_code_t ui_find_mode(uint8_t mode_id, uint16_t screen_w, uint16_t screen_h,
+                               ui_bundle_header_t* header, ui_mode_record_t* mode) {
+    ret_code_t ret;
+
+    if (!m_ui_cache_valid || m_ui_cache_width != screen_w || m_ui_cache_height != screen_h) {
+        ret = GUI_ReloadUICache(screen_w, screen_h);
+        if (ret != NRF_SUCCESS) return ret;
+    }
+
+    if (header != NULL) {
+        *header = m_ui_cached_header;
+    }
+
+    for (uint8_t i = 0; i < m_ui_cached_header.mode_count; i++) {
+        if (m_ui_cached_modes[i].mode_id == mode_id) {
+            if (mode != NULL) {
+                *mode = m_ui_cached_modes[i];
+            }
+            return NRF_SUCCESS;
+        }
+    }
+
+    return NRF_ERROR_NOT_FOUND;
+}
+
+ret_code_t GUI_ReloadUICache(uint16_t width, uint16_t height) {
+    ui_bundle_header_t header;
+    ui_mode_record_t mode;
+    ret_code_t ret = ui_read_header(&header, width, height);
+
+    m_ui_cache_valid = false;
+    m_ui_partial_cache_valid = false;
+    m_month_render_cache.valid = false;
+    if (ret != NRF_SUCCESS) return ret;
+    if (header.mode_count > UI_CACHE_MAX_MODES) {
+        return NRF_ERROR_NO_MEM;
+    }
+
+    for (uint8_t i = 0; i < header.mode_count; i++) {
+        ret = ui_read_mode_at(&header, i, &mode);
+        if (ret != NRF_SUCCESS) return ret;
+        m_ui_cached_modes[i] = mode;
+        app_feed_wdt();
+    }
+
+    m_ui_cached_header = header;
+    m_ui_cache_width = width;
+    m_ui_cache_height = height;
+    m_ui_cache_valid = true;
+    return NRF_SUCCESS;
+}
+
+static ret_code_t ui_read_component(const ui_bundle_header_t* header, uint8_t index, ui_component_record_t* comp) {
+    uint8_t raw[UI_BUNDLE_COMPONENT_SIZE];
+    ret_code_t ret;
+
+    if (header == NULL || comp == NULL) return NRF_ERROR_NULL;
+    if (index >= header->component_count) return NRF_ERROR_NOT_FOUND;
+
+    ret = ui_bundle_read(header->component_offset + (uint32_t)index * UI_BUNDLE_COMPONENT_SIZE, raw, sizeof(raw));
+    if (ret != NRF_SUCCESS) return ret;
+
+    comp->type = raw[0];
+    comp->data_id = raw[1];
+    comp->font_id = raw[2];
+    comp->flags = raw[3];
+    comp->x = ui_read_i16(&raw[4]);
+    comp->y = ui_read_i16(&raw[6]);
+    comp->w = ui_read_i16(&raw[8]);
+    comp->h = ui_read_i16(&raw[10]);
+    comp->fg = ui_read_u16(&raw[12]);
+    comp->bg = ui_read_u16(&raw[14]);
+    comp->p0 = ui_read_i16(&raw[16]);
+    comp->p1 = ui_read_i16(&raw[18]);
+    comp->p2 = ui_read_i16(&raw[20]);
+    comp->text_offset = ui_read_u16(&raw[22]);
+
+    if (!ui_component_valid(header, comp)) {
+        return NRF_ERROR_INVALID_DATA;
+    }
+
+    return NRF_SUCCESS;
+}
+
+static ret_code_t ui_load_mode_components(uint8_t mode_id, uint16_t screen_w, uint16_t screen_h,
+                                          ui_mode_record_t* mode,
+                                          ui_component_record_t* components,
+                                          uint8_t max_components,
+                                          uint8_t* component_count) {
+    ui_bundle_header_t header;
+    ret_code_t ret;
+
+    if (mode == NULL || components == NULL || component_count == NULL) {
+        return NRF_ERROR_NULL;
+    }
+
+    *component_count = 0;
+    ret = ui_find_mode(mode_id, screen_w, screen_h, &header, mode);
+    if (ret != NRF_SUCCESS) return ret;
+    if (mode->component_count > max_components) {
+        return NRF_ERROR_NO_MEM;
+    }
+
+    for (uint8_t i = 0; i < mode->component_count; i++) {
+        ret = ui_read_component(&header, mode->component_start + i, &components[i]);
+        if (ret != NRF_SUCCESS) return ret;
+        app_feed_wdt();
+    }
+
+    *component_count = mode->component_count;
+    return NRF_SUCCESS;
+}
+
+static ret_code_t ui_load_partial_component_cache(uint8_t mode_id, uint16_t screen_w, uint16_t screen_h,
+                                                  ui_mode_record_t* mode,
+                                                  const ui_component_record_t** components,
+                                                  uint8_t* component_count) {
+    ui_bundle_header_t header;
+    ui_mode_record_t local_mode;
+    ui_component_record_t comp;
+    uint8_t partial_count = 0;
+    ret_code_t ret;
+
+    if (mode == NULL || components == NULL || component_count == NULL) {
+        return NRF_ERROR_NULL;
+    }
+
+    if (m_ui_partial_cache_valid &&
+        m_ui_partial_cache_mode_id == mode_id &&
+        m_ui_partial_cache_width == screen_w &&
+        m_ui_partial_cache_height == screen_h) {
+        *mode = m_ui_partial_cached_mode;
+        *components = m_ui_partial_cached_components;
+        *component_count = m_ui_partial_cached_count;
+        return NRF_SUCCESS;
+    }
+
+    ret = ui_find_mode(mode_id, screen_w, screen_h, &header, &local_mode);
+    if (ret != NRF_SUCCESS) return ret;
+
+    for (uint8_t i = 0; i < local_mode.component_count; i++) {
+        ret = ui_read_component(&header, local_mode.component_start + i, &comp);
+        if (ret != NRF_SUCCESS) return ret;
+
+        if ((comp.flags & UI_FLAG_PARTIAL_ONLY) != 0) {
+            if (partial_count >= UI_PARTIAL_COMPONENT_CACHE_MAX) {
+                return NRF_ERROR_NO_MEM;
+            }
+            m_ui_partial_cached_components[partial_count++] = comp;
+        }
+        app_feed_wdt();
+    }
+
+    m_ui_partial_cached_mode = local_mode;
+    m_ui_partial_cache_mode_id = mode_id;
+    m_ui_partial_cache_width = screen_w;
+    m_ui_partial_cache_height = screen_h;
+    m_ui_partial_cached_count = partial_count;
+    m_ui_partial_cache_valid = true;
+
+    *mode = m_ui_partial_cached_mode;
+    *components = m_ui_partial_cached_components;
+    *component_count = m_ui_partial_cached_count;
+    return NRF_SUCCESS;
+}
+
+static void ui_render_component(Adafruit_GFX* gfx, const ui_component_record_t* comp,
+                                tm_t* tm, struct Lunar_Date* lunar, gui_data_t* data,
+                                bool partial_pass, int16_t origin_x, int16_t origin_y) {
+    int16_t x = comp->x - origin_x;
+    int16_t y = comp->y - origin_y;
+
+    if (((comp->flags & UI_FLAG_PARTIAL_ONLY) != 0) != partial_pass) {
+        return;
+    }
+
+    switch (comp->type) {
+        case UI_COMP_WEEK_HEADER:
+            DrawWeekHeaderArea(gfx, x, y, comp->w, comp->h, data);
+            break;
+        case UI_COMP_MONTH_GRID:
+            DrawMonthDaysArea(gfx, x, y, comp->w, comp->h, tm, data);
+            break;
+        case UI_COMP_TIME_7SEG:
+            DrawTime(gfx, tm, x, y,
+                     ui_clamp_u16(comp->p0, UI_TIME_SCALE_MIN, UI_TIME_SCALE_MAX),
+                     ui_clamp_u16(comp->p1, UI_TIME_DIGITS_MIN, UI_TIME_DIGITS_MAX));
+            break;
+        case UI_COMP_BATTERY:
+            DrawBattery(gfx, x, y, (uint8_t)comp->w, data->voltage_mv);
+            break;
+        case UI_COMP_LINE:
+            GFX_fillRect(gfx, x, y, comp->w, comp->h, comp->fg);
+            break;
+        case UI_COMP_TEXT_FIELD:
+            ui_render_text_field(gfx, comp, tm, lunar, data, x, y,
+                                 comp->p0 > 0 ? (int16_t)(comp->p0 - origin_y) : (int16_t)(y + 20));
+            break;
+        case UI_COMP_LOW_BATTERY_TIP:
+            DrawLowBatteryTip(gfx, data);
+            break;
+        case UI_COMP_TIME_SYNC_TIP:
+            if ((tm->tm_year + YEAR0 == 2025) && (tm->tm_mon + 1 == 1)) {
+                DrawTimeSyncTip(gfx, data);
+            }
+            break;
+        default:
+            break;
+    }
+}
+
+static void ui_render_component_list(Adafruit_GFX* gfx, const ui_component_record_t* components,
+                                     uint8_t component_count, tm_t* tm,
+                                     struct Lunar_Date* lunar, gui_data_t* data,
+                                     bool partial_pass, int16_t origin_x, int16_t origin_y) {
+    for (uint8_t i = 0; i < component_count; i++) {
+        ui_render_component(gfx, &components[i], tm, lunar, data, partial_pass, origin_x, origin_y);
+        app_feed_wdt();
+    }
+}
+
+static bool ui_get_mode_partial_rect(uint8_t mode_id, uint16_t screen_w, uint16_t screen_h,
+                                     uint16_t* x, uint16_t* y, uint16_t* w, uint16_t* h) {
+    ui_bundle_header_t header;
+    ui_mode_record_t mode;
+
+    if (ui_find_mode(mode_id, screen_w, screen_h, &header, &mode) != NRF_SUCCESS) {
+        return false;
+    }
+    if (mode.partial_w == 0 || mode.partial_h == 0) {
+        return false;
+    }
+
+    if (x) *x = mode.partial_x;
+    if (y) *y = mode.partial_y;
+    if (w) *w = mode.partial_w;
+    if (h) *h = mode.partial_h;
+    return true;
+}
+
+bool GUI_ModeExists(uint8_t mode_id, uint16_t width, uint16_t height) {
+    ui_bundle_header_t header;
+    ui_mode_record_t mode;
+    return ui_find_mode(mode_id, width, height, &header, &mode) == NRF_SUCCESS;
+}
+
+uint8_t GUI_GetModeUpdatePolicy(uint8_t mode_id, uint16_t width, uint16_t height) {
+    if (!m_ui_cache_valid || m_ui_cache_width != width || m_ui_cache_height != height) {
+        return UI_UPDATE_MANUAL;
+    }
+
+    for (uint8_t i = 0; i < m_ui_cached_header.mode_count; i++) {
+        if (m_ui_cached_modes[i].mode_id == mode_id) {
+            return m_ui_cached_modes[i].update_policy;
+        }
+    }
+
+    return UI_UPDATE_MANUAL;
 }
 
 /**
@@ -1184,6 +1578,19 @@ void DrawGUI(gui_data_t* data, buffer_callback callback, void* callback_data) {
 
     // 将UNIX时间戳转换为tm结构 | Convert UNIX timestamp to tm structure
     transformTime(data->timestamp, &tm);
+    bool low_battery = (data->voltage_mv <= LOW_BATTERY_THRESHOLD_MV);
+    uint8_t render_mode_id = low_battery ? UI_MODE_LOW_BATTERY : (uint8_t)data->mode;
+    ui_mode_record_t cached_mode;
+    ui_component_record_t cached_components[UI_RENDER_COMPONENT_CACHE_MAX];
+    uint8_t cached_component_count = 0;
+
+    if (!low_battery) {
+        LUNAR_SolarToLunar(&Lunar, tm.tm_year + YEAR0, tm.tm_mon + 1, tm.tm_mday);
+    }
+    (void)ui_load_mode_components(render_mode_id, data->width, data->height,
+                                  &cached_mode, cached_components,
+                                  UI_RENDER_COMPONENT_CACHE_MAX,
+                                  &cached_component_count);
 
     Adafruit_GFX gfx;
     // 计算页面高度：根据可用堆内存动态调整 | Calculate page height: dynamically adjust based on available heap
@@ -1203,33 +1610,14 @@ void DrawGUI(gui_data_t* data, buffer_callback callback, void* callback_data) {
         // 填充白色背景 | Fill white background
         GFX_fillScreen(&gfx, GFX_WHITE);
 
-        if (data->voltage_mv <= LOW_BATTERY_THRESHOLD_MV) {
-            DrawLowBatteryTip(&gfx, data);
+        if (low_battery) {
+            ui_render_component_list(&gfx, cached_components, cached_component_count,
+                                     &tm, &Lunar, data, false, 0, 0);
             continue;
         }
 
-        // 计算农历日期 | Calculate lunar date
-        LUNAR_SolarToLunar(&Lunar, tm.tm_year + YEAR0, tm.tm_mon + 1, tm.tm_mday);
-
-        // 根据显示模式绘制不同界面 | Draw different interfaces based on display mode
-        switch (data->mode) {
-            case MODE_CALENDAR:
-                DrawCalendar(&gfx, &tm, &Lunar, data);  // 全屏日历 | Full screen calendar
-                break;
-            case MODE_CLOCK:
-                DrawClock(&gfx, &tm, &Lunar, data);     // 全屏时钟 | Full screen clock
-                break;
-            case MODE_CLOCK_CALENDAR:
-                DrawClockCalendar_Full(&gfx, &tm, &Lunar, data);  // 分屏模式 | Split screen mode
-                break;
-            default:
-                break;
-        }
-        // 如果是2025年1月且未同步时间，显示同步提示 | Show sync reminder if Jan 2025 and time not synced
-        if ((data->mode == MODE_CALENDAR || data->mode == MODE_CLOCK) &&
-            (tm.tm_year + YEAR0 == 2025 && tm.tm_mon + 1 == 1)) {
-            DrawTimeSyncTip(&gfx, data);
-        }
+        ui_render_component_list(&gfx, cached_components, cached_component_count,
+                                 &tm, &Lunar, data, false, 0, 0);
     } while (GFX_nextPage(&gfx, callback, callback_data));  // 分页绘制 | Draw with paging
 
     GFX_end(&gfx);
@@ -1256,12 +1644,27 @@ void DrawGUI(gui_data_t* data, buffer_callback callback, void* callback_data) {
   void DrawGUI_ClockOnly(gui_data_t* data, buffer_callback callback, void* callback_data) {
       tm_t tm = {0};
       transformTime(data->timestamp, &tm);
+      ui_mode_record_t cached_mode;
+      const ui_component_record_t* cached_components = NULL;
+      uint8_t cached_component_count = 0;
+      ret_code_t ui_ret;
 
       Adafruit_GFX gfx;
       // Use small time-only area for minimal partial refresh
       // 使用小的时间专用区域以实现最小局部刷新
-      int16_t refresh_width = TIME_REFRESH_WIDTH;
-      int16_t refresh_height = TIME_REFRESH_HEIGHT;
+      uint16_t refresh_x = TIME_REFRESH_X;
+      uint16_t refresh_y = TIME_REFRESH_Y;
+      uint16_t refresh_width = TIME_REFRESH_WIDTH;
+      uint16_t refresh_height = TIME_REFRESH_HEIGHT;
+      (void)ui_get_mode_partial_rect(MODE_CLOCK_CALENDAR, data->width, data->height,
+                                     &refresh_x, &refresh_y, &refresh_width, &refresh_height);
+      ui_ret = ui_load_partial_component_cache(MODE_CLOCK_CALENDAR, data->width, data->height,
+                                               &cached_mode, &cached_components,
+                                               &cached_component_count);
+      if (ui_ret != NRF_SUCCESS) {
+          cached_components = NULL;
+          cached_component_count = 0;
+      }
       int16_t ph = (__HEAP_SIZE - 512) / (refresh_width / 8);
 
       // For partial refresh, we only use black/white (no color layer)
@@ -1276,23 +1679,8 @@ void DrawGUI(gui_data_t* data, buffer_callback callback, void* callback_data) {
     do {
         GFX_fillScreen(&gfx, GFX_WHITE);
 
-        // Draw only the time display, centered in the refresh area
-        // The refresh area starts at TIME_REFRESH_X, TIME_REFRESH_Y on screen
-        // But GFX coordinates start at 0,0 for this buffer
-        // 只绘制时间显示，在刷新区域内居中
-        // 刷新区域在屏幕上从TIME_REFRESH_X, TIME_REFRESH_Y开始
-        // 但GFX坐标从此缓冲区的0,0开始
-        uint16_t cS = 6;  // Scale factor for 7-segment display | 7段数码管缩放因子
-        uint16_t nD = 2;  // Number of digits | 数字位数
-        uint16_t time_width = 2 * (nD * (11 * cS + 2) - 2 * cS) + 4 * cS;  // 272
-        uint16_t time_height = 20 * cS + 4;  // 124
-
-      // Center the time in the refresh buffer
-      // 在刷新缓冲区内居中时间
-      int16_t time_x = (refresh_width - time_width) / 2;
-      int16_t time_y = (refresh_height - time_height) / 2;
-
-          DrawTime(&gfx, &tm, time_x, time_y, cS, nD);
+          ui_render_component_list(&gfx, cached_components, cached_component_count,
+                                   &tm, NULL, data, true, refresh_x, refresh_y);
 
       } while (GFX_nextPage(&gfx, callback, callback_data));
 
@@ -1324,10 +1712,12 @@ void DrawGUI(gui_data_t* data, buffer_callback callback, void* callback_data) {
   void GetTimeRefreshArea(uint32_t timestamp, uint16_t* x, uint16_t* y, uint16_t* w, uint16_t* h) {
       // Base time area (centered HH:MM inside TIME_REFRESH_*)
       // 基础时间区域(TIME_REFRESH_*内居中的HH:MM)
-      const uint16_t base_x = TIME_REFRESH_X;
-      const uint16_t base_y = TIME_REFRESH_Y;
-      const uint16_t base_w = TIME_REFRESH_WIDTH;
-      const uint16_t base_h = TIME_REFRESH_HEIGHT;
+      uint16_t base_x = TIME_REFRESH_X;
+      uint16_t base_y = TIME_REFRESH_Y;
+      uint16_t base_w = TIME_REFRESH_WIDTH;
+      uint16_t base_h = TIME_REFRESH_HEIGHT;
+
+      (void)ui_get_mode_partial_rect(MODE_CLOCK_CALENDAR, 800, 480, &base_x, &base_y, &base_w, &base_h);
 
       // 7-segment layout parameters (must match DrawTime/Draw7Number)
       // 7段数码管布局参数(必须与DrawTime/Draw7Number匹配)
@@ -1445,6 +1835,174 @@ void DrawGUI(gui_data_t* data, buffer_callback callback, void* callback_data) {
  * @param y 输出Y坐标 | Output Y coordinate
  */
 void GetTimeRefreshOrigin(uint16_t* x, uint16_t* y) {
-    if (x) *x = TIME_REFRESH_X;
-    if (y) *y = TIME_REFRESH_Y;
+    uint16_t base_x = TIME_REFRESH_X;
+    uint16_t base_y = TIME_REFRESH_Y;
+    uint16_t base_w = TIME_REFRESH_WIDTH;
+    uint16_t base_h = TIME_REFRESH_HEIGHT;
+    (void)ui_get_mode_partial_rect(MODE_CLOCK_CALENDAR, 800, 480, &base_x, &base_y, &base_w, &base_h);
+    if (x) *x = base_x;
+    if (y) *y = base_y;
+}
+
+/* ==========================================================================
+ * Resource-missing fallback screen.
+ *
+ * Drawn when the external FM25Q04B resource bundle is missing or invalid
+ * (fresh DFU, blank Flash, manifest CRC mismatch). Self-contained: carries
+ * its own 5x7 ASCII font so it works without any external Flash resource.
+ *
+ * Layout mirrors DrawTimeSyncTip — title "SYNC TIME!" + the sync URL.
+ * ========================================================================== */
+
+#define FALLBACK_SYNC_TITLE  "SYNC TIME!"
+#define FALLBACK_SYNC_URL    "https://ycd12.github.io/EPD-nRF5_DYC/"
+#define FALLBACK_FONT_FIRST  0x20
+#define FALLBACK_FONT_LAST   0x7E
+#define FALLBACK_GLYPH_W     5
+#define FALLBACK_GLYPH_H     7
+#define FALLBACK_GLYPH_ADV   6  /* 5 columns + 1 column spacing */
+
+/* Public-domain 5x7 ASCII font (Adafruit GFX classic), columns LSB-on-top,
+ * ASCII 0x20..0x7E = 95 glyphs x 5 bytes = 475 bytes ROM. */
+static const uint8_t fallback_font[95][5] = {
+    {0x00, 0x00, 0x00, 0x00, 0x00}, {0x00, 0x00, 0x5F, 0x00, 0x00},
+    {0x00, 0x07, 0x00, 0x07, 0x00}, {0x14, 0x7F, 0x14, 0x7F, 0x14},
+    {0x24, 0x2A, 0x7F, 0x2A, 0x12}, {0x23, 0x13, 0x08, 0x64, 0x62},
+    {0x36, 0x49, 0x55, 0x22, 0x50}, {0x00, 0x05, 0x03, 0x00, 0x00},
+    {0x00, 0x1C, 0x22, 0x41, 0x00}, {0x00, 0x41, 0x22, 0x1C, 0x00},
+    {0x14, 0x08, 0x3E, 0x08, 0x14}, {0x08, 0x08, 0x3E, 0x08, 0x08},
+    {0x00, 0x50, 0x30, 0x00, 0x00}, {0x08, 0x08, 0x08, 0x08, 0x08},
+    {0x00, 0x60, 0x60, 0x00, 0x00}, {0x20, 0x10, 0x08, 0x04, 0x02},
+    {0x3E, 0x51, 0x49, 0x45, 0x3E}, {0x00, 0x42, 0x7F, 0x40, 0x00},
+    {0x42, 0x61, 0x51, 0x49, 0x46}, {0x21, 0x41, 0x45, 0x4B, 0x31},
+    {0x18, 0x14, 0x12, 0x7F, 0x10}, {0x27, 0x45, 0x45, 0x45, 0x39},
+    {0x3C, 0x4A, 0x49, 0x49, 0x30}, {0x01, 0x71, 0x09, 0x05, 0x03},
+    {0x36, 0x49, 0x49, 0x49, 0x36}, {0x06, 0x49, 0x49, 0x29, 0x1E},
+    {0x00, 0x36, 0x36, 0x00, 0x00}, {0x00, 0x56, 0x36, 0x00, 0x00},
+    {0x08, 0x14, 0x22, 0x41, 0x00}, {0x14, 0x14, 0x14, 0x14, 0x14},
+    {0x00, 0x41, 0x22, 0x14, 0x08}, {0x02, 0x01, 0x51, 0x09, 0x06},
+    {0x32, 0x49, 0x79, 0x41, 0x3E}, {0x7E, 0x11, 0x11, 0x11, 0x7E},
+    {0x7F, 0x49, 0x49, 0x49, 0x36}, {0x3E, 0x41, 0x41, 0x41, 0x22},
+    {0x7F, 0x41, 0x41, 0x22, 0x1C}, {0x7F, 0x49, 0x49, 0x49, 0x41},
+    {0x7F, 0x09, 0x09, 0x01, 0x01}, {0x3E, 0x41, 0x41, 0x51, 0x32},
+    {0x7F, 0x08, 0x08, 0x08, 0x7F}, {0x00, 0x41, 0x7F, 0x41, 0x00},
+    {0x20, 0x40, 0x41, 0x3F, 0x01}, {0x7F, 0x08, 0x14, 0x22, 0x41},
+    {0x7F, 0x40, 0x40, 0x40, 0x40}, {0x7F, 0x02, 0x04, 0x02, 0x7F},
+    {0x7F, 0x04, 0x08, 0x10, 0x7F}, {0x3E, 0x41, 0x41, 0x41, 0x3E},
+    {0x7F, 0x09, 0x09, 0x09, 0x06}, {0x3E, 0x41, 0x51, 0x21, 0x5E},
+    {0x7F, 0x09, 0x19, 0x29, 0x46}, {0x46, 0x49, 0x49, 0x49, 0x31},
+    {0x01, 0x01, 0x7F, 0x01, 0x01}, {0x3F, 0x40, 0x40, 0x40, 0x3F},
+    {0x1F, 0x20, 0x40, 0x20, 0x1F}, {0x7F, 0x20, 0x18, 0x20, 0x7F},
+    {0x63, 0x14, 0x08, 0x14, 0x63}, {0x03, 0x04, 0x78, 0x04, 0x03},
+    {0x61, 0x51, 0x49, 0x45, 0x43}, {0x00, 0x7F, 0x41, 0x41, 0x00},
+    {0x02, 0x04, 0x08, 0x10, 0x20}, {0x00, 0x41, 0x41, 0x7F, 0x00},
+    {0x04, 0x02, 0x01, 0x02, 0x04}, {0x40, 0x40, 0x40, 0x40, 0x40},
+    {0x00, 0x01, 0x02, 0x04, 0x00}, {0x20, 0x54, 0x54, 0x54, 0x78},
+    {0x7F, 0x48, 0x44, 0x44, 0x38}, {0x38, 0x44, 0x44, 0x44, 0x20},
+    {0x38, 0x44, 0x44, 0x48, 0x7F}, {0x38, 0x54, 0x54, 0x54, 0x18},
+    {0x08, 0x7E, 0x09, 0x01, 0x02}, {0x0C, 0x52, 0x52, 0x52, 0x3E},
+    {0x7F, 0x08, 0x04, 0x04, 0x78}, {0x00, 0x44, 0x7D, 0x40, 0x00},
+    {0x20, 0x40, 0x44, 0x3D, 0x00}, {0x7F, 0x10, 0x28, 0x44, 0x00},
+    {0x00, 0x41, 0x7F, 0x40, 0x00}, {0x7C, 0x04, 0x18, 0x04, 0x7C},
+    {0x7C, 0x08, 0x04, 0x04, 0x78}, {0x38, 0x44, 0x44, 0x44, 0x38},
+    {0x7C, 0x14, 0x14, 0x14, 0x08}, {0x08, 0x14, 0x14, 0x18, 0x7C},
+    {0x7C, 0x08, 0x04, 0x04, 0x08}, {0x48, 0x54, 0x54, 0x54, 0x20},
+    {0x04, 0x3F, 0x44, 0x40, 0x20}, {0x3C, 0x40, 0x40, 0x20, 0x7C},
+    {0x1C, 0x20, 0x40, 0x20, 0x1C}, {0x3C, 0x40, 0x30, 0x40, 0x3C},
+    {0x44, 0x28, 0x10, 0x28, 0x44}, {0x0C, 0x50, 0x50, 0x50, 0x3C},
+    {0x44, 0x64, 0x54, 0x4C, 0x44}, {0x00, 0x08, 0x36, 0x41, 0x00},
+    {0x00, 0x00, 0x7F, 0x00, 0x00}, {0x00, 0x41, 0x36, 0x08, 0x00},
+    {0x02, 0x01, 0x02, 0x04, 0x02},
+};
+
+static void fallback_draw_char(Adafruit_GFX* gfx, int16_t x, int16_t y,
+                               char ch, uint16_t color, uint8_t scale) {
+    uint8_t code = (uint8_t)ch;
+    const uint8_t* glyph;
+    if (code < FALLBACK_FONT_FIRST || code > FALLBACK_FONT_LAST) code = '?';
+    glyph = fallback_font[code - FALLBACK_FONT_FIRST];
+    for (uint8_t col = 0; col < FALLBACK_GLYPH_W; col++) {
+        uint8_t bits = glyph[col];
+        for (uint8_t row = 0; row < FALLBACK_GLYPH_H; row++) {
+            if (bits & (1u << row)) {
+                if (scale == 1) {
+                    GFX_drawPixel(gfx, x + col, y + row, color);
+                } else {
+                    GFX_fillRect(gfx, x + col * scale, y + row * scale,
+                                 scale, scale, color);
+                }
+            }
+        }
+    }
+}
+
+static int16_t fallback_text_width(const char* text, uint8_t scale) {
+    int16_t len = (int16_t)strlen(text);
+    if (len == 0) return 0;
+    return len * FALLBACK_GLYPH_ADV * scale - scale;
+}
+
+static void fallback_draw_text(Adafruit_GFX* gfx, int16_t x, int16_t y,
+                               const char* text, uint16_t color, uint8_t scale) {
+    while (*text) {
+        fallback_draw_char(gfx, x, y, *text++, color, scale);
+        x += FALLBACK_GLYPH_ADV * scale;
+    }
+}
+
+static void fallback_paint(Adafruit_GFX* gfx, gui_data_t* data) {
+    int16_t W = (int16_t)data->width;
+    int16_t H = (int16_t)data->height;
+    const uint8_t title_scale = 4;
+    const uint8_t url_scale = 2;
+    int16_t title_w = fallback_text_width(FALLBACK_SYNC_TITLE, title_scale);
+    int16_t title_h = FALLBACK_GLYPH_H * title_scale;
+    int16_t url_w = fallback_text_width(FALLBACK_SYNC_URL, url_scale);
+    int16_t url_h = FALLBACK_GLYPH_H * url_scale;
+    int16_t pad = 20;
+    int16_t gap = 18;
+    int16_t box_w = (title_w > url_w ? title_w : url_w) + pad * 2;
+    int16_t box_h = title_h + gap + url_h + pad * 2;
+    int16_t box_x = (W - box_w) / 2;
+    int16_t box_y = (H - box_h) / 2;
+    int16_t title_x = box_x + (box_w - title_w) / 2;
+    int16_t url_x = box_x + (box_w - url_w) / 2;
+    int16_t title_y = box_y + pad;
+    int16_t url_y = title_y + title_h + gap;
+    uint16_t title_color = (data->color == 2) ? GFX_RED : GFX_BLACK;
+
+    GFX_fillScreen(gfx, GFX_WHITE);
+    GFX_fillRect(gfx, box_x, box_y, box_w, box_h, GFX_WHITE);
+    GFX_drawRoundRect(gfx, box_x, box_y, box_w, box_h, 8, GFX_BLACK);
+    GFX_drawRoundRect(gfx, box_x + 2, box_y + 2, box_w - 4, box_h - 4, 6, GFX_BLACK);
+
+    fallback_draw_text(gfx, title_x, title_y, FALLBACK_SYNC_TITLE, title_color, title_scale);
+    fallback_draw_text(gfx, url_x, url_y, FALLBACK_SYNC_URL, GFX_BLACK, url_scale);
+    GFX_fillRect(gfx, url_x, url_y + url_h + 2, url_w, 2, GFX_BLACK);
+}
+
+void DrawResourceMissingScreen(gui_data_t* data, buffer_callback callback, void* cb_data) {
+    Adafruit_GFX gfx;
+    int16_t ph;
+
+    if (data == NULL || callback == NULL) return;
+    if (data->width == 0) return;
+
+    ph = (__HEAP_SIZE - 512) / (data->width / 8);
+    if (ph <= 0) ph = 1;
+
+    if (data->color == 2) {
+        GFX_begin_3c(&gfx, data->width, data->height, ph);
+    } else if (data->color == 3) {
+        GFX_begin_4c(&gfx, data->width, data->height, ph);
+    } else {
+        GFX_begin(&gfx, data->width, data->height, ph);
+    }
+
+    GFX_firstPage(&gfx);
+    do {
+        fallback_paint(&gfx, data);
+    } while (GFX_nextPage(&gfx, callback, cb_data));
+
+    GFX_end(&gfx);
 }

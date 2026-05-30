@@ -111,7 +111,6 @@ static uint32_t                          m_timestamp = 1735689600;              
 APP_TIMER_DEF(m_clock_timer_id);                                                        /**< Clock timer. */
                                                                                         /**< 时钟定时器 */
 static nrf_drv_wdt_channel_id            m_wdt_channel_id;                              /**< 看门狗定时器通道ID */
-static uint32_t                          m_wdt_last_feed_time = 0;                      /**< 上次喂狗时间戳 */
 static uint32_t                          m_resetreas;                                   /**< 复位原因寄存器值 */
 // clang-format on
 
@@ -151,13 +150,8 @@ void set_timestamp(uint32_t timestamp) {
 
 // reload the wdt channel
 // 重新加载看门狗定时器通道（喂狗）
-// 每30秒喂一次狗，防止系统复位
 void app_feed_wdt(void) {
-    if (m_timestamp - m_wdt_last_feed_time >= 30) {  // 检查是否已过30秒
-        NRF_LOG_DEBUG("Feed WDT\n");
-        nrf_drv_wdt_channel_feed(m_wdt_channel_id);  // 喂狗
-        m_wdt_last_feed_time = m_timestamp;           // 更新上次喂狗时间
-    }
+    nrf_drv_wdt_channel_feed(m_wdt_channel_id);
 }
 
 /**@brief 无按钮DFU的SoftDevice处理器状态观察者
@@ -364,7 +358,18 @@ static void gap_params_init(void) {
                  addr.addr[2], addr.addr[1], addr.addr[0]);
 
     // 根据MAC地址后两位生成唯一设备名称，例如：NRF_EPD_1234
-    snprintf(device_name, 20, "%s_%02X%02X", DEVICE_NAME, addr.addr[1], addr.addr[0]);
+    {
+        static const char hex[] = "0123456789ABCDEF";
+        size_t len = strlen(DEVICE_NAME);
+
+        memcpy(device_name, DEVICE_NAME, len);
+        device_name[len++] = '_';
+        device_name[len++] = hex[addr.addr[1] >> 4];
+        device_name[len++] = hex[addr.addr[1] & 0x0F];
+        device_name[len++] = hex[addr.addr[0] >> 4];
+        device_name[len++] = hex[addr.addr[0] & 0x0F];
+        device_name[len] = '\0';
+    }
     APP_ERROR_CHECK(sd_ble_gap_device_name_set(&sec_mode, (const uint8_t*)device_name, strlen(device_name)));
 
     // 设置GAP连接参数
@@ -794,9 +799,11 @@ int main(void) {
 
     // 根据复位原因决定显示内容
     if (m_resetreas & NRF_POWER_RESETREAS_DOG_MASK) {
-        // 如果是看门狗复位，显示日历模式
-        m_epd.config.display_mode = MODE_CALENDAR;
-        ble_epd_on_timer(&m_epd, 0, true);  // 触发EPD刷新
+        // 看门狗复位：保留当前显示模式(用户原本停留在哪个模式就回到哪个),
+        // 时间戳沿用 m_timestamp 默认值(2025-01-01)而不是 0,避免出现 1970 日期。
+        // 若需要同步,Web 端连接后会重新下发时间。
+        NRF_LOG_WARNING("[EPD]: Recovered from watchdog reset, redrawing with default time\n");
+        ble_epd_on_timer(&m_epd, m_timestamp, true);
     } else {
         // 其他复位原因，使用正常时间戳
         ble_epd_on_timer(&m_epd, m_timestamp, true);  // 触发EPD刷新
