@@ -1,0 +1,63 @@
+EPD-nRF5 code size optimization prompt
+=====================================
+
+Scope:
+- Focus files:
+  - EPD-nRF5/EPD       (EPD driver, config, service glue)
+  - EPD-nRF5/GUI       (UI drawing, lunar/solar calendar, fonts)
+  - EPD-nRF5/main.c    (BLE app, services, timers)
+- Do NOT modify SDK under EPD-nRF5/SDK; only touch application code.
+
+Goals:
+- Reduce Flash usage while keeping external behavior the same (display output and BLE protocol).
+- Avoid pulling in heavy standard libraries unless absolutely necessary.
+
+EPD module (EPD-nRF5/EPD):
+- Voltage reading:
+  - Prefer simple math over heavy floating-point logic and avoid introducing printf float formatting in drivers.
+  - Keep EPD_IsLowBattery() semantics unchanged: it must decide based on cached voltage from the last refresh.
+- Command queue:
+  - If shrinking is needed, EPD_CMD_QUEUE_SIZE and the length field type may be reduced, but only after confirming all BLE command payload sizes and queue depth requirements.
+- Logging:
+  - EPD_service.c and EPD_driver.c use NRF_LOG heavily.
+  - For release builds, prefer turning off NRF_LOG via sdk_config.h or a module-specific macro; keep logs only for debug builds.
+
+GUI / Lunar modules (EPD-nRF5/GUI):
+- Week-of-year calculation:
+  - Avoid using <time.h>, mktime, strftime, atoi in firmware; they bring in large standard library chunks.
+  - Use existing helpers from Lunar.c (transformTime, day_of_week_get, thisMonthMaxDays) to implement ISO week-of-year yourself.
+  - Keep all “week number” texts visible to the user, but change only the internal calculation.
+- Battery display:
+  - Avoid new float printf formats in GUI for voltage; if display is required, consider fixed-point (e.g., millivolts mapped to “X.YV”).
+  - Map voltage to a percentage in a small integer range and draw the bar accordingly.
+- Lunar and solar terms data:
+  - Lunar.c already has compressed tables; if needed, you may further restrict data to a single continuous range of years (e.g. 2026–2029).
+  - When changing year ranges, keep:
+    - solar_1_1[] and lunar_month_days[] indexes aligned.
+    - JIEQI_YEAR_MIN / MAX and YearMonthBit[] consistent with comments.
+- Festival/holiday data:
+  - Public and lunar festival arrays (festivals, festivals_lunar) and the holiday table (holidays[]) are optional.
+  - If Flash is tight and UI can be simplified, prefer:
+    - Keeping lunar date and solar term highlighting;
+    - Dropping text labels for specific holidays and “days to next solar term” counters.
+- snprintf usage:
+  - Where strings are simple templates (e.g. “还有%d天”), consider using GFX_printf directly with width helpers instead of building intermediate buffers.
+  - Where text layout is complex and right-aligned with mixed ASCII/UTF-8, keep snprintf unless you can carefully re-implement with GFX_getUTF8Widthf + GFX_printf.
+
+main.c (EPD-nRF5/main.c):
+- BLE DFU / OTA:
+  - If the product does not require app-initiated DFU, remove ble_dfu includes, instances, init calls, and BLE event forwarding.
+  - Also remove the DFU-related C files from the build to reclaim code size.
+- GATT / connection parameters:
+  - Standard init (gap_params_init, conn_params_init, gatt_init) can stay.
+  - Only reduce MTU or connection options if you fully understand the impact and test BLE compatibility.
+- Logging:
+  - As with EPD and GUI, use sdk_config.h to disable NRF_LOG in release builds.
+
+How to use this file as an AI prompt:
+- Paste this entire file as the “system” or “task” description.
+- Additionally state:
+  - Which specific file(s) you want to modify in this session.
+  - Which user-visible features must stay (e.g. week number display, lunar/solar term support).
+  - That SDK code must remain untouched and BLE behavior must remain compatible.
+
