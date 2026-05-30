@@ -1,7 +1,15 @@
 #ifndef __GUI_H
 #define __GUI_H
 
+#include <stdbool.h>
+#include <stdint.h>
+
 #include "Adafruit_GFX.h"
+#include "sdk_errors.h"
+
+#define GUI_UPDATE_MANUAL 0U
+#define GUI_UPDATE_DAILY  1U
+#define GUI_UPDATE_MINUTE 2U
 
 // 显示模式枚举类型
 // Display mode enumeration type
@@ -55,5 +63,14 @@ void GetTimeRefreshArea(uint32_t timestamp, uint16_t* x, uint16_t* y, uint16_t* 
 // Get the base origin (top-left) of the time refresh area on the full screen
 // 获取时间刷新区域在整个屏幕上的基准起点(左上角坐标)
 void GetTimeRefreshOrigin(uint16_t* x, uint16_t* y);
+
+bool GUI_ModeExists(uint8_t mode, uint16_t width, uint16_t height);
+uint8_t GUI_GetModeUpdatePolicy(uint8_t mode, uint16_t width, uint16_t height);
+ret_code_t GUI_ReloadUICache(uint16_t width, uint16_t height);
+
+// Draw the resource-missing sync hint screen. Carries its own ASCII font and
+// works even when the external FM25Q04B resource bundle is absent or invalid.
+// 绘制资源缺失时的同步提示页(自带字体,不依赖外置 Flash 资源)。
+void DrawResourceMissingScreen(gui_data_t* data, buffer_callback callback, void* callback_data);
 
 #endif

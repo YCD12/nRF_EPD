@@ -138,6 +138,7 @@ void pinMode(uint32_t pin, uint32_t mode);  // 设置引脚模式
 // GPIO初始化相关函数
 void EPD_GPIO_Load(epd_config_t* cfg);  // 加载GPIO配置(从配置结构体)
 void EPD_GPIO_Init(void);               // 初始化GPIO引脚
+bool EPD_GPIO_Config_Conflicts_With_Ext_Flash(const epd_config_t* cfg);  // 检查引脚是否与外置Flash(P0.12-15)冲突
 void EPD_GPIO_Uninit(void);             // 反初始化GPIO引脚(恢复默认状态)
 
 // SPI

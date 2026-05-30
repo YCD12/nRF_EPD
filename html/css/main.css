@@ -70,6 +70,18 @@ button.secondary:hover {
     background-color: var(--secondary-hover);
 }
 
+button.danger {
+    color: #fff;
+    background-color: #dc2626;
+    border-color: #dc2626;
+}
+
+button.danger:hover {
+    color: #fff;
+    border-color: #b91c1c;
+    background-color: #b91c1c;
+}
+
 h1 {
     font-size: 2rem;
     font-weight: 600;
@@ -401,6 +413,29 @@ label {
     margin-left: 0.5rem;
     color: #b91c1c;
     font-weight: 600;
+}
+
+.resource-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+    gap: 0.6rem 1rem;
+    margin-bottom: 0.75rem;
+    color: #475569;
+    font-size: 0.9rem;
+}
+
+.resource-status {
+    display: flex;
+    gap: 0.75rem;
+    align-items: center;
+    flex-wrap: wrap;
+    margin-bottom: 0.75rem;
+    color: #475569;
+    font-size: 0.9rem;
+}
+
+.resource-progress {
+    color: #64748b;
 }
 
 .orientation-hint {
@@ -903,6 +938,18 @@ body.dark-mode .device-modal-item .recommended {
 
 body.dark-mode .dfu-hint {
     color: #94a3b8;
+}
+
+body.dark-mode .resource-grid,
+body.dark-mode .resource-status,
+body.dark-mode .resource-progress {
+    color: #cbd5e1;
+}
+
+body.dark-mode .device-badge {
+    background: var(--dark-input-bg);
+    border-color: var(--dark-border);
+    color: var(--dark-text);
 }
 
 body.dark-mode .dfu-retry-info {

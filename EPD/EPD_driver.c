@@ -10,6 +10,7 @@
 #include "app_error.h"
 #include "nrf_drv_spi.h"
 #include "nrf_log.h"
+#include "../main.h"
 
 #define ARRAY_SIZE(arr) (sizeof(arr) / sizeof((arr)[0]))  // 计算数组元素个数 - Calculate array size
 #define BUFFER_SIZE 128  // 缓冲区大小(用于填充显存) - Buffer size for RAM filling
@@ -68,6 +69,33 @@ void pinMode(uint32_t pin, uint32_t mode) {
 // GPIO相关函数
 static uint16_t m_driver_refs = 0;  // 驱动引用计数(用于支持多次初始化/反初始化) - Driver reference count
 
+/*
+ * The external FM25Q04B Flash is wired on SPI1 at P0.12..P0.15 (CS/MISO/SCK/MOSI).
+ * Any EPD pin assignment landing in that range would short the two SPI buses
+ * together once both peripherals are initialised. Reject such configs early.
+ */
+#define EPD_EXT_FLASH_BUS_PIN_MIN  12U
+#define EPD_EXT_FLASH_BUS_PIN_MAX  15U
+#define EPD_PIN_UNUSED             0xFFU
+
+static bool epd_pin_conflicts_with_ext_flash(uint8_t pin) {
+    if (pin == EPD_PIN_UNUSED) return false;
+    return pin >= EPD_EXT_FLASH_BUS_PIN_MIN && pin <= EPD_EXT_FLASH_BUS_PIN_MAX;
+}
+
+bool EPD_GPIO_Config_Conflicts_With_Ext_Flash(const epd_config_t* cfg) {
+    if (cfg == NULL) return false;
+    return epd_pin_conflicts_with_ext_flash(cfg->mosi_pin) ||
+           epd_pin_conflicts_with_ext_flash(cfg->sclk_pin) ||
+           epd_pin_conflicts_with_ext_flash(cfg->cs_pin) ||
+           epd_pin_conflicts_with_ext_flash(cfg->dc_pin) ||
+           epd_pin_conflicts_with_ext_flash(cfg->rst_pin) ||
+           epd_pin_conflicts_with_ext_flash(cfg->busy_pin) ||
+           epd_pin_conflicts_with_ext_flash(cfg->bs_pin) ||
+           epd_pin_conflicts_with_ext_flash(cfg->en_pin) ||
+           epd_pin_conflicts_with_ext_flash(cfg->led_pin);
+}
+
 /**
  * 加载EPD的GPIO配置
  * Load EPD GPIO configuration
@@ -79,6 +107,20 @@ static uint16_t m_driver_refs = 0;  // 驱动引用计数(用于支持多次初�
  */
 void EPD_GPIO_Load(epd_config_t* cfg) {
     if (cfg == NULL) return;
+
+    if (epd_pin_conflicts_with_ext_flash(cfg->mosi_pin) ||
+        epd_pin_conflicts_with_ext_flash(cfg->sclk_pin) ||
+        epd_pin_conflicts_with_ext_flash(cfg->cs_pin) ||
+        epd_pin_conflicts_with_ext_flash(cfg->dc_pin) ||
+        epd_pin_conflicts_with_ext_flash(cfg->rst_pin) ||
+        epd_pin_conflicts_with_ext_flash(cfg->busy_pin) ||
+        epd_pin_conflicts_with_ext_flash(cfg->bs_pin) ||
+        epd_pin_conflicts_with_ext_flash(cfg->en_pin) ||
+        epd_pin_conflicts_with_ext_flash(cfg->led_pin)) {
+        NRF_LOG_ERROR("[EPD]: pin config rejected: P0.12-P0.15 reserved for external Flash");
+        return;
+    }
+
     EPD_MOSI_PIN = cfg->mosi_pin;
     EPD_SCLK_PIN = cfg->sclk_pin;
     EPD_CS_PIN = cfg->cs_pin;
@@ -345,8 +387,13 @@ void EPD_Reset(uint32_t value, uint16_t duration) {
  */
 void EPD_WaitBusy(uint32_t value, uint16_t timeout) {
     NRF_LOG_DEBUG("[EPD]: check busy\n");
+    uint16_t feed_tick = 0;
     while (digitalRead(EPD_BUSY_PIN) == value) {
         delay(1);
+        if (++feed_tick >= 1000) {
+            app_feed_wdt();
+            feed_tick = 0;
+        }
         timeout--;
         if (timeout == 0) {
             NRF_LOG_DEBUG("[EPD]: busy timeout!\n");  // 超时警告 - Timeout warning

@@ -38,9 +38,10 @@ POSSIBILITY OF SUCH DAMAGE.
 
 #include <stdarg.h>
 #include <stddef.h>
-#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
+extern void app_feed_wdt(void);
 
 // 实用宏定义 | Utility macros
 #ifndef ABS
@@ -268,11 +269,13 @@ bool GFX_nextPage(Adafruit_GFX* gfx, buffer_callback callback, void* user_data) 
             int16_t height = MIN(gfx->page_height, gfx->HEIGHT - page_ys);
             callback(user_data, gfx->buffer, gfx->color, 0, page_ys, gfx->WIDTH, height);
         }
+        app_feed_wdt();
     }
 
     // 准备下一页 | Prepare for next page
     gfx->current_page++;
     GFX_fillScreen(gfx, GFX_WHITE);  // 清空缓冲区 | Clear buffer
+    app_feed_wdt();
 
     return gfx->current_page < gfx->total_pages;
 }
@@ -1391,29 +1394,124 @@ int16_t GFX_getUTF8Width(Adafruit_GFX* gfx, const char* str) {
     return w;
 }
 
+static size_t gfx_append_char(char* out, size_t out_size, size_t pos, char c) {
+    if (out_size > 0 && pos < out_size - 1) {
+        out[pos] = c;
+    }
+    return pos + 1;
+}
+
+static size_t gfx_append_str(char* out, size_t out_size, size_t pos, const char* str) {
+    if (str == NULL) {
+        str = "";
+    }
+    while (*str != '\0') {
+        pos = gfx_append_char(out, out_size, pos, *str++);
+    }
+    return pos;
+}
+
+static size_t gfx_append_uint(char* out, size_t out_size, size_t pos, uint32_t value,
+                              uint8_t base, bool upper, bool zero_pad, uint8_t width) {
+    char tmp[11];
+    uint8_t len = 0;
+
+    do {
+        uint8_t digit = value % base;
+        tmp[len++] = (digit < 10) ? (char)('0' + digit) : (char)((upper ? 'A' : 'a') + digit - 10);
+        value /= base;
+    } while (value != 0 && len < sizeof(tmp));
+
+    while (len < width) {
+        pos = gfx_append_char(out, out_size, pos, zero_pad ? '0' : ' ');
+        width--;
+    }
+
+    while (len > 0) {
+        pos = gfx_append_char(out, out_size, pos, tmp[--len]);
+    }
+    return pos;
+}
+
+static size_t gfx_vformat(char* out, size_t out_size, const char* format, va_list args) {
+    size_t pos = 0;
+
+    while (*format != '\0') {
+        bool zero_pad = false;
+        uint8_t width = 0;
+        char spec;
+
+        if (*format != '%') {
+            pos = gfx_append_char(out, out_size, pos, *format++);
+            continue;
+        }
+
+        format++;
+        if (*format == '%') {
+            pos = gfx_append_char(out, out_size, pos, *format++);
+            continue;
+        }
+
+        if (*format == '0') {
+            zero_pad = true;
+            format++;
+        }
+        while (*format >= '0' && *format <= '9') {
+            width = (uint8_t)(width * 10 + (*format - '0'));
+            format++;
+        }
+        while (*format == 'l' || *format == 'h' || *format == 'z') {
+            format++;
+        }
+
+        spec = *format++;
+        switch (spec) {
+            case 'd':
+            case 'i': {
+                int value = va_arg(args, int);
+                if (value < 0) {
+                    pos = gfx_append_char(out, out_size, pos, '-');
+                    value = -value;
+                }
+                pos = gfx_append_uint(out, out_size, pos, (uint32_t)value, 10, false, zero_pad, width);
+                break;
+            }
+            case 'u':
+                pos = gfx_append_uint(out, out_size, pos, va_arg(args, unsigned int), 10, false, zero_pad, width);
+                break;
+            case 'x':
+                pos = gfx_append_uint(out, out_size, pos, va_arg(args, unsigned int), 16, false, zero_pad, width);
+                break;
+            case 'X':
+                pos = gfx_append_uint(out, out_size, pos, va_arg(args, unsigned int), 16, true, zero_pad, width);
+                break;
+            case 's':
+                pos = gfx_append_str(out, out_size, pos, va_arg(args, const char*));
+                break;
+            case 'c':
+                pos = gfx_append_char(out, out_size, pos, (char)va_arg(args, int));
+                break;
+            default:
+                pos = gfx_append_char(out, out_size, pos, spec);
+                break;
+        }
+    }
+
+    if (out_size > 0) {
+        out[(pos < out_size) ? pos : (out_size - 1)] = '\0';
+    }
+    return pos;
+}
+
 int16_t GFX_getUTF8Widthf(Adafruit_GFX* gfx, const char* format, ...) {
-    char buf[64] = {0};
-    char* str = buf;
-    size_t len;
+    char buf[32];
     va_list va;
 
     va_start(va, format);
-    len = vsnprintf(buf, sizeof(buf), format, va);
+    (void)gfx_vformat(buf, sizeof(buf), format, va);
     va_end(va);
 
-    if (len > sizeof(buf) - 1) {
-        str = malloc(len + 1);
-        if (str == NULL) return 0;
-        va_start(va, format);
-        vsnprintf(str, len + 1, format, va);
-        va_end(va);
-    }
-
-    int16_t w = GFX_getUTF8Width(gfx, str);
-
-    if (str != buf) free(str);
-
-    return w;
+    return GFX_getUTF8Width(gfx, buf);
 }
 
 size_t GFX_print(Adafruit_GFX* gfx, const char c) {
@@ -1455,24 +1553,12 @@ size_t GFX_write(Adafruit_GFX* gfx, const char* buffer, size_t size) {
 
 size_t GFX_printf(Adafruit_GFX* gfx, const char* format, ...) {
     va_list va;
-    char tmp[64] = {0};
-    char* buf = tmp;
+    char buf[96];
     size_t len;
 
     va_start(va, format);
-    len = vsnprintf(tmp, sizeof(tmp), format, va);
+    len = gfx_vformat(buf, sizeof(buf), format, va);
     va_end(va);
 
-    if (len > sizeof(tmp) - 1) {
-        buf = malloc(len + 1);
-        if (buf == NULL) return 0;
-        va_start(va, format);
-        vsnprintf(buf, len + 1, format, va);
-        va_end(va);
-    }
-
-    len = GFX_write(gfx, buf, len);
-    if (buf != tmp) free(buf);
-
-    return len;
+    return GFX_write(gfx, buf, (len < sizeof(buf)) ? len : (sizeof(buf) - 1));
 }

@@ -2,6 +2,7 @@
 #define __LUNAR_H
 #include <stdint.h>
 #include <string.h>
+#include <stddef.h>
 
 /*
  * 时间基准定义 - Time Reference Definitions
@@ -36,18 +37,14 @@ struct Lunar_Date {
     uint16_t Year;      /* Lunar year - 农历年份 (如: 2025) */
 };
 
-/*
- * 农历字符串常量声明 - Lunar Calendar String Constants Declaration
- * 这些字符串用于显示农历日期的中文表示
- */
-extern const char Lunar_MonthString[13][7];     /* 农历月份名称: 正月~腊月 */
-extern const char Lunar_MonthLeapString[2][4];  /* 闰月标识: " "/闰 */
-extern const char Lunar_DateString[31][7];      /* 农历日期名称: 初一~三十 */
-extern const char Lunar_DayString[7][4];        /* 星期名称: 日/一/二/三/四/五/六 */
-extern const char Lunar_ZodiacString[12][4];    /* 十二生肖: 鼠/牛/虎/兔/龙/蛇/马/羊/猴/鸡/狗/猪 */
-extern const char Lunar_StemStrig[10][4];       /* 十天干: 甲/乙/丙/丁/戊/己/庚/辛/壬/癸 */
-extern const char Lunar_BranchStrig[12][4];     /* 十二地支: 子/丑/寅/卯/辰/巳/午/未/申/酉/戌/亥 */
-extern const char JieQiStr[24][7];              /* 二十四节气名称 */
+const char* LUNAR_GetMonthName(uint8_t index, char* buffer, size_t buffer_len);
+const char* LUNAR_GetLeapName(uint8_t index, char* buffer, size_t buffer_len);
+const char* LUNAR_GetDateName(uint8_t index, char* buffer, size_t buffer_len);
+const char* LUNAR_GetDayName(uint8_t index, char* buffer, size_t buffer_len);
+const char* LUNAR_GetZodiacName(uint8_t index, char* buffer, size_t buffer_len);
+const char* LUNAR_GetStemName(uint8_t index, char* buffer, size_t buffer_len);
+const char* LUNAR_GetBranchName(uint8_t index, char* buffer, size_t buffer_len);
+const char* LUNAR_GetJieQiName(uint8_t index, char* buffer, size_t buffer_len);
 
 /*
  * 农历转换函数声明 - Lunar Calendar Conversion Function Declarations
@@ -66,7 +63,7 @@ void LUNAR_SolarToLunar(struct Lunar_Date* lunar, uint16_t solar_year, uint8_t s
 /**
  * @brief 获取生肖索引 - Get Chinese Zodiac Index
  * @param lunar 农历日期结构体
- * @return 生肖索引 (0-11)，用于索引 Lunar_ZodiacString 数组
+ * @return 生肖索引 (0-11)，用于 LUNAR_GetZodiacName()
  * @note 计算公式: 年份 % 12，注意数组顺序从猴开始
  */
 uint8_t LUNAR_GetZodiac(const struct Lunar_Date* lunar);
@@ -74,7 +71,7 @@ uint8_t LUNAR_GetZodiac(const struct Lunar_Date* lunar);
 /**
  * @brief 获取天干索引 - Get Heavenly Stem Index
  * @param lunar 农历日期结构体
- * @return 天干索引 (0-9)，用于索引 Lunar_StemStrig 数组
+ * @return 天干索引 (0-9)，用于 LUNAR_GetStemName()
  * @note 计算公式: 年份 % 10，注意数组顺序从庚开始
  */
 uint8_t LUNAR_GetStem(const struct Lunar_Date* lunar);
@@ -82,7 +79,7 @@ uint8_t LUNAR_GetStem(const struct Lunar_Date* lunar);
 /**
  * @brief 获取地支索引 - Get Earthly Branch Index
  * @param lunar 农历日期结构体
- * @return 地支索引 (0-11)，用于索引 Lunar_BranchStrig 数组
+ * @return 地支索引 (0-11)，用于 LUNAR_GetBranchName()
  * @note 计算公式: 年份 % 12，注意数组顺序从申开始
  */
 uint8_t LUNAR_GetBranch(const struct Lunar_Date* lunar);
@@ -93,7 +90,7 @@ uint8_t LUNAR_GetBranch(const struct Lunar_Date* lunar);
  * @param mmonth 公历月份 (1-12)
  * @param mday 公历日期 (1-31)
  * @param day 输出参数，距离下一个节气的天数
- * @return 节气索引 (0-23)，用于索引 JieQiStr 数组；0xFF表示失败
+ * @return 节气索引 (0-23)，用于 LUNAR_GetJieQiName()；0xFF表示失败
  */
 uint8_t GetJieQiStr(uint16_t myear, uint8_t mmonth, uint8_t mday, uint8_t* day);
 

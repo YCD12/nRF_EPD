@@ -1,5 +1,11 @@
 #include "fonts.h"
 
+#ifndef EPD_INCLUDE_INTERNAL_FONT_PAYLOADS
+/* Font payloads are provisioned to FM25Q04B as external resources. Define
+ * EPD_INCLUDE_INTERNAL_FONT_PAYLOADS only for host-side package generation or
+ * emergency builds that intentionally embed fonts in internal flash. */
+#else
+
 /*
   Fontname: -wenquanyi-wenquanyi bitmap song-bold-r-normal--12-120-75-75-P-119-ISO10646-1
   字体名称: 文泉驿点阵宋体-粗体-正常--12-120-75-75-P-119-ISO10646-1
@@ -351,3 +357,4 @@ const uint8_t u8g2_font_helvB18_tn[389] U8G2_FONT_SECTION("u8g2_font_helvB18_tn"
   "\14\215\14\315\214LY\35\304\14M\214y\66\61\64r\60d\3\71\37,\11\373\30\35\310\220P\20M"
   "\214yvDARq@S\61\71i\65ARr U\4:\12\343\14/\34\310C\36\10\0\0\0"
   "\4\377\377\0";
+#endif
