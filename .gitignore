@@ -1,3 +1,12 @@
+# Build output
+_build/
+
+# 编译工具链（体积过大，不入库）
+tools/gcc/
+tools/nrf-tools/
+tools/*.tar.bz2
+tools/*.tar.gz
+
 # Build and Release Folders
 bin-debug/
 bin-release/
