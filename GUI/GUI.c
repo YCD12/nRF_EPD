@@ -23,7 +23,7 @@
 #define UI_BUNDLE_MODE_SIZE 16U
 #define UI_BUNDLE_COMPONENT_SIZE 24U
 #define UI_CACHE_MAX_MODES 8U
-#define UI_RENDER_COMPONENT_CACHE_MAX 24U
+#define UI_RENDER_COMPONENT_CACHE_MAX 18U
 #define UI_PARTIAL_COMPONENT_CACHE_MAX 2U
 #define MONTH_HOLIDAY_MARK_MAX 48U
 
@@ -145,6 +145,13 @@ static uint16_t m_ui_partial_cache_height;
 static ui_mode_record_t m_ui_partial_cached_mode;
 static ui_component_record_t m_ui_partial_cached_components[UI_PARTIAL_COMPONENT_CACHE_MAX];
 static uint8_t m_ui_partial_cached_count;
+static bool m_ui_render_cache_valid;
+static uint8_t m_ui_render_cache_mode_id;
+static uint16_t m_ui_render_cache_width;
+static uint16_t m_ui_render_cache_height;
+static ui_mode_record_t m_ui_render_cached_mode;
+static ui_component_record_t m_ui_render_cached_components[UI_RENDER_COMPONENT_CACHE_MAX];
+static uint8_t m_ui_render_cached_count;
 static month_render_cache_t m_month_render_cache;
 
 static void DrawTimeSyncTip(Adafruit_GFX* gfx, gui_data_t* data);
@@ -897,6 +904,10 @@ static uint16_t s_time_window_y = 0;                      // local Y inside TIME
 static uint16_t s_time_window_w = TIME_REFRESH_WIDTH;    // width of current refresh window | 当前刷新窗口的宽度
 static uint16_t s_time_window_h = TIME_REFRESH_HEIGHT;   // height of current refresh window | 当前刷新窗口的高度
 
+void GUI_MarkTimeRefreshTimestamp(uint32_t timestamp) {
+    s_last_time_refresh_ts = timestamp;
+}
+
 static void ui_draw_date_ymd(Adafruit_GFX* gfx, int16_t x, int16_t y, tm_t* tm, uint8_t flags) {
     const char* fmt = (flags & UI_TEXT_FLAG_ZERO_PAD) ? "%02d" : "%d";
 
@@ -1322,6 +1333,7 @@ ret_code_t GUI_ReloadUICache(uint16_t width, uint16_t height) {
 
     m_ui_cache_valid = false;
     m_ui_partial_cache_valid = false;
+    m_ui_render_cache_valid = false;
     m_month_render_cache.valid = false;
     if (ret != NRF_SUCCESS) return ret;
     if (header.mode_count > UI_CACHE_MAX_MODES) {
@@ -1400,6 +1412,48 @@ static ret_code_t ui_load_mode_components(uint8_t mode_id, uint16_t screen_w, ui
     }
 
     *component_count = mode->component_count;
+    return NRF_SUCCESS;
+}
+
+static ret_code_t ui_load_render_component_cache(uint8_t mode_id, uint16_t screen_w, uint16_t screen_h,
+                                                 ui_mode_record_t* mode,
+                                                 const ui_component_record_t** components,
+                                                 uint8_t* component_count) {
+    ret_code_t ret;
+
+    if (mode == NULL || components == NULL || component_count == NULL) {
+        return NRF_ERROR_NULL;
+    }
+
+    if (m_ui_render_cache_valid &&
+        m_ui_render_cache_mode_id == mode_id &&
+        m_ui_render_cache_width == screen_w &&
+        m_ui_render_cache_height == screen_h) {
+        *mode = m_ui_render_cached_mode;
+        *components = m_ui_render_cached_components;
+        *component_count = m_ui_render_cached_count;
+        return NRF_SUCCESS;
+    }
+
+    ret = ui_load_mode_components(mode_id, screen_w, screen_h,
+                                  &m_ui_render_cached_mode,
+                                  m_ui_render_cached_components,
+                                  UI_RENDER_COMPONENT_CACHE_MAX,
+                                  &m_ui_render_cached_count);
+    if (ret != NRF_SUCCESS) {
+        m_ui_render_cache_valid = false;
+        m_ui_render_cached_count = 0;
+        return ret;
+    }
+
+    m_ui_render_cache_mode_id = mode_id;
+    m_ui_render_cache_width = screen_w;
+    m_ui_render_cache_height = screen_h;
+    m_ui_render_cache_valid = true;
+
+    *mode = m_ui_render_cached_mode;
+    *components = m_ui_render_cached_components;
+    *component_count = m_ui_render_cached_count;
     return NRF_SUCCESS;
 }
 
@@ -1581,16 +1635,20 @@ void DrawGUI(gui_data_t* data, buffer_callback callback, void* callback_data) {
     bool low_battery = (data->voltage_mv <= LOW_BATTERY_THRESHOLD_MV);
     uint8_t render_mode_id = low_battery ? UI_MODE_LOW_BATTERY : (uint8_t)data->mode;
     ui_mode_record_t cached_mode;
-    ui_component_record_t cached_components[UI_RENDER_COMPONENT_CACHE_MAX];
+    const ui_component_record_t* cached_components = NULL;
     uint8_t cached_component_count = 0;
+    ret_code_t ui_ret;
 
     if (!low_battery) {
         LUNAR_SolarToLunar(&Lunar, tm.tm_year + YEAR0, tm.tm_mon + 1, tm.tm_mday);
     }
-    (void)ui_load_mode_components(render_mode_id, data->width, data->height,
-                                  &cached_mode, cached_components,
-                                  UI_RENDER_COMPONENT_CACHE_MAX,
-                                  &cached_component_count);
+    ui_ret = ui_load_render_component_cache(render_mode_id, data->width, data->height,
+                                            &cached_mode, &cached_components,
+                                            &cached_component_count);
+    if (ui_ret != NRF_SUCCESS) {
+        cached_components = NULL;
+        cached_component_count = 0;
+    }
 
     Adafruit_GFX gfx;
     // 计算页面高度：根据可用堆内存动态调整 | Calculate page height: dynamically adjust based on available heap
@@ -1700,14 +1758,14 @@ void DrawGUI(gui_data_t* data, buffer_callback callback, void* callback_data) {
    * @param h         输出：刷新区域高度 | Output: refresh area height
    *
    * 智能优化策略(Smart optimization strategy)：
-   * 1. 默认刷新整个HH:MM时间显示区域
-   * 2. 如果仅分钟个位数字变化(如12:08->12:09)，只刷新最右侧的一个数字
-   * 3. 这样可以将刷新面积减少到原来的约1/4，大幅降低功耗和屏幕磨损
+   * 1. 默认刷新整个HH:MM时间显示区域(首次/时间大跳变)
+   * 2. 正常分钟更新时,固定刷新完整MM两位数字
+   * 3. 这样避免分钟十位旧段漏刷,同时仍比刷新完整HH:MM面积小
    *
    * 刷新区域动态调整(Dynamic refresh area adjustment)：
-   * - 完整时间区域：约272x124像素
-   * - 仅个位数字：约68x124像素
-   * - 决策条件：小时十位、小时个位、分钟十位都未变化
+   * - 完整时间区域: 约272x128像素
+   * - 正常分钟区域: 约148x128像素
+   * - 小时变化/时间跳变: 刷新完整HH:MM
    */
   void GetTimeRefreshArea(uint32_t timestamp, uint16_t* x, uint16_t* y, uint16_t* w, uint16_t* h) {
       // Base time area (centered HH:MM inside TIME_REFRESH_*)
@@ -1723,6 +1781,7 @@ void DrawGUI(gui_data_t* data, buffer_callback callback, void* callback_data) {
       // 7段数码管布局参数(必须与DrawTime/Draw7Number匹配)
       const uint16_t cS = 6;      // scale factor | 缩放因子
       const uint16_t nD = 2;      // digits per number (HH / MM) | 每个数字的位数
+      const uint16_t digit_advance = 11 * cS + 2;  // Draw7Number digit stride | 数字步进
       const uint16_t digit_block_width = nD * (11 * cS + 2) - 2 * cS;  // width of "HH" or "MM" | "HH"或"MM"的宽度
       const uint16_t time_width = 2 * digit_block_width + 4 * cS;      // nominal HH:MM width (used for centering) | HH:MM总宽度
 
@@ -1738,7 +1797,7 @@ void DrawGUI(gui_data_t* data, buffer_callback callback, void* callback_data) {
     uint16_t time_height = 20 * cS + 4;  // must match DrawGUI_ClockOnly | 必须与DrawGUI_ClockOnly匹配
     int16_t window_y_local = (base_h - time_height) / 2;
     int16_t window_h = time_height;
-    const int16_t margin_y = 2;
+    const int16_t margin_y = 0;
     // Expand upwards if there is room | 如果有空间则向上扩展
     if (window_y_local > margin_y) {
         window_y_local -= margin_y;
@@ -1749,16 +1808,10 @@ void DrawGUI(gui_data_t* data, buffer_callback callback, void* callback_data) {
         window_h += margin_y;
     }
 
-      // Decide whether we can shrink to only the minute ones digit.
-      // We do this only when:
-      //  - we have a valid previous timestamp,
-      //  - time moves forward by a reasonable amount,
-      //  - and only the minute ones digit changes (e.g. 00->01, 01->02, ... 08->09).
-      // 判断是否可以缩小到只刷新分钟个位数字
-      // 仅在以下条件都满足时才缩小：
-      //  - 有有效的上次时间戳
-      //  - 时间正常向前推进(不是大跳跃)
-      //  - 仅分钟个位数字变化(如00->01, 01->02, ..., 08->09)
+      // Normal minute updates always refresh the full "MM" block. Refreshing
+      // only the changed digit can leave stale segments in the minute-tens
+      // digit, and later minute-ones updates will never touch that area.
+      // 正常分钟更新固定刷新完整"MM"两位。只刷变化数字会漏掉分钟十位残留段。
       if (s_last_time_refresh_ts != 0 && timestamp > s_last_time_refresh_ts &&
           (timestamp - s_last_time_refresh_ts) <= 600) {  // ignore large jumps | 忽略大跳跃(>10分钟)
           // 计算上次和当前的小时和分钟 | Calculate previous and current hours and minutes
@@ -1781,31 +1834,21 @@ void DrawGUI(gui_data_t* data, buffer_callback callback, void* callback_data) {
           uint8_t curr_mt = curr_min / 10;
           uint8_t curr_mu = curr_min % 10;
 
-          // 仅分钟个位变化 | Only minute ones digit changed
-          bool only_minute_ones_changed =
-              (prev_ht == curr_ht) && (prev_hu == curr_hu) &&
-              (prev_mt == curr_mt) && (prev_mu != curr_mu);
+          uint16_t minute_start = window_x_local + digit_block_width + 6 * cS;
+          const uint16_t digit_margin_x = cS;
+          bool hour_unchanged = (prev_ht == curr_ht) && (prev_hu == curr_hu);
+          bool minute_changed = (prev_mt != curr_mt) || (prev_mu != curr_mu);
 
-          if (only_minute_ones_changed) {
-              // Compute local X for the minute block and then its ones digit.
-              // DrawTime layout:
-              //   - "HH" at time_x
-              //   - colon after HH + 2*cS
-              //   - "MM" starts at time_x + digit_block_width + 6*cS
-              // 计算分钟块的本地X坐标，然后是个位数字的位置
-              // DrawTime布局：
-              //   - "HH"位于time_x
-              //   - HH后的冒号占2*cS
-              //   - "MM"从time_x + digit_block_width + 6*cS开始
-              uint16_t minute_block_start = window_x_local + digit_block_width + 6 * cS;
-              uint16_t digit_single_width = 11 * cS + 2;  // 单个数字的宽度 | Width of single digit
-              // Minute ones digit occupies the right part of the MM block.
-              // 分钟个位数字占据MM块的右侧部分
-              uint16_t minute_ones_left = minute_block_start + (digit_block_width - digit_single_width);
+          if (hour_unchanged && minute_changed) {
+              uint16_t left = (minute_start > digit_margin_x) ?
+                              (uint16_t)(minute_start - digit_margin_x) : minute_start;
+              uint16_t right = (uint16_t)(minute_start + (2 * digit_advance) + digit_margin_x);
+              if (right > base_w) {
+                  right = base_w;
+              }
 
-              // 缩小刷新窗口为仅分钟个位数字 | Shrink refresh window to minute ones digit only
-              window_x_local = minute_ones_left;
-              window_w = digit_single_width;
+              window_x_local = left;
+              window_w = (uint16_t)(right - left);
           }
       }
 

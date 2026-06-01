@@ -168,14 +168,12 @@ void EPD_WaitBusy(uint32_t value, uint16_t timeout);         // 等待EPD忙状�
 // LED控制(低电平有效: LOW=点亮, HIGH=熄灭)
 /**
  * LED行为说明 - LED Behavior:
- * - 全刷新: LED在刷新期间保持点亮,完成后熄灭 - Full refresh: LED stays ON during refresh, OFF after complete
- * - 部分刷新: LED保持熄灭状态(不闪烁) - Partial refresh: LED stays OFF (no blinking)
+ * - 屏幕刷新/低电量/唤醒: LED保持熄灭 - Refresh/low battery/wakeup: LED stays OFF
  * - BLE连接/断开: LED闪烁一次 - BLE connect/disconnect: LED blinks once
- * - 低电量(<2.8V): LED每2秒闪烁一次 - Low battery (<2.8V): LED blinks every 2 seconds
  */
-void EPD_LED_ON(void);    // Turn LED on (for full refresh) - 点亮LED(用于全刷新)
+void EPD_LED_ON(void);    // Turn LED on manually - 手动点亮LED
 void EPD_LED_OFF(void);   // Turn LED off - 熄灭LED
-void EPD_LED_BLINK(void); // Blink LED once (for BLE events, low battery) - LED闪烁一次(用于BLE事件、低电量提示)
+void EPD_LED_BLINK(void); // Blink LED once (BLE connect/disconnect only) - LED闪烁一次(仅用于BLE连接/断开)
 
 // VDD voltage (in millivolts)
 // VDD电压(单位:毫伏)

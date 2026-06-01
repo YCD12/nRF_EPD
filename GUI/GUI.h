@@ -52,13 +52,16 @@ void DrawGUI(gui_data_t* data, buffer_callback callback, void* callback_data);
 void DrawGUI_ClockOnly(gui_data_t* data, buffer_callback callback, void* callback_data);
 
 // Get the time refresh area parameters for EPD_service
-// timestamp is the current UNIX time used to decide whether we can
-// shrink the window to only the minute-ones digit (e.g. 00->01, 01->02, ...).
+// timestamp is the current UNIX time used to shrink the partial window to
+// the digit(s) that changed since the last displayed time.
 // 获取时间刷新区域参数供EPD服务使用
-// timestamp: 当前UNIX时间戳，用于判断是否可以将刷新窗口缩小为仅刷新分钟个位数字
-// 智能优化：当仅分钟个位变化时(如00->01, 01->02, ..., 08->09)，只刷新最右侧的一个数字，
-// 最大程度减少局部刷新面积，降低功耗和屏幕磨损
+// timestamp: 当前UNIX时间戳，用于将刷新窗口缩小到相对上次显示发生变化的数字
 void GetTimeRefreshArea(uint32_t timestamp, uint16_t* x, uint16_t* y, uint16_t* w, uint16_t* h);
+
+// Mark the current time as already fully drawn. Call after a full refresh so
+// the next partial refresh compares against the real visible time.
+// 标记当前时间已经通过全刷完整显示，避免下一次局刷误判为大范围变化。
+void GUI_MarkTimeRefreshTimestamp(uint32_t timestamp);
 
 // Get the base origin (top-left) of the time refresh area on the full screen
 // 获取时间刷新区域在整个屏幕上的基准起点(左上角坐标)

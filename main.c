@@ -247,7 +247,7 @@ static void ble_dfu_evt_handler(ble_dfu_buttonless_evt_type_t event) {
 
 /**@brief 时钟定时器超时处理函数
  *
- * @details 每秒调用一次，用于更新时间戳、处理低电量LED闪烁和EPD定时事件
+ * @details 每秒调用一次，用于更新时间戳和EPD定时事件
  *
  * @param[in] p_context 上下文指针（未使用）
  */
@@ -255,14 +255,6 @@ static void clock_timer_timeout_handler(void* p_context) {
     UNUSED_PARAMETER(p_context);
 
     m_timestamp++;  // 时间戳递增（每秒一次）
-
-    // Low battery LED blinking (every 2 seconds)
-    // Uses cached voltage from last screen refresh, no ADC operation here
-    // 低电量LED闪烁（每2秒一次）
-    // 使用上次屏幕刷新时缓存的电压值，此处不进行ADC操作
-    if (m_timestamp % 2 == 0 && EPD_IsLowBattery()) {  // 每2秒检查一次
-        EPD_LED_BLINK();  // 闪烁LED指示低电量
-    }
 
     ble_epd_on_timer(&m_epd, m_timestamp, false);  // 通知EPD服务定时器事件
 }
@@ -462,10 +454,6 @@ void gpiote_evt_handler(nrf_drv_gpiote_pin_t pin, nrf_gpiote_polarity_t action) 
     nrf_drv_gpiote_in_event_disable(pin);  // 禁用引脚事件
     nrf_drv_gpiote_in_uninit(pin);         // 取消初始化引脚
     nrf_drv_gpiote_uninit();               // 取消初始化GPIOTE模块
-
-    // blink LED on wakeup
-    // 唤醒时闪烁LED
-    EPD_LED_BLINK();
 
     advertising_start();  // 开始广播
 }

@@ -258,10 +258,17 @@ ret_code_t epd_ext_resource_read(uint16_t type, uint16_t id, uint32_t offset, vo
         return NRF_ERROR_INVALID_LENGTH;
     }
 
+    ret = epd_ext_resources_wake();
+    if (ret != NRF_SUCCESS) {
+        return ret;
+    }
+
     return fm25q04b_read(entry.offset + offset, data, length);
 }
 
 ret_code_t epd_ext_resource_read_raw(uint32_t address, void* data, size_t length) {
+    ret_code_t ret;
+
     if (!m_flash_ready) {
         return NRF_ERROR_INVALID_STATE;
     }
@@ -271,6 +278,11 @@ ret_code_t epd_ext_resource_read_raw(uint32_t address, void* data, size_t length
     if (length != 0 && (address >= EPD_EXT_RES_RESERVED_START_ADDR ||
         length > (size_t)(EPD_EXT_RES_RESERVED_START_ADDR - address))) {
         return NRF_ERROR_INVALID_ADDR;
+    }
+
+    ret = epd_ext_resources_wake();
+    if (ret != NRF_SUCCESS) {
+        return ret;
     }
 
     return fm25q04b_read(address, data, length);

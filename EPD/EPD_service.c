@@ -80,6 +80,7 @@
 
 #include "EPD_service.h"
 
+#include <stdbool.h>
 #include <string.h>
 
 #include "app_scheduler.h"
@@ -99,6 +100,50 @@
 // ============================================================================
 
 #define LOW_BATTERY_POLL_INTERVAL_S 10  // Low-battery mode voltage polling interval in seconds | 低电量模式电压轮询周期(秒)
+
+extern void UC8179_Set_Partial_Strong_BW_Allowed(bool allowed);
+
+static uint8_t clock_7seg_mask(uint8_t digit) {
+    static const uint8_t masks[10] = {
+        0x3F, // 0: a b c d e f
+        0x06, // 1: b c
+        0x5B, // 2: a b d e g
+        0x4F, // 3: a b c d g
+        0x66, // 4: b c f g
+        0x6D, // 5: a c d f g
+        0x7D, // 6: a c d e f g
+        0x07, // 7: a b c
+        0x7F, // 8: a b c d e f g
+        0x6F  // 9: a b c d f g
+    };
+
+    return (digit < 10U) ? masks[digit] : 0U;
+}
+
+static bool clock_digit_needs_strong_cleanup(uint8_t old_digit, uint8_t new_digit) {
+    uint8_t old_mask = clock_7seg_mask(old_digit);
+    uint8_t new_mask = clock_7seg_mask(new_digit);
+
+    return (old_mask & (uint8_t)~new_mask) != 0U;
+}
+
+static bool clock_time_needs_strong_cleanup(uint32_t timestamp) {
+    if (timestamp < 60U) {
+        return true;
+    }
+
+    uint32_t old_minute_total = (timestamp - 60U) / 60U;
+    uint32_t new_minute_total = timestamp / 60U;
+    uint8_t old_minute = (uint8_t)(old_minute_total % 60U);
+    uint8_t new_minute = (uint8_t)(new_minute_total % 60U);
+    uint8_t old_hour = (uint8_t)((old_minute_total / 60U) % 24U);
+    uint8_t new_hour = (uint8_t)((new_minute_total / 60U) % 24U);
+
+    return clock_digit_needs_strong_cleanup(old_minute % 10U, new_minute % 10U) ||
+           clock_digit_needs_strong_cleanup(old_minute / 10U, new_minute / 10U) ||
+           clock_digit_needs_strong_cleanup(old_hour % 10U, new_hour % 10U) ||
+           clock_digit_needs_strong_cleanup(old_hour / 10U, new_hour / 10U);
+}
 
 /**@brief 计算CRC16-CCITT校验值
  *        Calculate CRC16-CCITT checksum
@@ -220,11 +265,15 @@ static void send_resource_op_response(ble_epd_t* p_epd, uint8_t cmd, uint16_t se
 
 static void send_resource_status(ble_epd_t* p_epd, ret_code_t init_ret) {
     epd_ext_resource_status_t status;
-    ret_code_t ret = epd_ext_resources_get_status(&status);
+    ret_code_t ret = NRF_SUCCESS;
     uint8_t rsp[20];
 
-    if (ret != NRF_SUCCESS) {
-        memset(&status, 0, sizeof(status));
+    memset(&status, 0, sizeof(status));
+    if (init_ret != NRF_ERROR_BUSY) {
+        ret = epd_ext_resources_get_status(&status);
+        if (ret != NRF_SUCCESS) {
+            memset(&status, 0, sizeof(status));
+        }
     }
 
     rsp[0] = EPD_RSP_RESOURCE_STATUS;
@@ -266,6 +315,47 @@ static void send_resource_read_response(ble_epd_t* p_epd, uint16_t seq, uint32_t
     rsp[9 + payload_len] = (uint8_t)(crc >> 8);
     rsp_len += payload_len;
     ble_epd_string_send(p_epd, rsp, rsp_len);
+}
+
+static bool is_resource_command(uint8_t cmd) {
+    return (cmd == EPD_CMD_RES_ERASE ||
+            cmd == EPD_CMD_RES_WRITE ||
+            cmd == EPD_CMD_RES_COMMIT ||
+            cmd == EPD_CMD_RES_STATUS ||
+            cmd == EPD_CMD_RES_READ);
+}
+
+static void send_resource_busy_response(ble_epd_t* p_epd, const uint8_t* p_data, uint16_t length) {
+    uint8_t cmd = (p_data != NULL && length > 0) ? p_data[0] : 0;
+
+    switch (cmd) {
+        case EPD_CMD_RES_WRITE: {
+            uint16_t seq = (length >= 3) ? ((uint16_t)p_data[1] | ((uint16_t)p_data[2] << 8)) : 0;
+            send_resource_op_response(p_epd, cmd, seq, NRF_ERROR_BUSY);
+        } break;
+
+        case EPD_CMD_RES_READ: {
+            uint16_t seq = 0;
+            uint32_t address = 0;
+            if (length >= 7) {
+                seq = (uint16_t)p_data[1] | ((uint16_t)p_data[2] << 8);
+                address = epd_parse_u24_le(&p_data[3]);
+            }
+            send_resource_read_response(p_epd, seq, address, NRF_ERROR_BUSY, NULL, 0);
+        } break;
+
+        case EPD_CMD_RES_STATUS:
+            send_resource_status(p_epd, NRF_ERROR_BUSY);
+            break;
+
+        case EPD_CMD_RES_ERASE:
+        case EPD_CMD_RES_COMMIT:
+            send_resource_op_response(p_epd, cmd, 0, NRF_ERROR_BUSY);
+            break;
+
+        default:
+            break;
+    }
 }
 
 // nRF52811默认引脚配置
@@ -449,12 +539,7 @@ static bool is_urgent_command(uint8_t cmd) {
             // CRC transfer commands need immediate execution for timely ACK response
             cmd == EPD_CMD_WRITE_BLOCK ||
             cmd == EPD_CMD_QUERY_STATUS ||
-            cmd == EPD_CMD_RESET_TRANSFER ||
-            cmd == EPD_CMD_RES_ERASE ||
-            cmd == EPD_CMD_RES_WRITE ||
-            cmd == EPD_CMD_RES_COMMIT ||
-            cmd == EPD_CMD_RES_STATUS ||
-            cmd == EPD_CMD_RES_READ);
+            cmd == EPD_CMD_RESET_TRANSFER);
 }
 
 // 异步命令处理的前向声明
@@ -496,8 +581,8 @@ static void epd_gui_update(void* p_event_data, uint16_t event_size) {
     app_feed_wdt();  // Feed watchdog at the beginning. 开始时喂狗
     EPD_GPIO_Init();  // 初始化GPIO / Initialize GPIO
     epd_model_t* epd = epd_init((epd_model_id_t)p_epd->config.model_id);
-    EPD_LED_OFF();  // Ensure LED is OFF after driver init, will be turned ON only for full refresh
-                    // 确保驱动初始化后LED关闭,只在全刷时才打开
+    EPD_LED_OFF();  // Keep LED off during all refresh operations.
+                    // 所有刷新过程中保持LED熄灭。
 
     // ========================================================================
     // 电压读取缓存策略
@@ -541,7 +626,13 @@ static void epd_gui_update(void* p_event_data, uint16_t event_size) {
     uint32_t err_code = sd_ble_gap_device_name_get((uint8_t*)data.ssid, &dev_name_len);
     if (err_code == NRF_SUCCESS && dev_name_len > 0) data.ssid[dev_name_len] = '\0';
 
-    if (!epd_resources_manifest_ready()) {
+    ret_code_t resource_wake_ret = epd_ext_resources_wake();
+    if (resource_wake_ret != NRF_SUCCESS) {
+        NRF_LOG_WARNING("[EPD]: External resource flash wake failed before refresh: %lu",
+                        (unsigned long)resource_wake_ret);
+    }
+
+    if (resource_wake_ret != NRF_SUCCESS || !epd_resources_manifest_ready()) {
         NRF_LOG_WARNING("[EPD]: External resources missing/invalid — drawing sync hint");
         EPD_LED_OFF();
         if (epd->drv && epd->drv->refresh && epd->drv->write_image) {
@@ -655,10 +746,6 @@ static void epd_gui_update(void* p_event_data, uint16_t event_size) {
             // ================================================================
             NRF_LOG_INFO("[EPD]: *** Performing FULL refresh (mode switch or periodic) ***\n");
 
-            // LED ON during full refresh
-            // 全刷期间打开LED指示
-            EPD_LED_ON();
-
             // Standard full refresh flow to ensure display is correct
             // 标准全刷流程,确保显示正确
             app_feed_wdt();  // Feed watchdog before drawing GUI. 绘制GUI前喂狗
@@ -667,11 +754,11 @@ static void epd_gui_update(void* p_event_data, uint16_t event_size) {
             epd->drv->refresh(epd);
             app_feed_wdt();  // Feed watchdog after refresh. 刷新后喂狗
 
-            // LED OFF after full refresh completed
-            // 全刷完成后关闭LED
             EPD_LED_OFF();
-
             last_full_clear = event->timestamp;  // 记录全刷时间 / Record full refresh time
+            if (data.mode == MODE_CLOCK_CALENDAR) {
+                GUI_MarkTimeRefreshTimestamp(data.timestamp);
+            }
             p_epd->force_full_refresh = false;  // Clear the force flag after full refresh. 清除强制全刷标志
             NRF_LOG_INFO("[EPD]: Full refresh completed\n");
         } else {
@@ -697,14 +784,15 @@ static void epd_gui_update(void* p_event_data, uint16_t event_size) {
             // 局刷区域计算 (Partial Refresh Area Calculation)
             // ================================================================
             // For MODE_CLOCK_CALENDAR, only refresh the time display area (minimal partial refresh).
-            // The time refresh area is further reduced dynamically to only the minute-ones digit
-            // when possible (e.g. 00->01, 01->02, ...). For MODE_CLOCK, refresh the full screen.
+            // The time refresh area is reduced to the full minute block (MM)
+            // when possible. For MODE_CLOCK, refresh the full screen.
             //
             // 对于MODE_CLOCK_CALENDAR模式,只刷新时间显示区域(最小化局刷)。
-            // 时间刷新区域可以进一步动态减少到只刷新分钟个位数
-            // (例如 00->01, 01->02, ...)。对于MODE_CLOCK模式,刷新整个屏幕。
+            // 时间刷新区域可以进一步动态减少到完整分钟两位(MM)。
+            // 对于MODE_CLOCK模式,刷新整个屏幕。
             // ================================================================
             uint16_t partial_x = 0, partial_y = 0, partial_w = epd->width, partial_h = epd->height;
+            UC8179_Set_Partial_Strong_BW_Allowed(true);
             if (data.mode == MODE_CLOCK_CALENDAR) {
                 // Get the (possibly reduced) time-only refresh area based on current timestamp.
                 // 根据当前时间戳获取(可能缩小的)仅时间刷新区域
@@ -748,7 +836,10 @@ static void epd_gui_update(void* p_event_data, uint16_t event_size) {
                     .offset_x = time_base_x,
                     .offset_y = time_base_y
                 };
+                bool allow_strong_bw_cleanup = clock_time_needs_strong_cleanup(data.timestamp);
+                UC8179_Set_Partial_Strong_BW_Allowed(allow_strong_bw_cleanup);
                 DrawGUI_ClockOnly(&data, (buffer_callback)write_image_partial_with_offset, &write_ctx);
+                UC8179_Set_Partial_Strong_BW_Allowed(true);
             } else {
                 // MODE_CLOCK模式: 刷新整个屏幕
                 // MODE_CLOCK mode: refresh full screen
@@ -781,20 +872,13 @@ fallback_full_refresh:
         // ====================================================================
         NRF_LOG_INFO("[EPD]: === Using FULL refresh ===\n");
 
-        // LED ON during full refresh
-        // 全刷期间打开LED指示
-        EPD_LED_ON();
-
         app_feed_wdt();  // Feed watchdog before drawing GUI. 绘制GUI前喂狗
         DrawGUI(&data, (buffer_callback)epd->drv->write_image, epd);
         app_feed_wdt();  // Feed watchdog after drawing GUI. 绘制GUI后喂狗
         epd->drv->refresh(epd);
         app_feed_wdt();  // Feed watchdog after refresh. 刷新后喂狗
 
-        // LED OFF after full refresh completed
-        // 全刷完成后关闭LED
         EPD_LED_OFF();
-
         NRF_LOG_INFO("[EPD]: === Full refresh complete ===\n");
     }
 
@@ -878,6 +962,10 @@ static void on_disconnect(ble_epd_t* p_epd, ble_evt_t* p_ble_evt) {
     UNUSED_PARAMETER(p_ble_evt);
     p_epd->conn_handle = BLE_CONN_HANDLE_INVALID;
 
+    // Blink LED once on BLE disconnect, even if the display is refreshing.
+    // BLE断开时闪烁LED一次, 即使屏幕正在刷新。
+    EPD_LED_BLINK();
+
     // If screen refresh is in progress, skip sleep/GPIO_Uninit to avoid interrupting refresh
     // The epd_gui_update function will handle GPIO_Uninit after refresh completes
     // 如果屏幕刷新正在进行,跳过sleep/GPIO_Uninit以避免中断刷新
@@ -887,10 +975,6 @@ static void on_disconnect(ble_epd_t* p_epd, ble_evt_t* p_ble_evt) {
         app_feed_wdt();
         return;
     }
-
-    // Blink LED once on BLE disconnect
-    // BLE断开时闪烁LED一次
-    EPD_LED_BLINK();
 
     // Only put EPD to sleep if it has been initialized
     // 只有在EPD已初始化时才将其置于睡眠状态
@@ -1745,6 +1829,14 @@ static void epd_service_on_write(ble_epd_t* p_epd, uint8_t* p_data, uint16_t len
                   p_data ? p_data[0] : 0, length);
     if (p_data == NULL || length <= 0) return;
 
+    // Resource flash commands share SPI/power state with GUI resource loading and
+    // must not run while the panel driver is in a refresh transaction.
+    if (is_resource_command(p_data[0]) && p_epd->is_refreshing) {
+        NRF_LOG_WARNING("[EPD]: Resource command 0x%02x rejected while refreshing", p_data[0]);
+        send_resource_busy_response(p_epd, p_data, length);
+        return;
+    }
+
     // Urgent commands bypass queue and execute immediately
     // 紧急命令绕过队列立即执行
     if (is_urgent_command(p_data[0])) {
@@ -2033,10 +2125,6 @@ uint32_t ble_epd_init(ble_epd_t* p_epd) {
                             (unsigned long)flash_sleep_ret);
         }
     }
-
-    // blink LED on start
-    // 启动时闪烁LED
-    EPD_LED_BLINK();
 
     // Add the service.
     // 添加BLE服务
