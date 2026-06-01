@@ -19,6 +19,7 @@ const ResourceManager = {
   LOW_BATTERY_THRESHOLD_MV: 2800,
   MAX_RETRIES: 3,
   SAMPLE_BYTES: 32,
+  NRF_ERROR_BUSY: 17,
 
   seq: 1,
   statusResolver: null,
@@ -28,7 +29,13 @@ const ResourceManager = {
   latestStatus: null,
   latestCheck: null,
   isUpdating: false,
+  isChecking: false,
+  isClearing: false,
+  busyOperation: null,
   crcTable: null,
+  get isBusy() {
+    return !!this.busyOperation || this.isUpdating || this.isChecking || this.isClearing;
+  },
 
   init() {
     this.setUiStatus('等待检查');
@@ -39,6 +46,9 @@ const ResourceManager = {
     this.latestStatus = null;
     this.latestCheck = null;
     this.isUpdating = false;
+    this.isChecking = false;
+    this.isClearing = false;
+    this.busyOperation = null;
     this.statusResolver = null;
     this.opResolvers.clear();
     this.readResolvers.clear();
@@ -135,53 +145,84 @@ const ResourceManager = {
     }
   },
 
-  async checkResources() {
+  beginOperation(label) {
+    if (this.busyOperation) {
+      throw new Error(`${this.busyOperation}正在进行，请稍后再试`);
+    }
+    this.busyOperation = label;
+    this.updateButtonLocks();
+    this.updateUi();
+  },
+
+  endOperation() {
+    this.busyOperation = null;
+    this.updateButtonLocks();
+    this.updateUi();
+  },
+
+  async checkResources(options = {}) {
+    const ownLock = !options.skipLock;
     if (!this.isConnected()) throw new Error('BLE未连接');
     const bundle = this.getBundle();
 
-    this.setUiStatus('读取状态');
-    const status = await this.queryStatus();
-    this.latestStatus = status;
-    if (!status.flashReady) {
-      this.latestCheck = { needsUpdate: true, reason: '外置Flash未就绪' };
-      this.updateUi();
-      return this.latestCheck;
+    if (ownLock) {
+      this.beginOperation('资源检查');
+      this.isChecking = true;
     }
 
-    this.setUiStatus('读取manifest');
-    const deviceManifestBytes = await this.readRaw(bundle.manifestAddress, bundle.manifest.length);
-    const deviceManifest = this.parseManifest(deviceManifestBytes);
-    if (!deviceManifest.valid) {
-      this.latestCheck = { needsUpdate: true, reason: deviceManifest.reason || '设备manifest无效' };
+    try {
+      this.setUiStatus('读取状态');
+      const status = await this.queryStatus();
+      this.latestStatus = status;
+      if (status.statusCode === this.NRF_ERROR_BUSY) {
+        throw new Error('设备正在刷新屏幕，请稍后再试');
+      }
+      if (!status.flashReady) {
+        this.latestCheck = { needsUpdate: true, reason: '外置Flash未就绪' };
+        this.updateUi();
+        return this.latestCheck;
+      }
+
+      this.setUiStatus('读取manifest');
+      const deviceManifestBytes = await this.readRaw(bundle.manifestAddress, bundle.manifest.length);
+      const deviceManifest = this.parseManifest(deviceManifestBytes);
+      if (!deviceManifest.valid) {
+        this.latestCheck = { needsUpdate: true, reason: deviceManifest.reason || '设备manifest无效' };
+        this.updateUi();
+        return this.latestCheck;
+      }
+
+      if (deviceManifest.crc32 !== bundle.manifestCrc32) {
+        this.latestCheck = { needsUpdate: true, reason: 'manifest CRC不一致' };
+        this.updateUi();
+        return this.latestCheck;
+      }
+
+      const entryMismatch = this.compareEntries(deviceManifest.entries, bundle.entries);
+      if (entryMismatch) {
+        this.latestCheck = { needsUpdate: true, reason: entryMismatch };
+        this.updateUi();
+        return this.latestCheck;
+      }
+
+      this.setUiStatus('抽样校验');
+      const sampleMismatch = await this.verifySamples(bundle.entries, bundle);
+      if (sampleMismatch) {
+        this.latestCheck = { needsUpdate: true, reason: sampleMismatch };
+        this.updateUi();
+        return this.latestCheck;
+      }
+
+      this.latestCheck = { needsUpdate: false, reason: '资源已是最新' };
+      this.setUiStatus('已是最新');
       this.updateUi();
       return this.latestCheck;
+    } finally {
+      if (ownLock) {
+        this.isChecking = false;
+        this.endOperation();
+      }
     }
-
-    if (deviceManifest.crc32 !== bundle.manifestCrc32) {
-      this.latestCheck = { needsUpdate: true, reason: 'manifest CRC不一致' };
-      this.updateUi();
-      return this.latestCheck;
-    }
-
-    const entryMismatch = this.compareEntries(deviceManifest.entries, bundle.entries);
-    if (entryMismatch) {
-      this.latestCheck = { needsUpdate: true, reason: entryMismatch };
-      this.updateUi();
-      return this.latestCheck;
-    }
-
-    this.setUiStatus('抽样校验');
-    const sampleMismatch = await this.verifySamples(bundle.entries, bundle);
-    if (sampleMismatch) {
-      this.latestCheck = { needsUpdate: true, reason: sampleMismatch };
-      this.updateUi();
-      return this.latestCheck;
-    }
-
-    this.latestCheck = { needsUpdate: false, reason: '资源已是最新' };
-    this.setUiStatus('已是最新');
-    this.updateUi();
-    return this.latestCheck;
   },
 
   async updateResources() {
@@ -189,6 +230,7 @@ const ResourceManager = {
     if (this.isLowBattery()) throw new Error('电量过低，已阻止外置Flash擦写');
 
     const bundle = this.getBundle();
+    this.beginOperation('资源更新');
     this.isUpdating = true;
     this.updateButtonLocks();
     this.updateUi();
@@ -215,7 +257,7 @@ const ResourceManager = {
       await this.commitManifest();
 
       this.setUiStatus('提交后复核');
-      const check = await this.checkResources();
+      const check = await this.checkResources({ skipLock: true });
       if (check.needsUpdate) throw new Error(check.reason);
 
       if (typeof addLog === 'function') addLog('外置Flash资源更新完成');
@@ -223,8 +265,7 @@ const ResourceManager = {
       return true;
     } finally {
       this.isUpdating = false;
-      this.updateButtonLocks();
-      this.updateUi();
+      this.endOperation();
     }
   },
 
@@ -233,7 +274,8 @@ const ResourceManager = {
     if (this.isLowBattery()) throw new Error('电量过低，已阻止外置Flash擦写');
 
     const bundle = this.getBundle();
-    this.isUpdating = true;
+    this.beginOperation('清空外置Flash');
+    this.isClearing = true;
     this.updateButtonLocks();
     this.updateUi();
 
@@ -251,9 +293,8 @@ const ResourceManager = {
       if (typeof showToast === 'function') showToast('外置Flash已清空，请更新资源');
       return true;
     } finally {
-      this.isUpdating = false;
-      this.updateButtonLocks();
-      this.updateUi();
+      this.isClearing = false;
+      this.endOperation();
     }
   },
 
@@ -299,11 +340,13 @@ const ResourceManager = {
     this.writeU24(payload, 0, address);
     this.writeU32(payload, 3, length);
     const op = await this.sendOp(this.CMD_RES_ERASE, 0, payload, timeout);
+    if (op.status === this.NRF_ERROR_BUSY) throw new Error('设备正在刷新屏幕，请稍后再试');
     if (op.status !== 0) throw new Error(`资源区擦除失败: ${op.status}`);
   },
 
   async commitManifest() {
     const op = await this.sendOp(this.CMD_RES_COMMIT, 0, null, 12000);
+    if (op.status === this.NRF_ERROR_BUSY) throw new Error('设备正在刷新屏幕，请稍后再试');
     if (op.status !== 0) throw new Error(`manifest提交失败: ${op.status}`);
   },
 
@@ -329,6 +372,10 @@ const ResourceManager = {
           const op = await this.sendOp(this.CMD_RES_WRITE, seq, packet, 3000);
           if (op.status === 0) {
             lastError = null;
+            break;
+          }
+          if (op.status === this.NRF_ERROR_BUSY) {
+            lastError = new Error('设备正在刷新屏幕，请稍后再试');
             break;
           }
           lastError = new Error(`写入失败: ${op.status}`);
@@ -359,6 +406,7 @@ const ResourceManager = {
       request[5] = readLen;
 
       const response = await this.sendRead(seq, request);
+      if (response.status === this.NRF_ERROR_BUSY) throw new Error('设备正在刷新屏幕，请稍后再试');
       if (response.status !== 0) throw new Error(`Flash读取失败: ${response.status}`);
       if (!response.crcOk) throw new Error('Flash读取响应CRC错误');
       if (response.address !== address + pos || response.payload.length !== readLen) {
@@ -685,6 +733,7 @@ const ResourceManager = {
     if (flashStatus) {
       if (!this.isConnected()) flashStatus.innerText = '未连接';
       else if (!this.latestStatus) flashStatus.innerText = '未查询';
+      else if (this.latestStatus.statusCode === this.NRF_ERROR_BUSY) flashStatus.innerText = '刷新中';
       else flashStatus.innerText = this.latestStatus.flashReady ? '在线' : '离线';
     }
     if (jedec) {
@@ -713,21 +762,22 @@ const ResourceManager = {
     if (bundleCrc && bundle) {
       bundleCrc.innerText = `0x${bundle.manifestCrc32.toString(16).padStart(8, '0')}`;
     }
+    const busy = this.isBusy;
     if (updateButton) {
-      updateButton.disabled = !this.isConnected() || this.isUpdating || this.isLowBattery() ||
+      updateButton.disabled = !this.isConnected() || busy || this.isLowBattery() ||
         (this.latestStatus && !this.latestStatus.flashReady) ||
         !this.latestCheck || !this.latestCheck.needsUpdate;
     }
-    if (checkButton) checkButton.disabled = !this.isConnected() || this.isUpdating;
+    if (checkButton) checkButton.disabled = !this.isConnected() || busy;
     if (clearButton) {
-      clearButton.disabled = !this.isConnected() || this.isUpdating || this.isLowBattery() ||
+      clearButton.disabled = !this.isConnected() || busy || this.isLowBattery() ||
         (this.latestStatus && !this.latestStatus.flashReady);
     }
     if (this.latestCheck) this.setProgress(this.latestCheck.reason);
   },
 
   updateButtonLocks() {
-    if (typeof updateButtonStatus === 'function') updateButtonStatus(this.isUpdating);
+    if (typeof updateButtonStatus === 'function') updateButtonStatus(this.isBusy);
   },
 };
 

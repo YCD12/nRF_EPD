@@ -409,22 +409,18 @@ void EPD_WaitBusy(uint32_t value, uint16_t timeout) {
  *
  * LED behavior:
  * LED行为说明:
- * - Full refresh: LED stays ON during refresh, OFF after complete
- *   全刷新: LED在刷新过程中保持点亮,完成后熄灭
- * - Partial refresh: LED stays OFF (no blinking)
- *   部分刷新: LED保持熄灭状态(不闪烁)
+ * - Refresh, low battery, and wakeup: LED stays OFF
+ *   屏幕刷新、低电量和唤醒期间LED保持熄灭
  * - BLE connect/disconnect: LED blinks once
  *   BLE连接/断开: LED闪烁一次
- * - Low battery (<2.8V): LED blinks every 2 seconds
- *   低电量(<2.8V): LED每2秒闪烁一次
  */
 
 /**
  * 点亮LED
  * Turn LED on
  *
- * 主要用于全刷新期间指示屏幕正在更新
- * Mainly used during full refresh to indicate screen is updating
+ * Reserved for explicit/manual LED use. Normal refresh paths keep LED off.
+ * 保留给显式/手动LED控制使用。正常刷新路径保持LED熄灭。
  */
 void EPD_LED_ON(void) {
     if (EPD_LED_PIN != 0xFF) digitalWrite(EPD_LED_PIN, LOW);  // LOW=点亮 - LOW=ON
@@ -434,8 +430,8 @@ void EPD_LED_ON(void) {
  * 熄灭LED
  * Turn LED off
  *
- * 部分刷新期间LED保持熄灭状态
- * LED stays off during partial refresh
+ * Refresh paths call this defensively to keep the LED dark.
+ * 刷新路径防御性调用此函数以保持LED熄灭。
  */
 void EPD_LED_OFF(void) {
     if (EPD_LED_PIN != 0xFF) digitalWrite(EPD_LED_PIN, HIGH);  // HIGH=熄灭 - HIGH=OFF
@@ -445,8 +441,8 @@ void EPD_LED_OFF(void) {
  * LED闪烁一次
  * Blink LED once
  *
- * 用于BLE事件和低电量提示
- * Used for BLE events and low battery indication
+ * Used only for BLE connect/disconnect indication.
+ * 仅用于BLE连接/断开提示。
  *
  * 闪烁时序: 点亮100ms -> 熄灭100ms -> 恢复默认状态
  * Blink sequence: ON 100ms -> OFF 100ms -> restore default state

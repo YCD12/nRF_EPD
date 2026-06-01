@@ -159,6 +159,8 @@ function updateBatteryVoltageDisplay(voltageMv = null, fallbackText = '未连接
   }
 }
 
+let bleWriteQueue = Promise.resolve();
+
 async function write(cmd, data, withResponse = true) {
   if (!epdCharacteristic) {
     addLog("服务不可用，请检查蓝牙连接");
@@ -170,18 +172,23 @@ async function write(cmd, data, withResponse = true) {
     if (data instanceof Uint8Array) data = Array.from(data);
     payload.push(...data)
   }
-  addLog(bytes2hex(payload), '⇑');
-  try {
-    if (withResponse)
-      await epdCharacteristic.writeValueWithResponse(Uint8Array.from(payload));
-    else
-      await epdCharacteristic.writeValueWithoutResponse(Uint8Array.from(payload));
-  } catch (e) {
-    console.error(e);
-    if (e.message) addLog("write: " + e.message);
-    return false;
-  }
-  return true;
+  const task = async () => {
+    addLog(bytes2hex(payload), '⇑');
+    try {
+      if (withResponse)
+        await epdCharacteristic.writeValueWithResponse(Uint8Array.from(payload));
+      else
+        await epdCharacteristic.writeValueWithoutResponse(Uint8Array.from(payload));
+    } catch (e) {
+      console.error(e);
+      if (e.message) addLog("write: " + e.message);
+      return false;
+    }
+    return true;
+  };
+  const result = bleWriteQueue.then(task, task);
+  bleWriteQueue = result.catch(() => {});
+  return result;
 }
 
 async function writeImage(data, step = 'bw') {
@@ -556,7 +563,7 @@ function downloadDataArray() {
 
 function updateButtonStatus(forceDisabled = false) {
   const connected = gattServer != null && gattServer.connected;
-  const resourceBusy = typeof ResourceManager !== 'undefined' && ResourceManager.isUpdating;
+  const resourceBusy = typeof ResourceManager !== 'undefined' && ResourceManager.isBusy;
   const status = (forceDisabled || resourceBusy) ? 'disabled' : (connected ? null : 'disabled');
   document.getElementById("reconnectbutton").disabled = (gattServer == null || gattServer.connected) ? 'disabled' : null;
   document.getElementById("sendcmdbutton").disabled = status;

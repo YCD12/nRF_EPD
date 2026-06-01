@@ -33,7 +33,12 @@
 #define FM25Q04B_STATUS2_PROTECT_MASK 0x40
 #define FM25Q04B_STATUS2_SRP1_MASK    0x01
 
-#define FM25Q04B_READ_CHUNK_SIZE      128U
+/*
+ * Keep the read chunk modest because fm25q04b_read() is called deep inside
+ * GUI/font rendering during hourly full refreshes. nRF52811 has very little
+ * stack margin, and oversized local SPI buffers can corrupt the page buffers.
+ */
+#define FM25Q04B_READ_CHUNK_SIZE      32U
 #define FM25Q04B_ERASE_TIMEOUT_MS     5000U
 #define FM25Q04B_PROGRAM_TIMEOUT_MS   1000U
 

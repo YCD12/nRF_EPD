@@ -30,6 +30,16 @@ extern void app_feed_wdt(void);
 
 #define UC8179_ROW_CHUNK_SIZE 64U
 #define UC8179_WDT_FEED_ROWS  8U
+#define UC8179_STRONG_BW_PARTIAL_MAX_AREA 24000UL
+#define UC8179_STRONG_BW_PARTIAL_MAX_WIDTH 160U
+#define UC8179_STRONG_BW_PARTIAL_GUARD_BYTES 0U
+
+static bool m_uc8179_partial_strong_bw_allowed = true;
+
+void UC8179_Set_Partial_Strong_BW_Allowed(bool allowed)
+{
+    m_uc8179_partial_strong_bw_allowed = allowed;
+}
 
 // LUT参数表 - 基于线性插值,从极冷到很热
 // 温度越低,T1/T2越大(驱动时间越长); 温度越高,T1/T2越小(驱动时间越短)
@@ -617,7 +627,7 @@ void UC8179_Clear(epd_model_t* epd, bool refresh) {
  * 1. 进入局部模式(PTIN)
  * 2. 设置刷新区域为全屏
  * 3. 向DTM1(黑色层)写入0xFF(白色)
- * 4. 向DTM2(颜色层)写入0x00(无红色)
+ * 4. 向DTM2(颜色层)写入0xFF(无红色)
  * 5. 退出局部模式(PTOUT)
  * 6. 可选执行刷新显示白屏
  *
@@ -645,12 +655,11 @@ void UC8179_Clear_Partial(epd_model_t *epd, bool refresh)
     NRF_LOG_DEBUG("[EPD]: Writing 0xFF to RAM1 (black layer)\n");
     EPD_FillRAM(UC81xx_DTM1, 0xFF, ram_bytes);  // 黑色层填充白色
 
-    // For EPD_COLOR_BWR screen: 0x00 = no red in color layer (DTM2/0x13)
-    // 对于BWR屏幕: 0x00 = 颜色层中无红色(DTM2/0x13)
-    // Reference code uses ~0xFF = 0x00 for white background
-    // 参考代码使用 ~0xFF = 0x00 作为白色背景
-    NRF_LOG_DEBUG("[EPD]: Writing 0x00 to RAM2 (color layer, no red)\n");
-    EPD_FillRAM(UC81xx_DTM2, 0x00, ram_bytes);  // 颜色层填充零(无红色)
+    // For EPD_COLOR_BWR screen: 0xFF = no red in color layer (DTM2/0x13).
+    // Keep this consistent with UC8179_Clear(); 0 bits in DTM2 can drive red.
+    // 对于BWR屏幕: 0xFF = 颜色层中无红色(DTM2/0x13)。
+    NRF_LOG_DEBUG("[EPD]: Writing 0xFF to RAM2 (color layer, no red)\n");
+    EPD_FillRAM(UC81xx_DTM2, 0xFF, ram_bytes);  // 颜色层填充无红
 
     EPD_WriteCmd(UC81xx_PTOUT);  // partial out // 退出局部模式
     delay(100);  // Wait for partial mode to fully exit // 等待局部模式完全退出
@@ -814,6 +823,45 @@ static void UC8179_Write_Image_Rows(const uint8_t* src, uint16_t wb, uint16_t h,
     }
 }
 
+static void UC8179_Write_Image_Rows_GuardedInvert(const uint8_t* src, uint16_t wb, uint16_t h, uint8_t guard_bytes) {
+    uint8_t temp[UC8179_ROW_CHUNK_SIZE];
+
+    if (src == NULL || wb == 0) {
+        UC8179_Write_Image_Rows(NULL, wb, h, 0xFF, false);
+        return;
+    }
+
+    if ((uint16_t)guard_bytes * 2U >= wb) {
+        guard_bytes = 0;
+    }
+
+    for (uint16_t row = 0; row < h; row++) {
+        uint16_t remaining = wb;
+        uint16_t offset = 0;
+
+        while (remaining > 0) {
+            uint8_t chunk = (remaining > UC8179_ROW_CHUNK_SIZE) ? UC8179_ROW_CHUNK_SIZE : (uint8_t)remaining;
+
+            for (uint8_t i = 0; i < chunk; i++) {
+                uint16_t col = (uint16_t)(offset + i);
+                if (col < guard_bytes || col >= (uint16_t)(wb - guard_bytes)) {
+                    temp[i] = 0xFF;
+                } else {
+                    temp[i] = (uint8_t)~src[row * wb + col];
+                }
+            }
+
+            EPD_WriteData(temp, chunk);
+            offset += chunk;
+            remaining -= chunk;
+        }
+
+        if ((row % UC8179_WDT_FEED_ROWS) == 0) {
+            app_feed_wdt();
+        }
+    }
+}
+
 /**
  * @brief 全刷模式写入图像
  * @param epd EPD设备模型指针
@@ -831,7 +879,7 @@ static void UC8179_Write_Image_Rows(const uint8_t* src, uint16_t wb, uint16_t h,
  * - 每个字节包含8个像素(1位每像素)
  * - 黑色层(DTM1/0x10): 0=黑色, 1=白色
  * - 颜色层(DTM2/0x13):
- *   - BWR模式: 0=无红色, 1=有红色
+ *   - BWR模式: 0=红色, 1=无红色
  *   - BW模式: 直接使用black数据
  *
  * 注意:
@@ -892,19 +940,18 @@ void UC8179_Write_Image(epd_model_t* epd, uint8_t* black, uint8_t* color, uint16
  * │ 颜色支持       │ 黑白红三色      │ 仅黑白          │
  * │ LUT来源        │ OTP默认         │ 外部寄存器      │
  * │ RAM1写入       │ black数据       │ black数据       │
- * │ RAM2写入       │ red数据         │ ~black数据      │
+ * │ RAM2写入       │ red数据         │ 小窗口强黑白/大窗口无红 │
  * │ 适用场景       │ 全新图像/清残影 │ 频繁小区域更新  │
  * └────────────────┴─────────────────┴─────────────────┘
  *
- * 局刷数据写入方法(参考"局刷使用方法.txt" 第141-143行):
+ * 局刷数据写入方法:
  * - RAM1(0x10/DTM1): 写入 black 数据
- * - RAM2(0x13/DTM2): 写入 ~black 数据(取反)
+ * - RAM2(0x13/DTM2): 小/中窗口写入带边界保护的~black增强黑白转换; 大窗口写入0xFF保持无红色
  *
- * 为什么RAM2要写入反转数据?
- * 局刷模式下,芯片通过比较RAM1和RAM2的差异来决定哪些像素需要改变:
- * - RAM1和RAM2相同的位 → 像素不变(节省刷新时间)
- * - RAM1和RAM2不同的位 → 像素需要改变
- * 写入反转数据确保所有black区域都会被正确更新。
+ * 为什么按面积切换RAM2策略?
+ * 数字变化窗口需要足够的黑白转换强度,否则断码白底不够白;
+ * 边界保护字节当前为0,保证8->7这类变化能擦掉旧左竖段;
+ * 完整HH:MM等大窗口如果写~black会让白底0位过多,长时间局刷后容易激活红色残影。
  *
  * 注意:
  * - 局刷只支持黑白,不支持红色!
@@ -913,8 +960,10 @@ void UC8179_Write_Image(epd_model_t* epd, uint8_t* black, uint8_t* color, uint16
  */
 // Write image for UC8179 partial refresh
 // UC8179局刷模式写入图像
-// Step 5: Write black data to old RAM (0x10) and ~black to new RAM (0x13)
-// 步骤5: 向旧RAM(0x10)写入black数据,向新RAM(0x13)写入~black数据
+// Step 5: Write black data to RAM1 (0x10). For small/medium digit windows, use
+// the stronger UC8179 B/W partial drive on RAM2; for larger windows keep RAM2 no-red.
+// 步骤5: 向RAM1(0x10)写入black数据。小/中数字窗口使用更强黑白局刷驱动,
+// 大窗口保持RAM2无红以抑制泛红。
 // This function is called by DrawGUI via the buffer_callback
 // 此函数由DrawGUI通过buffer_callback调用
 void UC8179_Write_Image_Partial(epd_model_t *epd, uint8_t *black, uint8_t *color, uint16_t x, uint16_t y, uint16_t w, uint16_t h)
@@ -934,11 +983,14 @@ void UC8179_Write_Image_Partial(epd_model_t *epd, uint8_t *black, uint8_t *color
     EPD_WriteCmd(UC81xx_PTIN); // partial in // 进入局部模式
     _setPartialRamArea(epd, x, y, w, h);  // 设置写入区域
 
-    // Step 5: Write black data to RAM1 (0x10) and ~black to RAM2 (0x13)
-    // 步骤5: 向RAM1(0x10)写入black数据,向RAM2(0x13)写入~black数据
-    // Reference: 局刷使用方法.txt line 141-143
-    // 参考: 局刷使用方法.txt 第141-143行
-    // "0x10 写black 数据, 0x13 写~black 数据"
+    (void)color;
+    bool strong_bw_drive = m_uc8179_partial_strong_bw_allowed &&
+                           (black != NULL) &&
+                           (w <= UC8179_STRONG_BW_PARTIAL_MAX_WIDTH) &&
+                           (((uint32_t)w * (uint32_t)h) <= UC8179_STRONG_BW_PARTIAL_MAX_AREA);
+
+    // Step 5: Write black data to RAM1 (0x10).
+    // 步骤5: 向RAM1(0x10)写入black数据
     // NOTE: Partial refresh only supports black/white, no red color!
     // 注意: 局刷仅支持黑白,不支持红色!
 
@@ -948,11 +1000,19 @@ void UC8179_Write_Image_Partial(epd_model_t *epd, uint8_t *black, uint8_t *color
     EPD_WriteCmd(UC81xx_DTM1);  // 选择RAM1(黑色层)
     UC8179_Write_Image_Rows(black, wb, h, 0xFF, false);  // 0xFF = white // 0xFF = 白色
 
-    // Write ~black data to RAM2 (0x13) - inverted GFX data
-    // 向RAM2(0x13)写入~black数据 - 反转的GFX数据
-    NRF_LOG_DEBUG("[EPD]: Writing ~black data to RAM2 (0x13)\n");
     EPD_WriteCmd(UC81xx_DTM2);  // 选择RAM2(颜色层)
-    UC8179_Write_Image_Rows(black, wb, h, 0x00, true);  // inverted // 反转数据
+    if (strong_bw_drive) {
+        // Small/medium digit windows need stronger white/black transition.
+        // Guard bytes are disabled so 8->7 can fully erase the old left segments.
+        // 小/中数字窗口需要更强黑白转换; 关闭边界保护以便8->7完整擦掉旧左竖段。
+        NRF_LOG_DEBUG("[EPD]: Writing guarded strong B/W data to RAM2 (0x13)\n");
+        UC8179_Write_Image_Rows_GuardedInvert(black, wb, h, UC8179_STRONG_BW_PARTIAL_GUARD_BYTES);
+    } else {
+        // Keep color/red layer neutral for larger windows. For BWR, 0xFF means no red.
+        // 大面积窗口保持颜色/红色层中性。BWR屏幕中0xFF表示无红色。
+        NRF_LOG_DEBUG("[EPD]: Writing no-red data to RAM2 (0x13)\n");
+        UC8179_Write_Image_Rows(NULL, wb, h, 0xFF, false);  // no red // 无红色
+    }
 
     EPD_WriteCmd(UC81xx_PTOUT); // partial out // 退出局部模式
     NRF_LOG_DEBUG("[EPD]: UC8179 write image partial done\n");
