@@ -38,8 +38,16 @@ echo ""
 for f in "$FW_HEX" "$P_KEY" "$BL_HEX" "$SD_HEX"; do
     [ -f "$f" ] || { echo "Error: file not found: $f"; exit 1; }
 done
-command -v nrfutil  >/dev/null 2>&1 || { echo "Error: nrfutil not found"; exit 1; }
-command -v mergehex >/dev/null 2>&1 || { echo "Error: mergehex not found"; exit 1; }
+command -v nrfutil  >/dev/null 2>&1 || {
+    echo "Error: nrfutil not found (looked in: $SCRIPT_DIR/nrf-tools/bin, \$HOME/.local/bin, \$PATH)"
+    echo "  Install with: pip install nrfutil==6.1.7"
+    exit 1
+}
+command -v mergehex >/dev/null 2>&1 || {
+    echo "Error: mergehex not found (provided by nRF Command Line Tools)"
+    echo "  Ensure tools/nrf-tools/bin is populated, or install nRF Command Line Tools."
+    exit 1
+}
 
 # Step 1: 生成 OTA zip
 echo "Step 1: Generating OTA package..."

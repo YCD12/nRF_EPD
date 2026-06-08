@@ -82,6 +82,7 @@ SRC_FILES += \
   $(SDK_ROOT)/modules/nrfx/mdk/gcc_startup_nrf52811.S \
   $(SDK_ROOT)/modules/nrfx/mdk/system_nrf52.c \
   $(PROJ_DIR)/main.c \
+  $(PROJ_DIR)/gcc_sbrk.c \
   $(PROJ_DIR)/EPD/EPD_config.c \
   $(PROJ_DIR)/EPD/EPD_driver.c \
   $(PROJ_DIR)/EPD/EPD_service.c \
@@ -145,7 +146,12 @@ INC_FOLDERS += \
 LIB_FILES += \
 
 # =============================================================================
-# 编译选项（与 Keil 工程宏定义完全一致，__HEAP_SIZE=8192 对齐 Keil）
+# 编译选项
+# 注意: __HEAP_SIZE/__STACK_SIZE 与 Keil 工程保持一致(HEAP=8192, STACK=2048)。
+#   GUI 帧缓冲按 ph=(__HEAP_SIZE-512)/(width/8) 几乎吃满整个堆(见 GUI.c)。
+#   GCC(-lnosys) 默认的 _sbrk 不检查栈、堆会越界长进栈区 -> 内存踩踏 -> 不停重启；
+#   已由 gcc_sbrk.c 的带边界 _sbrk 把堆限制在链接器保留区 [__HeapBase,__HeapLimit)
+#   内(超出返回 ENOMEM)，行为对齐 Keil/armcc 的"堆/栈各自固定区"，因此可安全用 8192。
 # =============================================================================
 OPT = -Os -g3
 
