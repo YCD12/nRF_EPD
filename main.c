@@ -53,7 +53,7 @@
 
 #define DEVICE_NAME                      "NRF_EPD"                                      /**< Name of device. Will be included in the advertising data. */
                                                                                         /**< 设备名称。将包含在广播数据中。 */
-#define APP_ADV_INTERVAL                 1600                                           /**< The advertising interval (in units of 0.625 ms. This value corresponds to 1 s). */
+#define APP_ADV_INTERVAL                 400                                           /**< The advertising interval (in units of 0.625 ms. This value corresponds to 1 s). */
                                                                                         /**< 广播间隔（以0.625毫秒为单位。此值对应1秒）。 */
 #define APP_ADV_TIMEOUT_IN_SECONDS       120                                            /**< The advertising timeout (in units of seconds). */
                                                                                         /**< 广播超时时间（以秒为单位）。 */

@@ -130,9 +130,14 @@ void GFX_begin(Adafruit_GFX* gfx, int16_t w, int16_t h, int16_t buffer_height) {
     // 设置U8G2字体库的绘线回调函数 | Set U8G2 font library's line drawing callback
     gfx->u8g2.draw_hv_line = GFX_u8g2_draw_hv_line;
 
-    // 分配缓冲区：每行使用 (宽度+7)/8 字节（向上取整到字节边界）
-    // Allocate buffer: each row uses (width+7)/8 bytes (rounded up to byte boundary)
-    gfx->buffer = malloc(((gfx->WIDTH + 7) / 8) * buffer_height);
+    // 使用静态缓冲区代替动态堆分配以避免堆碎裂与分配失败
+    // Use static buffer instead of dynamic heap allocation to avoid fragmentation and failure
+    static uint8_t s_gfx_buffer[7680];
+    int16_t max_height = sizeof(s_gfx_buffer) / ((gfx->WIDTH + 7) / 8);
+    if (buffer_height <= 0 || buffer_height > max_height) {
+        buffer_height = max_height;
+    }
+    gfx->buffer = s_gfx_buffer;
     gfx->page_height = buffer_height;
 
     // 计算总页数（向上取整）| Calculate total pages (rounded up)
@@ -212,7 +217,9 @@ void GFX_begin_4c(Adafruit_GFX* gfx, int16_t w, int16_t h, int16_t buffer_height
  */
 /**************************************************************************/
 void GFX_end(Adafruit_GFX* gfx) {
-    if (gfx->buffer) free(gfx->buffer);
+    // 使用静态缓冲区，无需释放内存
+    // Using static buffer, no need to free
+    (void)gfx;
 }
 
 /**************************************************************************/

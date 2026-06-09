@@ -201,9 +201,9 @@ LDFLAGS += -Wl,--gc-sections
 LDFLAGS += --specs=nano.specs
 
 # 与 Keil 工程一致：HEAP=8192，STACK=2048
-nrf52811_xxaa: CFLAGS += -D__HEAP_SIZE=8192
+nrf52811_xxaa: CFLAGS += -D__HEAP_SIZE=0
 nrf52811_xxaa: CFLAGS += -D__STACK_SIZE=2048
-nrf52811_xxaa: ASMFLAGS += -D__HEAP_SIZE=8192
+nrf52811_xxaa: ASMFLAGS += -D__HEAP_SIZE=0
 nrf52811_xxaa: ASMFLAGS += -D__STACK_SIZE=2048
 
 LIB_FILES += -lc -lnosys -lm
