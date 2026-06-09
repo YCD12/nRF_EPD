@@ -1387,10 +1387,18 @@
         emitLog('DFU 已取消：用户关闭了设备选择窗口');
         if (typeof showToast === 'function') showToast('已取消设备选择');
       } else {
-        resetPendingDfuSession();
-        setDfuStatus(`DFU 失败: ${errMsg}`, true);
-        emitLog(`DFU 失败: ${errMsg}`);
-        if (typeof showToast === 'function') showToast(`DFU失败: ${errMsg}`, 3600);
+        if (pendingManualSession && !isPickerCancelled(err)) {
+          ensureManualPickVisible('DFU失败重试');
+          pulseManualPickButton();
+          setDfuStatus(`DFU 失败: ${errMsg}。可尝试点击“手动选择DFU设备并继续”重试`, false);
+          emitLog(`DFU 失败: ${errMsg}。保留会话，等待用户手动重试`);
+          if (typeof showToast === 'function') showToast(`DFU失败: ${errMsg}，可手动选择设备重试`, 3600);
+        } else {
+          resetPendingDfuSession();
+          setDfuStatus(`DFU 失败: ${errMsg}`, true);
+          emitLog(`DFU 失败: ${errMsg}`);
+          if (typeof showToast === 'function') showToast(`DFU失败: ${errMsg}`, 3600);
+        }
       }
     } finally {
       dfuBusy = false;
@@ -1431,10 +1439,18 @@
         setDfuStatus('已取消手动选择，可再次点击继续');
         emitLog('DFU 手动选择已取消，当前会话保留，可再次点击继续');
       } else {
-        resetPendingDfuSession();
-        setDfuStatus(`DFU 失败: ${errMsg}`, true);
-        emitLog(`DFU 失败: ${errMsg}`);
-        if (typeof showToast === 'function') showToast(`DFU失败: ${errMsg}`, 3600);
+        if (pendingManualSession && !isPickerCancelled(err)) {
+          ensureManualPickVisible('DFU失败重试');
+          pulseManualPickButton();
+          setDfuStatus(`DFU 失败: ${errMsg}。可尝试再次点击“手动选择DFU设备并继续”重试`, false);
+          emitLog(`DFU 失败: ${errMsg}。保留会话，等待用户手动再次重试`);
+          if (typeof showToast === 'function') showToast(`DFU失败: ${errMsg}，可再次手动选择设备重试`, 3600);
+        } else {
+          resetPendingDfuSession();
+          setDfuStatus(`DFU 失败: ${errMsg}`, true);
+          emitLog(`DFU 失败: ${errMsg}`);
+          if (typeof showToast === 'function') showToast(`DFU失败: ${errMsg}`, 3600);
+        }
       }
     } finally {
       dfuBusy = false;
