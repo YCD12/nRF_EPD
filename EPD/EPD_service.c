@@ -103,6 +103,7 @@
 
 extern void UC8179_Set_Partial_Strong_BW_Allowed(bool allowed);
 
+#if 0
 static uint8_t clock_7seg_mask(uint8_t digit) {
     static const uint8_t masks[10] = {
         0x3F, // 0: a b c d e f
@@ -144,6 +145,7 @@ static bool clock_time_needs_strong_cleanup(uint32_t timestamp) {
            clock_digit_needs_strong_cleanup(old_hour % 10U, new_hour % 10U) ||
            clock_digit_needs_strong_cleanup(old_hour / 10U, new_hour / 10U);
 }
+#endif
 
 /**@brief 计算CRC16-CCITT校验值
  *        Calculate CRC16-CCITT checksum
@@ -840,7 +842,10 @@ static void epd_gui_update(void* p_event_data, uint16_t event_size) {
                     .offset_x = time_base_x,
                     .offset_y = time_base_y
                 };
-                bool allow_strong_bw_cleanup = clock_time_needs_strong_cleanup(data.timestamp);
+                // Disable strong_bw_drive (RAM2 override) for clock partial refresh.
+                // This prevents red ghosting on digits and reduces source line crosstalk to the text below (e.g. "离夏至").
+                // Since base T1/T2 timings are already increased, standard LUTBW is strong enough to clean old segments.
+                bool allow_strong_bw_cleanup = false;
                 UC8179_Set_Partial_Strong_BW_Allowed(allow_strong_bw_cleanup);
                 DrawGUI_ClockOnly(&data, (buffer_callback)write_image_partial_with_offset, &write_ctx);
                 UC8179_Set_Partial_Strong_BW_Allowed(true);
