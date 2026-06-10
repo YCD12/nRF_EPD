@@ -747,7 +747,7 @@ void UC8179_Refresh_Partial(epd_model_t *epd, uint16_t x, uint16_t y, uint16_t w
     if (w1 % 8 > 0) w1 += 8 - w1 % 8;
     x1 -= x1 % 8;
 
-    NRF_LOG_DEBUG("[EPD]: Adjusted area: (%d,%d,%d,%d)\n", x1, y1, w1, h1);
+    NRF_LOG_INFO("[EPD]: Adjusted area: (%d,%d,%d,%d)\n", x1, y1, w1, h1);
 
     // Read current temperature and select appropriate LUT
     // 读取当前温度并选择合适的LUT

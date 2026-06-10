@@ -1852,7 +1852,7 @@ void DrawGUI(gui_data_t* data, buffer_callback callback, void* callback_data) {
     uint16_t time_height = 20 * cS + 4;  // must match DrawGUI_ClockOnly | 必须与DrawGUI_ClockOnly匹配
     int16_t window_y_local = (base_h - time_height) / 2;
     int16_t window_h = time_height;
-    const int16_t margin_y = 0;
+    const int16_t margin_y = 8;
     // Expand upwards if there is room | 如果有空间则向上扩展
     if (window_y_local > margin_y) {
         window_y_local -= margin_y;
