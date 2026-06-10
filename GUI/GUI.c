@@ -911,16 +911,18 @@ static void Draw7Number(Adafruit_GFX *gfx, int n, unsigned int xLoc, unsigned in
  * @param cS  缩放因子 | Scale factor
  * @param nD  每个数字的位数(通常为2) | Digits per number (usually 2)
  */
+static uint16_t s_clock_draw_color = GFX_BLACK;
+
 static void DrawTime(Adafruit_GFX* gfx, tm_t* tm, int16_t x, int16_t y, uint16_t cS, uint16_t nD) {
     // 绘制小时 | Draw hours
-    Draw7Number(gfx, tm->tm_hour, x, y, cS, GFX_BLACK, GFX_WHITE, nD);
+    Draw7Number(gfx, tm->tm_hour, x, y, cS, s_clock_draw_color, GFX_WHITE, nD);
     x += (nD * (11 * cS + 2) - 2 * cS) + 2 * cS;
     // 绘制冒号(两个方块) | Draw colon (two squares)
-    GFX_fillRect(gfx, x, y + (9 * cS) / 2 + 1, 2 * cS, 2 * cS, GFX_BLACK);
-    GFX_fillRect(gfx, x, y + (27 * cS) / 2 + 3, 2 * cS, 2 * cS, GFX_BLACK);
+    GFX_fillRect(gfx, x, y + (9 * cS) / 2 + 1, 2 * cS, 2 * cS, s_clock_draw_color);
+    GFX_fillRect(gfx, x, y + (27 * cS) / 2 + 3, 2 * cS, 2 * cS, s_clock_draw_color);
     x += 4 * cS;
     // 绘制分钟 | Draw minutes
-    Draw7Number(gfx, tm->tm_min, x, y, cS, GFX_BLACK, GFX_WHITE, nD);
+    Draw7Number(gfx, tm->tm_min, x, y, cS, s_clock_draw_color, GFX_WHITE, nD);
 }
 
 // Split screen layout constants for 800x480 screen
@@ -954,12 +956,14 @@ static void DrawTime(Adafruit_GFX* gfx, tm_t* tm, int16_t x, int16_t y, uint16_t
 // 动态时间刷新窗口的状态(用于局部刷新)
 // 这些变量追踪TIME_REFRESH区域内最后选择的子窗口
 static uint32_t s_last_time_refresh_ts = 0;               // 上次刷新的时间戳 | Last refresh timestamp
+static uint32_t s_prev_time_refresh_ts = 0;               // 上上次刷新的时间戳 | Previous refresh timestamp
 static uint16_t s_time_window_x = 0;                      // local X inside TIME_REFRESH area | TIME_REFRESH区域内的本地X坐标
 static uint16_t s_time_window_y = 0;                      // local Y inside TIME_REFRESH area | TIME_REFRESH区域内的本地Y坐标
 static uint16_t s_time_window_w = TIME_REFRESH_WIDTH;    // width of current refresh window | 当前刷新窗口的宽度
 static uint16_t s_time_window_h = TIME_REFRESH_HEIGHT;   // height of current refresh window | 当前刷新窗口的高度
 
 void GUI_MarkTimeRefreshTimestamp(uint32_t timestamp) {
+    s_prev_time_refresh_ts = s_last_time_refresh_ts;
     s_last_time_refresh_ts = timestamp;
 }
 
@@ -1679,6 +1683,7 @@ uint8_t GUI_GetModeUpdatePolicy(uint8_t mode_id, uint16_t width, uint16_t height
  * - MODE_CLOCK_CALENDAR: 分屏时钟+日历 | Split screen clock + calendar
  */
 void DrawGUI(gui_data_t* data, buffer_callback callback, void* callback_data) {
+    s_clock_draw_color = GFX_BLACK;
     // 验证一周起始日参数 | Validate week start parameter
     if (data->week_start > 6) data->week_start = 0;
 
@@ -1757,6 +1762,15 @@ void DrawGUI(gui_data_t* data, buffer_callback callback, void* callback_data) {
   void DrawGUI_ClockOnly(gui_data_t* data, buffer_callback callback, void* callback_data) {
       tm_t tm = {0};
       transformTime(data->timestamp, &tm);
+
+      // Calculate previous time (1 minute ago) for differential partial refresh
+      tm_t tm_prev = {0};
+      uint32_t prev_timestamp = data->timestamp;
+      if (prev_timestamp >= 60) {
+          prev_timestamp -= 60;
+      }
+      transformTime(prev_timestamp, &tm_prev);
+
       ui_mode_record_t cached_mode;
       const ui_component_record_t* cached_components = NULL;
       uint8_t cached_component_count = 0;
@@ -1780,18 +1794,25 @@ void DrawGUI(gui_data_t* data, buffer_callback callback, void* callback_data) {
       }
       int16_t ph = (__HEAP_SIZE - 512) / (refresh_width / 8);
 
-      // For partial refresh, we only use black/white (no color layer)
-      // 局部刷新只使用黑白模式(不使用彩色层)
-      GFX_begin(&gfx, refresh_width, refresh_height, ph);
+      // Use GFX_begin_3c to allocate both black and color page buffers
+      // black buffer holds current frame, color buffer holds old frame
+      GFX_begin_3c(&gfx, refresh_width, refresh_height, ph);
       // Limit drawing to the last computed time window so only the
       // changed digit (or full time area) is written to EPD RAM.
       // 限制绘制到上次计算的时间窗口，这样只有变化的数字(或完整时间区域)被写入EPD RAM
       GFX_setWindow(&gfx, s_time_window_x, s_time_window_y, s_time_window_w, s_time_window_h);
 
-    GFX_firstPage(&gfx);
-    do {
-        GFX_fillScreen(&gfx, GFX_WHITE);
+      GFX_firstPage(&gfx);
+      do {
+          GFX_fillScreen(&gfx, GFX_WHITE);
 
+          // 1. Draw the OLD time using GFX_RED (this populates the color buffer)
+          s_clock_draw_color = GFX_RED;
+          ui_render_component_list(&gfx, cached_components, cached_component_count,
+                                   &tm_prev, NULL, data, true, refresh_x, refresh_y);
+
+          // 2. Draw the NEW time using GFX_BLACK (this populates the black buffer)
+          s_clock_draw_color = GFX_BLACK;
           ui_render_component_list(&gfx, cached_components, cached_component_count,
                                    &tm, NULL, data, true, refresh_x, refresh_y);
 
@@ -1909,6 +1930,7 @@ void DrawGUI(gui_data_t* data, buffer_callback callback, void* callback_data) {
 
       // Persist the chosen window for DrawGUI_ClockOnly (GFX_setWindow)
       // 保存选定的窗口供DrawGUI_ClockOnly使用(GFX_setWindow)
+      s_prev_time_refresh_ts = s_last_time_refresh_ts;
       s_last_time_refresh_ts = timestamp;
       s_time_window_x = window_x_local;
     s_time_window_y = (uint16_t)window_y_local;

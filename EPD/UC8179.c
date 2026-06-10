@@ -340,8 +340,14 @@ static ret_code_t UC8179_Load_LUT_Tier_Internal(uint8_t tier) {
     for (uint8_t i = 0; i < EPD_EXT_LUT_TIER_TABLE_COUNT; i++) {
         memset(lut_data, 0, sizeof(lut_data));
         lut_data[0] = s_uc8179_lut_waveforms[i];
-        lut_data[1] = s_uc8179_lut_timings[tier].t1;
-        lut_data[2] = s_uc8179_lut_timings[tier].t2;
+        if (i == 3) { // LUTWB (white -> black)
+            // Shorter drive time for white->black to avoid red particle activation (red ghosting)
+            lut_data[1] = (s_uc8179_lut_timings[tier].t1 * 3) / 4;
+            lut_data[2] = (s_uc8179_lut_timings[tier].t2 * 3) / 4;
+        } else {
+            lut_data[1] = s_uc8179_lut_timings[tier].t1;
+            lut_data[2] = s_uc8179_lut_timings[tier].t2;
+        }
         lut_data[3] = T3_PARTIAL;
         lut_data[4] = T4_PARTIAL;
         lut_data[5] = 1;
@@ -983,7 +989,6 @@ void UC8179_Write_Image_Partial(epd_model_t *epd, uint8_t *black, uint8_t *color
     EPD_WriteCmd(UC81xx_PTIN); // partial in // 进入局部模式
     _setPartialRamArea(epd, x, y, w, h);  // 设置写入区域
 
-    (void)color;
     bool strong_bw_drive = m_uc8179_partial_strong_bw_allowed &&
                            (black != NULL) &&
                            (w <= UC8179_STRONG_BW_PARTIAL_MAX_WIDTH) &&
@@ -1001,7 +1006,12 @@ void UC8179_Write_Image_Partial(epd_model_t *epd, uint8_t *black, uint8_t *color
     UC8179_Write_Image_Rows(black, wb, h, 0xFF, false);  // 0xFF = white // 0xFF = 白色
 
     EPD_WriteCmd(UC81xx_DTM2);  // 选择RAM2(颜色层)
-    if (strong_bw_drive) {
+    if (color != NULL) {
+        // If color buffer is provided, it contains the old frame B/W data (differential refresh).
+        // 如果提供了color缓冲区，则其中包含上一帧的黑白数据（用于差分局部刷新）。
+        NRF_LOG_DEBUG("[EPD]: Writing differential old frame buffer to RAM2 (0x13)\n");
+        UC8179_Write_Image_Rows(color, wb, h, 0xFF, false);
+    } else if (strong_bw_drive) {
         // Small/medium digit windows need stronger white/black transition.
         // Guard bytes are disabled so 8->7 can fully erase the old left segments.
         // 小/中数字窗口需要更强黑白转换; 关闭边界保护以便8->7完整擦掉旧左竖段。
