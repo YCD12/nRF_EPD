@@ -745,6 +745,8 @@ static void epd_gui_update(void* p_event_data, uint16_t event_size) {
             // Execute Full Refresh Flow
             // ================================================================
             NRF_LOG_INFO("[EPD]: *** Performing FULL refresh (mode switch or periodic) ***\n");
+            ble_log("[EPD]: Performing FULL refresh, ts=%u, reason=%s",
+                    event->timestamp, p_epd->force_full_refresh ? "Forced" : (last_full_clear == 0 ? "FirstTime" : "Periodic"));
 
             // Standard full refresh flow to ensure display is correct
             // 标准全刷流程,确保显示正确
@@ -761,6 +763,7 @@ static void epd_gui_update(void* p_event_data, uint16_t event_size) {
             }
             p_epd->force_full_refresh = false;  // Clear the force flag after full refresh. 清除强制全刷标志
             NRF_LOG_INFO("[EPD]: Full refresh completed\n");
+            ble_log("[EPD]: Full refresh completed");
         } else {
             // ================================================================
             // 执行局刷流程
@@ -816,6 +819,7 @@ static void epd_gui_update(void* p_event_data, uint16_t event_size) {
             // Write black data using partial image write
             // 使用局部图像写入写入黑色数据
             NRF_LOG_INFO("[EPD]: Drawing GUI for partial refresh (%d,%d,%d,%d)\n", partial_x, partial_y, partial_w, partial_h);
+            ble_log("[EPD]: Using PARTIAL refresh at (%d,%d,%d,%d)", partial_x, partial_y, partial_w, partial_h);
             if (data.mode == MODE_CLOCK_CALENDAR) {
                 // ============================================================
                 // MODE_CLOCK_CALENDAR模式的最小化刷新
@@ -859,6 +863,7 @@ static void epd_gui_update(void* p_event_data, uint16_t event_size) {
         }
 
         NRF_LOG_INFO("[EPD]: === Partial refresh sequence complete ===\n");
+        ble_log("[EPD]: Partial refresh complete");
     } else {
 fallback_full_refresh:
         // ====================================================================
@@ -871,6 +876,7 @@ fallback_full_refresh:
         // - 不支持局刷的驱动芯片
         // ====================================================================
         NRF_LOG_INFO("[EPD]: === Using FULL refresh ===\n");
+        ble_log("[EPD]: Using normal FULL refresh");
 
         app_feed_wdt();  // Feed watchdog before drawing GUI. 绘制GUI前喂狗
         DrawGUI(&data, (buffer_callback)epd->drv->write_image, epd);
@@ -880,6 +886,7 @@ fallback_full_refresh:
 
         EPD_LED_OFF();
         NRF_LOG_INFO("[EPD]: === Full refresh complete ===\n");
+        ble_log("[EPD]: Full refresh complete");
     }
 
 finish_refresh:
@@ -1255,7 +1262,7 @@ static void epd_execute_command(ble_epd_t* p_epd, uint8_t* p_data, uint16_t leng
             // 如果在时钟模式,需要先切换到图片模式
             // If in clock mode, need to switch to picture mode first
             if (p_epd->config.display_mode == MODE_CLOCK || p_epd->config.display_mode == MODE_CLOCK_CALENDAR) {
-                NRF_LOG_INFO("[EPD]: Switching from clock mode to PICTURE mode for clear\n");
+                NRF_LOG_INFO("Switch mode: clear\n");
                 epd_switch_from_clock_mode(p_epd);
             }
             epd_update_display_mode(p_epd, MODE_PICTURE);
@@ -1272,7 +1279,7 @@ static void epd_execute_command(ble_epd_t* p_epd, uint8_t* p_data, uint16_t leng
             // In clock mode, switch to picture mode for direct command operation
             // 在时钟模式下,切换到图片模式进行直接命令操作
             if (p_epd->config.display_mode == MODE_CLOCK || p_epd->config.display_mode == MODE_CLOCK_CALENDAR) {
-                NRF_LOG_INFO("[EPD]: Switching from clock mode to PICTURE mode for send_command\n");
+                NRF_LOG_INFO("Switch mode: cmd\n");
                 epd_switch_from_clock_mode(p_epd);
                 epd_update_display_mode(p_epd, MODE_PICTURE);
             }
@@ -1288,7 +1295,7 @@ static void epd_execute_command(ble_epd_t* p_epd, uint8_t* p_data, uint16_t leng
             // In clock mode, switch to picture mode for direct data operation
             // 在时钟模式下,切换到图片模式进行直接数据操作
             if (p_epd->config.display_mode == MODE_CLOCK || p_epd->config.display_mode == MODE_CLOCK_CALENDAR) {
-                NRF_LOG_INFO("[EPD]: Switching from clock mode to PICTURE mode for send_data\n");
+                NRF_LOG_INFO("Switch mode: data\n");
                 epd_switch_from_clock_mode(p_epd);
                 epd_update_display_mode(p_epd, MODE_PICTURE);
             }
@@ -1325,7 +1332,9 @@ static void epd_execute_command(ble_epd_t* p_epd, uint8_t* p_data, uint16_t leng
             if (length < 5) return;
 
             NRF_LOG_DEBUG("time: %02x %02x %02x %02x\n", p_data[1], p_data[2], p_data[3], p_data[4]);
-            if (length > 5) NRF_LOG_DEBUG("timezone: %d\n", (int8_t)p_data[5]);
+            if (length > 5) {
+                NRF_LOG_DEBUG("timezone: %d\n", (int8_t)p_data[5]);
+            }
 
             uint32_t timestamp = epd_parse_time_payload(p_data, length);
             set_timestamp(timestamp);
@@ -1427,7 +1436,7 @@ static void epd_execute_command(ble_epd_t* p_epd, uint8_t* p_data, uint16_t leng
             // 在时钟模式下,切换到图片模式并重新初始化以进行正常的write_ram操作
             // 时钟模式使用局刷,与直接write_ram不兼容
             if (p_epd->config.display_mode == MODE_CLOCK || p_epd->config.display_mode == MODE_CLOCK_CALENDAR) {
-                NRF_LOG_INFO("[EPD]: Switching from clock mode to PICTURE mode for write_image\n");
+                NRF_LOG_INFO("Switch mode: img\n");
                 epd_switch_from_clock_mode(p_epd);
             }
             epd_update_display_mode(p_epd, MODE_PICTURE);  // Officially update mode. 正式更新模式
@@ -1487,7 +1496,7 @@ static void epd_execute_command(ble_epd_t* p_epd, uint8_t* p_data, uint16_t leng
                         // 如果在时钟模式，需先切换到图片模式
                         if (p_epd->config.display_mode == MODE_CLOCK || 
                             p_epd->config.display_mode == MODE_CLOCK_CALENDAR) {
-                            NRF_LOG_INFO("[EPD]: Switching from clock mode to PICTURE mode for write_block\n");
+                            NRF_LOG_INFO("Switch mode: block\n");
                             epd_switch_from_clock_mode(p_epd);
                         }
                         epd_update_display_mode(p_epd, MODE_PICTURE);
@@ -1829,6 +1838,10 @@ static void epd_service_on_write(ble_epd_t* p_epd, uint8_t* p_data, uint16_t len
                   p_data ? p_data[0] : 0, length);
     if (p_data == NULL || length <= 0) return;
 
+    if (p_data[0] != 0x31 && p_data[0] != 0x41) {
+        ble_log("[CMD]: Recv 0x%02x, len=%d", p_data[0], length);
+    }
+
     // Resource flash commands share SPI/power state with GUI resource loading and
     // must not run while the panel driver is in a refresh transaction.
     if (is_resource_command(p_data[0]) && p_epd->is_refreshing) {
@@ -1887,6 +1900,7 @@ static void on_write(ble_epd_t* p_epd, ble_evt_t* p_ble_evt) {
             // Notification enabled, send config to peer
             NRF_LOG_DEBUG("notification enabled\n");
             p_epd->is_notification_enabled = true;
+            ble_log("[SYS]: BLE notifications enabled, MTU=%d", p_epd->max_data_len);
             static uint16_t length = sizeof(epd_config_t);
             NRF_LOG_DEBUG("send epd config\n");
             uint32_t err_code = ble_epd_string_send(p_epd, (uint8_t*)&p_epd->config, length);

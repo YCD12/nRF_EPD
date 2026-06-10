@@ -17,6 +17,7 @@
 
 #include <stdint.h>
 #include <string.h>
+#include <stdarg.h>
 
 #include "ble.h"
 #include "ble_advdata.h"
@@ -202,7 +203,7 @@ static void advertising_config_get(ble_adv_modes_config_t* p_config) {
 static void ble_dfu_evt_handler(ble_dfu_buttonless_evt_type_t event) {
     switch (event) {
         case BLE_DFU_EVT_BOOTLOADER_ENTER_PREPARE: {
-            NRF_LOG_INFO("Device is preparing to enter bootloader mode.");
+            NRF_LOG_INFO("Prep DFU");
             // 设备正在准备进入引导加载程序模式
 
             // Prevent device from advertising on disconnect.
@@ -222,24 +223,24 @@ static void ble_dfu_evt_handler(ble_dfu_buttonless_evt_type_t event) {
         }
 
         case BLE_DFU_EVT_BOOTLOADER_ENTER:
-            NRF_LOG_INFO("Device will enter bootloader mode.");
+            NRF_LOG_INFO("Enter DFU");
             // 设备将进入引导加载程序模式
             break;
 
         case BLE_DFU_EVT_BOOTLOADER_ENTER_FAILED:
-            NRF_LOG_ERROR("Request to enter bootloader mode failed asynchroneously.");
+            NRF_LOG_ERROR("DFU fail async");
             // 进入引导加载程序模式的请求异步失败
             APP_ERROR_CHECK(false);
             break;
 
         case BLE_DFU_EVT_RESPONSE_SEND_ERROR:
-            NRF_LOG_ERROR("Request to send a response to client failed.");
+            NRF_LOG_ERROR("Resp fail");
             // 向客户端发送响应的请求失败
             APP_ERROR_CHECK(false);
             break;
 
         default:
-            NRF_LOG_ERROR("Unknown event from ble_dfu_buttonless.");
+            NRF_LOG_ERROR("DFU unknown evt");
             // 来自ble_dfu_buttonless的未知事件
             break;
     }
@@ -626,6 +627,145 @@ void gatt_evt_handler(nrf_ble_gatt_t* p_gatt, nrf_ble_gatt_evt_t const* p_evt) {
     }
     NRF_LOG_DEBUG("ATT MTU exchange completed. central 0x%x peripheral 0x%x", p_gatt->att_mtu_desired_central,
                   p_gatt->att_mtu_desired_periph);
+}
+
+static void long_to_str(char **out, char *end, long val, int radix, int width, char pad, bool sign, bool upper) {
+    char buf[12];  // max 10 digits for 32-bit + sign + NUL
+    int len = 0;
+    unsigned long uval = val;
+    if (sign && val < 0) {
+        uval = -val;
+        if (*out < end) {
+            *(*out)++ = '-';
+        }
+    }
+    do {
+        int rem = uval % radix;
+        buf[len++] = (rem < 10) ? (rem + '0') : (rem - 10 + (upper ? 'A' : 'a'));
+        uval /= radix;
+    } while (uval > 0);
+    
+    while (len < width && *out < end) {
+        *(*out)++ = pad;
+        width--;
+    }
+    while (len > 0 && *out < end) {
+        *(*out)++ = buf[--len];
+    }
+}
+
+static int mini_vsnprintf(char *buf, size_t size, const char *format, va_list args) {
+    if (size == 0) return 0;
+    char *p = buf;
+    char *end = buf + size - 1;
+    const char *f = format;
+    
+    while (*f && p < end) {
+        if (*f != '%') {
+            *p++ = *f++;
+            continue;
+        }
+        f++; // Skip '%'
+        
+        char pad = ' ';
+        int width = 0;
+        if (*f == '0') {
+            pad = '0';
+            f++;
+        }
+        while (*f >= '0' && *f <= '9') {
+            width = width * 10 + (*f - '0');
+            f++;
+        }
+        
+        bool is_long = false;
+        if (*f == 'l') {
+            is_long = true;
+            f++;
+        }
+        
+        if (*f == 'd') {
+            long val = is_long ? va_arg(args, long) : va_arg(args, int);
+            long_to_str(&p, end, val, 10, width, pad, true, false);
+            f++;
+        } else if (*f == 'u') {
+            unsigned long val = is_long ? va_arg(args, unsigned long) : va_arg(args, unsigned int);
+            long_to_str(&p, end, val, 10, width, pad, false, false);
+            f++;
+        } else if (*f == 'x' || *f == 'X') {
+            unsigned long val = is_long ? va_arg(args, unsigned long) : va_arg(args, unsigned int);
+            long_to_str(&p, end, val, 16, width, pad, false, (*f == 'X'));
+            f++;
+        } else if (*f == 's') {
+            const char *s = va_arg(args, const char *);
+            if (!s) s = "(null)";
+            while (*s && p < end) {
+                *p++ = *s++;
+            }
+            f++;
+        } else if (*f == 'c') {
+            *p++ = (char)va_arg(args, int);
+            f++;
+        } else {
+            *p++ = *f++;
+        }
+    }
+    *p = '\0';
+    return p - buf;
+}
+
+/**@brief BLE log redirect function to send logs via EPD service notification.
+ */
+void ble_log(const char *format, ...) {
+    // Reentrance guard: ble_log calls sd_ble_gatts_hvx which must not
+    // be invoked recursively (e.g. NRF_LOG inside a BLE event handler
+    // that itself triggers another NRF_LOG).
+    static volatile bool in_ble_log = false;
+    if (in_ble_log) return;
+    if (m_epd.conn_handle == BLE_CONN_HANDLE_INVALID || !m_epd.is_notification_enabled) {
+        return;
+    }
+    in_ble_log = true;
+
+    char buf[80];
+    va_list args;
+    va_start(args, format);
+    int len = mini_vsnprintf(buf, sizeof(buf), format, args);
+    va_end(args);
+
+    if (len > 0) {
+        uint16_t send_len = (len < (int)sizeof(buf)) ? len : (sizeof(buf) - 1);
+        if (send_len > m_epd.max_data_len) {
+            send_len = m_epd.max_data_len;
+        }
+        ble_epd_string_send(&m_epd, (uint8_t*)buf, send_len);
+    }
+    in_ble_log = false;
+}
+
+void ble_log_hexdump(const void *p_data, uint16_t len) {
+    if (m_epd.conn_handle == BLE_CONN_HANDLE_INVALID || !m_epd.is_notification_enabled || p_data == NULL || len == 0) {
+        return;
+    }
+
+    char buf[64];
+    int offset = 0;
+    const uint8_t *data = (const uint8_t *)p_data;
+    for (uint16_t i = 0; i < len && offset < sizeof(buf) - 4; i++) {
+        uint8_t byte = data[i];
+        uint8_t high = byte >> 4;
+        uint8_t low = byte & 0x0F;
+        buf[offset++] = (high < 10) ? (high + '0') : (high - 10 + 'A');
+        buf[offset++] = (low < 10) ? (low + '0') : (low - 10 + 'A');
+        buf[offset++] = ' ';
+    }
+    if (offset > 0) {
+        uint16_t send_len = (offset < sizeof(buf)) ? offset : (sizeof(buf) - 1);
+        if (send_len > m_epd.max_data_len) {
+            send_len = m_epd.max_data_len;
+        }
+        ble_epd_string_send(&m_epd, (uint8_t*)buf, send_len);
+    }
 }
 
 /**@brief Function for initializing the GATT library.
