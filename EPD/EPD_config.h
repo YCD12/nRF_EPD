@@ -1,5 +1,10 @@
 #ifndef __EPD_CONFIG_H
 #define __EPD_CONFIG_H
+
+#ifndef BLE_LOG_REDIRECT_ALL_NRF_LOG
+#define BLE_LOG_REDIRECT_ALL_NRF_LOG 1
+#endif
+
 #include <stdbool.h>
 #include <stdint.h>
 

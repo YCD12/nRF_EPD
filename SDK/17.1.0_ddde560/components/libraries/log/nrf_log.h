@@ -286,6 +286,34 @@ char const * nrf_log_push(char * const p_str);
  */
 #define NRF_LOG_MODULE_REGISTER() NRF_LOG_INTERNAL_MODULE_REGISTER()
 
+#ifndef BLE_LOG_REDIRECT_ALL_NRF_LOG
+#define BLE_LOG_REDIRECT_ALL_NRF_LOG 0
+#endif
+
+#if BLE_LOG_REDIRECT_ALL_NRF_LOG
+void ble_log(const char *format, ...);
+void ble_log_hexdump(const void *p_data, uint16_t len);
+
+#undef NRF_LOG_ERROR
+#undef NRF_LOG_WARNING
+#undef NRF_LOG_INFO
+#undef NRF_LOG_DEBUG
+#undef NRF_LOG_RAW_INFO
+#undef NRF_LOG_HEXDUMP_ERROR
+#undef NRF_LOG_HEXDUMP_WARNING
+#undef NRF_LOG_HEXDUMP_INFO
+#undef NRF_LOG_HEXDUMP_DEBUG
+
+#define NRF_LOG_ERROR(...)                     do { ble_log(__VA_ARGS__); } while(0)
+#define NRF_LOG_WARNING(...)                   do { ble_log(__VA_ARGS__); } while(0)
+#define NRF_LOG_INFO(...)                      do { ble_log(__VA_ARGS__); } while(0)
+#define NRF_LOG_DEBUG(...)
+#define NRF_LOG_RAW_INFO(...)                  do { ble_log(__VA_ARGS__); } while(0)
+#define NRF_LOG_HEXDUMP_ERROR(p_data, len)     do { ble_log_hexdump(p_data, len); } while(0)
+#define NRF_LOG_HEXDUMP_WARNING(p_data, len)   do { ble_log_hexdump(p_data, len); } while(0)
+#define NRF_LOG_HEXDUMP_INFO(p_data, len)      do { ble_log_hexdump(p_data, len); } while(0)
+#define NRF_LOG_HEXDUMP_DEBUG(p_data, len)
+#endif
 
 #ifdef __cplusplus
 }
