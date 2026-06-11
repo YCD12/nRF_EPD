@@ -12,17 +12,17 @@
   const NEXT_STAGE_DISCOVERY_TIMEOUT_MS = 12000;
   const DFU_REBOOT_SETTLE_MS = 1600;
   const DFU_RESPONSE_TIMEOUT_MS = 10000;
-  const CONNECT_TIMEOUT_MS = 6000;
+  const CONNECT_TIMEOUT_MS = 3000;
   const SERVICE_TIMEOUT_MS = 6000;
   const CHARS_TIMEOUT_MS = 5000;
   const DFU_SERVICE_DISCOVERY_RETRY_MS = 900;
   const DFU_OBJECT_EXECUTE_SETTLE_MS = 180;
   const APP_FLASH_START_ADDR = 0x19000;
-  const APP_FLASH_SIZE_BYTES = 0x17000;
+  const APP_FLASH_SIZE_BYTES = 0xE000;
   // Approximate spare DFU cache space for the current flash layout.
   // This is only a heuristic for combo-package precheck and should be kept
   // aligned with the linker/bootloader layout when the project changes.
-  const DFU_APP_CACHE_ESTIMATE_BYTES = 0x10C00;
+  const DFU_APP_CACHE_ESTIMATE_BYTES = 0xE000;
   const AUTO_FIND_RETRY_INTERVAL_MS = 2500;
   const MANUAL_PICK_REQUIRED_ERROR = 'DFU_MANUAL_PICK_REQUIRED';
   const MANUAL_DFU_MODE_REQUIRED_ERROR = 'DFU_MANUAL_MODE_REQUIRED';
@@ -895,8 +895,11 @@
       const maxSize = resp.getUint32(0, LITTLE_ENDIAN);
       const offset = resp.getUint32(4, LITTLE_ENDIAN);
       const crc = resp.getInt32(8, LITTLE_ENDIAN);
-      if (objectName === 'init' && offset === buffer.byteLength && this.checkCrc(buffer, crc)) {
-        this.log('init packet already available, skipping transfer');
+      if (offset === buffer.byteLength && this.checkCrc(buffer, crc)) {
+        this.log(`${objectName} already available, executing/skipping transfer`);
+        if (objectName === 'firmware') {
+          await this.sendControl(OP.EXECUTE);
+        }
         return;
       }
       this.progress(objectName, buffer.byteLength, 0);
@@ -1183,10 +1186,27 @@
 
   async function resolveBootloaderAfterSwitch(dfu, preferredDevice) {
     await dfu.delayPromise(DFU_REBOOT_SETTLE_MS);
+
+    // Optimize: Check if there are any authorized DfuTarg devices in the browser.
+    let hasAuthorizedDfu = false;
+    if (navigator.bluetooth && typeof navigator.bluetooth.getDevices === 'function') {
+      try {
+        const devices = await navigator.bluetooth.getDevices();
+        hasAuthorizedDfu = devices.some(dev => looksLikeBootloaderName(dev));
+      } catch (_) { }
+    }
+    const isPreferredLooksLikeBootloader = looksLikeBootloaderName(preferredDevice);
+
+    // Use a short timeout (3 seconds) if we don't have a pre-authorized DfuTarg,
+    // to give same-MAC devices a chance to reconnect without causing a long 8s hang.
+    const timeoutMs = (hasAuthorizedDfu || isPreferredLooksLikeBootloader)
+      ? INITIAL_DFU_DISCOVERY_TIMEOUT_MS // 8 seconds
+      : 3000; // 3 seconds
+
     const authorized = await tryResolveAuthorizedBootloaderDevice(
       dfu,
       preferredDevice,
-      INITIAL_DFU_DISCOVERY_TIMEOUT_MS,
+      timeoutMs,
       '切换到 DFU'
     );
     if (authorized) return authorized;
