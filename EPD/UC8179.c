@@ -301,7 +301,8 @@ void UC8179_Init(epd_model_t* epd) {
 
     // CDI: VCOM and Data Interval Setting / VCOM和数据间隔设置
     // 这个设置影响显示对比度和刷新质量
-    EPD_Write(UC81xx_CDI, epd->color == EPD_COLOR_BWR ? 0x77 : 0x97);
+    // 在BWR模式下,使用0x57(BDV[1:0]=01)将最外围边框(Border)设置为纯白(使用LUTW)
+    EPD_Write(UC81xx_CDI, epd->color == EPD_COLOR_BWR ? 0x57 : 0x97);
 }
 
 /*
