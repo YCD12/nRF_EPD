@@ -45,11 +45,7 @@ typedef struct {
 // @param callback_data: 回调函数的用户数据 | User data for callback function
 void DrawGUI(gui_data_t* data, buffer_callback callback, void* callback_data);
 
-// Draw only the time portion for partial refresh in MODE_CLOCK_CALENDAR
-// This draws to a small area containing only the 7-segment time display
-// 仅绘制时间部分用于MODE_CLOCK_CALENDAR模式的局部刷新
-// 该函数只绘制包含7段数码管样式时间显示的小区域，大幅减少刷新面积，延长屏幕寿命
-void DrawGUI_ClockOnly(gui_data_t* data, buffer_callback callback, void* callback_data);
+
 
 // Get the time refresh area parameters for EPD_service
 // timestamp is the current UNIX time used to shrink the partial window to
@@ -71,9 +67,6 @@ bool GUI_ModeExists(uint8_t mode, uint16_t width, uint16_t height);
 uint8_t GUI_GetModeUpdatePolicy(uint8_t mode, uint16_t width, uint16_t height);
 ret_code_t GUI_ReloadUICache(uint16_t width, uint16_t height);
 
-// Draw the resource-missing sync hint screen. Carries its own ASCII font and
-// works even when the external FM25Q04B resource bundle is absent or invalid.
-// 绘制资源缺失时的同步提示页(自带字体,不依赖外置 Flash 资源)。
 void DrawResourceMissingScreen(gui_data_t* data, buffer_callback callback, void* callback_data);
-
+void Draw7Number(Adafruit_GFX *gfx, int n, unsigned int xLoc, unsigned int yLoc, char cS, unsigned int fC, unsigned int bC, int nD);
 #endif
