@@ -1280,7 +1280,8 @@ static void epd_execute_command(ble_epd_t* p_epd, uint8_t* p_data, uint16_t leng
 
             uint32_t timestamp = epd_parse_time_payload(p_data, length);
             set_timestamp(timestamp);
-            NRF_LOG_INFO("[EPD]: Time synced silently without immediate refresh\n");
+            p_epd->force_full_refresh = true;
+            NRF_LOG_INFO("[EPD]: Time synced silently, will force full refresh on next tick\n");
             app_feed_wdt();
         } break;
 

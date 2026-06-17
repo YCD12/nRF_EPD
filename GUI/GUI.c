@@ -947,10 +947,6 @@ static void DrawTime(Adafruit_GFX* gfx, tm_t* tm, int16_t x, int16_t y, uint16_t
 // 动态时间刷新窗口的状态(用于局部刷新)
 // 这些变量追踪TIME_REFRESH区域内最后选择的子窗口
 static uint32_t s_last_time_refresh_ts = 0;               // 上次刷新的时间戳 | Last refresh timestamp
-static uint16_t s_time_window_x = 0;                      // local X inside TIME_REFRESH area | TIME_REFRESH区域内的本地X坐标
-static uint16_t s_time_window_y = 0;                      // local Y inside TIME_REFRESH area | TIME_REFRESH区域内的本地Y坐标
-static uint16_t s_time_window_w = TIME_REFRESH_WIDTH;    // width of current refresh window | 当前刷新窗口的宽度
-static uint16_t s_time_window_h = TIME_REFRESH_HEIGHT;   // height of current refresh window | 当前刷新窗口的高度
 
 void GUI_MarkTimeRefreshTimestamp(uint32_t timestamp) {
     s_last_time_refresh_ts = timestamp;
@@ -1807,10 +1803,6 @@ void DrawGUI(gui_data_t* data, buffer_callback callback, void* callback_data) {
       // Persist the chosen window for DrawGUI_ClockOnly (GFX_setWindow)
       // 保存选定的窗口供DrawGUI_ClockOnly使用(GFX_setWindow)
       s_last_time_refresh_ts = timestamp;
-      s_time_window_x = window_x_local;
-    s_time_window_y = (uint16_t)window_y_local;
-    s_time_window_w = window_w;
-    s_time_window_h = (uint16_t)window_h;
 
       // Return global refresh region for EPD_service
       // 返回全局刷新区域坐标供EPD服务使用
