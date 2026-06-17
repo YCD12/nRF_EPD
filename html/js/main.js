@@ -300,7 +300,7 @@ async function syncTimeOnConnect() {
     return false;
   }
 
-  const ok = await write(EpdCmd.SYNC_TIME_SILENT, buildTimeData());
+  const ok = await write(EpdCmd.SYNC_TIME_SILENT, buildTimeData(), false);
   addLog(ok ? '已自动同步当前时间到设备' : '自动时间同步失败');
   return ok;
 }
