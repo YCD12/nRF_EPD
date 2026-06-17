@@ -24,7 +24,6 @@
 #define UI_BUNDLE_COMPONENT_SIZE 24U
 #define UI_CACHE_MAX_MODES 8U
 #define UI_RENDER_COMPONENT_CACHE_MAX 18U
-#define UI_PARTIAL_COMPONENT_CACHE_MAX 2U
 #define MONTH_HOLIDAY_MARK_MAX 48U
 
 #define UI_MODE_LOW_BATTERY 250U
@@ -138,13 +137,7 @@ static uint16_t m_ui_cache_width;
 static uint16_t m_ui_cache_height;
 static ui_bundle_header_t m_ui_cached_header;
 static ui_mode_record_t m_ui_cached_modes[UI_CACHE_MAX_MODES];
-static bool m_ui_partial_cache_valid;
-static uint8_t m_ui_partial_cache_mode_id;
-static uint16_t m_ui_partial_cache_width;
-static uint16_t m_ui_partial_cache_height;
-static ui_mode_record_t m_ui_partial_cached_mode;
-static ui_component_record_t m_ui_partial_cached_components[UI_PARTIAL_COMPONENT_CACHE_MAX];
-static uint8_t m_ui_partial_cached_count;
+
 static bool m_ui_render_cache_valid;
 static uint8_t m_ui_render_cache_mode_id;
 static uint16_t m_ui_render_cache_width;
@@ -830,7 +823,7 @@ static void DrawMonthDaysArea(Adafruit_GFX* gfx, int16_t x, int16_t y, int16_t a
 
    https://forum.arduino.cc/t/fast-7-segment-number-display-for-tft/296619/4
 */
-static void Draw7Number(Adafruit_GFX *gfx, int n, unsigned int xLoc, unsigned int yLoc, char cS, unsigned int fC, unsigned int bC, int nD) {
+void Draw7Number(Adafruit_GFX *gfx, int n, unsigned int xLoc, unsigned int yLoc, char cS, unsigned int fC, unsigned int bC, int nD) {
     unsigned char c_abs = (unsigned char)abs(cS);
     unsigned char c = c_abs > 10 ? 10 : (c_abs < 1) ? 1 : c_abs;
     unsigned char cnt_abs = (unsigned char)abs(nD);
@@ -1387,7 +1380,6 @@ ret_code_t GUI_ReloadUICache(uint16_t width, uint16_t height) {
     ret_code_t ret = ui_read_header(&header, width, height);
 
     m_ui_cache_valid = false;
-    m_ui_partial_cache_valid = false;
     m_ui_render_cache_valid = false;
     m_month_render_cache.valid = false;
     if (ret != NRF_SUCCESS) return ret;
@@ -1512,58 +1504,7 @@ static ret_code_t ui_load_render_component_cache(uint8_t mode_id, uint16_t scree
     return NRF_SUCCESS;
 }
 
-static ret_code_t ui_load_partial_component_cache(uint8_t mode_id, uint16_t screen_w, uint16_t screen_h,
-                                                  ui_mode_record_t* mode,
-                                                  const ui_component_record_t** components,
-                                                  uint8_t* component_count) {
-    ui_bundle_header_t header;
-    ui_mode_record_t local_mode;
-    ui_component_record_t comp;
-    uint8_t partial_count = 0;
-    ret_code_t ret;
 
-    if (mode == NULL || components == NULL || component_count == NULL) {
-        return NRF_ERROR_NULL;
-    }
-
-    if (m_ui_partial_cache_valid &&
-        m_ui_partial_cache_mode_id == mode_id &&
-        m_ui_partial_cache_width == screen_w &&
-        m_ui_partial_cache_height == screen_h) {
-        *mode = m_ui_partial_cached_mode;
-        *components = m_ui_partial_cached_components;
-        *component_count = m_ui_partial_cached_count;
-        return NRF_SUCCESS;
-    }
-
-    ret = ui_find_mode(mode_id, screen_w, screen_h, &header, &local_mode);
-    if (ret != NRF_SUCCESS) return ret;
-
-    for (uint8_t i = 0; i < local_mode.component_count; i++) {
-        ret = ui_read_component(&header, local_mode.component_start + i, &comp);
-        if (ret != NRF_SUCCESS) return ret;
-
-        if ((comp.flags & UI_FLAG_PARTIAL_ONLY) != 0) {
-            if (partial_count >= UI_PARTIAL_COMPONENT_CACHE_MAX) {
-                return NRF_ERROR_NO_MEM;
-            }
-            m_ui_partial_cached_components[partial_count++] = comp;
-        }
-        app_feed_wdt();
-    }
-
-    m_ui_partial_cached_mode = local_mode;
-    m_ui_partial_cache_mode_id = mode_id;
-    m_ui_partial_cache_width = screen_w;
-    m_ui_partial_cache_height = screen_h;
-    m_ui_partial_cached_count = partial_count;
-    m_ui_partial_cache_valid = true;
-
-    *mode = m_ui_partial_cached_mode;
-    *components = m_ui_partial_cached_components;
-    *component_count = m_ui_partial_cached_count;
-    return NRF_SUCCESS;
-}
 
 static void ui_render_component(Adafruit_GFX* gfx, const ui_component_record_t* comp,
                                 tm_t* tm, struct Lunar_Date* lunar, gui_data_t* data,
@@ -1754,51 +1695,7 @@ void DrawGUI(gui_data_t* data, buffer_callback callback, void* callback_data) {
  * - 仅使用黑白模式(局部刷新不支持彩色) | Only use B/W mode (partial refresh doesn't support color)
  * - 大幅减少刷新面积，延长屏幕寿命 | Greatly reduce refresh area, extend screen life
  */
-  void DrawGUI_ClockOnly(gui_data_t* data, buffer_callback callback, void* callback_data) {
-      tm_t tm = {0};
-      transformTime(data->timestamp, &tm);
-      ui_mode_record_t cached_mode;
-      const ui_component_record_t* cached_components = NULL;
-      uint8_t cached_component_count = 0;
-      ret_code_t ui_ret;
 
-      Adafruit_GFX gfx;
-      // Use small time-only area for minimal partial refresh
-      // 使用小的时间专用区域以实现最小局部刷新
-      uint16_t refresh_x = TIME_REFRESH_X;
-      uint16_t refresh_y = TIME_REFRESH_Y;
-      uint16_t refresh_width = TIME_REFRESH_WIDTH;
-      uint16_t refresh_height = TIME_REFRESH_HEIGHT;
-      (void)ui_get_mode_partial_rect(MODE_CLOCK_CALENDAR, data->width, data->height,
-                                     &refresh_x, &refresh_y, &refresh_width, &refresh_height);
-      ui_ret = ui_load_partial_component_cache(MODE_CLOCK_CALENDAR, data->width, data->height,
-                                               &cached_mode, &cached_components,
-                                               &cached_component_count);
-      if (ui_ret != NRF_SUCCESS) {
-          cached_components = NULL;
-          cached_component_count = 0;
-      }
-      int16_t ph = (__HEAP_SIZE - 512) / (refresh_width / 8);
-
-      // For partial refresh, we only use black/white (no color layer)
-      // 局部刷新只使用黑白模式(不使用彩色层)
-      GFX_begin(&gfx, refresh_width, refresh_height, ph);
-      // Limit drawing to the last computed time window so only the
-      // changed digit (or full time area) is written to EPD RAM.
-      // 限制绘制到上次计算的时间窗口，这样只有变化的数字(或完整时间区域)被写入EPD RAM
-      GFX_setWindow(&gfx, s_time_window_x, s_time_window_y, s_time_window_w, s_time_window_h);
-
-    GFX_firstPage(&gfx);
-    do {
-        GFX_fillScreen(&gfx, GFX_WHITE);
-
-          ui_render_component_list(&gfx, cached_components, cached_component_count,
-                                   &tm, NULL, data, true, refresh_x, refresh_y);
-
-      } while (GFX_nextPage(&gfx, callback, callback_data));
-
-      GFX_end(&gfx);
-  }
 
   // Get the time refresh area parameters for EPD_service
   // 获取时间刷新区域参数供EPD服务使用
@@ -2104,3 +2001,6 @@ void DrawResourceMissingScreen(gui_data_t* data, buffer_callback callback, void*
 
     GFX_end(&gfx);
 }
+
+
+

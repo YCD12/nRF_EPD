@@ -7,26 +7,7 @@
 
 extern void app_feed_wdt(void);
 
-#ifndef EPD_INCLUDE_INTERNAL_UC8179_LUTS
-#define EPD_INCLUDE_INTERNAL_UC8179_LUTS 1
-#endif
 
-#define UC8179_LUT_LUTC   0U
-#define UC8179_LUT_LUTWW  1U
-#define UC8179_LUT_LUTKW  2U
-#define UC8179_LUT_LUTWK  3U
-#define UC8179_LUT_LUTKK  4U
-#define UC8179_LUT_LUTBD  5U
-
-// =============================================================================
-// 温度分段参数定义 - 每3度一档,共11档
-// Temperature tier parameters - 11 tiers with 3°C intervals
-// =============================================================================
-
-// T3 and T4 must always be 0 for partial refresh!
-// T3和T4在局部刷新时必须始终为0!
-#define T3_PARTIAL  0  // MUST BE 0 for partial refresh // 局刷时必须为0
-#define T4_PARTIAL  0  // MUST BE 0 for partial refresh // 局刷时必须为0
 
 #define UC8179_ROW_CHUNK_SIZE 64U
 #define UC8179_WDT_FEED_ROWS  8U
@@ -41,75 +22,12 @@ void UC8179_Set_Partial_Strong_BW_Allowed(bool allowed)
     m_uc8179_partial_strong_bw_allowed = allowed;
 }
 
-// LUT参数表 - 基于线性插值,从极冷到很热
-// 温度越低,T1/T2越大(驱动时间越长); 温度越高,T1/T2越小(驱动时间越短)
-// T1: 主驱动阶段  T2: 扩展稳定阶段
 
-// Tier 0: < 7°C (极冷/Very Cold)
-#define T1_TIER_0  56
-#define T2_TIER_0  22
-
-// Tier 1: 7-9°C (很冷/Cold)
-#define T1_TIER_1  52
-#define T2_TIER_1  20
-
-// Tier 2: 10-12°C (冷/Chilly)
-#define T1_TIER_2  48
-#define T2_TIER_2  18
-
-// Tier 3: 13-15°C (偏冷/Cool)
-#define T1_TIER_3  44
-#define T2_TIER_3  16
-
-// Tier 4: 16-18°C (凉爽/Mild Cool)
-#define T1_TIER_4  48   // 增加驱动时间(原40)
-#define T2_TIER_4  18   // 增加驱动时间(原14)
-
-// Tier 5: 19-21°C (微凉/Mild - 关键区间,解决20°C残影问题)
-// 大幅增加驱动时间以解决黑→白转换不完全的问题
-#define T1_TIER_5  50   // 大幅增加(原36),确保黑色完全擦除
-#define T2_TIER_5  18   // 大幅增加(原12),延长稳定时间
-
-// Tier 6: 22-24°C (适中/Moderate)
-#define T1_TIER_6  42   // 增加驱动时间(原32)
-#define T2_TIER_6  14   // 增加驱动时间(原10)
-
-// Tier 7: 25-27°C (偏暖/Warm)
-#define T1_TIER_7  36   // 增加驱动时间(原28)
-#define T2_TIER_7  12   // 增加驱动时间(原8)
-
-// Tier 8: 28-30°C (暖/Hot)
-#define T1_TIER_8  30   // 增加驱动时间(原24)
-#define T2_TIER_8  10   // 增加驱动时间(原7)
-
-// Tier 9: 31-33°C (热/Very Hot)
-#define T1_TIER_9  20
-#define T2_TIER_9  6
-
-// Tier 10: >= 34°C (很热/Extreme Hot)
-#define T1_TIER_10  16
-#define T2_TIER_10  5
-
-// Temperature range enumeration - 11 tiers
-// 温度范围枚举 - 11档
-typedef enum {
-    TEMP_TIER_0,   // < 7°C   极冷
-    TEMP_TIER_1,   // 7-9°C   很冷
-    TEMP_TIER_2,   // 10-12°C 冷
-    TEMP_TIER_3,   // 13-15°C 偏冷
-    TEMP_TIER_4,   // 16-18°C 凉爽
-    TEMP_TIER_5,   // 19-21°C 微凉 (20°C关键区间)
-    TEMP_TIER_6,   // 22-24°C 适中
-    TEMP_TIER_7,   // 25-27°C 偏暖
-    TEMP_TIER_8,   // 28-30°C 暖
-    TEMP_TIER_9,   // 31-33°C 热
-    TEMP_TIER_10   // >= 34°C 很热
-} temp_range_t;
 
 // LUT tables must be 42 bytes (6 data + 36 padding zeros)
 // LUT表必须为42字节(6字节数据 + 36字节填充零)
-// Each temperature range has its own set of LUT tables
-// 每个温度范围都有自己的一组LUT表
+// A fixed set of LUT tables is used for pixel-level partial refresh.
+// 局部刷新使用固定的LUT表。
 
 /*
  * =============================================================================
@@ -130,10 +48,10 @@ typedef enum {
  * - 0xA8: 白→黑 (LUTWK/LUTWB) - 先拉高电压再推低
  *
  * 时序参数说明:
- * - T1: 第一阶段驱动时间(主要电荷平衡阶段)
- * - T2: 第二阶段驱动时间(扩展稳定阶段)
- * - T3: 第三阶段驱动时间(局刷时必须为0!)
- * - T4: 第四阶段驱动时间(局刷时必须为0!)
+ * - T1: 第一阶段驱动时间 (charge balance pre-phase, 当前为 1)
+ * - T2: 第二阶段驱动时间 (optional extension, 当前为 0x32)
+ * - T3: 第三阶段驱动时间 (color change phase, 当前为 0xA)
+ * - T4: 第四阶段驱动时间 (optional extension for one color, 当前为 0)
  *
  * 各LUT表用途:
  * - LUTC:  通用/清除LUT(不刷新)
@@ -142,26 +60,8 @@ typedef enum {
  * - LUTWK/LUTWB: 白色→黑色 过渡(白变黑)
  * - LUTKK/LUTBB: 黑色→黑色 过渡(保持黑色)
  * - LUTBD: 边框LUT
- *
- * 温度对墨水的影响:
- * - 低温: 墨水粘度高,响应慢,需要更长驱动时间
- * - 高温: 墨水粘度低,响应快,可以使用较短驱动时间
  * =============================================================================
  */
-
-#if EPD_INCLUDE_INTERNAL_UC8179_LUTS
-typedef struct {
-    uint8_t t1;
-    uint8_t t2;
-} uc8179_lut_timing_t;
-
-static const uc8179_lut_timing_t s_uc8179_lut_timings[] = {
-    {T1_TIER_0, T2_TIER_0}, {T1_TIER_1, T2_TIER_1}, {T1_TIER_2, T2_TIER_2},
-    {T1_TIER_3, T2_TIER_3}, {T1_TIER_4, T2_TIER_4}, {T1_TIER_5, T2_TIER_5},
-    {T1_TIER_6, T2_TIER_6}, {T1_TIER_7, T2_TIER_7}, {T1_TIER_8, T2_TIER_8},
-    {T1_TIER_9, T2_TIER_9}, {T1_TIER_10, T2_TIER_10},
-};
-#endif
 
 /*
  * =============================================================================
@@ -220,167 +120,68 @@ int8_t UC8179_Read_Temp(epd_model_t* epd) {
     return (int8_t)EPD_ReadByte();  // 读取温度值
 }
 
-/**
- * @brief 根据温度确定温度范围
- * @param temperature 当前温度(摄氏度)
- * @return 返回温度范围枚举值
- *
- * 功能说明:
- * 将连续的温度值映射到11个离散的温度范围,每3度一档,以便精确选择LUT参数。
- */
-// Determine temperature range based on current temperature
-// 根据当前温度确定温度范围 (11档,每3度一档)
-static temp_range_t UC8179_Get_Temp_Range(int8_t temperature) {
-    if (temperature < 7) {
-        return TEMP_TIER_0;   // < 7°C   极冷
-    } else if (temperature < 10) {
-        return TEMP_TIER_1;   // 7-9°C   很冷
-    } else if (temperature < 13) {
-        return TEMP_TIER_2;   // 10-12°C 冷
-    } else if (temperature < 16) {
-        return TEMP_TIER_3;   // 13-15°C 偏冷
-    } else if (temperature < 19) {
-        return TEMP_TIER_4;   // 16-18°C 凉爽
-    } else if (temperature < 22) {
-        return TEMP_TIER_5;   // 19-21°C 微凉 (20°C关键区间)
-    } else if (temperature < 25) {
-        return TEMP_TIER_6;   // 22-24°C 适中
-    } else if (temperature < 28) {
-        return TEMP_TIER_7;   // 25-27°C 偏暖
-    } else if (temperature < 31) {
-        return TEMP_TIER_8;   // 28-30°C 暖
-    } else if (temperature < 34) {
-        return TEMP_TIER_9;   // 31-33°C 热
-    } else {
-        return TEMP_TIER_10;  // >= 34°C 很热
-    }
-}
 
-/**
- * @brief 根据温度选择合适的LUT集合
- * @param temperature 当前温度(摄氏度)
- * @return 返回对应温度范围的LUT集合指针
- *
- * 功能说明:
- * 根据环境温度自动选择最优的LUT参数集(11档),确保不同温度下都有良好的刷新效果。
- * - 低温时选择长脉冲LUT,补偿墨水响应慢的问题
- * - 高温时选择短脉冲LUT,加快刷新速度
- */
-// Select appropriate LUT tier based on temperature (11 tiers)
-// 根据温度选择合适的LUT档位 (11档)
-static uint8_t UC8179_Select_LUT_Tier(int8_t temperature) {
-    temp_range_t range = UC8179_Get_Temp_Range(temperature);
 
-    switch (range) {
-        case TEMP_TIER_0:
-            NRF_LOG_INFO("[EPD]: Using Tier0 LUT (<7°C, T1=56, T2=22) temp=%d°C\n", temperature);
-            return 0;
-        case TEMP_TIER_1:
-            NRF_LOG_INFO("[EPD]: Using Tier1 LUT (7-9°C, T1=52, T2=20) temp=%d°C\n", temperature);
-            return 1;
-        case TEMP_TIER_2:
-            NRF_LOG_INFO("[EPD]: Using Tier2 LUT (10-12°C, T1=48, T2=18) temp=%d°C\n", temperature);
-            return 2;
-        case TEMP_TIER_3:
-            NRF_LOG_INFO("[EPD]: Using Tier3 LUT (13-15°C, T1=44, T2=16) temp=%d°C\n", temperature);
-            return 3;
-        case TEMP_TIER_4:
-            NRF_LOG_INFO("[EPD]: Using Tier4 LUT (16-18°C, T1=40, T2=14) temp=%d°C\n", temperature);
-            return 4;
-        case TEMP_TIER_5:
-            NRF_LOG_INFO("[EPD]: Using Tier5 LUT (19-21°C, T1=36, T2=12) temp=%d°C\n", temperature);
-            return 5;
-        case TEMP_TIER_6:
-            NRF_LOG_INFO("[EPD]: Using Tier6 LUT (22-24°C, T1=32, T2=10) temp=%d°C\n", temperature);
-            return 6;
-        case TEMP_TIER_7:
-            NRF_LOG_INFO("[EPD]: Using Tier7 LUT (25-27°C, T1=28, T2=8) temp=%d°C\n", temperature);
-            return 7;
-        case TEMP_TIER_8:
-            NRF_LOG_INFO("[EPD]: Using Tier8 LUT (28-30°C, T1=24, T2=7) temp=%d°C\n", temperature);
-            return 8;
-        case TEMP_TIER_9:
-            NRF_LOG_INFO("[EPD]: Using Tier9 LUT (31-33°C, T1=20, T2=6) temp=%d°C\n", temperature);
-            return 9;
-        case TEMP_TIER_10:
-        default:
-            NRF_LOG_INFO("[EPD]: Using Tier10 LUT (>=34°C, T1=16, T2=5) temp=%d°C\n", temperature);
-            return 10;
-    }
-}
+#ifndef UBYTE
+typedef uint8_t UBYTE;
+#endif
 
-/*
- * LUT load path:
- * - Default (EPD_INCLUDE_INTERNAL_UC8179_LUTS=1): stream the in-flash const
- *   tables directly to the UC8179 LUT command registers.
- * - Set EPD_INCLUDE_INTERNAL_UC8179_LUTS=0 to read 6 x 42B from FM25Q04B
- *   external resources instead.
- */
-static const uint8_t s_uc8179_lut_commands[EPD_EXT_LUT_TIER_TABLE_COUNT] = {
-    UC81xx_LUTC,   /* table 0: LUTC  */
-    UC81xx_LUTWW,  /* table 1: LUTWW */
-    UC81xx_LUTBW,  /* table 2: LUTKW (black->white) */
-    UC81xx_LUTWB,  /* table 3: LUTWK (white->black) */
-    UC81xx_LUTBB,  /* table 4: LUTKK (black->black / keep) */
-    0x25,          /* table 5: LUTBD (border) */
+#define T1 1  // charge balance pre-phase
+#define T2 0x32 // optional extension
+#define T3 0xA  // color change phase (b/w)
+#define T4 0  // optional extension for one color
+
+static void _setPartialRamArea(epd_model_t* epd, uint16_t x, uint16_t y, uint16_t w, uint16_t h);
+static void UC8179_Write_Image_Rows(const uint8_t* src, uint16_t wb, uint16_t h, uint8_t fill, bool invert);
+
+const UBYTE LUT_WW_BB_VCOM_7IN5_V2_PART[42] = {
+    0x00, T1, T2, T3, T4, 1,
 };
 
-#if EPD_INCLUDE_INTERNAL_UC8179_LUTS
-static const uint8_t s_uc8179_lut_waveforms[EPD_EXT_LUT_TIER_TABLE_COUNT] = {
-    0x00, 0x20, 0x58, 0xA8, 0x00, 0x00
+const UBYTE LUT_BW_7IN5_V2_PART[42] = {
+    0x20, T1, T2, T3, T4, 1,
 };
 
-static ret_code_t UC8179_Load_LUT_Tier_Internal(uint8_t tier) {
-    uint8_t lut_data[EPD_EXT_LUT_TIER_TABLE_SIZE];
-
-    if (tier >= (sizeof(s_uc8179_lut_timings) / sizeof(s_uc8179_lut_timings[0]))) {
-        return NRF_ERROR_NOT_FOUND;
-    }
-
-    for (uint8_t i = 0; i < EPD_EXT_LUT_TIER_TABLE_COUNT; i++) {
-        memset(lut_data, 0, sizeof(lut_data));
-        lut_data[0] = s_uc8179_lut_waveforms[i];
-        lut_data[1] = s_uc8179_lut_timings[tier].t1;
-        lut_data[2] = s_uc8179_lut_timings[tier].t2;
-        lut_data[3] = T3_PARTIAL;
-        lut_data[4] = T4_PARTIAL;
-        lut_data[5] = 1;
-        EPD_WriteCmd(s_uc8179_lut_commands[i]);
-        EPD_WriteData(lut_data, sizeof(lut_data));
-        app_feed_wdt();
-    }
-    return NRF_SUCCESS;
-}
-#endif /* EPD_INCLUDE_INTERNAL_UC8179_LUTS */
-
-#if !EPD_INCLUDE_INTERNAL_UC8179_LUTS
-static ret_code_t UC8179_Load_LUT_Tier_External(uint8_t tier) {
-    uint8_t lut_buf[EPD_EXT_LUT_TIER_TABLE_SIZE];
-
-    for (uint8_t i = 0; i < EPD_EXT_LUT_TIER_TABLE_COUNT; i++) {
-        ret_code_t ret = epd_ext_resource_read(
-            EPD_EXT_RES_TYPE_LUT, (uint16_t)tier,
-            (uint32_t)i * EPD_EXT_LUT_TIER_TABLE_SIZE,
-            lut_buf, sizeof(lut_buf));
-        if (ret != NRF_SUCCESS) {
-            NRF_LOG_ERROR("[EPD]: External LUT read failed tier=%u table=%u ret=%lu",
-                          tier, i, (unsigned long)ret);
-            return ret;
-        }
-        EPD_WriteCmd(s_uc8179_lut_commands[i]);
-        EPD_WriteData(lut_buf, sizeof(lut_buf));
-        app_feed_wdt();
-    }
-    return NRF_SUCCESS;
-}
-#endif /* !EPD_INCLUDE_INTERNAL_UC8179_LUTS */
+const UBYTE LUT_WB_7IN5_V2_PART[42] = {
+    0x10, T1, T2, T3, T4, 1,
+};
 
 static ret_code_t UC8179_Load_LUT_Tier(uint8_t tier) {
-#if EPD_INCLUDE_INTERNAL_UC8179_LUTS
-    return UC8179_Load_LUT_Tier_Internal(tier);
-#else
-    return UC8179_Load_LUT_Tier_External(tier);
-#endif
+    (void)tier;
+    static const uint8_t registers[6] = {0x20, 0x21, 0x22, 0x23, 0x24, 0x25};
+    const uint8_t* luts[6] = {
+        LUT_WW_BB_VCOM_7IN5_V2_PART,
+        LUT_WW_BB_VCOM_7IN5_V2_PART,
+        LUT_BW_7IN5_V2_PART,
+        LUT_WB_7IN5_V2_PART,
+        LUT_WW_BB_VCOM_7IN5_V2_PART,
+        LUT_WW_BB_VCOM_7IN5_V2_PART
+    };
+    for (int i = 0; i < 6; i++) {
+        EPD_WriteCmd(registers[i]);
+        EPD_WriteData((uint8_t*)luts[i], 42);
+        app_feed_wdt();
+    }
+    return NRF_SUCCESS;
+}
+
+void UC8179_Partial_Diff_Push(epd_model_t *epd, uint16_t x, uint16_t y, uint16_t w, uint16_t h, 
+                              const uint8_t *old_bm, const uint8_t *new_bm) {
+    uint16_t wb = (w + 7) / 8;
+    x &= 0xFFF8;
+    w = wb * 8;
+    if (x + w > epd->width || y + h > epd->height) return;
+
+    EPD_WriteCmd(UC81xx_PTIN);
+    _setPartialRamArea(epd, x, y, w, h);
+
+    EPD_WriteCmd(UC81xx_DTM1);
+    UC8179_Write_Image_Rows(old_bm, wb, h, 0xFF, false);
+
+    EPD_WriteCmd(UC81xx_DTM2);
+    UC8179_Write_Image_Rows(new_bm, wb, h, 0xFF, false);
+
+    EPD_WriteCmd(UC81xx_PTOUT);
 }
 
 /**
@@ -749,16 +550,9 @@ void UC8179_Refresh_Partial(epd_model_t *epd, uint16_t x, uint16_t y, uint16_t w
 
     NRF_LOG_INFO("[EPD]: Adjusted area: (%d,%d,%d,%d)\n", x1, y1, w1, h1);
 
-    // Read current temperature and select appropriate LUT
-    // 读取当前温度并选择合适的LUT
-    int8_t temperature = UC8179_Read_Temp(epd);
-    uint8_t lut_tier = UC8179_Select_LUT_Tier(temperature);
-
-    // Step 4: Load partial LUT tables based on temperature
-    // 步骤4: 根据温度加载局刷LUT表
-    NRF_LOG_DEBUG("[EPD]: Loading temperature-adaptive partial LUT\n");
-
-    if (UC8179_Load_LUT_Tier(lut_tier) != NRF_SUCCESS) {
+    // Step 4: Load partial LUT tables
+    // 步骤4: 加载局刷LUT表
+    if (UC8179_Load_LUT_Tier(0) != NRF_SUCCESS) {
         return;
     }
 

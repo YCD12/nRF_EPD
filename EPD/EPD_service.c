@@ -93,6 +93,8 @@
 #include "sdk_macros.h"
 #include "Lunar.h"
 #include "epd_ext_resources.h"
+#include "epd_clock_diff.h"
+
 
 // ============================================================================
 // CRC16计算和传输响应函数
@@ -103,47 +105,7 @@
 
 extern void UC8179_Set_Partial_Strong_BW_Allowed(bool allowed);
 
-static uint8_t clock_7seg_mask(uint8_t digit) {
-    static const uint8_t masks[10] = {
-        0x3F, // 0: a b c d e f
-        0x06, // 1: b c
-        0x5B, // 2: a b d e g
-        0x4F, // 3: a b c d g
-        0x66, // 4: b c f g
-        0x6D, // 5: a c d f g
-        0x7D, // 6: a c d e f g
-        0x07, // 7: a b c
-        0x7F, // 8: a b c d e f g
-        0x6F  // 9: a b c d f g
-    };
 
-    return (digit < 10U) ? masks[digit] : 0U;
-}
-
-static bool clock_digit_needs_strong_cleanup(uint8_t old_digit, uint8_t new_digit) {
-    uint8_t old_mask = clock_7seg_mask(old_digit);
-    uint8_t new_mask = clock_7seg_mask(new_digit);
-
-    return (old_mask & (uint8_t)~new_mask) != 0U;
-}
-
-static bool clock_time_needs_strong_cleanup(uint32_t timestamp) {
-    if (timestamp < 60U) {
-        return true;
-    }
-
-    uint32_t old_minute_total = (timestamp - 60U) / 60U;
-    uint32_t new_minute_total = timestamp / 60U;
-    uint8_t old_minute = (uint8_t)(old_minute_total % 60U);
-    uint8_t new_minute = (uint8_t)(new_minute_total % 60U);
-    uint8_t old_hour = (uint8_t)((old_minute_total / 60U) % 24U);
-    uint8_t new_hour = (uint8_t)((new_minute_total / 60U) % 24U);
-
-    return clock_digit_needs_strong_cleanup(old_minute % 10U, new_minute % 10U) ||
-           clock_digit_needs_strong_cleanup(old_minute / 10U, new_minute / 10U) ||
-           clock_digit_needs_strong_cleanup(old_hour % 10U, new_hour % 10U) ||
-           clock_digit_needs_strong_cleanup(old_hour / 10U, new_hour / 10U);
-}
 
 /**@brief 计算CRC16-CCITT校验值
  *        Calculate CRC16-CCITT checksum
@@ -363,41 +325,7 @@ static void send_resource_busy_response(ble_epd_t* p_epd, const uint8_t* p_data,
 #define EPD_CFG_52811 {0x14, 0x13, 0x06, 0x05, 0x04, 0x03, 0x02, 0x07, 0xFF, 0x12, 0x07}
 
 
-// ============================================================================
-// 局部刷新偏移上下文结构
-// Context for partial write with offset (used for time-only refresh)
-// ============================================================================
-// 在MODE_CLOCK_CALENDAR模式下,只需要刷新时间显示区域,
-// 该结构用于指定刷新的偏移位置,将局部坐标转换为屏幕绝对坐标
-typedef struct {
-    epd_model_t* epd;       // EPD模型指针 / Pointer to EPD model
-    uint16_t offset_x;      // X轴偏移量(相对于屏幕左上角) / X offset from screen origin
-    uint16_t offset_y;      // Y轴偏移量(相对于屏幕左上角) / Y offset from screen origin
-} partial_write_ctx_t;
 
-/**@brief 带偏移的局部写入回调包装函数
- *        Callback wrapper that adds offset to write_image_partial coordinates
- *
- * @details 用途: 在绘制GUI时,将局部坐标转换为屏幕绝对坐标。
- *          当MODE_CLOCK_CALENDAR模式下只刷新时间区域时,
- *          DrawGUI_ClockOnly输出的坐标是相对于时间区域原点的,
- *          此函数将其转换为相对于屏幕左上角的绝对坐标。
- *
- * @param[in] ctx    上下文指针,包含EPD和偏移信息 / Context with EPD and offset
- * @param[in] black  黑色图像数据 / Black image data
- * @param[in] color  彩色图像数据 / Color image data
- * @param[in] x      相对X坐标 / Relative X coordinate
- * @param[in] y      相对Y坐标 / Relative Y coordinate
- * @param[in] w      宽度 / Width
- * @param[in] h      高度 / Height
- */
-static void write_image_partial_with_offset(void* ctx, uint8_t* black, uint8_t* color,
-                                            uint16_t x, uint16_t y, uint16_t w, uint16_t h) {
-    partial_write_ctx_t* context = (partial_write_ctx_t*)ctx;
-    // 将局部坐标加上偏移,转换为屏幕绝对坐标
-    context->epd->drv->write_image_partial(context->epd, black, color,
-        x + context->offset_x, y + context->offset_y, w, h);
-}
 
 // ============================================================================
 // 命令队列管理函数
@@ -764,6 +692,13 @@ static void epd_gui_update(void* p_event_data, uint16_t event_size) {
             p_epd->force_full_refresh = false;  // Clear the force flag after full refresh. 清除强制全刷标志
             NRF_LOG_INFO("[EPD]: Full refresh completed\n");
             ble_log("[EPD]: Full refresh completed");
+
+            // Seed the differential clock refresh state
+            {
+                tm_t tm_seed = {0};
+                transformTime(event->timestamp, &tm_seed);
+                epd_clock_diff_seed(tm_seed.tm_hour, tm_seed.tm_min);
+            }
         } else {
             // ================================================================
             // 执行局刷流程
@@ -783,33 +718,24 @@ static void epd_gui_update(void* p_event_data, uint16_t event_size) {
             }
             app_feed_wdt();  // Feed watchdog after init_partial. 局刷初始化后喂狗
 
-            // ================================================================
-            // 局刷区域计算 (Partial Refresh Area Calculation)
-            // ================================================================
-            // For MODE_CLOCK_CALENDAR, only refresh the time display area (minimal partial refresh).
-            // The time refresh area is reduced to the full minute block (MM)
-            // when possible. For MODE_CLOCK, refresh the full screen.
-            //
-            // 对于MODE_CLOCK_CALENDAR模式,只刷新时间显示区域(最小化局刷)。
-            // 时间刷新区域可以进一步动态减少到完整分钟两位(MM)。
-            // 对于MODE_CLOCK模式,刷新整个屏幕。
-            // ================================================================
-            uint16_t partial_x = 0, partial_y = 0, partial_w = epd->width, partial_h = epd->height;
-            UC8179_Set_Partial_Strong_BW_Allowed(true);
-            if (data.mode == MODE_CLOCK_CALENDAR) {
-                // Get the (possibly reduced) time-only refresh area based on current timestamp.
-                // 根据当前时间戳获取(可能缩小的)仅时间刷新区域
-                GetTimeRefreshArea(data.timestamp, &partial_x, &partial_y, &partial_w, &partial_h);
+            // Try true differential clock partial refresh first
+            if (epd_clock_diff_try_partial(epd, data.timestamp, data.mode)) {
+                NRF_LOG_INFO("[EPD]: Differential clock partial refresh successful\n");
+                goto finish_refresh;
             }
 
+            if (data.mode == MODE_CLOCK_CALENDAR) {
+                NRF_LOG_INFO("[EPD]: Differential refresh failed/unseeded, falling back to full refresh\n");
+                goto fallback_full_refresh;
+            }
+
+            // Fallback for MODE_CLOCK (full screen partial refresh)
+            uint16_t partial_x = 0, partial_y = 0, partial_w = epd->width, partial_h = epd->height;
+            UC8179_Set_Partial_Strong_BW_Allowed(true);
+
             // Clear the partial refresh area to white first
-            // 首先将局刷区域清为白色
             if (epd->drv->clear_partial) {
-                // For MODE_CLOCK_CALENDAR, we skip clear_partial to avoid affecting calendar area
-                // 对于MODE_CLOCK_CALENDAR模式,跳过clear_partial以避免影响日历区域
-                if (data.mode != MODE_CLOCK_CALENDAR) {
-                    epd->drv->clear_partial(epd, false);  // Don't refresh, just clear RAM. 不刷新,只清RAM
-                }
+                epd->drv->clear_partial(epd, false);  // Don't refresh, just clear RAM. 不刷新,只清RAM
             } else {
                 NRF_LOG_ERROR("[EPD]: clear_partial not available!\n");
                 goto fallback_full_refresh;
@@ -820,35 +746,7 @@ static void epd_gui_update(void* p_event_data, uint16_t event_size) {
             // 使用局部图像写入写入黑色数据
             NRF_LOG_INFO("[EPD]: Drawing GUI for partial refresh (%d,%d,%d,%d)\n", partial_x, partial_y, partial_w, partial_h);
             ble_log("[EPD]: Using PARTIAL refresh at (%d,%d,%d,%d)", partial_x, partial_y, partial_w, partial_h);
-            if (data.mode == MODE_CLOCK_CALENDAR) {
-                // ============================================================
-                // MODE_CLOCK_CALENDAR模式的最小化刷新
-                // Minimal refresh for MODE_CLOCK_CALENDAR mode
-                // ============================================================
-                // Draw only the time portion for minimal partial refresh.
-                // The local GFX buffer origin corresponds to the TIME_REFRESH origin,
-                // and GetTimeRefreshArea returns a sub-window inside this region.
-                //
-                // 只绘制时间部分进行最小化局刷。
-                // 本地GFX缓冲区原点对应TIME_REFRESH原点,
-                // GetTimeRefreshArea返回该区域内的子窗口。
-                // ============================================================
-                uint16_t time_base_x = 0, time_base_y = 0;
-                GetTimeRefreshOrigin(&time_base_x, &time_base_y);
-                partial_write_ctx_t write_ctx = {
-                    .epd = epd,
-                    .offset_x = time_base_x,
-                    .offset_y = time_base_y
-                };
-                bool allow_strong_bw_cleanup = clock_time_needs_strong_cleanup(data.timestamp);
-                UC8179_Set_Partial_Strong_BW_Allowed(allow_strong_bw_cleanup);
-                DrawGUI_ClockOnly(&data, (buffer_callback)write_image_partial_with_offset, &write_ctx);
-                UC8179_Set_Partial_Strong_BW_Allowed(true);
-            } else {
-                // MODE_CLOCK模式: 刷新整个屏幕
-                // MODE_CLOCK mode: refresh full screen
-                DrawGUI(&data, (buffer_callback)epd->drv->write_image_partial, epd);
-            }
+            DrawGUI(&data, (buffer_callback)epd->drv->write_image_partial, epd);
             app_feed_wdt();  // Feed watchdog after drawing GUI. 绘制GUI后喂狗
 
             // Load external LUT and perform partial refresh
@@ -860,6 +758,13 @@ static void epd_gui_update(void* p_event_data, uint16_t event_size) {
                 NRF_LOG_ERROR("[EPD]: refresh_partial not available!\n");
             }
             app_feed_wdt();  // Feed watchdog after refresh_partial. 局刷后喂狗
+
+            // Seed the state since we just did a full window redraw
+            {
+                tm_t tm_seed = {0};
+                transformTime(data.timestamp, &tm_seed);
+                epd_clock_diff_seed(tm_seed.tm_hour, tm_seed.tm_min);
+            }
         }
 
         NRF_LOG_INFO("[EPD]: === Partial refresh sequence complete ===\n");
@@ -878,6 +783,10 @@ fallback_full_refresh:
         NRF_LOG_INFO("[EPD]: === Using FULL refresh ===\n");
         ble_log("[EPD]: Using normal FULL refresh");
 
+        if (epd->drv->init) {
+            epd->drv->init(epd);
+        }
+
         app_feed_wdt();  // Feed watchdog before drawing GUI. 绘制GUI前喂狗
         DrawGUI(&data, (buffer_callback)epd->drv->write_image, epd);
         app_feed_wdt();  // Feed watchdog after drawing GUI. 绘制GUI后喂狗
@@ -887,6 +796,13 @@ fallback_full_refresh:
         EPD_LED_OFF();
         NRF_LOG_INFO("[EPD]: === Full refresh complete ===\n");
         ble_log("[EPD]: Full refresh complete");
+
+        // Seed the state after fallback full refresh
+        {
+            tm_t tm_seed = {0};
+            transformTime(event->timestamp, &tm_seed);
+            epd_clock_diff_seed(tm_seed.tm_hour, tm_seed.tm_min);
+        }
     }
 
 finish_refresh:
@@ -1020,6 +936,7 @@ static void epd_update_display_mode(ble_epd_t* p_epd, display_mode_t mode) {
         // 模式变化时,下次GUI更新时强制全刷
         // 这防止了模式切换时的残影
         p_epd->force_full_refresh = true;
+        epd_clock_diff_invalidate();
     }
 }
 
