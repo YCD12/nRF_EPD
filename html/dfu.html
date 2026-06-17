@@ -42,11 +42,22 @@
         <div class="flex-group">
           <input type="file" id="dfuPackageFile" accept=".zip">
           <button id="dfuStartButton" type="button" class="primary">选择设备并升级</button>
+          <button id="dfuSwitchModeButton" type="button" class="secondary">手动切换到 DFU 模式</button>
           <button id="dfuManualPickButton" type="button" class="secondary" style="display:none;">手动选择DFU设备并继续</button>
           <button id="dfuAbandonSessionButton" type="button" class="secondary" disabled>放弃当前会话</button>
           <button id="dfuResetModeButton" type="button" class="secondary" disabled>恢复默认流程</button>
           <button id="dfuSelfCheckButton" type="button" class="secondary">环境自检</button>
         </div>
+      </div>
+      <div class="dfu-options-group">
+        <label class="dfu-checkbox-label">
+          <input type="checkbox" id="dfuEnableMtuQuery">
+          启用 MTU 查询 (勾选将尝试协商高 MTU 提升传输速度，不勾选则直接使用 20 字节兼容分片避免连接重启)
+        </label>
+        <label class="dfu-checkbox-label">
+          <input type="checkbox" id="dfuEnableAutoFind">
+          自动识别 DFU 设备 (默认关闭。因 unbonded DFU 重启后 MAC 地址改变，通常无法自动识别，关闭此项可在重启后立即弹出设备选择框)
+        </label>
       </div>
       <div class="dfu-hint">
         建议顺序：1. 先点“环境自检”；2. 选择 Nordic nRF Secure DFU 固件包（.zip）；3. 点击“选择设备并升级”；4. 如页面提示，再选择 DfuTarg 继续。
