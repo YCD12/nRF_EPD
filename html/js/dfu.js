@@ -90,6 +90,15 @@
     };
   }
 
+  function getDfuOptions() {
+    const enableMtuQueryEl = document.getElementById('dfuEnableMtuQuery');
+    const enableAutoFindEl = document.getElementById('dfuEnableAutoFind');
+    return {
+      enableMtuQuery: enableMtuQueryEl ? !!enableMtuQueryEl.checked : true,
+      enableAutoFind: enableAutoFindEl ? !!enableAutoFindEl.checked : true
+    };
+  }
+
   function notifyDfuPageStateChange() {
     if (typeof window.onDfuPageStateChange !== 'function') return;
     try {
@@ -513,7 +522,7 @@
   }
 
   class LocalSecureDfu {
-    constructor(crc32Fn, bluetooth, delayMs = 0) {
+    constructor(crc32Fn, bluetooth, delayMs = 0, options = {}) {
       this.crc32 = crc32Fn;
       this.bluetooth = bluetooth || (navigator && navigator.bluetooth);
       this.delay = delayMs;
@@ -527,6 +536,7 @@
       this.disconnectHandler = null;
       this.connectedControlChar = null;
       this.connectedButtonChar = null;
+      this.enableMtuQuery = options.enableMtuQuery !== false;
     }
 
     addEventListener(type, fn) {
@@ -561,12 +571,17 @@
       };
 
       let lastErr = null;
-      for (let attempt = 1; attempt <= 3; attempt++) {
+      const maxAttempts = 5;
+      for (let attempt = 1; attempt <= maxAttempts; attempt++) {
         try {
           const server = device.gatt.connected
             ? device.gatt
             : await withTimeout(device.gatt.connect(), CONNECT_TIMEOUT_MS, `GATT连接超时(${CONNECT_TIMEOUT_MS}ms)`);
           this.log('connected to gatt server');
+          
+          // 增加 300ms 延迟，给浏览器和设备一些时间稳定 GATT 服务列表并避免竞争
+          await this.delayPromise(300);
+
           const service = await withTimeout(
             server.getPrimaryService(serviceUUID),
             SERVICE_TIMEOUT_MS,
@@ -583,9 +598,10 @@
         } catch (err) {
           lastErr = err;
           safeDisconnect();
-          if (attempt < 3) {
-            this.log(`Bootloader 尚未稳定，等待后重试服务发现（第 ${attempt}/3 次）: ${getErrorMessage(err)}`);
-            await this.delayPromise(DFU_SERVICE_DISCOVERY_RETRY_MS);
+          if (attempt < maxAttempts) {
+            const retryDelay = 1000 + (attempt - 1) * 1000;
+            this.log(`连接或服务发现尚未稳定，等待后重试（第 ${attempt}/${maxAttempts} 次）: ${getErrorMessage(err)}`);
+            await this.delayPromise(retryDelay);
             continue;
           }
         }
@@ -625,6 +641,7 @@
       const start = Date.now();
       const lastTriedAt = new Map();
       this.log('正在自动查找 DFU 设备...');
+      this.log('提示: 若设备是 unbonded buttonless DFU，切换到 Bootloader 后 MAC 地址可能会变化。根据浏览器安全策略，网页必须再次通过设备选择框授权该新设备。若您以前升级时已选择过此 DfuTarg 并授权，浏览器才可自动识别。');
       while (Date.now() - start < timeoutMs) {
         const candidates = [];
         if (preferredDevice) candidates.push(preferredDevice);
@@ -760,6 +777,12 @@
         this.log('configured PRN=0');
       } catch (err) {
         this.log(`配置PRN失败，继续使用默认行为: ${getErrorMessage(err)}`);
+      }
+
+      if (!this.enableMtuQuery) {
+        this.packetSize = DEFAULT_PACKET_SIZE;
+        this.log(`已配置跳过 MTU 查询，直接使用 ${DEFAULT_PACKET_SIZE} 字节兼容分片`);
+        return;
       }
 
       try {
@@ -1026,7 +1049,7 @@
               device.gatt.disconnect();
             }
           } catch (_) { }
-          await this.delayPromise(DFU_SERVICE_DISCOVERY_RETRY_MS);
+          await this.delayPromise(2500);
           this.delay = 10;
           await this.update(device, initData, firmwareData);
           return;
@@ -1187,6 +1210,24 @@
   async function resolveBootloaderAfterSwitch(dfu, preferredDevice) {
     await dfu.delayPromise(DFU_REBOOT_SETTLE_MS);
 
+    const opts = getDfuOptions();
+    if (!opts.enableAutoFind) {
+      emitLog('已配置关闭自动识别 DFU 设备，直接弹出设备选择框');
+      try {
+        return await requestValidatedBootloaderDevice(dfu);
+      } catch (err) {
+        if (isUserGestureError(err)) {
+          throw makeManualPickError('系统可能已经配对 DfuTarg，但当前网页尚未获得该设备授权，请点击“手动选择DFU设备并继续”并重新选择 DfuTarg');
+        }
+        if (isPickerCancelled(err)) {
+          const cancelled = new Error('已取消选择DFU设备，可点击“手动选择DFU设备并继续”重试');
+          cancelled.code = DFU_BOOTLOADER_PICK_CANCELLED_ERROR;
+          throw cancelled;
+        }
+        throw err;
+      }
+    }
+
     // Optimize: Check if there are any authorized DfuTarg devices in the browser.
     let hasAuthorizedDfu = false;
     if (navigator.bluetooth && typeof navigator.bluetooth.getDevices === 'function') {
@@ -1227,6 +1268,17 @@
 
   async function resolveBootloaderForRemainingImages(dfu, preferredDevice, nextImage) {
     await dfu.delayPromise(DFU_REBOOT_SETTLE_MS);
+    const opts = getDfuOptions();
+    if (!opts.enableAutoFind) {
+      emitLog('已配置关闭自动识别 DFU 设备，直接弹出设备选择框');
+      try {
+        return await requestValidatedBootloaderDevice(dfu);
+      } catch (err) {
+        ensureManualPickVisible(`继续${nextImage.type}`);
+        pulseManualPickButton();
+        throw makeManualPickError(`设备已重启，请点击“手动选择DFU设备并继续”继续升级 ${nextImage.type}`);
+      }
+    }
     const authorized = await tryResolveAuthorizedBootloaderDevice(
       dfu,
       preferredDevice,
@@ -1300,7 +1352,7 @@
 
     const startBtn = document.getElementById('dfuStartButton');
     const manualBtn = document.getElementById('dfuManualPickButton');
-    const dfu = new LocalSecureDfu(makeCrc32());
+    const dfu = new LocalSecureDfu(makeCrc32(), null, 0, getDfuOptions());
     dfuBusy = true;
     notifyDfuPageStateChange();
     if (startBtn) startBtn.disabled = true;
@@ -1551,11 +1603,77 @@
     }
   }
 
+  async function triggerManualDfuModeSwitch() {
+    if (dfuBusy) {
+      setDfuStatus('DFU 正在执行，请稍候');
+      return;
+    }
+    const startBtn = document.getElementById('dfuStartButton');
+    const switchBtn = document.getElementById('dfuSwitchModeButton');
+    const manualBtn = document.getElementById('dfuManualPickButton');
+    const dfu = new LocalSecureDfu(makeCrc32(), null, 0, getDfuOptions());
+    
+    dfuBusy = true;
+    notifyDfuPageStateChange();
+    if (startBtn) startBtn.disabled = true;
+    if (switchBtn) switchBtn.disabled = true;
+    if (manualBtn) manualBtn.disabled = true;
+    
+    setDfuProgress(null);
+    setDfuRetryInfo('');
+    setManualPickVisible(false);
+    setPendingManualSession(null);
+
+    dfu.addEventListener('log', event => {
+      if (event && event.message) emitLog(event.message);
+    });
+
+    try {
+      setDfuStatus('请在弹窗中选择要切换的应用设备...');
+      emitLog('开始手动切换 DFU 模式：请选择要重启到 DfuTarg 的应用设备');
+      const device = await dfu.requestDevice(false, DFU_APP_FILTERS);
+      if (!device) {
+        throw new Error('未选择设备');
+      }
+      setDfuStatus('正在连接设备并发送 DFU 切换指令...');
+      emitLog(`已选择设备: ${device.name || 'Unknown Device'}，正在发送切换指令...`);
+      await dfu.switchToDfuModeOnly(device, {
+        service: DFU_SERVICE_UUID,
+        button: BUTTON_UUID,
+        control: CONTROL_UUID,
+        packet: PACKET_UUID
+      });
+      
+      setManualBootloaderEntryRequired(true);
+      setDfuStatus('手动切换 DFU 模式成功！', false);
+      emitLog('手动切换 DFU 指令发送成功！设备应已重启进入 DfuTarg。升级流程已自动切换为“手动进入 DFU 模式”流程，请直接点击“选择设备并升级”选择 DfuTarg 设备。');
+      if (typeof showToast === 'function') {
+        showToast('切换成功，请在设备重启后点击“选择设备并升级”', 4000);
+      }
+    } catch (err) {
+      const errMsg = getErrorMessage(err);
+      if (isPickerCancelled(err)) {
+        setDfuStatus('已取消设备选择');
+        emitLog('手动切换已取消：用户关闭了设备选择窗口');
+      } else {
+        setDfuStatus(`手动切换失败: ${errMsg}`, true);
+        emitLog(`手动切换失败: ${errMsg}`);
+      }
+    } finally {
+      dfuBusy = false;
+      notifyDfuPageStateChange();
+      if (startBtn) startBtn.disabled = false;
+      if (switchBtn) switchBtn.disabled = false;
+      if (manualBtn) manualBtn.disabled = !pendingManualSession;
+    }
+  }
+
   window.initDfuPanel = function () {
     const fileEl = document.getElementById('dfuPackageFile');
     const startBtn = document.getElementById('dfuStartButton');
     const manualBtn = document.getElementById('dfuManualPickButton');
     const selfCheckBtn = document.getElementById('dfuSelfCheckButton');
+    const switchBtn = document.getElementById('dfuSwitchModeButton');
     if (!fileEl || !startBtn || !manualBtn || !selfCheckBtn) return;
     if (startBtn.dataset.bound === '1') return;
 
@@ -1573,6 +1691,9 @@
     startBtn.addEventListener('click', startDfuUpgrade);
     manualBtn.addEventListener('click', continueWithManualPick);
     selfCheckBtn.addEventListener('click', runDfuSelfCheck);
+    if (switchBtn) {
+      switchBtn.addEventListener('click', triggerManualDfuModeSwitch);
+    }
     startBtn.dataset.bound = '1';
     setManualPickVisible(false);
     setDfuPrecheck('');

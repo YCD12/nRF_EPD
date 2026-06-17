@@ -101,10 +101,14 @@
     const abandonBtn = document.getElementById('dfuAbandonSessionButton');
     const resetBtn = document.getElementById('dfuResetModeButton');
     const startBtn = document.getElementById('dfuStartButton');
+    const switchBtn = document.getElementById('dfuSwitchModeButton');
     if (!badge || !hint || !flowGuide || !abandonBtn || !resetBtn || !startBtn) return;
 
     abandonBtn.disabled = !!(state.busy || !state.hasPendingSession);
     startBtn.textContent = state.hasPendingSession ? '继续升级' : '选择设备并升级';
+    if (switchBtn) {
+      switchBtn.disabled = !!(state.busy || state.hasPendingSession);
+    }
 
     if (state.manualBootloaderEntryRequired) {
       badge.textContent = '手动 DfuTarg';
