@@ -52,6 +52,7 @@
 			<div class="log-container" id="log"></div>
 			<div class="device-info">
 				<b>设备电量/电压：</b><span id="batteryVoltage" class="device-badge">未连接</span><span id="batteryWarning" class="device-warning" style="display:none;"></span>
+				<b style="margin-left: 1.5rem;">设备当前版本号：</b><span id="deviceVersion" class="device-badge">未连接</span>
 			</div>
 		</section>
 		<section class="section">
@@ -71,7 +72,8 @@
 				</div>
 				<div class="flex-group">
 					<button id="calendarmodebutton" type="button" class="primary" onclick="syncTime(1)">日历模式</button>
-					<button id="clockmodebutton" type="button" class="primary" onclick="syncTime(2)">时钟模式</button>
+					<button id="clockcalendarmodebutton" type="button" class="primary" onclick="syncTime(2)">时钟日历</button>
+					<button id="clockmodebutton" type="button" class="primary" onclick="syncTime(3)">纯时钟模式</button>
 					<button id="legacyclockbutton" type="button" class="primary" onclick="syncTimeLegacy()"
 						style="display:none;">老款时钟</button>
 					<button id="clearscreenbutton" type="button" class="secondary" onclick="clearScreen()">清除屏幕</button>
