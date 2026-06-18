@@ -159,6 +159,23 @@ function updateBatteryVoltageDisplay(voltageMv = null, fallbackText = '未连接
   }
 }
 
+function formatDeviceVersion(versionNum) {
+  const major = versionNum >> 4;
+  const minor = versionNum & 0x0f;
+  return `v${major.toString(16)}.${minor.toString(16)} (0x${versionNum.toString(16).toUpperCase()})`;
+}
+
+function updateDeviceVersionDisplay(versionNum = null, fallbackText = '未连接') {
+  const deviceVersion = document.getElementById('deviceVersion');
+  if (!deviceVersion) return;
+
+  if (typeof versionNum === 'number' && Number.isFinite(versionNum)) {
+    deviceVersion.innerText = formatDeviceVersion(versionNum);
+  } else {
+    deviceVersion.innerText = fallbackText;
+  }
+}
+
 let bleWriteQueue = Promise.resolve();
 
 async function write(cmd, data, withResponse = true) {
@@ -306,10 +323,20 @@ async function syncTimeOnConnect() {
 }
 
 async function syncTime(mode) {
-  const modeName = mode === 1 ? '日历模式' : '时钟模式';
+  let modeName = '';
+  if (mode === 1) {
+    modeName = '日历模式';
+  } else if (mode === 2) {
+    modeName = '时钟日历模式';
+  } else if (mode === 3) {
+    modeName = '纯时钟模式';
+  } else {
+    modeName = '时钟模式';
+  }
+
   let confirmMsg = `确认切换到${modeName}？`;
-  if (mode === 2) {
-    confirmMsg += '\n\n⚠️ 警告：时钟模式会加速屏幕老化导致损坏！\n• 请勿长时间使用\n• 费电';
+  if (mode === 2 || mode === 3) {
+    confirmMsg += `\n\n⚠️ 警告：${modeName}会加速屏幕老化导致损坏！\n• 请勿长时间使用\n• 费电`;
   }
   if (!confirm(confirmMsg)) return;
 
@@ -568,6 +595,7 @@ function updateButtonStatus(forceDisabled = false) {
   document.getElementById("reconnectbutton").disabled = (gattServer == null || gattServer.connected) ? 'disabled' : null;
   document.getElementById("sendcmdbutton").disabled = status;
   document.getElementById("calendarmodebutton").disabled = status;
+  document.getElementById("clockcalendarmodebutton").disabled = status;
   document.getElementById("clockmodebutton").disabled = status;
   document.getElementById("clearscreenbutton").disabled = status;
   document.getElementById("sendimgbutton").disabled = status;
@@ -582,6 +610,7 @@ function disconnect() {
   updateButtonStatus();
   resetVariables();
   updateBatteryVoltageDisplay(null, '未连接');
+  updateDeviceVersionDisplay(null, '未连接');
   if (typeof ResourceManager !== 'undefined') ResourceManager.onDisconnect();
   if (!isInternalRetryDisconnect) {
     clearLogOnNextSuccessfulConnect = true;
@@ -1105,9 +1134,11 @@ async function connect() {
       appVersion = versionData.getUint8(0);
       addLog(`固件版本: 0x${appVersion.toString(16)}`);
       addLog(`APP版本: v${APP_VERSION} (${APP_BUILD_DATE})`);
+      updateDeviceVersionDisplay(appVersion);
     } catch (e) {
       console.error(e);
       appVersion = 0x15;
+      updateDeviceVersionDisplay(appVersion);
     }
 
     if (appVersion < 0x16) {
@@ -1547,6 +1578,7 @@ document.body.onload = () => {
   updateFooterInfo();
   updateOrientationBadge();
   updateBatteryVoltageDisplay();
+  updateDeviceVersionDisplay();
   checkDebugMode();
   if (typeof initDfuPanel === 'function') {
     initDfuPanel();
