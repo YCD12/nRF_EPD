@@ -893,6 +893,16 @@ int main(void) {
     NRF_POWER->RESETREAS |= NRF_POWER->RESETREAS;  // 清除复位原因标志
     NRF_LOG_DEBUG("== RESET REASON: %d ===\n", m_resetreas);
 
+    // 如果复位是由看门狗引起，且电压严重不足（低于临界关机阈值），
+    // 则说明我们之前已经在低电量下触发了关机并显示了关机页，看门狗重启了芯片。
+    // 此时无需重新绘制墨水屏，直接进入睡眠即可，避免重复唤醒和刷屏。
+    if (m_resetreas & NRF_POWER_RESETREAS_DOG_MASK) {
+        if (EPD_ReadVoltage() < CRITICAL_BATTERY_SHUTDOWN_MV) {
+            NRF_POWER->SYSTEMOFF = 1;
+            while (1); // 等待进入低功耗睡眠
+        }
+    }
+
     NRF_LOG_DEBUG("init..\n");
 
     // Configure WDT.

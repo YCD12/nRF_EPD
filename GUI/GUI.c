@@ -149,7 +149,7 @@ static month_render_cache_t m_month_render_cache;
 
 static void DrawTimeSyncTip(Adafruit_GFX* gfx, gui_data_t* data);
 static void DrawLowBatteryTip(Adafruit_GFX* gfx, gui_data_t* data);
-static void DrawBattery(Adafruit_GFX* gfx, int16_t x, int16_t y, uint8_t iw, uint16_t voltage_mv);
+static void DrawBattery(Adafruit_GFX* gfx, int16_t x, int16_t y, uint8_t iw, gui_data_t* data);
 static void DrawWeekHeaderArea(Adafruit_GFX* gfx, int16_t x, int16_t y, int16_t area_w, int16_t area_h,
                                gui_data_t* data);
 static void DrawMonthDaysArea(Adafruit_GFX* gfx, int16_t x, int16_t y, int16_t area_w, int16_t area_h,
@@ -189,33 +189,6 @@ static void BatteryPercentToText(uint8_t percent, char* text, size_t text_size) 
         text[1] = '%';
         text[2] = '\0';
     }
-}
-
-static void BatteryStatusToText(uint16_t voltage_mv, char* text, size_t text_size) {
-    uint8_t percent;
-    size_t len;
-    uint16_t volts;
-    uint16_t decivolts;
-
-    if (text == NULL || text_size < 10) {
-        return;
-    }
-
-    percent = BatteryPercentFromMv(voltage_mv);
-    BatteryPercentToText(percent, text, text_size);
-    len = strlen(text);
-    if (len + 5 >= text_size) {
-        return;
-    }
-
-    volts = voltage_mv / 1000;
-    decivolts = (voltage_mv % 1000) / 100;
-    text[len++] = ' ';
-    text[len++] = (char)('0' + volts);
-    text[len++] = '.';
-    text[len++] = (char)('0' + decivolts);
-    text[len++] = 'V';
-    text[len] = '\0';
 }
 
 static uint8_t GetFestivalCount(uint16_t resource_id) {
@@ -480,52 +453,103 @@ static void DrawTimeSyncTip(Adafruit_GFX* gfx, gui_data_t* data) {
  * @param data GUI数据指针 | Pointer to GUI data
  */
 static void DrawLowBatteryTip(Adafruit_GFX* gfx, gui_data_t* data) {
-    char battery_text[12] = {0};
-    const uint8_t* battery_font = (data->height >= 300) ? u8g2_font_helvB18_tn : u8g2_font_helvB14_tn;
-    const char* power_off_text = "power off";
+    char volts_text[4];
+    volts_text[0] = (char)('0' + (data->voltage_mv / 1000));
+    volts_text[1] = '.';
+    volts_text[2] = (char)('0' + ((data->voltage_mv % 1000) / 100));
+    volts_text[3] = '\0';
 
-    BatteryStatusToText(data->voltage_mv, battery_text, sizeof(battery_text));
+    uint16_t warning_color = (data->color == 2) ? GFX_RED : GFX_BLACK;
+    int16_t W = (int16_t)data->width;
+    int16_t H = (int16_t)data->height;
 
-    int16_t body_w = data->width / 3;
-    int16_t body_h = data->height / 6;
-    if (body_w > 110) body_w = 110;
-    if (body_h > 55) body_h = 55;
-    if (body_w < 72) body_w = 72;
-    if (body_h < 34) body_h = 34;
+    int16_t box_w = (W >= 800) ? 360 : ((W >= 400) ? 240 : (W - 16));
+    int16_t box_h = (H >= 480) ? 200 : ((H >= 300) ? 150 : (H - 16));
+    int16_t box_x = (W - box_w) / 2;
+    int16_t box_y = (H - box_h) / 2;
 
-    int16_t terminal_w = body_w / 12;
-    int16_t terminal_h = body_h / 3;
-    int16_t body_x = (data->width - (body_w + terminal_w + 6)) / 2;
-    int16_t body_y = (data->height - body_h) / 2 - body_h / 6;
-    if (body_y < 10) body_y = 10;
-    int16_t fill_margin = 5;
-    int16_t inner_w = body_w - fill_margin * 2;
-    int16_t inner_h = body_h - fill_margin * 2;
-    int16_t fill_w = inner_w / 6;
-    if (fill_w < 6) fill_w = 6;
+    // Draw double rounded border for a premium dialog box
+    GFX_drawRoundRect(gfx, box_x, box_y, box_w, box_h, 8, warning_color);
+    GFX_drawRoundRect(gfx, box_x + 2, box_y + 2, box_w - 4, box_h - 4, 6, warning_color);
 
-    GFX_drawRoundRect(gfx, body_x, body_y, body_w, body_h, 8, GFX_BLACK);
-    GFX_fillRoundRect(gfx, body_x + body_w + 4, body_y + (body_h - terminal_h) / 2, terminal_w, terminal_h, 3, GFX_BLACK);
-    GFX_fillRect(gfx, body_x + fill_margin, body_y + fill_margin, fill_w, inner_h, GFX_BLACK);
+    int16_t body_y, title_y, status_y, inst_y;
+    int16_t body_w, body_h, term_w, term_r, fill_margin;
+    const uint8_t* num_font;
+    const char* inst_text;
 
-    GFX_setFont(gfx, battery_font);
-    GFX_setTextColor(gfx, GFX_BLACK, GFX_WHITE);
-    int16_t battery_w = GFX_getUTF8Width(gfx, battery_text);
-    int16_t battery_h = GFX_getFontHeight(gfx);
-    GFX_setCursor(gfx,
-                  body_x + (body_w - battery_w) / 2,
-                  body_y + (body_h + battery_h) / 2 - 2);
-    GFX_printf(gfx, "%s", battery_text);
+    if (H >= 480) {
+        body_w = 100; body_h = 48;
+        term_w = 6; term_r = 2; fill_margin = 4;
+        num_font = u8g2_font_helvB18_tn;
+        inst_text = "Please change battery";
 
-    if (data->voltage_mv < CRITICAL_BATTERY_SHUTDOWN_MV) {
-        GFX_setFont(gfx, u8g2_font_wqy9_t_lunar);
-        int16_t text_w = GFX_getUTF8Width(gfx, power_off_text);
-        int16_t text_h = GFX_getFontHeight(gfx);
-        GFX_setCursor(gfx,
-                      body_x + (body_w - text_w) / 2,
-                      body_y + body_h + text_h + 10);
-        GFX_printf(gfx, "%s", power_off_text);
+        body_y = box_y + 25;
+        status_y = body_y + body_h + 32;
+        title_y = status_y + 26;
+        inst_y = title_y + 22;
+    } else if (H >= 300) {
+        body_w = 80; body_h = 40;
+        term_w = 5; term_r = 2; fill_margin = 3;
+        num_font = u8g2_font_helvB14_tn;
+        inst_text = "Please change battery";
+
+        body_y = box_y + 15;
+        status_y = body_y + body_h + 26;
+        title_y = status_y + 22;
+        inst_y = title_y + 18;
+    } else {
+        body_w = 50; body_h = 24;
+        term_w = 3; term_r = 1; fill_margin = 2;
+        num_font = u8g2_font_helvB14_tn;
+        inst_text = "Change battery";
+
+        body_y = box_y + 10;
+        title_y = body_y + body_h + 16;
+        status_y = title_y + 24;
+        inst_y = status_y + 18;
     }
+    int16_t term_h = body_h / 3;
+
+    // 1. Draw Battery Icon (Centered)
+    int16_t body_x = box_x + (box_w - body_w) / 2;
+    GFX_drawRoundRect(gfx, body_x, body_y, body_w, body_h, (H >= 300) ? 6 : 3, warning_color);
+    GFX_fillRoundRect(gfx, body_x + body_w + ((H >= 300) ? 2 : 1), body_y + (body_h - term_h) / 2, term_w, term_h, term_r, warning_color);
+
+    int16_t inner_h = body_h - fill_margin * 2;
+    int16_t segment_w = (H >= 300) ? ((body_w - fill_margin * 2) / 8) : 4;
+    if (segment_w < 4) segment_w = 4;
+    GFX_fillRect(gfx, body_x + fill_margin, body_y + fill_margin, segment_w, inner_h, warning_color);
+
+    // 2. Draw Battery Status Text (e.g. 2.7 V)
+    GFX_setFont(gfx, num_font);
+    int16_t w_num = GFX_getUTF8Width(gfx, volts_text);
+    GFX_setFont(gfx, u8g2_font_wqy9_t_lunar);
+    int16_t w_unit = GFX_getUTF8Width(gfx, " V");
+    int16_t total_w = w_num + w_unit;
+    int16_t start_x = box_x + (box_w - total_w) / 2;
+
+    GFX_setFont(gfx, num_font);
+    GFX_setTextColor(gfx, GFX_BLACK, GFX_WHITE);
+    GFX_setCursor(gfx, start_x, status_y);
+    GFX_printf(gfx, "%s", volts_text);
+
+    GFX_setFont(gfx, u8g2_font_wqy9_t_lunar);
+    GFX_setTextColor(gfx, GFX_BLACK, GFX_WHITE);
+    GFX_setCursor(gfx, start_x + w_num, status_y);
+    GFX_printf(gfx, " V");
+
+    // 3. Draw Warning Title (LOW POWER / POWER OFF)
+    const char* title_text = (data->voltage_mv < CRITICAL_BATTERY_SHUTDOWN_MV) ? "POWER OFF" : "LOW POWER";
+    GFX_setTextColor(gfx, warning_color, GFX_WHITE);
+    int16_t title_w = GFX_getUTF8Width(gfx, title_text);
+    GFX_setCursor(gfx, box_x + (box_w - title_w) / 2, title_y);
+    GFX_printf(gfx, "%s", title_text);
+
+    // 4. Draw Instruction Text
+    GFX_setTextColor(gfx, GFX_BLACK, GFX_WHITE);
+    int16_t inst_w = GFX_getUTF8Width(gfx, inst_text);
+    GFX_setCursor(gfx, box_x + (box_w - inst_w) / 2, inst_y);
+    GFX_printf(gfx, "%s", inst_text);
 }
 
 /**
@@ -541,24 +565,36 @@ static void DrawLowBatteryTip(Adafruit_GFX* gfx, gui_data_t* data) {
  * 电池百分比显示：满电=3.3V，空电=2.8V
  * Battery percentage display: Full=3.3V, Empty=2.8V
  */
-static void DrawBattery(Adafruit_GFX* gfx, int16_t x, int16_t y, uint8_t iw, uint16_t voltage_mv) {
+static void DrawBattery(Adafruit_GFX* gfx, int16_t x, int16_t y, uint8_t iw, gui_data_t* data) {
     x -= iw;  // 从右边界开始向左绘制 | Start drawing from right edge to left
     uint8_t fill_width = (iw > 4) ? (uint8_t)(iw - 4) : 0;
-    uint8_t level = BatteryPercentFromMv(voltage_mv);
-    char battery_text[5] = {0};
+    uint8_t level = BatteryPercentFromMv(data->voltage_mv);
 
-    BatteryPercentToText(level, battery_text, sizeof(battery_text));
+    uint16_t color = GFX_BLACK;
+    if (level <= 20) {
+        if (data->color == 2) {
+            color = GFX_RED;
+        }
+    }
 
-    // 绘制电量文字 | Draw battery percentage text
-    GFX_setFont(gfx, u8g2_font_wqy9_t_lunar);
-    GFX_setCursor(gfx, x - GFX_getUTF8Width(gfx, "100%") - 2, y + 9);
-    GFX_printf(gfx, "%s", battery_text);
     // 绘制电池外框 | Draw battery outline
     GFX_fillRect(gfx, x, y, iw, 10, GFX_WHITE);   // 白色填充 | White fill
-    GFX_drawRect(gfx, x, y, iw, 10, GFX_BLACK);   // 黑色边框 | Black border
-    GFX_fillRect(gfx, x + iw, y + 4, 2, 2, GFX_BLACK);  // 电池正极凸起 | Battery positive terminal
+    GFX_drawRect(gfx, x, y, iw, 10, color);       // 边框颜色 | Border color
+    GFX_fillRect(gfx, x + iw, y + 4, 2, 2, color);  // 电池正极凸起 | Battery positive terminal
     // 根据电量绘制填充 | Draw fill based on battery level
-    GFX_fillRect(gfx, x + 2, y + 2, (uint16_t)(fill_width * level / 100), 6, GFX_BLACK);
+    GFX_fillRect(gfx, x + 2, y + 2, (uint16_t)(fill_width * level / 100), 6, color);
+
+    // 低电量时(<= 20%)，显示电量百分比和低电量提示 | Low battery (<= 20%), show percentage and low battery tip
+    if (level <= 20) {
+        char battery_text[16] = "LOW ";
+        BatteryPercentToText(level, battery_text + 4, sizeof(battery_text) - 4);
+
+        GFX_setFont(gfx, u8g2_font_wqy9_t_lunar);
+        GFX_setTextColor(gfx, color, GFX_WHITE);
+        int16_t text_w = GFX_getUTF8Width(gfx, battery_text);
+        GFX_setCursor(gfx, x - text_w - 2, y + 9);
+        GFX_printf(gfx, "%s", battery_text);
+    }
 }
 
 /**
@@ -1525,7 +1561,7 @@ static void ui_render_component(Adafruit_GFX* gfx, const ui_component_record_t* 
                      ui_clamp_u16(comp->p1, UI_TIME_DIGITS_MIN, UI_TIME_DIGITS_MAX));
             break;
         case UI_COMP_BATTERY:
-            DrawBattery(gfx, x, y, (uint8_t)comp->w, data->voltage_mv);
+            DrawBattery(gfx, x, y, (uint8_t)comp->w, data);
             break;
         case UI_COMP_LINE:
             GFX_fillRect(gfx, x, y, comp->w, comp->h, comp->fg);
