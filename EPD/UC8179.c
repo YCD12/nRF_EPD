@@ -131,6 +131,13 @@ typedef uint8_t UBYTE;
 #define T3 0xA  // color change phase (b/w)
 #define T4 0  // optional extension for one color
 
+// WB (White to Black) and BW (Black to White) timing shortened to 75%
+// to avoid red particle activation (red ghosting) on aging screens.
+#define T2_WB 0x25 // 75% of T2 (50 * 0.75 = 37.5 -> 37 = 0x25)
+#define T3_WB 0x07 // 75% of T3 (10 * 0.75 = 7.5 -> 7 = 0x07)
+#define T2_BW 0x25
+#define T3_BW 0x07
+
 static void _setPartialRamArea(epd_model_t* epd, uint16_t x, uint16_t y, uint16_t w, uint16_t h);
 static void UC8179_Write_Image_Rows(const uint8_t* src, uint16_t wb, uint16_t h, uint8_t fill, bool invert);
 
@@ -139,11 +146,11 @@ const UBYTE LUT_WW_BB_VCOM_7IN5_V2_PART[42] = {
 };
 
 const UBYTE LUT_BW_7IN5_V2_PART[42] = {
-    0x20, T1, T2, T3, T4, 1,
+    0x20, T1, T2_BW, T3_BW, T4, 1,
 };
 
 const UBYTE LUT_WB_7IN5_V2_PART[42] = {
-    0x10, T1, T2, T3, T4, 1,
+    0x10, T1, T2_WB, T3_WB, T4, 1,
 };
 
 static ret_code_t UC8179_Load_LUT_Tier(uint8_t tier) {
@@ -172,6 +179,8 @@ void UC8179_Partial_Diff_Push(epd_model_t *epd, uint16_t x, uint16_t y, uint16_t
     w = wb * 8;
     if (x + w > epd->width || y + h > epd->height) return;
 
+    EPD_Write(UC81xx_VDCS, 0x22);       // VCM_DC: -1.0V (0x22) matches hardware capture
+    EPD_Write(UC81xx_CDI, 0xA9, 0x07);   // CDI: 0xA9 (Border Hi-Z) to prevent border red fringe/crosstalk
     EPD_WriteCmd(UC81xx_PTIN);
     _setPartialRamArea(epd, x, y, w, h);
 
@@ -234,6 +243,14 @@ static void _setPartialRamArea(epd_model_t* epd, uint16_t x, uint16_t y, uint16_
  */
 void UC8179_Refresh(epd_model_t* epd) {
     NRF_LOG_DEBUG("[EPD]: refresh begin\n");
+
+    // Safeguard: Ensure we restore full refresh registers (PSR, VDCS, CDI)
+    // even if the last refresh was a partial refresh.
+    // 兜底: 确保即使上次是局刷状态,也能强制回到全刷的配置
+    EPD_Write(UC81xx_PSR, epd->color == EPD_COLOR_BWR ? 0x0F : 0x1F);  // OTP + BWR/BW
+    EPD_Write(UC81xx_VDCS, 0x00);                                       // 全刷不用偏置
+    EPD_Write(UC81xx_CDI, epd->color == EPD_COLOR_BWR ? 0x57 : 0x97);   // 边框设为纯白
+
     UC8179_PowerOn();  // 开启电源
 
     _setPartialRamArea(epd, 0, 0, epd->width, epd->height);  // 设置全屏区域
@@ -567,8 +584,8 @@ void UC8179_Refresh_Partial(epd_model_t *epd, uint16_t x, uint16_t y, uint16_t w
     EPD_Write(UC81xx_TRES, 0x03, 0x20, 0x01, 0xE0);  // 800x480 分辨率
     EPD_Write(0x15, 0x00);  // 双SPI模式禁用
     EPD_Write(UC81xx_TCON, 0x22);  // 时序控制
-    EPD_Write(UC81xx_VDCS, 0x31);  // VCM_DC Setting // VCM直流设置
-    EPD_Write(UC81xx_CDI, 0x39, 0x07);  // VCOM and data interval for partial // 局刷的VCOM和数据间隔
+    EPD_Write(UC81xx_VDCS, 0x22);  // VCM_DC Setting: 0x22 (-1.0V) VCOM to reduce crosstalk / DC offset on aged screens
+    EPD_Write(UC81xx_CDI, 0xA9, 0x07);  // VCOM and data interval: 0xA9 (Border Hi-Z) to avoid border red bands
 
     UC8179_PowerOn();  // 启动电源
 
@@ -775,6 +792,8 @@ void UC8179_Write_Image_Partial(epd_model_t *epd, uint8_t *black, uint8_t *color
 
     NRF_LOG_INFO("[EPD]: UC8179 write image partial at (%d,%d) size (%d,%d)\n", x, y, w, h);
 
+    EPD_Write(UC81xx_VDCS, 0x22);       // VCM_DC: -1.0V (0x22) matches hardware capture
+    EPD_Write(UC81xx_CDI, 0xA9, 0x07);   // CDI: 0xA9 (Border Hi-Z) to prevent border red fringe/crosstalk
     EPD_WriteCmd(UC81xx_PTIN); // partial in // 进入局部模式
     _setPartialRamArea(epd, x, y, w, h);  // 设置写入区域
 
