@@ -803,29 +803,37 @@ void UC8179_Write_Image_Partial(epd_model_t *epd, uint8_t *black, uint8_t *color
                            (w <= UC8179_STRONG_BW_PARTIAL_MAX_WIDTH) &&
                            (((uint32_t)w * (uint32_t)h) <= UC8179_STRONG_BW_PARTIAL_MAX_AREA);
 
-    // Step 5: Write black data to RAM1 (0x10).
-    // 步骤5: 向RAM1(0x10)写入black数据
+    // Step 5: Write black data to RAM1 (0x10) and RAM2 (0x13).
+    // 步骤5: 向RAM1(0x10)和RAM2(0x13)写入图像数据。
     // NOTE: Partial refresh only supports black/white, no red color!
     // 注意: 局刷仅支持黑白,不支持红色!
 
-    // Write black data to RAM1 (0x10) - directly write GFX data
-    // 向RAM1(0x10)写入黑色数据 - 直接写入GFX数据
-    NRF_LOG_DEBUG("[EPD]: Writing black data to RAM1 (0x10)\n");
-    EPD_WriteCmd(UC81xx_DTM1);  // 选择RAM1(黑色层)
-    UC8179_Write_Image_Rows(black, wb, h, 0xFF, false);  // 0xFF = white // 0xFF = 白色
-
-    EPD_WriteCmd(UC81xx_DTM2);  // 选择RAM2(颜色层)
     if (strong_bw_drive) {
+        // Write black data to RAM1 (0x10) - directly write GFX data
+        // 向RAM1(0x10)写入黑色数据 - 直接写入GFX数据
+        NRF_LOG_DEBUG("[EPD]: Writing black data to RAM1 (0x10)\n");
+        EPD_WriteCmd(UC81xx_DTM1);  // 选择RAM1(黑色层)
+        UC8179_Write_Image_Rows(black, wb, h, 0xFF, false);  // 0xFF = white // 0xFF = 白色
+
         // Small/medium digit windows need stronger white/black transition.
         // Guard bytes are disabled so 8->7 can fully erase the old left segments.
         // 小/中数字窗口需要更强黑白转换; 关闭边界保护以便8->7完整擦掉旧左竖段。
         NRF_LOG_DEBUG("[EPD]: Writing guarded strong B/W data to RAM2 (0x13)\n");
+        EPD_WriteCmd(UC81xx_DTM2);  // 选择RAM2(颜色层)
         UC8179_Write_Image_Rows_GuardedInvert(black, wb, h, UC8179_STRONG_BW_PARTIAL_GUARD_BYTES);
     } else {
-        // Keep color/red layer neutral for larger windows. For BWR, 0xFF means no red.
-        // 大面积窗口保持颜色/红色层中性。BWR屏幕中0xFF表示无红色。
-        NRF_LOG_DEBUG("[EPD]: Writing no-red data to RAM2 (0x13)\n");
-        UC8179_Write_Image_Rows(NULL, wb, h, 0xFF, false);  // no red // 无红色
+        // For large partial refresh windows (e.g. full screen clock mode fallback):
+        // DTM1 (Old RAM) gets the inverted new frame (~NEW), DTM2 (New RAM) gets the normal new frame (NEW).
+        // This triggers correct transitions (1->0 WK to draw black, 0->1 KW to draw white) on the pre-cleared white screen.
+        // 大面积局刷窗口（例如全屏时钟模式）：DTM1 写入反色图像，DTM2 写入新图像。
+        // 从而在已清白的屏幕上正确触发黑白过渡（1->0 驱黑，0->1 驱白）。
+        NRF_LOG_DEBUG("[EPD]: Writing inverted image to DTM1 and normal image to DTM2\n");
+        
+        EPD_WriteCmd(UC81xx_DTM1);  // 选择RAM1(旧数据)
+        UC8179_Write_Image_Rows(black, wb, h, 0xFF, true);  // DTM1 = ~NEW (invert=true)
+
+        EPD_WriteCmd(UC81xx_DTM2);  // 选择RAM2(新数据)
+        UC8179_Write_Image_Rows(black, wb, h, 0xFF, false); // DTM2 = NEW (invert=false)
     }
 
     EPD_WriteCmd(UC81xx_PTOUT); // partial out // 退出局部模式
