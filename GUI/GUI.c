@@ -6,6 +6,8 @@
 #include "../EPD/epd_ext_resources.h"
 #include "Lunar.h"
 #include "fonts.h"
+#include "nrf_log.h"
+
 
 // 带样式的printf宏，简化设置前景色、背景色、字体的操作
 // Styled printf macro to simplify setting foreground, background color and font
@@ -1673,10 +1675,15 @@ void DrawGUI(gui_data_t* data, buffer_callback callback, void* callback_data) {
     ui_ret = ui_load_render_component_cache(render_mode_id, data->width, data->height,
                                             &cached_mode, &cached_components,
                                             &cached_component_count);
+    NRF_LOG_INFO("[GUI]: ui_load_render_component_cache mode=%u ret=%u count=%u\n", render_mode_id, ui_ret, cached_component_count);
+    for (uint8_t i = 0; i < cached_component_count; i++) {
+        NRF_LOG_INFO("[GUI]: comp[%u] type=%u x=%d y=%d w=%d h=%d\n", i, cached_components[i].type, cached_components[i].x, cached_components[i].y, cached_components[i].w, cached_components[i].h);
+    }
     if (ui_ret != NRF_SUCCESS) {
         cached_components = NULL;
         cached_component_count = 0;
     }
+
 
     Adafruit_GFX gfx;
     // 计算页面高度：根据可用堆内存动态调整 | Calculate page height: dynamically adjust based on available heap
