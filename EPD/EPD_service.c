@@ -500,6 +500,9 @@ static void epd_process_next_command(void* p_event_data, uint16_t event_size);
 static void epd_gui_update(void* p_event_data, uint16_t event_size) {
     epd_gui_update_event_t* event = (epd_gui_update_event_t*)p_event_data;
     ble_epd_t* p_epd = event->p_epd;
+    uint16_t dev_name_len;
+    uint32_t err_code;
+    ret_code_t resource_wake_ret;
 
     // Set refreshing flag to prevent BLE disconnect from interrupting refresh
     // 设置刷新标志,防止BLE断开中断刷新过程
@@ -544,17 +547,28 @@ static void epd_gui_update(void* p_event_data, uint16_t event_size) {
     bool critical_battery = (cached_voltage_mv < CRITICAL_BATTERY_SHUTDOWN_MV);
     p_epd->low_battery_screen_active = low_battery;
 
+    static bool power_off_screen_drawn = false;
+    if (critical_battery) {
+        if (power_off_screen_drawn) {
+            NRF_LOG_WARNING("[EPD]: Critical battery screen already drawn, skipping redundant update\n");
+            goto finish_refresh;
+        }
+        power_off_screen_drawn = true;
+    } else {
+        power_off_screen_drawn = false;
+    }
+
     if (low_battery) {
         NRF_LOG_WARNING("[EPD]: Low battery detected (%d mV), showing warning screen\n", cached_voltage_mv);
     }
 
     // 获取BLE设备名称(SSID)
     // Get BLE device name (SSID)
-    uint16_t dev_name_len = sizeof(data.ssid);
-    uint32_t err_code = sd_ble_gap_device_name_get((uint8_t*)data.ssid, &dev_name_len);
+    dev_name_len = sizeof(data.ssid);
+    err_code = sd_ble_gap_device_name_get((uint8_t*)data.ssid, &dev_name_len);
     if (err_code == NRF_SUCCESS && dev_name_len > 0) data.ssid[dev_name_len] = '\0';
 
-    ret_code_t resource_wake_ret = epd_ext_resources_wake();
+    resource_wake_ret = epd_ext_resources_wake();
     if (resource_wake_ret != NRF_SUCCESS) {
         NRF_LOG_WARNING("[EPD]: External resource flash wake failed before refresh: %lu",
                         (unsigned long)resource_wake_ret);
@@ -2135,6 +2149,14 @@ void ble_epd_on_timer(ble_epd_t* p_epd, uint32_t timestamp, bool force_update) {
             if (voltage_mv > LOW_BATTERY_THRESHOLD_MV) {
                 NRF_LOG_INFO("[EPD]: Battery recovered to %d mV, leaving low-battery mode\n", voltage_mv);
                 p_epd->low_battery_screen_active = false;
+                p_epd->force_full_refresh = true;
+                // Immediately schedule a GUI update to redraw the normal screen with a full refresh
+                epd_gui_update_event_t event = {p_epd, timestamp};
+                uint32_t err_code = app_sched_event_put(&event, sizeof(epd_gui_update_event_t), epd_gui_update);
+                if (err_code != NRF_SUCCESS) {
+                    NRF_LOG_ERROR("[EPD]: Failed to schedule recovery screen update: 0x%08x\n", err_code);
+                }
+                return;
             }
         }
 
