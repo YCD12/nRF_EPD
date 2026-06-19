@@ -1280,7 +1280,6 @@ static void epd_execute_command(ble_epd_t* p_epd, uint8_t* p_data, uint16_t leng
                 // 注意: auto_refresh=false因为下面会调用ble_epd_on_timer
                 epd_update_display_mode_with_refresh(p_epd, (display_mode_t)p_data[6], false);
             }
-            p_epd->force_full_refresh = true;
             ble_epd_on_timer(p_epd, timestamp, true);
             app_feed_wdt();  // Feed watchdog after set time. 设置时间后喂狗
         } break;
@@ -1294,8 +1293,7 @@ static void epd_execute_command(ble_epd_t* p_epd, uint8_t* p_data, uint16_t leng
 
             uint32_t timestamp = epd_parse_time_payload(p_data, length);
             set_timestamp(timestamp);
-            p_epd->force_full_refresh = true;
-            NRF_LOG_INFO("[EPD]: Time synced silently, will force full refresh on next tick\n");
+            NRF_LOG_INFO("[EPD]: Time synced silently\n");
             app_feed_wdt();
         } break;
 
@@ -1344,7 +1342,6 @@ static void epd_execute_command(ble_epd_t* p_epd, uint8_t* p_data, uint16_t leng
 
                 // Update mode and force full refresh
                 // 更新模式并强制全刷
-                p_epd->force_full_refresh = true;
                 epd_update_display_mode(p_epd, new_mode);
 
                 // Trigger immediate GUI update with current time
@@ -1833,6 +1830,8 @@ static void on_write(ble_epd_t* p_epd, ble_evt_t* p_ble_evt) {
             NRF_LOG_DEBUG("notification enabled\n");
             p_epd->is_notification_enabled = true;
             ble_log("[SYS]: BLE notifications enabled, MTU=%d", p_epd->max_data_len);
+            extern uint32_t m_resetreas;
+            ble_log("[SYS]: Reset reason: 0x%08X", m_resetreas);
             static uint16_t length = sizeof(epd_config_t);
             NRF_LOG_DEBUG("send epd config\n");
             uint32_t err_code = ble_epd_string_send(p_epd, (uint8_t*)&p_epd->config, length);
