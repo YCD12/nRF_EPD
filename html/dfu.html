@@ -34,33 +34,73 @@
 
     <section class="section">
       <h2>升级流程</h2>
-      <div class="device-info">
-        <b>当前流程：</b><span id="dfuModeBadge" class="device-badge">默认流程</span>
+      <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 0.5rem; margin-bottom: 0.75rem;">
+        <div class="device-info" style="margin-bottom: 0;">
+          <b>当前流程：</b><span id="dfuModeBadge" class="device-badge">默认流程</span>
+        </div>
+        <button id="dfuSelfCheckButton" type="button" class="secondary" style="height: auto; padding: 0.25rem 0.75rem; font-size: 0.82rem;">环境自检</button>
       </div>
-      <div id="dfuModeHint" class="dfu-hint" style="margin-top:0.75rem;"></div>
-      <div class="flex-container">
-        <div class="flex-group">
-          <input type="file" id="dfuPackageFile" accept=".zip">
-          <button id="dfuStartButton" type="button" class="primary">选择设备并升级</button>
-          <button id="dfuSwitchModeButton" type="button" class="secondary">手动切换到 DFU 模式</button>
-          <button id="dfuManualPickButton" type="button" class="secondary" style="display:none;">手动选择DFU设备并继续</button>
-          <button id="dfuAbandonSessionButton" type="button" class="secondary" disabled>放弃当前会话</button>
-          <button id="dfuResetModeButton" type="button" class="secondary" disabled>恢复默认流程</button>
-          <button id="dfuSelfCheckButton" type="button" class="secondary">环境自检</button>
+      <div id="dfuModeHint" class="dfu-hint" style="margin-top:0.5rem;"></div>
+
+      <!-- DFU Step-by-Step Upgrade Guide -->
+      <div class="dfu-steps-cards">
+        <!-- Step 1: Select Firmware Package -->
+        <div class="dfu-step-card" id="stepCardPkg">
+          <div class="step-badge">步骤 1</div>
+          <div class="step-body">
+            <h3>选择 DFU 固件包</h3>
+            <p class="step-desc">点击选择本地打包好的 Nordic Secure DFU 固件包 (.zip)。</p>
+            <div class="step-action">
+              <input type="file" id="dfuPackageFile" accept=".zip">
+            </div>
+          </div>
+        </div>
+
+        <!-- Step 2: Switch to DFU Mode -->
+        <div class="dfu-step-card" id="stepCardSwitch">
+          <div class="step-badge">步骤 2 (可选)</div>
+          <div class="step-body">
+            <h3>使设备进入 DFU 模式</h3>
+            <p class="step-desc">如果设备当前处于正常运行的 APP 模式，点击此按钮选择并将其重启到 Bootloader 模式（DfuTarg）。如果设备已被手动重启或本就处于 DfuTarg 状态，可直接跳过此步。</p>
+            <div class="step-action">
+              <button id="dfuSwitchModeButton" type="button" class="secondary">连接并切换到 DFU 模式</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- Step 3: Select DfuTarg & Upgrade -->
+        <div class="dfu-step-card" id="stepCardUpgrade">
+          <div class="step-badge">步骤 3</div>
+          <div class="step-body">
+            <h3>选择 DfuTarg 设备并升级</h3>
+            <p class="step-desc">手动搜索并选择进入 DFU 模式的升级目标（名称通常为 DfuTarg），系统连接后将自动开始传输并烧录固件包。</p>
+            <div class="step-action" style="display: flex; gap: 8px; flex-wrap: wrap;">
+              <button id="dfuStartButton" type="button" class="primary">选择 DfuTarg 设备并升级</button>
+              <button id="dfuManualPickButton" type="button" class="secondary" style="display:none;">手动选择 DFU 设备并继续</button>
+              <button id="dfuAbandonSessionButton" type="button" class="secondary" disabled>放弃当前会话</button>
+              <button id="dfuResetModeButton" type="button" class="secondary" disabled>恢复默认流程</button>
+            </div>
+          </div>
         </div>
       </div>
       <div class="dfu-options-group">
-        <label class="dfu-checkbox-label">
-          <input type="checkbox" id="dfuEnableMtuQuery">
-          启用 MTU 查询 (勾选将尝试协商高 MTU 提升传输速度，不勾选则直接使用 20 字节兼容分片避免连接重启)
-        </label>
+
         <label class="dfu-checkbox-label">
           <input type="checkbox" id="dfuEnableAutoFind">
           自动识别 DFU 设备 (默认关闭。因 unbonded DFU 重启后 MAC 地址改变，通常无法自动识别，关闭此项可在重启后立即弹出设备选择框)
         </label>
+        <div class="dfu-select-row" style="display: flex; align-items: center; gap: 0.5rem; margin-top: 0.25rem;">
+          <label for="dfuPrnValue" style="margin-right: 0.25rem; white-space: nowrap;">PRN 流控分片 (Packet Receipt Notification):</label>
+          <select id="dfuPrnValue" style="padding: 0.25rem 2rem 0.25rem 0.5rem; height: auto;">
+            <option value="0">禁用 (PRN = 0, PC端/Chrome极速推荐)</option>
+            <option value="12" selected>12 (官方默认/移动端推荐/高兼容)</option>
+            <option value="16">16</option>
+            <option value="32">32</option>
+          </select>
+        </div>
       </div>
       <div class="dfu-hint">
-        建议顺序：1. 先点“环境自检”；2. 选择 Nordic nRF Secure DFU 固件包（.zip）；3. 点击“选择设备并升级”；4. 如页面提示，再选择 DfuTarg 继续。
+        建议升级步骤：1. 先执行“环境自检”确认环境；2. 步骤 1 选择固件包 (.zip)；3. 步骤 2 切换设备到 DFU 模式 (若已是 DfuTarg 则跳过)；4. 步骤 3 点击“选择 DfuTarg 设备并升级”。
       </div>
       <div id="dfuStatus" class="dfu-status">状态：未选择 DFU 固件包</div>
       <div id="dfuPrecheck" class="dfu-precheck" style="display:none;"></div>

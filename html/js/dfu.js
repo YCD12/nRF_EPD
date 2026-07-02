@@ -10,9 +10,9 @@
   const DEFAULT_PACKET_SIZE = 20;
   const INITIAL_DFU_DISCOVERY_TIMEOUT_MS = 8000;
   const NEXT_STAGE_DISCOVERY_TIMEOUT_MS = 12000;
-  const DFU_REBOOT_SETTLE_MS = 1600;
+  const DFU_REBOOT_SETTLE_MS = 2000;
   const DFU_RESPONSE_TIMEOUT_MS = 10000;
-  const CONNECT_TIMEOUT_MS = 3000;
+  const CONNECT_TIMEOUT_MS = 5000;
   const SERVICE_TIMEOUT_MS = 6000;
   const CHARS_TIMEOUT_MS = 5000;
   const DFU_SERVICE_DISCOVERY_RETRY_MS = 900;
@@ -80,7 +80,7 @@
   let dfuBusy = false;
   let pendingManualSession = null;
   let packageVersionHint = null;
-  let manualBootloaderEntryRequired = false;
+  let manualBootloaderEntryRequired = true;
 
   function getDfuPageState() {
     return {
@@ -91,11 +91,11 @@
   }
 
   function getDfuOptions() {
-    const enableMtuQueryEl = document.getElementById('dfuEnableMtuQuery');
     const enableAutoFindEl = document.getElementById('dfuEnableAutoFind');
+    const prnValueEl = document.getElementById('dfuPrnValue');
     return {
-      enableMtuQuery: enableMtuQueryEl ? !!enableMtuQueryEl.checked : true,
-      enableAutoFind: enableAutoFindEl ? !!enableAutoFindEl.checked : true
+      enableAutoFind: enableAutoFindEl ? !!enableAutoFindEl.checked : true,
+      prn: prnValueEl ? parseInt(prnValueEl.value, 10) : 0
     };
   }
 
@@ -525,7 +525,6 @@
     constructor(crc32Fn, bluetooth, delayMs = 0, options = {}) {
       this.crc32 = crc32Fn;
       this.bluetooth = bluetooth || (navigator && navigator.bluetooth);
-      this.delay = delayMs;
       this.packetSize = DEFAULT_PACKET_SIZE;
       this.forceWriteWithResponse = false;
       this.notifyFns = {};
@@ -536,7 +535,12 @@
       this.disconnectHandler = null;
       this.connectedControlChar = null;
       this.connectedButtonChar = null;
-      this.enableMtuQuery = options.enableMtuQuery !== false;
+      this.prn = options.prn !== undefined ? options.prn : 12;
+      this.delay = delayMs > 0 ? delayMs : (this.prn > 0 ? 10 : 15);
+      this.prnPacketCount = 0;
+      this.prnResolver = null;
+      this.expectedChecksumOffset = null;
+      this.prnQueue = [];
     }
 
     addEventListener(type, fn) {
@@ -672,6 +676,31 @@
         throw new Error('Unrecognised control characteristic response notification');
       }
       const operation = view.getUint8(1);
+
+      // Check if this is a PRN notification (represented as standard response to CRC_GET/0x03)
+      if (operation === OP.CALCULATE_CHECKSUM[0]) {
+        const offset = view.getUint32(3, LITTLE_ENDIAN);
+        const isChecksumResponse = this.expectedChecksumOffset !== null && offset === this.expectedChecksumOffset;
+        if (!isChecksumResponse) {
+          if (this.prnResolver) {
+            const resolver = this.prnResolver;
+            this.prnResolver = null;
+            const result = view.getUint8(2);
+            if (result === 0x01) {
+              resolver.resolve(view);
+            } else {
+              const err = (result === 0x0B)
+                ? `PRN Error: ${EXTENDED_ERROR_MSG[view.getUint8(3)] || 'Unknown extended error'}`
+                : `PRN Error: ${RESPONSE_MSG[result] || 'Unknown response error'}`;
+              resolver.reject(new Error(err));
+            }
+          } else if (this.prn > 0) {
+            this.prnQueue.push(view);
+          }
+          return;
+        }
+      }
+
       const target = this.notifyFns[operation];
       if (!target) return;
       const result = view.getUint8(2);
@@ -681,11 +710,7 @@
         const err = (result === 0x0B)
           ? `Error: ${EXTENDED_ERROR_MSG[view.getUint8(3)] || 'Unknown extended error'}`
           : `Error: ${RESPONSE_MSG[result] || 'Unknown response error'}`;
-        if (operation === OP.GET_MTU[0] && result === 0x02) {
-          this.log('Bootloader 未实现 MTU 查询，准备回退到 20 字节兼容分片');
-        } else {
-          this.log(`notify: ${err}`);
-        }
+        this.log(`notify: ${err}`);
         target.reject(new Error(err));
       }
       delete this.notifyFns[operation];
@@ -772,34 +797,15 @@
     async configureTransport() {
       try {
         const prnView = new DataView(new ArrayBuffer(4));
-        prnView.setUint32(0, 0, LITTLE_ENDIAN);
+        prnView.setUint32(0, this.prn, LITTLE_ENDIAN);
         await this.sendControl(OP.SET_PRN, prnView.buffer);
-        this.log('configured PRN=0');
+        this.log(`configured PRN=${this.prn}`);
       } catch (err) {
         this.log(`配置PRN失败，继续使用默认行为: ${getErrorMessage(err)}`);
       }
 
-      if (!this.enableMtuQuery) {
-        this.packetSize = DEFAULT_PACKET_SIZE;
-        this.log(`已配置跳过 MTU 查询，直接使用 ${DEFAULT_PACKET_SIZE} 字节兼容分片`);
-        return;
-      }
-
-      try {
-        const resp = await this.sendControl(OP.GET_MTU);
-        const mtu = resp.getUint16(0, LITTLE_ENDIAN);
-        const negotiated = Math.max(DEFAULT_PACKET_SIZE, Math.min(244, mtu - 3));
-        this.packetSize = negotiated;
-        this.log(`transport mtu=${mtu}, packet size=${this.packetSize}`);
-      } catch (err) {
-        this.packetSize = DEFAULT_PACKET_SIZE;
-        const msg = getErrorMessage(err);
-        if (/Opcode not supported/i.test(msg)) {
-          this.log(`设备未支持 MTU 查询，使用 ${DEFAULT_PACKET_SIZE} 字节兼容分片`);
-        } else {
-          this.log(`读取MTU失败，回退到${DEFAULT_PACKET_SIZE}字节分片: ${msg}`);
-        }
-      }
+      this.packetSize = DEFAULT_PACKET_SIZE;
+      this.log(`使用 ${DEFAULT_PACKET_SIZE} 字节兼容分片进行传输`);
     }
 
     sendOperation(characteristic, operation, buffer) {
@@ -847,25 +853,80 @@
     }
 
     async writePacket(packet) {
-      const canWriteWithoutResponse = !this.forceWriteWithResponse &&
-        this.packetChar.properties.writeWithoutResponse &&
-        typeof this.packetChar.writeValueWithoutResponse === 'function';
-      if (canWriteWithoutResponse) {
+      let attempts = 0;
+      const maxAttempts = 3;
+
+      while (attempts < maxAttempts) {
+        const canWriteWithoutResponse = !this.forceWriteWithResponse &&
+          this.packetChar.properties.writeWithoutResponse &&
+          typeof this.packetChar.writeValueWithoutResponse === 'function';
+
         try {
-          await this.packetChar.writeValueWithoutResponse(packet);
+          if (canWriteWithoutResponse) {
+            await this.packetChar.writeValueWithoutResponse(packet);
+          } else {
+            await this.packetChar.writeValue(packet);
+          }
           return;
         } catch (err) {
+          attempts++;
           const msg = getErrorMessage(err);
-          const canFallbackToWriteWithResponse = this.packetChar.properties.write &&
-            typeof this.packetChar.writeValue === 'function' &&
-            /NotSupportedError|GATT operation failed|unknown reason/i.test(msg);
-          if (!canFallbackToWriteWithResponse) throw err;
-          this.forceWriteWithResponse = true;
-          this.delay = Math.max(this.delay, 12);
-          this.log(`writeWithoutResponse 不稳定，切换到 writeValue 模式: ${msg}`);
+          
+          if (msg.includes('already in progress') && attempts < maxAttempts) {
+            this.log(`GATT 操作进行中，等待 50ms 并重试（第 ${attempts}/${maxAttempts} 次）...`);
+            await this.delayPromise(50);
+            continue;
+          }
+
+          if (canWriteWithoutResponse) {
+            const canFallbackToWriteWithResponse = this.packetChar.properties.write &&
+              typeof this.packetChar.writeValue === 'function' &&
+              /NotSupportedError|GATT operation failed|unknown reason/i.test(msg);
+            if (canFallbackToWriteWithResponse) {
+              this.forceWriteWithResponse = true;
+              this.delay = Math.max(this.delay, 12);
+              this.log(`writeWithoutResponse 不稳定，切换到 writeValue 模式: ${msg}`);
+              attempts = Math.max(0, attempts - 1);
+              continue;
+            }
+          }
+          throw err;
         }
       }
-      await this.packetChar.writeValue(packet);
+    }
+
+    waitForPrn() {
+      const PRN_TIMEOUT_MS = 4000;
+      if (this.prnQueue && this.prnQueue.length > 0) {
+        const view = this.prnQueue.shift();
+        const offset = view.getUint32(3, LITTLE_ENDIAN);
+        const crc = view.getUint32(7, LITTLE_ENDIAN);
+        this.log(`PRN received (from queue): offset=${offset}, crc=0x${(crc >>> 0).toString(16).toUpperCase()}`);
+        return Promise.resolve();
+      }
+
+      return new Promise((resolve, reject) => {
+        let timeoutId = setTimeout(() => {
+          this.prnResolver = null;
+          reject(new Error(`PRN response timeout (${PRN_TIMEOUT_MS}ms)`));
+        }, PRN_TIMEOUT_MS);
+
+        this.prnResolver = {
+          resolve: (view) => {
+            clearTimeout(timeoutId);
+            this.prnResolver = null;
+            const offset = view.getUint32(3, LITTLE_ENDIAN);
+            const crc = view.getUint32(7, LITTLE_ENDIAN);
+            this.log(`PRN received: offset=${offset}, crc=0x${(crc >>> 0).toString(16).toUpperCase()}`);
+            resolve();
+          },
+          reject: (err) => {
+            clearTimeout(timeoutId);
+            this.prnResolver = null;
+            reject(err);
+          }
+        };
+      });
     }
 
     async transferData(dataBuffer, offset, start = 0, objectName, totalBytes) {
@@ -886,6 +947,25 @@
         if (this.delay > 0) await this.delayPromise(this.delay);
         this.progress(objectName, totalBytes, offset + end);
         cursor = end;
+
+        if (this.prn > 0) {
+          this.prnPacketCount++;
+          if (this.prnPacketCount >= this.prn) {
+            this.prnPacketCount = 0;
+            this.log(`sent ${this.prn} packets, waiting for PRN...`);
+            try {
+              await this.waitForPrn();
+            } catch (prnErr) {
+              this.log(`PRN 等待异常，禁用后续 PRN 流控并回退到兼容模式: ${getErrorMessage(prnErr)}`);
+              this.prn = 0; // Disable PRN flow control for the remainder of this session to prevent further hangs
+              this.forceWriteWithResponse = true; // Force write with response for ultimate flow control!
+              this.delay = Math.max(this.delay, 10); // Maintain a safe pacing delay
+              if (this.packetSize > DEFAULT_PACKET_SIZE) {
+                this.packetSize = DEFAULT_PACKET_SIZE;
+              }
+            }
+          }
+        }
       }
     }
 
@@ -895,8 +975,20 @@
       const view = new DataView(new ArrayBuffer(4));
       view.setUint32(0, end - start, LITTLE_ENDIAN);
       await this.sendControl(createType, view.buffer);
+      this.prnPacketCount = 0; // Reset PRN counter for the new object
+      this.prnQueue = []; // Clear PRN queue for the new object
       await this.transferData(buffer.slice(start, end), start, 0, objectName, buffer.byteLength);
-      const response = await this.sendControl(OP.CALCULATE_CHECKSUM);
+
+      // Let the BLE / GATT queue settle for 100ms after heavy traffic before requesting checksum
+      await this.delayPromise(100);
+
+      this.expectedChecksumOffset = end;
+      let response;
+      try {
+        response = await this.sendControl(OP.CALCULATE_CHECKSUM);
+      } finally {
+        this.expectedChecksumOffset = null;
+      }
       const crc = response.getInt32(4, LITTLE_ENDIAN);
       const transferred = response.getUint32(0, LITTLE_ENDIAN);
       const data = buffer.slice(0, transferred);
