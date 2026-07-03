@@ -41,7 +41,7 @@ POSSIBILITY OF SUCH DAMAGE.
 #include <stdlib.h>
 #include <string.h>
 
-extern void app_feed_wdt(void);
+#include "gui_porting_hal.h"
 
 // 实用宏定义 | Utility macros
 #ifndef ABS
@@ -248,13 +248,13 @@ bool GFX_nextPage(Adafruit_GFX* gfx, buffer_callback callback, void* user_data) 
             int16_t height = MIN(gfx->page_height, gfx->HEIGHT - page_ys);
             callback(user_data, gfx->buffer, gfx->color, 0, page_ys, gfx->WIDTH, height);
         }
-        app_feed_wdt();
+        gui_porting_feed_wdt();
     }
 
     // 准备下一页 | Prepare for next page
     gfx->current_page++;
     GFX_fillScreen(gfx, GFX_WHITE);  // 清空缓冲区 | Clear buffer
-    app_feed_wdt();
+    gui_porting_feed_wdt();
 
     return gfx->current_page < gfx->total_pages;
 }
@@ -426,12 +426,17 @@ void GFX_drawPixel(Adafruit_GFX* gfx, int16_t x, int16_t y, uint16_t color) {
         // - buffer: black/white info (1=white, 0=black)
         // - color: color info (0=colored, 1=not colored)
         uint16_t i = x / 8 + y * (gfx->pw / 8);
-        gfx->buffer[i] |= 0x80 >> (x & 7);  // 默认设为白色 | Default to white
-        gfx->color[i] |= 0x80 >> (x & 7);   // 默认设为非彩色 | Default to not colored
-        if (color == GFX_BLACK)
-            gfx->buffer[i] &= ~(0x80 >> (x & 7));  // 黑色：清除buffer位 | Black: clear buffer bit
-        else if (color != GFX_WHITE)
-            gfx->color[i] &= ~(0x80 >> (x & 7));   // 彩色：清除color位 | Colored: clear color bit
+        uint8_t mask = 0x80 >> (x & 7);
+        if (color == GFX_BLACK) {
+            gfx->buffer[i] &= ~mask;
+            gfx->color[i] |= mask;
+        } else if (color == GFX_WHITE) {
+            gfx->buffer[i] |= mask;
+            gfx->color[i] |= mask;
+        } else {
+            gfx->buffer[i] |= mask;
+            gfx->color[i] &= ~mask;
+        }
     } else {
         // 单色模式：每像素1位，每字节存储8个像素
         // Monochrome mode: 1 bit per pixel, 8 pixels per byte

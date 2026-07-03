@@ -40,7 +40,7 @@ typedef struct {
     month_day_render_cache_t days_cache[31];
 } month_render_cache_t;
 
-extern void app_feed_wdt(void);
+#include "gui_porting_hal.h"
 
 static month_render_cache_t m_month_render_cache;
 
@@ -167,7 +167,7 @@ static const month_render_cache_t* PrepareMonthRenderCache(uint16_t year, uint8_
         char label[10] = {0};
         uint8_t actual_week = (uint8_t)((get_first_day_week(year, month) + day - 1U) % 7U);
 
-        app_feed_wdt();
+        gui_porting_feed_wdt();
         LUNAR_SolarToLunar(&day_lunar, year, month, day);
 
         if (GetFestival(year, month, day, actual_week, &day_lunar, label)) {
@@ -563,7 +563,7 @@ static void DrawMonthDaysArea(Adafruit_GFX* gfx, int16_t x, int16_t y, int16_t a
 
     // 遍历绘制每一天 | Iterate through each day of the month
     for (uint8_t i = 0; i < monthMaxDays; i++) {
-        app_feed_wdt();
+        gui_porting_feed_wdt();
 
         uint8_t day = i + 1;
         const month_day_render_cache_t* day_cache = (month_cache != NULL) ? &month_cache->days_cache[i] : NULL;
@@ -621,7 +621,7 @@ static void DrawMonthDaysArea(Adafruit_GFX* gfx, int16_t x, int16_t y, int16_t a
             GFX_printf(gfx, "%s", day_cache->holiday_work ? "班" : "休");
         }
 
-        app_feed_wdt();
+        gui_porting_feed_wdt();
     }
 }
 
@@ -1058,7 +1058,7 @@ static void ui_render_component_list(Adafruit_GFX* gfx, const ui_component_recor
                                      bool partial_pass, int16_t origin_x, int16_t origin_y) {
     for (uint8_t i = 0; i < component_count; i++) {
         ui_render_component(gfx, &components[i], tm, lunar, data, partial_pass, origin_x, origin_y);
-        app_feed_wdt();
+        gui_porting_feed_wdt();
     }
 }
 
