@@ -74,6 +74,15 @@
 
 #define EPD_EXT_UI_BUNDLE                  1U
 
+/* UI_BUNDLE schema handshake (P3). Values align with epd_color_t in EPD_driver.h. */
+#define EPD_EXT_UI_BUNDLE_MAGIC            0x314C4955UL
+#define EPD_EXT_UI_BUNDLE_VERSION          1U
+#define EPD_EXT_UI_SCHEMA_MAJOR            1U
+#define EPD_EXT_UI_SCHEMA_MINOR            0U
+#define EPD_EXT_UI_COLOR_DEPTH_BW          1U
+#define EPD_EXT_UI_COLOR_DEPTH_BWR         2U
+#define EPD_EXT_UI_COLOR_DEPTH_BWRY        3U
+
 typedef struct {
     uint16_t type;
     uint16_t id;

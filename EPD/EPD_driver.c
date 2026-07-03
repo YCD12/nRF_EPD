@@ -8,8 +8,11 @@
 #include "EPD_driver.h"
 
 #include "app_error.h"
+#include "app_timer.h"
 #include "nrf_drv_spi.h"
+#include "nrf_gpio.h"
 #include "nrf_log.h"
+#include "nrf_soc.h"
 #include "../main.h"
 
 #define ARRAY_SIZE(arr) (sizeof(arr) / sizeof((arr)[0]))  // 计算数组元素个数 - Calculate array size
@@ -376,31 +379,55 @@ void EPD_Reset(uint32_t value, uint16_t duration) {
 }
 
 /**
- * 等待EPD忙状态结束
- * Wait for EPD busy state to end
+ * 等待EPD忙状态结束（低功耗版，P4）
+ * Wait for EPD busy state to end (low-power, P4)
  *
- * @param value 忙状态时BUSY引脚的电平 - BUSY pin level during busy state
- * @param timeout 超时时间(毫秒) - Timeout in milliseconds
+ * @param value 忙状态时 BUSY 引脚的电平（本板 BUSY 低电平=忙）
+ * @param timeout 超时时间(毫秒)
  *
- * 轮询BUSY引脚直到状态改变或超时
- * Polls BUSY pin until state changes or timeout occurs
+ * 刷新波形期间 UC8179 可能持续数秒。原实现用 delay(1) 轮询，CPU 全程活跃。
+ * 现改为：配置 BUSY 引脚 PORT sense 在“释放”边沿唤醒，循环内 sd_app_evt_wait()
+ * 进入 System ON 睡眠，由 BLE/RTC 或 BUSY 边沿事件唤醒后复检引脚。
  */
 void EPD_WaitBusy(uint32_t value, uint16_t timeout) {
+    const uint32_t ticks_per_ms = APP_TIMER_CLOCK_FREQ / 1000UL;
+    uint32_t start_ticks;
+    uint32_t last_wdt_ticks;
+    uint32_t timeout_ticks;
+    nrf_gpio_pin_sense_t release_sense;
+
     NRF_LOG_DEBUG("[EPD]: check busy\n");
-    uint16_t feed_tick = 0;
+    if (digitalRead(EPD_BUSY_PIN) != value) {
+        NRF_LOG_DEBUG("[EPD]: busy release\n");
+        return;
+    }
+
+    start_ticks = app_timer_cnt_get();
+    last_wdt_ticks = start_ticks;
+    timeout_ticks = (uint32_t)timeout * ticks_per_ms;
+
+    /* 忙电平为 LOW 时，释放边沿为上升沿；反之亦然。 */
+    release_sense = (value == LOW) ? NRF_GPIO_PIN_SENSE_HIGH : NRF_GPIO_PIN_SENSE_LOW;
+    nrf_gpio_cfg_sense_set(EPD_BUSY_PIN, release_sense);
+
     while (digitalRead(EPD_BUSY_PIN) == value) {
-        delay(1);
-        if (++feed_tick >= 1000) {
-            app_feed_wdt();
-            feed_tick = 0;
-        }
-        timeout--;
-        if (timeout == 0) {
-            NRF_LOG_DEBUG("[EPD]: busy timeout!\n");  // 超时警告 - Timeout warning
-            break;
+        (void)sd_app_evt_wait();
+
+        {
+            uint32_t now_ticks = app_timer_cnt_get();
+            if (app_timer_cnt_diff_compute(now_ticks, start_ticks) >= timeout_ticks) {
+                NRF_LOG_DEBUG("[EPD]: busy timeout!\n");
+                break;
+            }
+            if (app_timer_cnt_diff_compute(now_ticks, last_wdt_ticks) >= (500UL * ticks_per_ms)) {
+                app_feed_wdt();
+                last_wdt_ticks = now_ticks;
+            }
         }
     }
-    NRF_LOG_DEBUG("[EPD]: busy release\n");  // 忙状态释放 - Busy released
+
+    nrf_gpio_cfg_sense_set(EPD_BUSY_PIN, NRF_GPIO_PIN_NOSENSE);
+    NRF_LOG_DEBUG("[EPD]: busy release\n");
 }
 
 /*

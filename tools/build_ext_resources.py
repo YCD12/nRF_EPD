@@ -93,6 +93,9 @@ LUT_TABLES_PER_TIER = 6
 
 UI_MAGIC = 0x314C4955
 UI_VERSION = 1
+UI_SCHEMA_MAJOR = 1
+UI_SCHEMA_MINOR = 0
+UI_COLOR_DEPTH_BWR = 2
 UI_HEADER_SIZE = 28
 UI_MODE_SIZE = 16
 UI_COMPONENT_SIZE = 24
@@ -561,7 +564,8 @@ def parse_lunar_db_resources():
 def default_ui_layout():
     return {
         "version": UI_VERSION,
-        "screen": {"width": 800, "height": 480},
+        "schema": {"major": UI_SCHEMA_MAJOR, "minor": UI_SCHEMA_MINOR},
+        "screen": {"width": 800, "height": 480, "colorDepth": UI_COLOR_DEPTH_BWR},
         "modes": [
             {
                 "id": 1,
@@ -659,10 +663,14 @@ def pack_ui_bundle(layout):
     component_offset = mode_offset + len(mode_records) * UI_MODE_SIZE
     string_offset = component_offset + len(components) * UI_COMPONENT_SIZE
     string_table = b"\x00"
+    schema = layout.get("schema", {})
+    schema_major = schema.get("major", UI_SCHEMA_MAJOR)
+    schema_minor = schema.get("minor", UI_SCHEMA_MINOR)
+    color_depth = layout.get("screen", {}).get("colorDepth", UI_COLOR_DEPTH_BWR)
 
     out = bytearray()
     out += struct.pack(
-        "<IHHHBBHHHHII",
+        "<IHHHBBHHHHBBBBI",
         UI_MAGIC,
         UI_VERSION,
         layout["screen"]["width"],
@@ -673,6 +681,9 @@ def pack_ui_bundle(layout):
         component_offset,
         string_offset,
         len(string_table),
+        schema_major,
+        schema_minor,
+        color_depth,
         0,
         0,
     )

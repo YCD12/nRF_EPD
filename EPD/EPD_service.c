@@ -1611,7 +1611,7 @@ static void epd_execute_command(ble_epd_t* p_epd, uint8_t* p_data, uint16_t leng
                  * Flash 读取到乱码，导致红屏/异常全刷。重建失败时缓存被标记为无效，
                  * 后续渲染回退到干净白屏而非乱码。 */
                 if (p_epd->epd != NULL) {
-                    (void)GUI_ReloadUICache(p_epd->epd->width, p_epd->epd->height);
+                    (void)GUI_ReloadUICache(p_epd->epd->width, p_epd->epd->height, (uint8_t)p_epd->epd->color);
                 }
             }
             send_resource_op_response(p_epd, EPD_CMD_RES_ERASE, 0, ret);
@@ -1671,7 +1671,7 @@ static void epd_execute_command(ble_epd_t* p_epd, uint8_t* p_data, uint16_t leng
                  * 无需重启设备即可生效（配合下方 UI/月历缓存重建）。 */
                 lunar_db_reset();
                 if (p_epd->epd != NULL) {
-                    ret_code_t ui_ret = GUI_ReloadUICache(p_epd->epd->width, p_epd->epd->height);
+                    ret_code_t ui_ret = GUI_ReloadUICache(p_epd->epd->width, p_epd->epd->height, (uint8_t)p_epd->epd->color);
                     if (ui_ret != NRF_SUCCESS) {
                         NRF_LOG_WARNING("[EPD]: UI cache reload after resource commit failed: %lu",
                                         (unsigned long)ui_ret);
@@ -2177,7 +2177,7 @@ uint32_t ble_epd_init(ble_epd_t* p_epd) {
     EPD_GPIO_Uninit();
 
     if (resource_ret == NRF_SUCCESS && p_epd->epd != NULL) {
-        ret_code_t ui_ret = GUI_ReloadUICache(p_epd->epd->width, p_epd->epd->height);
+        ret_code_t ui_ret = GUI_ReloadUICache(p_epd->epd->width, p_epd->epd->height, (uint8_t)p_epd->epd->color);
         if (ui_ret != NRF_SUCCESS) {
             NRF_LOG_WARNING("[EPD]: UI cache preload failed: %lu", (unsigned long)ui_ret);
         }
