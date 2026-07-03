@@ -1,0 +1,33 @@
+# Host GUI golden-image regression (Linux)
+CC = gcc
+CFLAGS = -std=c11 -Wall -Wextra -O2 \
+         -D__HEAP_SIZE=32768 \
+         -Itools/test/host/shim -IGUI -IEPD -Itools -Itools/test
+
+SRCS = tools/test/host_stubs.c \
+       tools/res_hal_host.c \
+       tools/test/test_gui_golden.c \
+       GUI/GUI.c \
+       GUI/Lunar.c \
+       GUI/Adafruit_GFX.c \
+       GUI/u8g2_font.c \
+       GUI/fonts.c
+
+TARGET = /tmp/test_gui_golden
+RES_BIN = tools/epd_resources.bin
+
+.PHONY: all test update-golden clean
+
+all: $(TARGET)
+
+$(TARGET): $(SRCS)
+	$(CC) $(CFLAGS) -o $@ $(SRCS)
+
+test: $(TARGET)
+	$(TARGET) $(RES_BIN)
+
+update-golden: $(TARGET)
+	$(TARGET) $(RES_BIN) --update-golden
+
+clean:
+	rm -f $(TARGET)

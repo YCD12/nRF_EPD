@@ -546,7 +546,7 @@ int lunar_db_get_record(uint16_t year, uint8_t month, uint8_t day, daily_record_
 | 坐标越界硬校验 | Clipping | `ui_rect_fits_screen` 已实现 | ✅ 已做 |
 | 资源写入 Staging + Commit | 防砖 | `commit_staging` 已实现（单区，非 A/B） | ⚠️ 部分 |
 | 动态数据绑定 | 通用 Bind ID | 写死枚举 `ui_text_data_id_t` + `switch` | ⚠️ 弱耦合残留 |
-| 局刷区域 | 动态脏矩形 | `ui_mode_record_t.partial_*` 硬编码 | ⚠️ 强耦合残留 |
+| 局刷区域 | 动态脏矩形 | 打包期 `synthesize_mode_partial()` 已写入；`epd_clock_diff` 仍硬编码坐标 | ⚠️ 部分（零 Flash 增量） |
 | Schema/屏幕规格/逻辑色 | 头部约束字段 | `ui_bundle_header_t` 仅 `version/width/height` | ❌ 缺失 |
 | 模拟器资源读取 HAL | 统一接口 | `emulator.c` 未抽象，路径与真机分叉 | ❌ 缺失 |
 
@@ -997,5 +997,125 @@ ret_code_t res_hal_read(uint16_t type, uint16_t id, uint32_t offset, void* buf, 
 - 主机等价测试通过。
 
 #### 仍暂缓
-- `emulator.c`（Win32 GDI）接入 `res_hal_host` + 800×480 布局渲染（与真机像素对齐的黄金图 A2）。
+- `emulator.c`（Win32 GDI）接入 `res_hal_host` + 800×480 布局渲染（与真机像素对齐）。
 - BLE 资源管理仍直读 Flash，无需 HAL。
+
+### 7.18 A2 落地：主机 GUI 黄金图回归 (Implementation Log)
+
+> 承接路线图 A2：在 Linux 主机无头渲染 `DrawGUI`，用 CRC32 锁死「资源包 + UI 布局 + 渲染路径」的像素级一致性，为后续拆分 `GUI.c`（A1）和 Win32 `emulator.c` 对齐提供基线。
+
+#### 新增文件
+| 文件 | 作用 |
+| --- | --- |
+| `tools/test/test_gui_golden.c` | 固定场景渲染 + 帧缓冲 CRC32 比对 |
+| `tools/test/Makefile.golden` | 主机编译链（与固件同源 `GUI.c` / `Lunar.c` / GFX / 字模） |
+| `tools/test/host_stubs.c` | `app_feed_wdt` 等真机符号桩 |
+| `tools/test/host/shim/` | `EPD_driver.h` / `nrf_log.h` / `nrf_delay.h` 影子头，`-I` 优先于 `EPD/` |
+
+#### 固定场景
+- 分辨率 800×480，三色 BWR（`color=2`）
+- 模式 `MODE_CALENDAR`
+- 时间戳 `1781481600`（2026-06-15 08:00:00 本地）
+- 资源：`tools/epd_resources.bin`（经 `res_hal_host` 读取）
+
+#### 期望哈希
+```
+GOLDEN_CRC32_EXPECTED = 0x8678EADB
+```
+黑/红两平面拼接后 CRC32；资源或 UI 布局有意变更时：
+```bash
+make -f tools/test/Makefile.golden update-golden
+```
+
+#### 验证命令
+```bash
+make -f tools/test/Makefile.golden test
+```
+与 `test_lunar_db`（1095 天数据等价）互补：前者锁数据层，后者锁渲染层。
+
+#### 下一步
+- A1：在 A2 基线保护下拆分 `GUI.c` 组件渲染
+
+### 7.19 Win32 模拟器 + BLE UI schema 状态上报 (Implementation Log)
+
+#### Win32 `emulator.c`
+- 分辨率改为 **800×480**，与真机 UC8179 BWR 一致。
+- 链接 `tools/res_hal_host.c` + `host_stubs.c`，启动时 `res_hal_host_init("tools\\epd_resources.bin")`（可通过命令行覆盖路径）。
+- 渲染前 `GUI_ReloadUICache(800,480,color)`；`gui_data_t` 字段与固件对齐（`voltage_mv` 等）。
+- `Makefile` 增加 `-Itools/test/host/shim` 影子头与 `res_hal` 主机实现。
+
+编译（MinGW）：
+```bash
+make emulator.exe
+emulator.exe tools\\epd_resources.bin
+```
+
+#### BLE `RES_STATUS` 扩展（向后兼容）
+- 响应由 20 字节扩至 **24 字节**：`[20..23]` = `GUI_GetUIBundleLastError()`（小端 u32）。
+- 查询时若 manifest 有效，固件先对当前屏幕规格执行 `GUI_ReloadUICache`，再上报 UI bundle 握手结果。
+- 旧网页解析 `data.length >= 20` 仍可用；新固件 + 新网页在 manifest 有效但 schema/分辨率/色深不匹配时提前提示，无需读完 manifest。
+
+#### 网页
+- `resource_manager.js`：`parseStatus` 读取 `uiBundleError`；`checkResources` 在 Flash 就绪后优先拦截 UI bundle 错误并给出可读原因。
+
+#### 仍暂缓
+- Win32 与 A2 同场景 CRC 自动比对（可在 CI 加 mingw 构建后对接）
+
+### 7.20 A1 落地：拆分 `GUI.c` 为 runtime / render (Implementation Log)
+
+> 在 A2 黄金图保护下，将原 ~2000 行 `GUI.c` 按编译期边界拆为两层，行为不变。
+
+#### 文件结构
+| 文件 | 职责 |
+| --- | --- |
+| `GUI/ui_runtime.h` | UI bundle 组件/模式类型、渲染层可见 API |
+| `GUI/ui_runtime.c` | bundle 解析、schema 握手、模式/组件缓存（**由 `GUI.c` `#include` 合并为单编译单元**，避免 nRF52811 Flash 再增 ~200B） |
+| `GUI/GUI.c` | GFX 绘制、`DrawGUI`、局刷区域；末尾 `#include "ui_runtime.c"` |
+| `GUI/GUI.h` | 对外公共 API 不变 |
+
+#### Flash 说明
+独立链接 `ui_runtime.o` + `ui_render.o` 会比原单文件 **+216B** 导致链接溢出（App 区仅剩 ~90B 余量）。采用 include 合并后 **+80B**（`text=56892`），仍在 `0xE000` 预算内。
+
+#### 跨层接口
+- `ui_runtime_load_render_cache()` — 渲染前加载当前 mode 的组件列表
+- `ui_runtime_get_partial_rect()` — 局刷矩形
+- `ui_render_invalidate_month_cache()` — `GUI_ReloadUICache` 时失效月历 RAM 缓存
+
+#### 验证
+```bash
+make -f tools/test/Makefile.golden test   # CRC32=0x8678EADB 不变
+make -f Makefile.nRF52_linux              # text=56892, -Werror 通过
+```
+
+#### 仍暂缓（Flash 余量不足）
+- P2 **运行时**脏矩形合成 + 数据绑定向量（见 §7.21 打包期 partial 已落地）
+
+> BLE `RES_STATUS` 24 字节 `uiBundleError` 已合入（`text=56780`，+32B），见 §7.19。
+
+### 7.21 P2 打包期局刷矩形合成 (Implementation Log)
+
+> 在 Flash 余量不足无法做固件运行时包围盒合成的前提下，将「优化 11」拆为**打包期零增量**方案：由 `tools/build_ext_resources.py` 根据各 mode 的 `PARTIAL_ONLY` 组件自动计算 `ui_mode_record_t.partial_*`，替代网页/脚本手写矩形。
+
+#### 实现
+| 项 | 说明 |
+| --- | --- |
+| `synthesize_mode_partial(mode)` | 对所有 `flags & UI_FLAG_PARTIAL_ONLY` 且 `w/h>0` 的组件取并集包围盒 |
+| 无 PARTIAL_ONLY 组件 | 回退 `mode["partial"]` 显式值（如 mode 3 `clock` 为 `[0,0,0,0]`） |
+| `clock_calendar` (mode 2) | 移除手写 `[0,169,384,150]`；由 `time_7seg` 合成 **`[56,182,272,124]`** |
+| 固件 | **无 ROM 变更**；`ui_runtime_get_partial_rect()` / `GetTimeRefreshArea()` 仍读 bundle 内 partial 字段 |
+| `epd_clock_diff.c` | 仍硬编码 `comp_x=56, comp_y=182`（与 `time_7seg` 坐标一致）；待 Flash 腾出后改读 runtime API |
+
+#### 验证
+```bash
+python3 tools/build_ext_resources.py
+python3 -c "from tools.build_ext_resources import default_ui_layout, synthesize_mode_partial; ..."
+# mode2 partial: [56, 182, 272, 124]
+
+make -f tools/test/Makefile.golden test   # CRC32=0x8678EADB 不变（黄金图测 mode 1 日历）
+make -f Makefile.nRF52_linux              # text=56748, 仍在 0xE000 内
+```
+
+#### 后续（需 Flash 预算或打包端扩展）
+- 固件运行时 `ui_collect_dirty_rects()`：多动态组件各自脏标记 → 合并包围盒
+- `epd_clock_diff.c` 去硬编码：读 `ui_runtime` 布局或打包导出 `epd_layout.h` 常量
+- 网页拖拽组件后仅需重打 UI bundle，partial 随 `PARTIAL_ONLY` 自动更新
