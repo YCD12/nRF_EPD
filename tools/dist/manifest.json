@@ -1,0 +1,175 @@
+{
+  "magic": "EPDR",
+  "version": 1,
+  "manifestCrc32": "0x8086AA69",
+  "entries": [
+    {
+      "type": 1,
+      "id": 1,
+      "name": "u8g2_font_wqy9_t_lunar",
+      "offset": 4096,
+      "length": 4315,
+      "crc32": "0x2319E209"
+    },
+    {
+      "type": 1,
+      "id": 2,
+      "name": "u8g2_font_wqy12_t_lunar",
+      "offset": 8412,
+      "length": 4830,
+      "crc32": "0x5DA27322"
+    },
+    {
+      "type": 1,
+      "id": 3,
+      "name": "u8g2_font_helvB14_tn",
+      "offset": 13244,
+      "length": 287,
+      "crc32": "0x7301EB2F"
+    },
+    {
+      "type": 1,
+      "id": 4,
+      "name": "u8g2_font_helvB18_tn",
+      "offset": 13532,
+      "length": 389,
+      "crc32": "0x22A4716A"
+    },
+    {
+      "type": 2,
+      "id": 1,
+      "name": "lunar_month_names",
+      "offset": 13924,
+      "length": 91,
+      "crc32": "0x951200A7"
+    },
+    {
+      "type": 2,
+      "id": 2,
+      "name": "lunar_leap_names",
+      "offset": 14016,
+      "length": 8,
+      "crc32": "0x2BBAB340"
+    },
+    {
+      "type": 2,
+      "id": 3,
+      "name": "lunar_date_names",
+      "offset": 14024,
+      "length": 217,
+      "crc32": "0x75853CE8"
+    },
+    {
+      "type": 2,
+      "id": 4,
+      "name": "lunar_day_names",
+      "offset": 14244,
+      "length": 28,
+      "crc32": "0x0D826C56"
+    },
+    {
+      "type": 2,
+      "id": 5,
+      "name": "lunar_zodiac_names",
+      "offset": 14272,
+      "length": 48,
+      "crc32": "0x3F299BB3"
+    },
+    {
+      "type": 2,
+      "id": 6,
+      "name": "lunar_stem_names",
+      "offset": 14320,
+      "length": 40,
+      "crc32": "0xD7CC996F"
+    },
+    {
+      "type": 2,
+      "id": 7,
+      "name": "lunar_branch_names",
+      "offset": 14360,
+      "length": 48,
+      "crc32": "0x75282B8E"
+    },
+    {
+      "type": 2,
+      "id": 8,
+      "name": "lunar_jieqi_names",
+      "offset": 14408,
+      "length": 168,
+      "crc32": "0xE17EC4AD"
+    },
+    {
+      "type": 2,
+      "id": 9,
+      "name": "lunar_month_days",
+      "offset": 14576,
+      "length": 28,
+      "crc32": "0xCEE55C95"
+    },
+    {
+      "type": 2,
+      "id": 10,
+      "name": "lunar_solar_1_1",
+      "offset": 14604,
+      "length": 28,
+      "crc32": "0x8A6437D0"
+    },
+    {
+      "type": 2,
+      "id": 11,
+      "name": "lunar_jieqi_year_bits",
+      "offset": 14632,
+      "length": 18,
+      "crc32": "0x2E9B3FB4"
+    },
+    {
+      "type": 2,
+      "id": 12,
+      "name": "lunar_jieqi_base_days",
+      "offset": 14652,
+      "length": 24,
+      "crc32": "0xA1A93A24"
+    },
+    {
+      "type": 3,
+      "id": 1,
+      "name": "solar_festivals",
+      "offset": 14676,
+      "length": 180,
+      "crc32": "0xE5F55E38"
+    },
+    {
+      "type": 3,
+      "id": 2,
+      "name": "lunar_festivals",
+      "offset": 14856,
+      "length": 132,
+      "crc32": "0x773338C4"
+    },
+    {
+      "type": 3,
+      "id": 3,
+      "name": "holiday_adjustments",
+      "offset": 14988,
+      "length": 82,
+      "crc32": "0xC0F7DE64"
+    },
+    {
+      "type": 6,
+      "id": 1,
+      "name": "lunar_db",
+      "offset": 15072,
+      "length": 14047,
+      "crc32": "0x3E57FE69"
+    },
+    {
+      "type": 4,
+      "id": 1,
+      "name": "ui_bundle",
+      "offset": 29120,
+      "length": 1029,
+      "crc32": "0x7E4EE159"
+    }
+  ]
+}

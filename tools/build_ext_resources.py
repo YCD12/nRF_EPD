@@ -957,6 +957,39 @@ def main():
 """
     (html_js / "resource_bundle.js").write_text(bundle, encoding="utf-8")
 
+    # Write independent partition files and manifest to tools/dist
+    dist_dir = ROOT / "tools" / "dist"
+    dist_dir.mkdir(parents=True, exist_ok=True)
+
+    # Save the manifest binary
+    (dist_dir / "manifest.bin").write_bytes(manifest)
+
+    # Save each independent resource payload
+    for res_type, res_id, payload, name in resources:
+        (dist_dir / f"{name}.bin").write_bytes(payload)
+
+    # Save a JSON manifest file for incremental DFU tooling
+    json_manifest = {
+        "magic": "EPDR",
+        "version": VERSION,
+        "manifestCrc32": f"0x{manifest_crc:08X}",
+        "entries": [
+            {
+                "type": e["type"],
+                "id": e["id"],
+                "name": e["name"],
+                "offset": e["offset"],
+                "length": e["length"],
+                "crc32": f"0x{e['crc32']:08X}"
+            }
+            for e in entries
+        ]
+    }
+    (dist_dir / "manifest.json").write_text(
+        json.dumps(json_manifest, indent=2, ensure_ascii=False),
+        encoding="utf-8"
+    )
+
     image = bytearray([0xFF] * (SCRATCH - DATA_START))
     image[0:len(data)] = data
     main_manifest_offset = MAIN_MANIFEST - DATA_START
