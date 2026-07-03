@@ -1,4 +1,4 @@
-﻿#include "Lunar.h"
+#include "Lunar.h"
 
 #include "../EPD/epd_ext_resources.h"
 #include "../EPD/res_hal.h"
@@ -23,6 +23,7 @@ int is_leap(int yr); /* 前置声明，实现见本文件下方时间转换区 *
  * 偏移表并缓存于 RAM，后续按日索引直接读取 12B 记录。详见
  * AiCoding/lunar_calendar_database_design_and_migration.md 第 4 章。
  ******************************************************************************/
+#if EPD_SUPPORT_LUNAR
 #define LUNAR_DB_MAX_YEARS      8U
 #define LUNAR_DB_YEAR_HEADER_SZ 8U
 
@@ -615,13 +616,6 @@ uint8_t LUNAR_GetBranch(const struct Lunar_Date* lunar) { return lunar->Year % 1
  * 冬至: 白昼最短，冬季中点
  */
 
-/**
- * 每月最大天数表 - Maximum Days per Month
- * 用于日期计算（2月按平年28天计算，闰年需特殊处理）
- */
-const uint8_t MonthDayMax[12] = {
-    31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31,
-};
 
 /*********************************************************************************************************
  ** 函数名称: GetJieQi
@@ -724,6 +718,98 @@ uint8_t GetJieQiStr(uint16_t myear, uint8_t mmonth, uint8_t mday, uint8_t* day) 
     if (day != NULL) *day = 0;
     return 0xFF;
 }
+#else
+
+void lunar_db_reset(void) {}
+int lunar_db_init(void) { return -1; }
+int lunar_db_get_record(uint16_t year, uint8_t month, uint8_t day, daily_record_t* out_record) {
+    (void)year; (void)month; (void)day;
+    if (out_record) memset(out_record, 0, sizeof(daily_record_t));
+    return -1;
+}
+const char* lunar_db_get_string(uint16_t year, uint16_t offset, char* buffer, size_t buffer_len) {
+    (void)year; (void)offset;
+    if (buffer && buffer_len > 0) buffer[0] = '\0';
+    return "";
+}
+bool lunar_db_year_supported(uint16_t year) {
+    (void)year;
+    return false;
+}
+
+const char* LUNAR_GetMonthName(uint8_t index, char* buffer, size_t buffer_len) {
+    (void)index;
+    if (buffer && buffer_len > 0) buffer[0] = '\0';
+    return "";
+}
+const char* LUNAR_GetLeapName(uint8_t index, char* buffer, size_t buffer_len) {
+    (void)index;
+    if (buffer && buffer_len > 0) buffer[0] = '\0';
+    return "";
+}
+const char* LUNAR_GetDateName(uint8_t index, char* buffer, size_t buffer_len) {
+    (void)index;
+    if (buffer && buffer_len > 0) buffer[0] = '\0';
+    return "";
+}
+const char* LUNAR_GetDayName(uint8_t index, char* buffer, size_t buffer_len) {
+    static const char* const days[] = {"日", "一", "二", "三", "四", "五", "六"};
+    if (buffer && buffer_len > 0) {
+        if (index < 7) {
+            strncpy(buffer, days[index], buffer_len - 1);
+            buffer[buffer_len - 1] = '\0';
+        } else {
+            buffer[0] = '\0';
+        }
+        return buffer;
+    }
+    return (index < 7) ? days[index] : "";
+}
+const char* LUNAR_GetZodiacName(uint8_t index, char* buffer, size_t buffer_len) {
+    (void)index;
+    if (buffer && buffer_len > 0) buffer[0] = '\0';
+    return "";
+}
+const char* LUNAR_GetStemName(uint8_t index, char* buffer, size_t buffer_len) {
+    (void)index;
+    if (buffer && buffer_len > 0) buffer[0] = '\0';
+    return "";
+}
+const char* LUNAR_GetBranchName(uint8_t index, char* buffer, size_t buffer_len) {
+    (void)index;
+    if (buffer && buffer_len > 0) buffer[0] = '\0';
+    return "";
+}
+const char* LUNAR_GetJieQiName(uint8_t index, char* buffer, size_t buffer_len) {
+    (void)index;
+    if (buffer && buffer_len > 0) buffer[0] = '\0';
+    return "";
+}
+
+void LUNAR_SolarToLunar(struct Lunar_Date* lunar, uint16_t solar_year, uint8_t solar_month, uint8_t solar_date) {
+    (void)solar_year; (void)solar_month; (void)solar_date;
+    if (lunar) {
+        lunar->Year = 0;
+        lunar->Month = 0;
+        lunar->Date = 0;
+        lunar->IsLeap = 0;
+    }
+}
+uint8_t LUNAR_GetZodiac(const struct Lunar_Date* lunar) { (void)lunar; return 0; }
+uint8_t LUNAR_GetStem(const struct Lunar_Date* lunar) { (void)lunar; return 0; }
+uint8_t LUNAR_GetBranch(const struct Lunar_Date* lunar) { (void)lunar; return 0; }
+uint8_t GetJieQiStr(uint16_t myear, uint8_t mmonth, uint8_t mday, uint8_t* day) {
+    (void)myear; (void)mmonth; (void)mday;
+    if (day) *day = 0;
+    return 0xFF;
+}
+uint8_t GetJieQi(uint16_t myear, uint8_t mmonth, uint8_t mday, uint8_t* JQdate) {
+    (void)myear; (void)mmonth; (void)mday;
+    if (JQdate) *JQdate = 0;
+    return 0;
+}
+
+#endif
 
 /*******************************************************************************
  *                  时间转换相关常量 - Time Conversion Constants
@@ -943,6 +1029,14 @@ uint32_t transformTimeStruct(struct devtm* result) {
     return (CountDay * SECOND_OF_DAY + (uint32_t)result->tm_sec + (uint32_t)result->tm_min * 60 +
             (uint32_t)result->tm_hour * 3600);
 }
+
+/**
+ * 每月最大天数表 - Maximum Days per Month
+ * 用于日期计算（2月按平年28天计算，闰年需特殊处理）
+ */
+const uint8_t MonthDayMax[12] = {
+    31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31,
+};
 
 /**
  * @brief 获取指定月份的天数 - Get Number of Days in Month

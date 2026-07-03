@@ -1,9 +1,13 @@
-﻿#ifndef __LUNAR_H
+#ifndef __LUNAR_H
 #define __LUNAR_H
 #include <stdint.h>
 #include <string.h>
 #include <stddef.h>
 #include <stdbool.h>
+
+#ifndef EPD_SUPPORT_LUNAR
+#define EPD_SUPPORT_LUNAR 1
+#endif
 
 /*
  * 时间基准定义 - Time Reference Definitions
