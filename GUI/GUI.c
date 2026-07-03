@@ -48,13 +48,13 @@ void ui_render_invalidate_month_cache(void) {
     m_month_render_cache.valid = false;
 }
 
-static void DrawTimeSyncTip(Adafruit_GFX* gfx, gui_data_t* data);
-static void DrawLowBatteryTip(Adafruit_GFX* gfx, gui_data_t* data);
-static void DrawBattery(Adafruit_GFX* gfx, int16_t x, int16_t y, uint8_t iw, gui_data_t* data);
+static void DrawTimeSyncTip(Adafruit_GFX* gfx, int16_t screen_w, int16_t screen_h);
+static void DrawLowBatteryTip(Adafruit_GFX* gfx, uint16_t voltage_mv, uint8_t epd_color, int16_t screen_w, int16_t screen_h);
+static void DrawBattery(Adafruit_GFX* gfx, int16_t x, int16_t y, uint8_t iw, uint16_t voltage_mv, uint8_t epd_color);
 static void DrawWeekHeaderArea(Adafruit_GFX* gfx, int16_t x, int16_t y, int16_t area_w, int16_t area_h,
-                               gui_data_t* data);
+                               int16_t screen_w, int16_t screen_h, uint8_t week_start);
 static void DrawMonthDaysArea(Adafruit_GFX* gfx, int16_t x, int16_t y, int16_t area_w, int16_t area_h,
-                              tm_t* tm, gui_data_t* data);
+                              tm_t* tm, int16_t screen_w, int16_t screen_h, uint8_t week_start);
 static void DrawTime(Adafruit_GFX* gfx, tm_t* tm, int16_t x, int16_t y, uint16_t cS, uint16_t nD);
 
 static uint8_t BatteryPercentFromMv(uint16_t voltage_mv) {
@@ -206,7 +206,7 @@ static const month_render_cache_t* PrepareMonthRenderCache(uint16_t year, uint8_
  * Purpose: When system time is not synced (e.g., Jan 2025), display a reminder box
  *          in screen center to guide users to web page for time synchronization
  */
-static void DrawTimeSyncTip(Adafruit_GFX* gfx, gui_data_t* data) {
+static void DrawTimeSyncTip(Adafruit_GFX* gfx, int16_t screen_w, int16_t screen_h) {
     const char* title = "SYNC TIME!";
     const char* url = "https://ycd12.github.io/EPD-nRF5_DYC/";
 
@@ -216,8 +216,8 @@ static void DrawTimeSyncTip(Adafruit_GFX* gfx, gui_data_t* data) {
     int16_t fh = GFX_getFontHeight(gfx);
     int16_t box_w = GFX_getUTF8Width(gfx, url) + 20;  // URL宽度+边距 | URL width + padding
     int16_t box_h = fh * 2 + 20;                       // 两行文字+边距 | 2 lines + padding
-    int16_t box_x = (data->width - box_w) / 2;         // 水平居中 | Horizontally centered
-    int16_t box_y = data->height / 2 - box_h / 2;      // 垂直居中 | Vertically centered
+    int16_t box_x = (screen_w - box_w) / 2;         // 水平居中 | Horizontally centered
+    int16_t box_y = screen_h / 2 - box_h / 2;      // 垂直居中 | Vertically centered
 
     // 绘制白色背景框 | Draw white background box
     GFX_fillRect(gfx, box_x, box_y, box_w, box_h, GFX_WHITE);
@@ -240,16 +240,16 @@ static void DrawTimeSyncTip(Adafruit_GFX* gfx, gui_data_t* data) {
  * @param gfx  图形上下文指针 | Pointer to graphics context
  * @param data GUI数据指针 | Pointer to GUI data
  */
-static void DrawLowBatteryTip(Adafruit_GFX* gfx, gui_data_t* data) {
+static void DrawLowBatteryTip(Adafruit_GFX* gfx, uint16_t voltage_mv, uint8_t epd_color, int16_t screen_w, int16_t screen_h) {
     char volts_text[4];
-    volts_text[0] = (char)('0' + (data->voltage_mv / 1000));
+    volts_text[0] = (char)('0' + (voltage_mv / 1000));
     volts_text[1] = '.';
-    volts_text[2] = (char)('0' + ((data->voltage_mv % 1000) / 100));
+    volts_text[2] = (char)('0' + ((voltage_mv % 1000) / 100));
     volts_text[3] = '\0';
 
-    uint16_t warning_color = (data->color == 2) ? GFX_RED : GFX_BLACK;
-    int16_t W = (int16_t)data->width;
-    int16_t H = (int16_t)data->height;
+    uint16_t warning_color = (epd_color == 2) ? GFX_RED : GFX_BLACK;
+    int16_t W = screen_w;
+    int16_t H = screen_h;
 
     int16_t box_w = (W >= 800) ? 360 : ((W >= 400) ? 240 : (W - 16));
     int16_t box_h = (H >= 480) ? 200 : ((H >= 300) ? 150 : (H - 16));
@@ -327,7 +327,7 @@ static void DrawLowBatteryTip(Adafruit_GFX* gfx, gui_data_t* data) {
     GFX_printf(gfx, " V");
 
     // 3. Draw Warning Title (LOW POWER / POWER OFF)
-    const char* title_text = (data->voltage_mv < CRITICAL_BATTERY_SHUTDOWN_MV) ? "POWER OFF" : "LOW POWER";
+    const char* title_text = (voltage_mv < CRITICAL_BATTERY_SHUTDOWN_MV) ? "POWER OFF" : "LOW POWER";
     GFX_setTextColor(gfx, warning_color, GFX_WHITE);
     int16_t title_w = GFX_getUTF8Width(gfx, title_text);
     GFX_setCursor(gfx, box_x + (box_w - title_w) / 2, title_y);
@@ -353,14 +353,14 @@ static void DrawLowBatteryTip(Adafruit_GFX* gfx, gui_data_t* data) {
  * 电池百分比显示：满电=3.3V，空电=2.8V
  * Battery percentage display: Full=3.3V, Empty=2.8V
  */
-static void DrawBattery(Adafruit_GFX* gfx, int16_t x, int16_t y, uint8_t iw, gui_data_t* data) {
+static void DrawBattery(Adafruit_GFX* gfx, int16_t x, int16_t y, uint8_t iw, uint16_t voltage_mv, uint8_t epd_color) {
     x -= iw;  // 从右边界开始向左绘制 | Start drawing from right edge to left
     uint8_t fill_width = (iw > 4) ? (uint8_t)(iw - 4) : 0;
-    uint8_t level = BatteryPercentFromMv(data->voltage_mv);
+    uint8_t level = BatteryPercentFromMv(voltage_mv);
 
     uint16_t color = GFX_BLACK;
     if (level <= 20) {
-        if (data->color == 2) {
+        if (epd_color == 2) {
             color = GFX_RED;
         }
     }
@@ -486,11 +486,11 @@ static uint8_t GetWeekOfYear(uint8_t year, uint8_t mon, uint8_t mday, uint8_t wd
  * Displays 7 weekday labels, weekends (Sat/Sun) shown with red background
  */
 static void DrawWeekHeaderArea(Adafruit_GFX* gfx, int16_t x, int16_t y, int16_t area_w, int16_t area_h,
-                               gui_data_t* data) {
-    if (area_w <= 0) area_w = data->width - 2 * x;
-    if (area_h <= 0) area_h = data->height > 300 ? 32 : 24;
+                               int16_t screen_w, int16_t screen_h, uint8_t week_start) {
+    if (area_w <= 0) area_w = screen_w - 2 * x;
+    if (area_h <= 0) area_h = screen_h > 300 ? 32 : 24;
 
-    GFX_setFont(gfx, data->height > 300 ? u8g2_font_wqy12_t_lunar : u8g2_font_wqy9_t_lunar);
+    GFX_setFont(gfx, screen_h > 300 ? u8g2_font_wqy12_t_lunar : u8g2_font_wqy9_t_lunar);
     uint8_t w = (uint8_t)(area_w / 7);  // 每列宽度 | Width per column
     uint8_t h = (uint8_t)area_h;        // 行高 | Row height
     uint8_t r = (uint8_t)(area_w % 7);  // 剩余像素分配给最后一列 | Remaining pixels for last column
@@ -499,7 +499,7 @@ static void DrawWeekHeaderArea(Adafruit_GFX* gfx, int16_t x, int16_t y, int16_t 
     int16_t cw = GFX_getUTF8Width(gfx, LUNAR_GetDayName(0, day_name, sizeof(day_name)));
     for (int i = 0; i < 7; i++) {
         // 根据一周起始日设置调整显示顺序 | Adjust display order based on week start setting
-        uint8_t day = (data->week_start + i) % 7;
+        uint8_t day = (week_start + i) % 7;
         uint16_t bg = (day == 0 || day == 6) ? GFX_RED : GFX_BLACK;  // 周末用红色 | Weekends in red
         GFX_fillRect(gfx, x + i * w, y, i == 6 ? (w + r) : w, h, bg);
         GFX_setTextColor(gfx, GFX_WHITE, bg);
@@ -528,7 +528,7 @@ static void DrawWeekHeaderArea(Adafruit_GFX* gfx, int16_t x, int16_t y, int16_t 
  * - 周末日期用红色显示 | Weekends shown in red
  */
 static void DrawMonthDaysArea(Adafruit_GFX* gfx, int16_t x, int16_t y, int16_t area_w, int16_t area_h,
-                              tm_t* tm, gui_data_t* data) {
+                              tm_t* tm, int16_t screen_w, int16_t screen_h, uint8_t week_start) {
     uint16_t year = tm->tm_year + YEAR0;
     uint8_t month = tm->tm_mon + 1;
     const month_render_cache_t* month_cache = PrepareMonthRenderCache(year, month);
@@ -536,20 +536,20 @@ static void DrawMonthDaysArea(Adafruit_GFX* gfx, int16_t x, int16_t y, int16_t a
     // 获取本月1号是星期几 | Get which day of week is the 1st day of month
     uint8_t firstDayWeek = get_first_day_week(year, month);
     // 根据用户设置的一周起始日调整首日位置 | Adjust first day position based on user's week start setting
-    int8_t adjustedFirstDay = (firstDayWeek - data->week_start + 7) % 7;
+    int8_t adjustedFirstDay = (firstDayWeek - week_start + 7) % 7;
     // 获取本月天数 | Get number of days in this month
     uint8_t monthMaxDays = (month_cache != NULL) ? month_cache->days : thisMonthMaxDays((uint8_t)year, month);
     // 计算需要的行数 | Calculate required rows
     // 公式：1 + (总天数 - 第一周剩余天数 + 6) / 7
     uint8_t monthDayRows = 1 + (monthMaxDays - (7 - adjustedFirstDay) + 6) / 7;
 
-    if (area_w <= 0) area_w = data->width - x - 10;
-    if (area_h <= 0) area_h = data->height - y - 10;
+    if (area_w <= 0) area_w = screen_w - x - 10;
+    if (area_h <= 0) area_h = screen_h - y - 10;
 
     // 计算每个单元格的宽度和高度 | Calculate cell width and height
     int16_t bw = area_w / 7;
     int16_t bh = area_h / monthDayRows;
-    bool large = data->height > 300;
+    bool large = screen_h > 300;
 
     // 大屏幕绘制网格分隔线(虚线) | Draw grid lines (dotted) for large screens
     if (large) {
@@ -808,15 +808,16 @@ static int16_t ui_temperature_width(Adafruit_GFX* gfx, int8_t temperature, const
     return width;
 }
 
-static void ui_draw_temperature(Adafruit_GFX* gfx, int16_t x, int16_t y, int16_t w, gui_data_t* data, uint8_t flags) {
+static void ui_draw_temperature(Adafruit_GFX* gfx, int16_t x, int16_t y, int16_t w, int8_t temperature, uint8_t epd_color, uint8_t flags) {
+    (void)epd_color;
     if ((flags & UI_TEXT_FLAG_RIGHT_ALIGN) && w > 0) {
-        x += w - ui_temperature_width(gfx, data->temperature, "℃");
+        x += w - ui_temperature_width(gfx, temperature, "℃");
     }
 
     GFX_setTextColor(gfx, GFX_BLACK, GFX_WHITE);
     GFX_setFont(gfx, u8g2_font_helvB18_tn);
     GFX_setCursor(gfx, x, y);
-    GFX_printf(gfx, "%d", data->temperature);
+    GFX_printf(gfx, "%d", temperature);
     GFX_setFont(gfx, u8g2_font_wqy12_t_lunar);
     GFX_printf(gfx, "℃");
 }
@@ -985,7 +986,7 @@ static void ui_render_text_field(Adafruit_GFX* gfx, const ui_component_record_t*
             ui_draw_date_ymd(gfx, x, y, tm, comp->flags);
             return;
         case UI_TEXT_TEMPERATURE:
-            ui_draw_temperature(gfx, x, y, comp->w, data, comp->flags);
+            ui_draw_temperature(gfx, x, y, comp->w, data->temperature, data->color, comp->flags);
             return;
         case UI_TEXT_JIEQI:
             ui_draw_jieqi(gfx, x, y, y2, comp->w, tm);
@@ -1015,10 +1016,10 @@ static void ui_render_component(Adafruit_GFX* gfx, const ui_component_record_t* 
 
     switch (comp->type) {
         case UI_COMP_WEEK_HEADER:
-            DrawWeekHeaderArea(gfx, x, y, comp->w, comp->h, data);
+            DrawWeekHeaderArea(gfx, x, y, comp->w, comp->h, data->width, data->height, data->week_start);
             break;
         case UI_COMP_MONTH_GRID:
-            DrawMonthDaysArea(gfx, x, y, comp->w, comp->h, tm, data);
+            DrawMonthDaysArea(gfx, x, y, comp->w, comp->h, tm, data->width, data->height, data->week_start);
             break;
         case UI_COMP_TIME_7SEG:
             DrawTime(gfx, tm, x, y,
@@ -1026,7 +1027,7 @@ static void ui_render_component(Adafruit_GFX* gfx, const ui_component_record_t* 
                      ui_runtime_clamp_u16(comp->p1, UI_TIME_DIGITS_MIN, UI_TIME_DIGITS_MAX));
             break;
         case UI_COMP_BATTERY:
-            DrawBattery(gfx, x, y, (uint8_t)comp->w, data);
+            DrawBattery(gfx, x, y, (uint8_t)comp->w, data->voltage_mv, data->color);
             break;
         case UI_COMP_LINE:
             GFX_fillRect(gfx, x, y, comp->w, comp->h, comp->fg);
@@ -1036,14 +1037,14 @@ static void ui_render_component(Adafruit_GFX* gfx, const ui_component_record_t* 
                                  comp->p0 > 0 ? (int16_t)(comp->p0 - origin_y) : (int16_t)(y + 20));
             break;
         case UI_COMP_LOW_BATTERY_TIP:
-            DrawLowBatteryTip(gfx, data);
+            DrawLowBatteryTip(gfx, data->voltage_mv, data->color, data->width, data->height);
             break;
         case UI_COMP_TIME_SYNC_TIP:
             /* 触发条件：未校时(默认 2025-01)，或当前年份农历数据缺失/超出 LCDB 范围
              * (诚实降级)。后者复用同一提示框，因两种情况的修复手段都是联网同步/更新。 */
             if (((tm->tm_year + YEAR0 == 2025) && (tm->tm_mon + 1 == 1)) ||
                 !lunar_db_year_supported((uint16_t)(tm->tm_year + YEAR0))) {
-                DrawTimeSyncTip(gfx, data);
+                DrawTimeSyncTip(gfx, data->width, data->height);
             }
             break;
         default:
@@ -1403,9 +1404,9 @@ static void fallback_draw_text(Adafruit_GFX* gfx, int16_t x, int16_t y,
     }
 }
 
-static void fallback_paint(Adafruit_GFX* gfx, gui_data_t* data) {
-    int16_t W = (int16_t)data->width;
-    int16_t H = (int16_t)data->height;
+static void fallback_paint(Adafruit_GFX* gfx, int16_t screen_w, int16_t screen_h) {
+    int16_t W = screen_w;
+    int16_t H = screen_h;
     const uint8_t title_scale = 4;
     const uint8_t url_scale = 2;
     int16_t title_w = fallback_text_width(FALLBACK_SYNC_TITLE, title_scale);
@@ -1456,7 +1457,7 @@ void DrawResourceMissingScreen(gui_data_t* data, buffer_callback callback, void*
 
     GFX_firstPage(&gfx);
     do {
-        fallback_paint(&gfx, data);
+        fallback_paint(&gfx, data->width, data->height);
     } while (GFX_nextPage(&gfx, callback, cb_data));
 
     GFX_end(&gfx);
