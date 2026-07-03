@@ -235,7 +235,7 @@ static void send_resource_op_response(ble_epd_t* p_epd, uint8_t cmd, uint16_t se
 static void send_resource_status(ble_epd_t* p_epd, ret_code_t init_ret) {
     epd_ext_resource_status_t status;
     ret_code_t ret = NRF_SUCCESS;
-    uint8_t rsp[20];
+    uint8_t rsp[24];
 
     memset(&status, 0, sizeof(status));
     if (init_ret != NRF_ERROR_BUSY) {
@@ -259,6 +259,7 @@ static void send_resource_status(ble_epd_t* p_epd, ret_code_t init_ret) {
     rsp[17] = (uint8_t)((status.flash_total_bytes / 1024UL) >> 8);
     rsp[18] = (uint8_t)((status.resource_free_bytes / 1024UL) & 0xFF);
     rsp[19] = (uint8_t)((status.resource_free_bytes / 1024UL) >> 8);
+    epd_write_u32_le(&rsp[20], (uint32_t)GUI_GetUIBundleLastError());
     ble_epd_string_send(p_epd, rsp, sizeof(rsp));
 }
 

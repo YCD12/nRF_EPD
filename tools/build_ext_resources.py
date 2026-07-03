@@ -117,6 +117,25 @@ UI_TEXT_FLAG_ZERO_PAD = 0x04
 UI_TEXT_FLAG_WITH_ZODIAC = 0x08
 UI_TEXT_FLAG_WEEK_LEADING_SPACE = 0x10
 
+
+def synthesize_mode_partial(mode):
+    """P2: derive mode partial rect from PARTIAL_ONLY component union (pack-time)."""
+    explicit = list(mode.get("partial", [0, 0, 0, 0]))
+    partial_comps = [
+        c for c in mode.get("components", [])
+        if (c.get("flags", 0) & UI_FLAG_PARTIAL_ONLY) and c.get("w", 0) > 0 and c.get("h", 0) > 0
+    ]
+    if not partial_comps:
+        return explicit
+
+    min_x = min(c.get("x", 0) for c in partial_comps)
+    min_y = min(c.get("y", 0) for c in partial_comps)
+    max_x = max(c.get("x", 0) + c.get("w", 0) for c in partial_comps)
+    max_y = max(c.get("y", 0) + c.get("h", 0) for c in partial_comps)
+    if max_x <= min_x or max_y <= min_y:
+        return explicit
+    return [min_x, min_y, max_x - min_x, max_y - min_y]
+
 UI_TEXT = {
     "date_ymd": 1,
     "lunar_date": 2,
@@ -588,7 +607,6 @@ def default_ui_layout():
                 "id": 2,
                 "name": "clock_calendar",
                 "updatePolicy": 2,
-                "partial": [0, 169, 384, 150],
                 "components": [
                     {"type": "line", "x": 15, "y": 45, "w": 770, "h": 2, "fg": 0},
                     {"type": "line", "x": 15, "y": 435, "w": 770, "h": 2, "fg": 0},
@@ -655,7 +673,7 @@ def pack_ui_bundle(layout):
             "updatePolicy": mode.get("updatePolicy", 0),
             "componentStart": start,
             "componentCount": len(mode["components"]),
-            "partial": mode.get("partial", [0, 0, 0, 0]),
+            "partial": synthesize_mode_partial(mode),
             "flags": mode.get("flags", 0),
         })
 

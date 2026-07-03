@@ -14,5 +14,8 @@ typedef uint32_t ret_code_t;
 #define NRF_ERROR_INVALID_LENGTH    0x0CUL
 #define NRF_ERROR_NULL              0x0EUL
 #define NRF_ERROR_INVALID_STATE     0x08UL
+#define NRF_ERROR_INVALID_DATA      0x09UL
+#define NRF_ERROR_NO_MEM            0x04UL
+#define NRF_ERROR_NOT_SUPPORTED     0x0BUL
 
 #endif

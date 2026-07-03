@@ -20,6 +20,8 @@ const ResourceManager = {
   MAX_RETRIES: 3,
   SAMPLE_BYTES: 32,
   NRF_ERROR_BUSY: 17,
+  NRF_ERROR_INVALID_DATA: 9,
+  NRF_ERROR_NOT_SUPPORTED: 11,
 
   seq: 1,
   statusResolver: null,
@@ -179,6 +181,13 @@ const ResourceManager = {
       }
       if (!status.flashReady) {
         this.latestCheck = { needsUpdate: true, reason: '外置Flash未就绪' };
+        this.updateUi();
+        return this.latestCheck;
+      }
+
+      if (status.uiBundleError) {
+        const reason = this.describeUiBundleError(status.uiBundleError);
+        this.latestCheck = { needsUpdate: true, reason };
         this.updateUi();
         return this.latestCheck;
       }
@@ -563,7 +572,19 @@ const ResourceManager = {
       statusCode: this.readU32(data, 12),
       flashTotalBytes: data.length >= 20 ? this.readU16(data, 16) * 1024 : null,
       resourceFreeBytes: data.length >= 20 ? this.readU16(data, 18) * 1024 : null,
+      uiBundleError: data.length >= 24 ? this.readU32(data, 20) : 0,
     };
+  },
+
+  describeUiBundleError(code) {
+    if (!code) return '';
+    if (code === this.NRF_ERROR_NOT_SUPPORTED) {
+      return 'UI 资源 schema 版本高于固件，请升级固件或下发兼容资源包';
+    }
+    if (code === this.NRF_ERROR_INVALID_DATA) {
+      return 'UI 资源与屏幕规格不匹配（分辨率/色深），请重新打包资源';
+    }
+    return `UI bundle 校验失败 (0x${code.toString(16)})`;
   },
 
   parseManifest(bytes) {
