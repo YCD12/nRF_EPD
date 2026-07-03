@@ -524,6 +524,62 @@ const uint8_t* u8g2_font_get_glyph_data(u8g2_font_t* u8g2, uint16_t encoding) {
     return NULL;
 }
 
+/*
+ * Glyph Fallback（缺字优雅回退，见设计文档优化 10）
+ * ------------------------------------------------------------------
+ * 字库子集化后，若渲染到不在子集内的汉字（如未来新增节日名、生僻字），
+ * u8g2_font_get_glyph_data 返回 NULL。原行为是"跳过且步进为 0"——文字既空白
+ * 又塌缩，用户无法察觉缺字。此处改为绘制一个字体无关的空心占位框（□），
+ * 并给出正常步进，保证：
+ *   1. 缺字位置有可见占位（诚实降级，而非静默空白）；
+ *   2. 后续字符排版不塌缩错位；
+ *   3. 绘制管线不中断（不依赖任何具体字体是否含 '?'）。
+ * 仅对可见字符(encoding >= 0x21)回退；空格/控制字符不画框。
+ */
+/* 缺字占位框的字高（基线向上的高度）：优先用大写字高 ascent_A。 */
+static int16_t u8g2_missing_glyph_cap(u8g2_font_t* u8g2) {
+    int16_t cap = (int16_t)u8g2->font_info.ascent_A;
+    if (cap <= 0) {
+        cap = (int16_t)u8g2->font_info.max_char_height;
+    }
+    if (cap <= 2) {
+        cap = 6; /* 极端兜底，避免退化成 0/负 */
+    }
+    return cap;
+}
+
+/* 缺字占位框宽度（约为字高的 3/5，下限 3px）。 */
+static int16_t u8g2_missing_glyph_width(u8g2_font_t* u8g2) {
+    int16_t box_w = (u8g2_missing_glyph_cap(u8g2) * 3) / 5;
+    if (box_w < 3) {
+        box_w = 3;
+    }
+    return box_w;
+}
+
+/* 缺字步进 = 占位框宽 + 1px 间隙，测宽与绘制共用以保证居中排版一致。 */
+static int16_t u8g2_missing_glyph_advance(u8g2_font_t* u8g2) {
+    return u8g2_missing_glyph_width(u8g2) + 1;
+}
+
+static int16_t u8g2_font_draw_missing_glyph(u8g2_font_t* u8g2, int16_t x, int16_t y) {
+    int16_t box_w = u8g2_missing_glyph_width(u8g2);
+    int16_t box_h = u8g2_missing_glyph_cap(u8g2);
+    int16_t y_top;
+    uint16_t fg = u8g2->font_decode.fg_color;
+
+    y_top = y - box_h + 1; /* 基线在 y，占位框自基线向上 */
+
+    if (u8g2->draw_hv_line != NULL) {
+        u8g2->draw_hv_line(u8g2, x, y_top, box_w, 0, fg);                    /* 上边 */
+        u8g2->draw_hv_line(u8g2, x, y, box_w, 0, fg);                        /* 下边(基线) */
+        u8g2->draw_hv_line(u8g2, x, y_top, box_h, 1, fg);                    /* 左边 */
+        u8g2->draw_hv_line(u8g2, x + box_w - 1, y_top, box_h, 1, fg);        /* 右边 */
+    }
+
+    return (int16_t)(box_w + 1); /* 步进：占位框宽 + 1px 间隙 */
+}
+
 // 绘制单个字形的内部实现
 static int16_t u8g2_font_draw_glyph(u8g2_font_t* u8g2, int16_t x, int16_t y, uint16_t encoding) {
     int16_t dx = 0;
@@ -534,8 +590,20 @@ static int16_t u8g2_font_draw_glyph(u8g2_font_t* u8g2, int16_t x, int16_t y, uin
     const uint8_t* glyph_data = u8g2_font_get_glyph_data(u8g2, encoding);
     if (glyph_data != NULL) {
         dx = u8g2_font_decode_glyph(u8g2, glyph_data);
+    } else if (encoding >= 0x21) {
+        /* 缺字回退：仅对可见字符绘制占位框，空格/控制字符仍按 0 步进跳过。 */
+        dx = u8g2_font_draw_missing_glyph(u8g2, x, y);
     }
     return dx;
+}
+
+/* 步进为 int8_t 返回；占位框步进在常见字号(9~18px)下不超过 12，安全落入范围。 */
+static int8_t u8g2_missing_glyph_delta(u8g2_font_t* u8g2) {
+    int16_t adv = u8g2_missing_glyph_advance(u8g2);
+    if (adv > 127) {
+        adv = 127;
+    }
+    return (int8_t)adv;
 }
 
 //========================================================
@@ -554,7 +622,10 @@ uint8_t u8g2_IsGlyph(u8g2_font_t* u8g2, uint16_t requested_encoding) {
 // 获取字形宽度
 int8_t u8g2_GetGlyphWidth(u8g2_font_t* u8g2, uint16_t requested_encoding) {
     const uint8_t* glyph_data = u8g2_font_get_glyph_data(u8g2, requested_encoding);
-    if (glyph_data == NULL) return 0;
+    if (glyph_data == NULL) {
+        /* 缺字：可见字符返回占位框步进，与实际绘制一致，避免居中排版塌缩错位。 */
+        return (requested_encoding >= 0x21) ? u8g2_missing_glyph_delta(u8g2) : 0;
+    }
 
     u8g2_font_setup_decode(u8g2, glyph_data);
     u8g2->glyph_x_offset = u8g2_font_decode_get_signed_bits(&(u8g2->font_decode), u8g2->font_info.bits_per_char_x);
