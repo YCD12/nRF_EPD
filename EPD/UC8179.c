@@ -16,11 +16,15 @@ extern void app_feed_wdt(void);
 #define UC8179_STRONG_BW_PARTIAL_GUARD_BYTES 0U
 
 static bool m_uc8179_partial_strong_bw_allowed = true;
+static bool m_uc8179_busy_timeout = false;
 
 void UC8179_Set_Partial_Strong_BW_Allowed(bool allowed)
 {
     m_uc8179_partial_strong_bw_allowed = allowed;
 }
+
+bool UC8179_HadBusyTimeout(void) { return m_uc8179_busy_timeout; }
+void UC8179_ClearBusyTimeout(void) { m_uc8179_busy_timeout = false; }
 
 
 
@@ -77,7 +81,11 @@ void UC8179_Set_Partial_Strong_BW_Allowed(bool allowed)
  * UC8179芯片在执行命令时会将BUSY引脚拉高,表示芯片正忙。
  * 此函数等待BUSY信号变为低电平,表示芯片已准备好接收新命令。
  */
-static void UC8179_WaitBusy(uint16_t timeout) { EPD_WaitBusy(LOW, timeout); }
+static void UC8179_WaitBusy(uint16_t timeout) {
+    if (!EPD_WaitBusy(LOW, timeout)) {
+        m_uc8179_busy_timeout = true;
+    }
+}
 
 /**
  * @brief UC8179电源开启
@@ -968,6 +976,7 @@ static epd_driver_t epd_drv_uc8179_partial = {
     .clear_partial = UC8179_Clear_Partial,          // 局刷清屏
     .write_image_partial = UC8179_Write_Image_Partial,  // 局刷写入图像
     .refresh_partial = UC8179_Refresh_Partial,      // 局刷刷新
+    .diff_push = UC8179_Partial_Diff_Push,          // 差分帧写入 (pixel-level partial)
 };
 
 /*

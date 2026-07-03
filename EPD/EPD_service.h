@@ -216,6 +216,9 @@ typedef struct {
     bool force_full_refresh;      /**< Force full refresh on next GUI update (used for mode switching). */
                                   /**< 下次GUI更新时强制全刷(用于模式切换)。
                                    *   当显示模式切换时设置此标志,确保清除残影 */
+    uint32_t last_full_clear;     /**< Timestamp (s) of the last full-screen clear/refresh. 0 = never. */
+                                  /**< 上次全屏清除/刷新的时间戳(秒)。0 表示从未全刷。
+                                   *   与 force_full_refresh 统一管理，避免状态分散 */
     bool is_refreshing;           /**< Flag to indicate screen refresh is in progress. */
                                   /**< 标志屏幕刷新正在进行中。
                                    *   防止BLE断开时中断刷新过程 */

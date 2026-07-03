@@ -112,8 +112,10 @@ static uint32_t                          m_timestamp = 1735689600;              
 APP_TIMER_DEF(m_clock_timer_id);                                                        /**< Clock timer. */
                                                                                         /**< 时钟定时器 */
 static nrf_drv_wdt_channel_id            m_wdt_channel_id;                              /**< 看门狗定时器通道ID */
-uint32_t                                 m_resetreas;                                   /**< 复位原因寄存器值 */
+static uint32_t                          m_resetreas;                                   /**< 复位原因寄存器值 */
 // clang-format on
+
+uint32_t get_reset_reason(void) { return m_resetreas; }
 
 /**@brief Callback function for asserts in the SoftDevice.
  * SoftDevice中断言的回调函数

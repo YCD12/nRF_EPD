@@ -41,7 +41,7 @@
  *    - 驱动提供了refresh_partial函数
  *
  *    全刷触发条件:
- *    - 首次刷新 (last_full_clear == 0)
+ *    - 首次刷新 (p_epd->last_full_clear == 0)
  *    - 强制全刷标志 (force_full_refresh)
  *    - 达到全刷间隔(默认每小时)且非夜间静默时段
  *
@@ -94,6 +94,7 @@
 #include "Lunar.h"
 #include "epd_ext_resources.h"
 #include "epd_clock_diff.h"
+#include "ui_runtime.h"
 
 
 // ============================================================================
@@ -110,7 +111,7 @@
 // the session auto-expires and periodic refresh resumes.
 #define EPD_RES_SESSION_TIMEOUT_S 15U
 
-extern void UC8179_Set_Partial_Strong_BW_Allowed(bool allowed);
+#include "UC8179.h"
 
 
 
@@ -497,6 +498,88 @@ static void epd_process_next_command(void* p_event_data, uint16_t event_size);
  *          这里按页把黑平面数据连续写入，各页拼接正好铺满整帧(与 EPD_FillRAM 同构)。
  *          红平面(DTM2)由外层统一填 0xFF(无红)，故此处忽略 color。
  */
+/* Returns true when the caller should skip all further rendering and jump to
+ * finish_refresh — either because the critical-battery screen was already drawn
+ * (avoid re-flashing every minute) or the voltage just crossed critical and we
+ * need the caller to draw it then shut down. */
+typedef struct {
+    bool skip;           /* jump straight to finish_refresh           */
+    bool low_battery;    /* show low-battery warning but keep running  */
+    bool critical;       /* draw critical screen then power off        */
+    uint16_t voltage_mv; /* sampled voltage for this refresh cycle     */
+} battery_guard_result_t;
+
+static battery_guard_result_t epd_battery_guard(ble_epd_t *p_epd) {
+    static uint16_t cached_mv = 3300;
+    static bool power_off_drawn = false;
+    cached_mv = EPD_ReadVoltageAndCache();
+
+    bool low      = (cached_mv <= LOW_BATTERY_THRESHOLD_MV);
+    bool critical = (cached_mv <  CRITICAL_BATTERY_SHUTDOWN_MV);
+    p_epd->low_battery_screen_active = low;
+
+    battery_guard_result_t r = {false, low, critical, cached_mv};
+
+    if (critical) {
+        if (power_off_drawn) {
+            NRF_LOG_WARNING("[EPD]: Critical battery screen already drawn, skipping redundant update\n");
+            r.skip = true;
+            return r;
+        }
+        power_off_drawn = true;
+    } else {
+        power_off_drawn = false;
+    }
+
+    if (low) {
+        NRF_LOG_WARNING("[EPD]: Low battery detected (%d mV), showing warning screen\n", cached_mv);
+    }
+    return r;
+}
+
+/* Returns true when the caller should skip rendering because resources are
+ * missing AND the hint screen was already drawn (avoids re-flashing every
+ * minute on blank Flash). Also draws the missing-resource hint screen when
+ * needed and forces the caller to jump to finish_refresh. */
+typedef struct {
+    bool missing;       /* resources are absent or invalid     */
+    bool skip;          /* hint already drawn — skip this tick */
+    bool draw_hint;     /* caller should draw the hint screen  */
+} resource_guard_result_t;
+
+static resource_guard_result_t epd_resource_guard(ble_epd_t *p_epd, epd_model_t *epd,
+                                                   display_mode_t mode, bool low_battery) {
+    static bool hint_drawn = false;
+    resource_guard_result_t r = {false, false, false};
+
+    ret_code_t wake_ret = epd_ext_resources_wake();
+    if (wake_ret != NRF_SUCCESS) {
+        NRF_LOG_WARNING("[EPD]: External resource flash wake failed before refresh: %lu",
+                        (unsigned long)wake_ret);
+    }
+
+    r.missing = (wake_ret != NRF_SUCCESS) || !epd_resources_manifest_ready();
+    if (!r.missing && !low_battery &&
+        (mode == MODE_CALENDAR || mode == MODE_CLOCK || mode == MODE_CLOCK_CALENDAR) &&
+        !GUI_ModeExists((uint8_t)mode, epd->width, epd->height)) {
+        r.missing = true;
+    }
+
+    if (r.missing) {
+        if (hint_drawn && !p_epd->force_full_refresh) {
+            NRF_LOG_INFO("[EPD]: Resource hint already shown, skipping redundant refresh\n");
+            r.skip = true;
+        } else {
+            hint_drawn = true;
+            r.draw_hint = true;
+            NRF_LOG_WARNING("[EPD]: External resources missing/invalid — drawing sync hint");
+        }
+    } else {
+        hint_drawn = false;
+    }
+    return r;
+}
+
 static void epd_resmiss_seq_black_cb(void* user_data, uint8_t* black, uint8_t* color,
                                      uint16_t x, uint16_t y, uint16_t w, uint16_t h) {
     (void)user_data;
@@ -576,7 +659,8 @@ static void epd_gui_update(void* p_event_data, uint16_t event_size) {
     ble_epd_t* p_epd = event->p_epd;
     uint16_t dev_name_len;
     uint32_t err_code;
-    ret_code_t resource_wake_ret;
+    uint16_t refresh_voltage_mv = 3300;  /* updated by battery guard, readable at finish_refresh */
+    bool critical_battery = false;
 
     // Set refreshing flag to prevent BLE disconnect from interrupting refresh
     // 设置刷新标志,防止BLE断开中断刷新过程
@@ -585,100 +669,43 @@ static void epd_gui_update(void* p_event_data, uint16_t event_size) {
 
     app_feed_wdt();  // Feed watchdog at the beginning. 开始时喂狗
     EPD_GPIO_Init();  // 初始化GPIO / Initialize GPIO
+    UC8179_ClearBusyTimeout();  // Reset busy-timeout flag before each refresh cycle.
     epd_model_t* epd = epd_init((epd_model_id_t)p_epd->config.model_id);
     EPD_LED_OFF();  // Keep LED off during all refresh operations.
                     // 所有刷新过程中保持LED熄灭。
 
-    // ========================================================================
-    // 电压读取缓存策略
-    // Battery Display Refresh Strategy
-    // ========================================================================
-    // 每次GUI刷新前都采样一次电压:
-    // 1. 让网页端电压显示更及时
-    // 2. 低电量时可以立即切到低电量提示页
-    // Sample battery voltage before every GUI refresh so:
-    // 1. the web voltage report stays current
-    // 2. we can switch to the low-battery warning page immediately
-    static uint16_t cached_voltage_mv = 3300;  // Default cached GUI battery value: 3.3V
-    cached_voltage_mv = EPD_ReadVoltageAndCache();
     display_mode_t mode = (display_mode_t)p_epd->config.display_mode;
     bool use_partial = false;
-    bool resources_missing = false;
 
-    // 准备GUI数据
-    // Prepare GUI data
+    // ── Battery guard ────────────────────────────────────────────────────────
+    {
+        battery_guard_result_t bat = epd_battery_guard(p_epd);
+        refresh_voltage_mv = bat.voltage_mv;
+        critical_battery   = bat.critical;
+        if (bat.skip) goto finish_refresh;
+    }
+    bool low_battery = (refresh_voltage_mv <= LOW_BATTERY_THRESHOLD_MV);
+
+    // ── Prepare GUI data ─────────────────────────────────────────────────────
     gui_data_t data = {
-        .mode = mode,
-        .color = epd->color,
-        .width = epd->width,
-        .height = epd->height,
-        .timestamp = event->timestamp,
-        .week_start = p_epd->config.week_start,
+        .mode        = mode,
+        .color       = epd->color,
+        .width       = epd->width,
+        .height      = epd->height,
+        .timestamp   = event->timestamp,
+        .week_start  = p_epd->config.week_start,
         .temperature = epd->drv->read_temp(epd),
-        .voltage_mv = cached_voltage_mv,
+        .voltage_mv  = refresh_voltage_mv,
     };
-
-    bool low_battery = (cached_voltage_mv <= LOW_BATTERY_THRESHOLD_MV);
-    bool critical_battery = (cached_voltage_mv < CRITICAL_BATTERY_SHUTDOWN_MV);
-    p_epd->low_battery_screen_active = low_battery;
-
-    static bool power_off_screen_drawn = false;
-    if (critical_battery) {
-        if (power_off_screen_drawn) {
-            NRF_LOG_WARNING("[EPD]: Critical battery screen already drawn, skipping redundant update\n");
-            goto finish_refresh;
-        }
-        power_off_screen_drawn = true;
-    } else {
-        power_off_screen_drawn = false;
-    }
-
-    if (low_battery) {
-        NRF_LOG_WARNING("[EPD]: Low battery detected (%d mV), showing warning screen\n", cached_voltage_mv);
-    }
-
-    // 获取BLE设备名称(SSID)
-    // Get BLE device name (SSID)
+    // 获取BLE设备名称(SSID) / Get BLE device name
     dev_name_len = sizeof(data.ssid);
     err_code = sd_ble_gap_device_name_get((uint8_t*)data.ssid, &dev_name_len);
     if (err_code == NRF_SUCCESS && dev_name_len > 0) data.ssid[dev_name_len] = '\0';
 
-    resource_wake_ret = epd_ext_resources_wake();
-    if (resource_wake_ret != NRF_SUCCESS) {
-        NRF_LOG_WARNING("[EPD]: External resource flash wake failed before refresh: %lu",
-                        (unsigned long)resource_wake_ret);
-    }
-
-    // ========================================================================
-    // 资源缺失判定 + 提示屏渲染(顺序写整帧，避开 write_image 的 PTIN/PTL 局部窗口寻址)
-    // Resource-missing detection + hint render (whole-frame sequential write)
-    // ========================================================================
-    // 判定条件:
-    // 1. 唤醒外置 Flash 失败，或 manifest 无效(空 Flash / 损坏)。
-    // 2. manifest 有效但当前模式的 UI 组件加载不出(部分擦除/损坏)——否则 DrawGUI 会读到
-    //    已擦除(0xFF)的字体/组件渲染成红色乱码。低电量页与图片模式不参与此判断。
-    resources_missing = (resource_wake_ret != NRF_SUCCESS) || !epd_resources_manifest_ready();
-    if (!resources_missing && !low_battery &&
-        (mode == MODE_CALENDAR || mode == MODE_CLOCK || mode == MODE_CLOCK_CALENDAR) &&
-        !GUI_ModeExists((uint8_t)mode, epd->width, epd->height)) {
-        resources_missing = true;
-    }
-
-    // 避免空 Flash 时每个刷新周期都全刷提示屏(伤屏且闪烁)：提示屏画过一次后就跳过，
-    // 直到强制全刷(模式切换)或资源恢复。资源恢复时复位标志，让正常画面重新绘制。
-    static bool resource_hint_drawn = false;
-    if (resources_missing) {
-        if (resource_hint_drawn && !p_epd->force_full_refresh) {
-            NRF_LOG_INFO("[EPD]: Resource hint already shown, skipping redundant refresh\n");
-            goto finish_refresh;
-        }
-        resource_hint_drawn = true;
-        NRF_LOG_WARNING("[EPD]: External resources missing/invalid — drawing sync hint (sequential full frame)");
-        epd_draw_resource_missing_screen(epd, &data);
-        goto finish_refresh;
-    } else {
-        resource_hint_drawn = false;
-    }
+    // ── Resource guard ───────────────────────────────────────────────────────
+    resource_guard_result_t res = epd_resource_guard(p_epd, epd, mode, low_battery);
+    if (res.skip)       goto finish_refresh;
+    if (res.draw_hint)  { epd_draw_resource_missing_screen(epd, &data); goto finish_refresh; }
 
     // DrawGUI(&data, (buffer_callback)epd->drv->write_image, epd);
     // epd->drv->refresh(epd);
@@ -718,7 +745,7 @@ static void epd_gui_update(void* p_event_data, uint16_t event_size) {
         // Full Refresh Trigger Conditions
         // ====================================================================
         //
-        // 1. 首次刷新 (last_full_clear == 0)
+        // 1. 首次刷新 (p_epd->last_full_clear == 0)
         //    - 确保初始显示正确
         //
         // 2. 强制全刷标志 (p_epd->force_full_refresh)
@@ -735,7 +762,6 @@ static void epd_gui_update(void* p_event_data, uint16_t event_size) {
         // ====================================================================
         // First time or at configured interval: use full refresh to ensure display is correct
         // 首次或按配置间隔: 使用全刷确保显示正确
-        static uint32_t last_full_clear = 0;
         // Get refresh interval in seconds (0 means hourly = 60 minutes)
         // 获取刷新间隔(秒),0表示每小时=60分钟
         uint32_t refresh_interval = (p_epd->config.full_refresh_minutes == 0 || p_epd->config.full_refresh_minutes == 0xFF)
@@ -771,7 +797,7 @@ static void epd_gui_update(void* p_event_data, uint16_t event_size) {
         // 综合判断是否需要全刷
         // Comprehensive decision on whether full refresh is needed
         bool need_full_refresh = p_epd->force_full_refresh ||
-                                 (last_full_clear == 0) ||
+                                 (p_epd->last_full_clear == 0) ||
                                  (at_refresh_boundary && !skip_full_in_quiet_hours);
 
         if (need_full_refresh) {
@@ -780,8 +806,8 @@ static void epd_gui_update(void* p_event_data, uint16_t event_size) {
             // Execute Full Refresh Flow
             // ================================================================
             NRF_LOG_INFO("[EPD]: *** Performing FULL refresh (mode switch or periodic) ***\n");
-            ble_log("[EPD]: Performing FULL refresh, ts=%u, reason=%s",
-                    event->timestamp, p_epd->force_full_refresh ? "Forced" : (last_full_clear == 0 ? "FirstTime" : "Periodic"));
+            ble_log("[EPD]:full ts=%u %s", event->timestamp,
+                    p_epd->force_full_refresh ? "force" : (p_epd->last_full_clear == 0 ? "first" : "period"));
 
             // Standard full refresh flow to ensure display is correct
             // 标准全刷流程,确保显示正确
@@ -790,15 +816,19 @@ static void epd_gui_update(void* p_event_data, uint16_t event_size) {
             app_feed_wdt();  // Feed watchdog after drawing GUI. 绘制GUI后喂狗
             epd->drv->refresh(epd);
             app_feed_wdt();  // Feed watchdog after refresh. 刷新后喂狗
+            if (UC8179_HadBusyTimeout()) {
+                NRF_LOG_ERROR("[EPD]: BUSY timeout during full refresh (clock path), aborting\n");
+                goto finish_refresh;
+            }
 
             EPD_LED_OFF();
-            last_full_clear = event->timestamp;  // 记录全刷时间 / Record full refresh time
+            p_epd->last_full_clear = event->timestamp;  // 记录全刷时间 / Record full refresh time
             if (data.mode == MODE_CLOCK_CALENDAR) {
                 GUI_MarkTimeRefreshTimestamp(data.timestamp);
             }
             p_epd->force_full_refresh = false;  // Clear the force flag after full refresh. 清除强制全刷标志
             NRF_LOG_INFO("[EPD]: Full refresh completed\n");
-            ble_log("[EPD]: Full refresh completed");
+            ble_log("[EPD]:full ok");
 
             // Seed the differential clock refresh state
             {
@@ -812,7 +842,7 @@ static void epd_gui_update(void* p_event_data, uint16_t event_size) {
             // Execute Partial Refresh Flow
             // ================================================================
             NRF_LOG_INFO("[EPD]: Using partial refresh (%d min since last full, interval=%d min)\n",
-                        (int)(event->timestamp - last_full_clear) / 60,
+                        (int)(event->timestamp - p_epd->last_full_clear) / 60,
                         (int)(refresh_interval / 60));
 
             // Initialize for partial mode (includes reset)
@@ -852,7 +882,7 @@ static void epd_gui_update(void* p_event_data, uint16_t event_size) {
             // Write black data using partial image write
             // 使用局部图像写入写入黑色数据
             NRF_LOG_INFO("[EPD]: Drawing GUI for partial refresh (%d,%d,%d,%d)\n", partial_x, partial_y, partial_w, partial_h);
-            ble_log("[EPD]: Using PARTIAL refresh at (%d,%d,%d,%d)", partial_x, partial_y, partial_w, partial_h);
+            ble_log("[EPD]:part %d,%d,%d,%d", partial_x, partial_y, partial_w, partial_h);
             DrawGUI(&data, (buffer_callback)epd->drv->write_image_partial, epd);
             app_feed_wdt();  // Feed watchdog after drawing GUI. 绘制GUI后喂狗
 
@@ -865,6 +895,10 @@ static void epd_gui_update(void* p_event_data, uint16_t event_size) {
                 NRF_LOG_ERROR("[EPD]: refresh_partial not available!\n");
             }
             app_feed_wdt();  // Feed watchdog after refresh_partial. 局刷后喂狗
+            if (UC8179_HadBusyTimeout()) {
+                NRF_LOG_ERROR("[EPD]: BUSY timeout during partial refresh (clock mode), aborting\n");
+                goto finish_refresh;
+            }
 
             // Seed the state since we just did a full window redraw
             {
@@ -875,7 +909,7 @@ static void epd_gui_update(void* p_event_data, uint16_t event_size) {
         }
 
         NRF_LOG_INFO("[EPD]: === Partial refresh sequence complete ===\n");
-        ble_log("[EPD]: Partial refresh complete");
+        ble_log("[EPD]:part ok");
     } else {
 fallback_full_refresh:
         // ====================================================================
@@ -888,7 +922,7 @@ fallback_full_refresh:
         // - 不支持局刷的驱动芯片
         // ====================================================================
         NRF_LOG_INFO("[EPD]: === Using FULL refresh ===\n");
-        ble_log("[EPD]: Using normal FULL refresh");
+        ble_log("[EPD]:full");
 
         if (epd->drv->init) {
             epd->drv->init(epd);
@@ -899,10 +933,14 @@ fallback_full_refresh:
         app_feed_wdt();  // Feed watchdog after drawing GUI. 绘制GUI后喂狗
         epd->drv->refresh(epd);
         app_feed_wdt();  // Feed watchdog after refresh. 刷新后喂狗
+        if (UC8179_HadBusyTimeout()) {
+            NRF_LOG_ERROR("[EPD]: BUSY timeout during full refresh (fallback path), aborting\n");
+            goto finish_refresh;
+        }
 
         EPD_LED_OFF();
         NRF_LOG_INFO("[EPD]: === Full refresh complete ===\n");
-        ble_log("[EPD]: Full refresh complete");
+        ble_log("[EPD]:full ok");
 
         // Seed the state after fallback full refresh
         {
@@ -929,7 +967,7 @@ finish_refresh:
     }
 
     if (critical_battery) {
-        NRF_LOG_ERROR("[EPD]: Critical battery warning displayed (%d mV), shutting down\n", cached_voltage_mv);
+        NRF_LOG_ERROR("[EPD]: Critical battery warning displayed (%d mV), shutting down\n", refresh_voltage_mv);
     }
 
     if ((ble_disconnected || critical_battery) && epd->drv->sleep) {
@@ -1195,6 +1233,361 @@ static uint32_t epd_parse_time_payload(const uint8_t* p_data, uint16_t length) {
     return parsed_timestamp + (timezone_hours * 60 * 60);
 }
 
+static void cmd_set_pins(ble_epd_t *p_epd, uint8_t *p_data, uint16_t length) {
+    if (length < 8) return;
+    epd_config_t candidate = p_epd->config;
+    candidate.mosi_pin = p_data[1];
+    candidate.sclk_pin = p_data[2];
+    candidate.cs_pin   = p_data[3];
+    candidate.dc_pin   = p_data[4];
+    candidate.rst_pin  = p_data[5];
+    candidate.busy_pin = p_data[6];
+    candidate.bs_pin   = p_data[7];
+    if (length > 8) candidate.en_pin = p_data[8];
+    if (EPD_GPIO_Config_Conflicts_With_Ext_Flash(&candidate)) {
+        NRF_LOG_ERROR("[EPD]: SET_PINS rejected: P0.12-P0.15 reserved for external Flash");
+        return;
+    }
+    p_epd->config = candidate;
+    epd_config_write(&p_epd->config);
+    EPD_GPIO_Uninit();
+    EPD_GPIO_Load(&p_epd->config);
+    EPD_GPIO_Init();
+    app_feed_wdt();
+}
+
+static void cmd_init(ble_epd_t *p_epd, uint8_t *p_data, uint16_t length) {
+    p_epd->epd = epd_init((epd_model_id_t)(length > 1 ? p_data[1] : p_epd->config.model_id));
+    if (p_epd->epd->id != p_epd->config.model_id) {
+        p_epd->config.model_id = p_epd->epd->id;
+        epd_config_write(&p_epd->config);
+    }
+    epd_send_mtu(p_epd);
+    epd_send_time(p_epd);
+    epd_send_voltage(p_epd);
+    app_feed_wdt();
+}
+
+static void cmd_clear(ble_epd_t *p_epd, uint8_t *p_data, uint16_t length) {
+    if (p_epd->epd == NULL) return;
+    if (p_epd->config.display_mode == MODE_CLOCK || p_epd->config.display_mode == MODE_CLOCK_CALENDAR) {
+        NRF_LOG_INFO("Switch mode: clear\n");
+        epd_switch_from_clock_mode(p_epd);
+    }
+    epd_update_display_mode(p_epd, MODE_PICTURE);
+    p_epd->epd->drv->clear(p_epd->epd, length > 1 ? p_data[1] : true);
+    app_feed_wdt();
+}
+
+static void cmd_send_command(ble_epd_t *p_epd, uint8_t *p_data, uint16_t length) {
+    if (length < 2) return;
+    if (p_epd->config.display_mode == MODE_CLOCK || p_epd->config.display_mode == MODE_CLOCK_CALENDAR) {
+        NRF_LOG_INFO("Switch mode: cmd\n");
+        epd_switch_from_clock_mode(p_epd);
+        epd_update_display_mode(p_epd, MODE_PICTURE);
+    }
+    EPD_WriteCmd(p_data[1]);
+    app_feed_wdt();
+}
+
+static void cmd_send_data(ble_epd_t *p_epd, uint8_t *p_data, uint16_t length) {
+    if (p_epd->config.display_mode == MODE_CLOCK || p_epd->config.display_mode == MODE_CLOCK_CALENDAR) {
+        NRF_LOG_INFO("Switch mode: data\n");
+        epd_switch_from_clock_mode(p_epd);
+        epd_update_display_mode(p_epd, MODE_PICTURE);
+    }
+    EPD_WriteData(&p_data[1], length - 1);
+    app_feed_wdt();
+}
+
+static void cmd_refresh(ble_epd_t *p_epd, uint8_t *p_data, uint16_t length) {
+    (void)p_data; (void)length;
+    if (p_epd->epd == NULL) return;
+    epd_update_display_mode(p_epd, MODE_PICTURE);
+    p_epd->epd->drv->refresh(p_epd->epd);
+    app_feed_wdt();
+}
+
+static void cmd_sleep(ble_epd_t *p_epd, uint8_t *p_data, uint16_t length) {
+    (void)p_data; (void)length;
+    if (p_epd->epd == NULL) return;
+    p_epd->epd->drv->sleep(p_epd->epd);
+    app_feed_wdt();
+}
+
+static void cmd_set_time(ble_epd_t *p_epd, uint8_t *p_data, uint16_t length) {
+    if (length < 5) return;
+    NRF_LOG_DEBUG("time: %02x %02x %02x %02x\n", p_data[1], p_data[2], p_data[3], p_data[4]);
+    if (length > 5) {
+        NRF_LOG_DEBUG("timezone: %d\n", (int8_t)p_data[5]);
+    }
+    uint32_t ts = epd_parse_time_payload(p_data, length);
+    set_timestamp(ts);
+    if (length > 6) {
+        epd_update_display_mode_with_refresh(p_epd, (display_mode_t)p_data[6], false);
+    }
+    ble_epd_on_timer(p_epd, ts, true);
+    app_feed_wdt();
+}
+
+static void cmd_sync_time_silent(ble_epd_t *p_epd, uint8_t *p_data, uint16_t length) {
+    (void)p_epd;
+    if (length < 5) return;
+    uint32_t ts = epd_parse_time_payload(p_data, length);
+    set_timestamp(ts);
+    NRF_LOG_INFO("[EPD]: Time synced silently\n");
+    app_feed_wdt();
+}
+
+static void cmd_set_week_start(ble_epd_t *p_epd, uint8_t *p_data, uint16_t length) {
+    if (length < 2) return;
+    if (p_data[1] < 7 && p_data[1] != p_epd->config.week_start) {
+        p_epd->config.week_start = p_data[1];
+        epd_config_write(&p_epd->config);
+    }
+    app_feed_wdt();
+}
+
+static void cmd_set_mode(ble_epd_t *p_epd, uint8_t *p_data, uint16_t length) {
+    if (length < 2) return;
+    if (p_data[1] == MODE_PICTURE ||
+        (p_data[1] <= 15 &&
+         p_epd->epd != NULL &&
+         GUI_ModeExists(p_data[1], p_epd->epd->width, p_epd->epd->height))) {
+        display_mode_t new_mode = (display_mode_t)p_data[1];
+        NRF_LOG_INFO("[EPD]: CMD_SET_MODE: switching to mode %d\n", new_mode);
+        if (p_epd->config.display_mode == MODE_CLOCK || p_epd->config.display_mode == MODE_CLOCK_CALENDAR) {
+            if (new_mode != MODE_CLOCK && new_mode != MODE_CLOCK_CALENDAR) {
+                epd_switch_from_clock_mode(p_epd);
+            }
+        }
+        epd_update_display_mode(p_epd, new_mode);
+        ble_epd_on_timer(p_epd, timestamp(), true);
+    }
+    app_feed_wdt();
+}
+
+static void cmd_write_image(ble_epd_t *p_epd, uint8_t *p_data, uint16_t length) {
+    if (length < 3) return;
+    if (p_epd->epd == NULL) return;
+    if (p_epd->config.display_mode == MODE_CLOCK || p_epd->config.display_mode == MODE_CLOCK_CALENDAR) {
+        NRF_LOG_INFO("Switch mode: img\n");
+        epd_switch_from_clock_mode(p_epd);
+    }
+    epd_update_display_mode(p_epd, MODE_PICTURE);
+    p_epd->epd->drv->write_ram(p_epd->epd, p_data[1], &p_data[2], length - 2);
+    app_feed_wdt();
+}
+
+static void cmd_write_block(ble_epd_t *p_epd, uint8_t *p_data, uint16_t length) {
+    if (length < 8) return;
+    if (p_epd->epd == NULL) return;
+    uint16_t block_id    = p_data[1] | (p_data[2] << 8);
+    uint16_t total_blocks = p_data[3] | (p_data[4] << 8);
+    uint8_t  cfg         = p_data[5];
+    uint16_t payload_len = length - 8;
+    uint8_t *payload     = &p_data[6];
+    uint16_t recv_crc    = p_data[length - 2] | (p_data[length - 1] << 8);
+    uint16_t calc_crc    = crc16_compute(payload, payload_len);
+
+    if (calc_crc == recv_crc) {
+        if (block_id >= EPD_MAX_BLOCKS || block_id >= total_blocks) {
+            NRF_LOG_WARNING("[EPD]: Block %d invalid (max=%d, total=%d)\n",
+                            block_id, EPD_MAX_BLOCKS, total_blocks);
+            send_block_response(p_epd, block_id, 0x02);
+            return;
+        }
+        if (total_blocks == 0 || total_blocks > EPD_MAX_BLOCKS) {
+            NRF_LOG_WARNING("[EPD]: Invalid total_blocks=%d\n", total_blocks);
+            send_block_response(p_epd, block_id, 0x02);
+            return;
+        }
+        if (block_id == 0 || !p_epd->transfer_ctx.transfer_active) {
+            p_epd->transfer_ctx.total_blocks    = total_blocks;
+            p_epd->transfer_ctx.received_blocks = 0;
+            memset(p_epd->transfer_ctx.block_bitmap, 0, EPD_BLOCK_BITMAP_SIZE);
+            p_epd->transfer_ctx.transfer_active = true;
+            if (p_epd->config.display_mode == MODE_CLOCK ||
+                p_epd->config.display_mode == MODE_CLOCK_CALENDAR) {
+                NRF_LOG_INFO("Switch mode: block\n");
+                epd_switch_from_clock_mode(p_epd);
+            }
+            epd_update_display_mode(p_epd, MODE_PICTURE);
+        } else if (p_epd->transfer_ctx.total_blocks != total_blocks) {
+            NRF_LOG_WARNING("[EPD]: total_blocks changed mid-transfer: %d -> %d, resetting\n",
+                            p_epd->transfer_ctx.total_blocks, total_blocks);
+            p_epd->transfer_ctx.total_blocks    = total_blocks;
+            p_epd->transfer_ctx.received_blocks = 0;
+            memset(p_epd->transfer_ctx.block_bitmap, 0, EPD_BLOCK_BITMAP_SIZE);
+        }
+        uint16_t byte_idx = block_id / 8;
+        uint8_t  bit_idx  = block_id % 8;
+        if (byte_idx < EPD_BLOCK_BITMAP_SIZE &&
+            !(p_epd->transfer_ctx.block_bitmap[byte_idx] & (1 << bit_idx))) {
+            p_epd->epd->drv->write_ram(p_epd->epd, cfg, payload, payload_len);
+            p_epd->transfer_ctx.block_bitmap[byte_idx] |= (1 << bit_idx);
+            p_epd->transfer_ctx.received_blocks++;
+            NRF_LOG_DEBUG("[EPD]: Block %d/%d received, cfg=0x%02X, CRC OK\n",
+                          block_id, total_blocks, cfg);
+        } else {
+            NRF_LOG_DEBUG("[EPD]: Block %d already received (duplicate)\n", block_id);
+        }
+        send_block_response(p_epd, block_id, 0x00);
+    } else {
+        NRF_LOG_WARNING("[EPD]: Block %d CRC mismatch! recv=0x%04X, calc=0x%04X\n",
+                        block_id, recv_crc, calc_crc);
+        send_block_response(p_epd, block_id, 0x01);
+    }
+    app_feed_wdt();
+}
+
+static void cmd_query_status(ble_epd_t *p_epd, uint8_t *p_data, uint16_t length) {
+    (void)p_data; (void)length;
+    send_transfer_status(p_epd);
+}
+
+static void cmd_reset_transfer(ble_epd_t *p_epd, uint8_t *p_data, uint16_t length) {
+    memset(&p_epd->transfer_ctx, 0, sizeof(image_transfer_ctx_t));
+    if (length > 1) {
+        p_epd->transfer_ctx.session_id = p_data[1];
+    }
+    p_epd->transfer_ctx.transfer_active = false;
+    NRF_LOG_INFO("[EPD]: Transfer state reset, session_id=%d\n", p_epd->transfer_ctx.session_id);
+}
+
+static void cmd_res_erase(ble_epd_t *p_epd, uint8_t *p_data, uint16_t length) {
+    if (length < 8) {
+        send_resource_op_response(p_epd, EPD_CMD_RES_ERASE, 0, NRF_ERROR_INVALID_LENGTH);
+        return;
+    }
+    uint32_t address   = epd_parse_u24_le(&p_data[1]);
+    uint32_t erase_len = epd_parse_u32_le(&p_data[4]);
+    ret_code_t ret = epd_resources_ensure_ready();
+    if (ret == NRF_SUCCESS) {
+        ret = epd_ext_resource_erase(address, erase_len);
+    }
+    if (ret == NRF_SUCCESS) {
+        /* 擦除会使 manifest 失效，GUI_ReloadUICache 会同步重置农历库缓存并
+         * 失效 UI/月历渲染缓存。重建失败时缓存被标记为无效，后续渲染回退到
+         * 干净白屏而非乱码。 */
+        if (p_epd->epd != NULL) {
+            (void)GUI_ReloadUICache(p_epd->epd->width, p_epd->epd->height, (uint8_t)p_epd->epd->color);
+        }
+    }
+    send_resource_op_response(p_epd, EPD_CMD_RES_ERASE, 0, ret);
+    app_feed_wdt();
+}
+
+static void cmd_res_write(ble_epd_t *p_epd, uint8_t *p_data, uint16_t length) {
+    if (length < 8) {
+        send_resource_op_response(p_epd, EPD_CMD_RES_WRITE, 0, NRF_ERROR_INVALID_LENGTH);
+        return;
+    }
+    uint16_t seq        = (uint16_t)p_data[1] | ((uint16_t)p_data[2] << 8);
+    uint32_t address    = epd_parse_u24_le(&p_data[3]);
+    uint8_t *payload    = &p_data[6];
+    uint16_t payload_len = length - 8;
+    uint16_t recv_crc   = (uint16_t)p_data[length - 2] | ((uint16_t)p_data[length - 1] << 8);
+    uint16_t calc_crc   = crc16_compute(payload, payload_len);
+    if (calc_crc != recv_crc) {
+        send_resource_op_response(p_epd, EPD_CMD_RES_WRITE, seq, NRF_ERROR_INVALID_DATA);
+        return;
+    }
+    ret_code_t ret = epd_resources_ensure_ready();
+    if (ret == NRF_SUCCESS) {
+        ret = epd_ext_resource_write(address, payload, payload_len);
+    }
+    send_resource_op_response(p_epd, EPD_CMD_RES_WRITE, seq, ret);
+    app_feed_wdt();
+}
+
+static void cmd_res_commit(ble_epd_t *p_epd, uint8_t *p_data, uint16_t length) {
+    (void)p_data; (void)length;
+    ret_code_t ret = epd_resources_ensure_ready();
+    if (ret == NRF_SUCCESS) {
+        ret = epd_ext_resource_commit_staging();
+    }
+    if (ret == NRF_SUCCESS) {
+        /* 新资源已激活：GUI_ReloadUICache 会同步重置农历库缓存并重建
+         * UI/月历渲染缓存，使更新后的数据库无需重启设备即可生效。 */
+        if (p_epd->epd != NULL) {
+            ret_code_t ui_ret = GUI_ReloadUICache(p_epd->epd->width, p_epd->epd->height, (uint8_t)p_epd->epd->color);
+            if (ui_ret != NRF_SUCCESS) {
+                NRF_LOG_WARNING("[EPD]: UI cache reload after resource commit failed: %lu",
+                                (unsigned long)ui_ret);
+            }
+        }
+    }
+    /* 提交结束资源会话(无论成功与否)，恢复周期刷新以立即呈现新资源；
+     * 失败时 web 会从擦除重新开始，届时会再次进入会话。 */
+    p_epd->res_session_active = false;
+    send_resource_op_response(p_epd, EPD_CMD_RES_COMMIT, 0, ret);
+    app_feed_wdt();
+}
+
+static void cmd_res_status(ble_epd_t *p_epd, uint8_t *p_data, uint16_t length) {
+    (void)p_data; (void)length;
+    ret_code_t ret = epd_resources_ensure_ready();
+    send_resource_status(p_epd, ret);
+    app_feed_wdt();
+}
+
+static void cmd_res_read(ble_epd_t *p_epd, uint8_t *p_data, uint16_t length) {
+    uint8_t  buffer[BLE_EPD_MAX_DATA_LEN];
+    uint16_t max_payload = p_epd->max_data_len > 10 ? (p_epd->max_data_len - 10) : 0;
+    if (length < 7) {
+        send_resource_read_response(p_epd, 0, 0, NRF_ERROR_INVALID_LENGTH, NULL, 0);
+        return;
+    }
+    uint16_t seq     = (uint16_t)p_data[1] | ((uint16_t)p_data[2] << 8);
+    uint32_t address = epd_parse_u24_le(&p_data[3]);
+    uint8_t  read_len = p_data[6];
+    if (read_len > max_payload || read_len > sizeof(buffer)) {
+        send_resource_read_response(p_epd, seq, address, NRF_ERROR_INVALID_LENGTH, NULL, 0);
+        return;
+    }
+    ret_code_t ret = epd_resources_ensure_ready();
+    if (ret == NRF_SUCCESS) {
+        ret = epd_ext_resource_read_raw(address, buffer, read_len);
+    }
+    send_resource_read_response(p_epd, seq, address, ret, buffer, (ret == NRF_SUCCESS) ? read_len : 0);
+    app_feed_wdt();
+}
+
+static void cmd_set_config(ble_epd_t *p_epd, uint8_t *p_data, uint16_t length) {
+    if (length < 2) return;
+    display_mode_t old_mode = (display_mode_t)p_epd->config.display_mode;
+    memcpy(&p_epd->config, &p_data[1], (length - 1 > EPD_CONFIG_SIZE) ? EPD_CONFIG_SIZE : length - 1);
+    epd_config_write(&p_epd->config);
+    if (p_epd->config.display_mode != old_mode) {
+        NRF_LOG_INFO("[EPD]: display_mode changed via SET_CONFIG: %d -> %d\n", old_mode, p_epd->config.display_mode);
+        if ((p_epd->config.display_mode == MODE_CLOCK || p_epd->config.display_mode == MODE_CLOCK_CALENDAR) &&
+            old_mode != p_epd->config.display_mode) {
+            p_epd->force_full_refresh = true;
+            ble_epd_on_timer(p_epd, timestamp(), true);
+        }
+    }
+    app_feed_wdt();
+}
+
+static void cmd_sys_sleep(ble_epd_t *p_epd, uint8_t *p_data, uint16_t length) {
+    (void)p_epd; (void)p_data; (void)length;
+    sleep_mode_enter();
+    app_feed_wdt();
+}
+
+static void cmd_sys_reset(ble_epd_t *p_epd, uint8_t *p_data, uint16_t length) {
+    (void)p_epd; (void)p_data; (void)length;
+    nrf_pwr_mgmt_shutdown(NRF_PWR_MGMT_SHUTDOWN_RESET);
+}
+
+static void cmd_cfg_erase(ble_epd_t *p_epd, uint8_t *p_data, uint16_t length) {
+    (void)p_data; (void)length;
+    epd_config_clear(&p_epd->config);
+    nrf_delay_ms(100);
+    NVIC_SystemReset();
+}
+
 /**@brief 执行单个命令(由队列处理器调用)
  *        Execute a single command (called by queue processor)
  *
@@ -1225,568 +1618,31 @@ static void epd_execute_command(ble_epd_t* p_epd, uint8_t* p_data, uint16_t leng
     app_feed_wdt();
 
     switch (p_data[0]) {
-        // ====================================================================
-        // 引脚配置命令 (0x00)
-        // Pin Configuration Command
-        // ====================================================================
-        case EPD_CMD_SET_PINS:
-            if (length < 8) return;
-            {
-                epd_config_t candidate = p_epd->config;
-                candidate.mosi_pin = p_data[1];
-                candidate.sclk_pin = p_data[2];
-                candidate.cs_pin = p_data[3];
-                candidate.dc_pin = p_data[4];
-                candidate.rst_pin = p_data[5];
-                candidate.busy_pin = p_data[6];
-                candidate.bs_pin = p_data[7];
-                if (length > 8) candidate.en_pin = p_data[8];
-
-                if (EPD_GPIO_Config_Conflicts_With_Ext_Flash(&candidate)) {
-                    NRF_LOG_ERROR("[EPD]: SET_PINS rejected: P0.12-P0.15 reserved for external Flash");
-                    return;
-                }
-                p_epd->config = candidate;
-            }
-            epd_config_write(&p_epd->config);
-
-            // 重新初始化GPIO / Reinitialize GPIO
-            EPD_GPIO_Uninit();
-            EPD_GPIO_Load(&p_epd->config);
-            EPD_GPIO_Init();
-            app_feed_wdt();  // Feed watchdog after GPIO operations. GPIO操作后喂狗
-            break;
-
-        // ====================================================================
-        // EPD初始化命令 (0x01)
-        // EPD Initialization Command
-        // ====================================================================
-        case EPD_CMD_INIT:
-            // 初始化EPD驱动,可指定型号或使用配置中的型号
-            // Initialize EPD driver, can specify model or use config model
-            p_epd->epd = epd_init((epd_model_id_t)(length > 1 ? p_data[1] : p_epd->config.model_id));
-            if (p_epd->epd->id != p_epd->config.model_id) {
-                p_epd->config.model_id = p_epd->epd->id;
-                epd_config_write(&p_epd->config);
-            }
-            // 发送MTU、时间和当前电压信息给对端
-            // Send MTU, current time, and current battery voltage to peer
-            epd_send_mtu(p_epd);
-            epd_send_time(p_epd);
-            epd_send_voltage(p_epd);
-            app_feed_wdt();  // Feed watchdog after EPD init. EPD初始化后喂狗
-            break;
-
-        // ====================================================================
-        // 清屏命令 (0x02)
-        // Clear Screen Command
-        // ====================================================================
-        case EPD_CMD_CLEAR:
-            if (p_epd->epd == NULL) return;  // EPD not initialized. EPD未初始化
-            // 如果在时钟模式,需要先切换到图片模式
-            // If in clock mode, need to switch to picture mode first
-            if (p_epd->config.display_mode == MODE_CLOCK || p_epd->config.display_mode == MODE_CLOCK_CALENDAR) {
-                NRF_LOG_INFO("Switch mode: clear\n");
-                epd_switch_from_clock_mode(p_epd);
-            }
-            epd_update_display_mode(p_epd, MODE_PICTURE);
-            p_epd->epd->drv->clear(p_epd->epd, length > 1 ? p_data[1] : true);
-            app_feed_wdt();  // Feed watchdog after clear. 清屏后喂狗
-            break;
-
-        // ====================================================================
-        // 发送命令到EPD (0x03)
-        // Send Command to EPD
-        // ====================================================================
-        case EPD_CMD_SEND_COMMAND:
-            if (length < 2) return;
-            // In clock mode, switch to picture mode for direct command operation
-            // 在时钟模式下,切换到图片模式进行直接命令操作
-            if (p_epd->config.display_mode == MODE_CLOCK || p_epd->config.display_mode == MODE_CLOCK_CALENDAR) {
-                NRF_LOG_INFO("Switch mode: cmd\n");
-                epd_switch_from_clock_mode(p_epd);
-                epd_update_display_mode(p_epd, MODE_PICTURE);
-            }
-            EPD_WriteCmd(p_data[1]);
-            app_feed_wdt();  // Feed watchdog after send command. 发送命令后喂狗
-            break;
-
-        // ====================================================================
-        // 发送数据到EPD (0x04)
-        // Send Data to EPD
-        // ====================================================================
-        case EPD_CMD_SEND_DATA:
-            // In clock mode, switch to picture mode for direct data operation
-            // 在时钟模式下,切换到图片模式进行直接数据操作
-            if (p_epd->config.display_mode == MODE_CLOCK || p_epd->config.display_mode == MODE_CLOCK_CALENDAR) {
-                NRF_LOG_INFO("Switch mode: data\n");
-                epd_switch_from_clock_mode(p_epd);
-                epd_update_display_mode(p_epd, MODE_PICTURE);
-            }
-            EPD_WriteData(&p_data[1], length - 1);
-            app_feed_wdt();  // Feed watchdog after send data. 发送数据后喂狗
-            break;
-
-        // ====================================================================
-        // 刷新显示命令 (0x05)
-        // Refresh Display Command
-        // ====================================================================
-        case EPD_CMD_REFRESH:
-            if (p_epd->epd == NULL) return;  // EPD not initialized. EPD未初始化
-            epd_update_display_mode(p_epd, MODE_PICTURE);
-            p_epd->epd->drv->refresh(p_epd->epd);
-            app_feed_wdt();  // Feed watchdog after refresh. 刷新后喂狗
-            break;
-
-        // ====================================================================
-        // EPD睡眠命令 (0x06)
-        // EPD Sleep Command
-        // ====================================================================
-        case EPD_CMD_SLEEP:
-            if (p_epd->epd == NULL) return;  // EPD not initialized. EPD未初始化
-            p_epd->epd->drv->sleep(p_epd->epd);
-            app_feed_wdt();  // Feed watchdog after sleep. 睡眠后喂狗
-            break;
-
-        // ====================================================================
-        // 设置时间命令 (0x20)
-        // Set Time Command
-        // ====================================================================
-        case EPD_CMD_SET_TIME: {
-            if (length < 5) return;
-
-            NRF_LOG_DEBUG("time: %02x %02x %02x %02x\n", p_data[1], p_data[2], p_data[3], p_data[4]);
-            if (length > 5) {
-                NRF_LOG_DEBUG("timezone: %d\n", (int8_t)p_data[5]);
-            }
-
-            uint32_t timestamp = epd_parse_time_payload(p_data, length);
-            set_timestamp(timestamp);
-
-            // Keep legacy behavior for compatibility:
-            // if mode is present, update it; regardless of whether mode is present,
-            // SET_TIME still triggers an immediate refresh.
-            // 保持旧协议行为以兼容历史客户端:
-            // 若带模式则更新模式; 无论是否带模式, SET_TIME 仍立即刷新。
-            if (length > 6) {
-                // Note: auto_refresh=false because ble_epd_on_timer is called below
-                // 注意: auto_refresh=false因为下面会调用ble_epd_on_timer
-                epd_update_display_mode_with_refresh(p_epd, (display_mode_t)p_data[6], false);
-            }
-            ble_epd_on_timer(p_epd, timestamp, true);
-            app_feed_wdt();  // Feed watchdog after set time. 设置时间后喂狗
-        } break;
-
-        // ====================================================================
-        // 静默校时命令 (0x23)
-        // Silent Time Sync Command
-        // ====================================================================
-        case EPD_CMD_SYNC_TIME_SILENT: {
-            if (length < 5) return;
-
-            uint32_t timestamp = epd_parse_time_payload(p_data, length);
-            set_timestamp(timestamp);
-            NRF_LOG_INFO("[EPD]: Time synced silently\n");
-            app_feed_wdt();
-        } break;
-
-        // ====================================================================
-        // 设置周起始日命令 (0x21)
-        // Set Week Start Day Command
-        // ====================================================================
-        case EPD_CMD_SET_WEEK_START:
-            if (length < 2) return;
-            // 0: Sunday, 1: Monday, ... 6: Saturday
-            // 0: 周日, 1: 周一, ... 6: 周六
-            if (p_data[1] < 7 && p_data[1] != p_epd->config.week_start) {
-                p_epd->config.week_start = p_data[1];
-                epd_config_write(&p_epd->config);
-            }
-            app_feed_wdt();  // Feed watchdog after set week start. 设置周起始日后喂狗
-            break;
-
-        // ====================================================================
-        // 设置显示模式命令 (0x22)
-        // Set Display Mode Command
-        // ====================================================================
-        // 模式切换处理流程:
-        // Mode switching process:
-        // 1. 检查新模式是否有效
-        // 2. 如果从时钟模式切换出去,重新初始化显示屏
-        // 3. 设置强制全刷标志
-        // 4. 更新模式并触发GUI更新
-        // ====================================================================
-        case EPD_CMD_SET_MODE:
-            if (length < 2) return;
-            if (p_data[1] == MODE_PICTURE ||
-                (p_data[1] <= 15 &&
-                 p_epd->epd != NULL &&
-                 GUI_ModeExists(p_data[1], p_epd->epd->width, p_epd->epd->height))) {
-                display_mode_t new_mode = (display_mode_t)p_data[1];
-                NRF_LOG_INFO("[EPD]: CMD_SET_MODE: switching to mode %d\n", new_mode);
-
-                // If switching from clock modes, reinitialize display
-                // 如果从时钟模式切换,重新初始化显示屏
-                if (p_epd->config.display_mode == MODE_CLOCK || p_epd->config.display_mode == MODE_CLOCK_CALENDAR) {
-                    if (new_mode != MODE_CLOCK && new_mode != MODE_CLOCK_CALENDAR) {
-                        epd_switch_from_clock_mode(p_epd);
-                    }
-                }
-
-                // Update mode and force full refresh
-                // 更新模式并强制全刷
-                epd_update_display_mode(p_epd, new_mode);
-
-                // Trigger immediate GUI update with current time
-                // 使用当前时间立即触发GUI更新
-                ble_epd_on_timer(p_epd, timestamp(), true);
-            }
-            app_feed_wdt();  // Feed watchdog after set mode. 设置模式后喂狗
-            break;
-
-        // ====================================================================
-        // 写入图像命令 (0x30)
-        // Write Image Command
-        // ====================================================================
-        // MSB=0000: ram begin, LSB=1111: black
-        // 用于将图像数据写入EPD RAM
-        case EPD_CMD_WRITE_IMAGE:
-            if (length < 3) return;
-            if (p_epd->epd == NULL) return;  // EPD not initialized. EPD未初始化
-            // In clock mode, switch to picture mode and reinitialize for normal write_ram operation
-            // Clock mode uses partial refresh which is incompatible with direct write_ram
-            // 在时钟模式下,切换到图片模式并重新初始化以进行正常的write_ram操作
-            // 时钟模式使用局刷,与直接write_ram不兼容
-            if (p_epd->config.display_mode == MODE_CLOCK || p_epd->config.display_mode == MODE_CLOCK_CALENDAR) {
-                NRF_LOG_INFO("Switch mode: img\n");
-                epd_switch_from_clock_mode(p_epd);
-            }
-            epd_update_display_mode(p_epd, MODE_PICTURE);  // Officially update mode. 正式更新模式
-            p_epd->epd->drv->write_ram(p_epd->epd, p_data[1], &p_data[2], length - 2);
-            app_feed_wdt();  // Feed watchdog after write image. 写入图像后喂狗
-            break;
-
-        // ====================================================================
-        // 带CRC校验的分块写入命令 (0x31)
-        // Write Block with CRC16 Checksum Command
-        // ====================================================================
-        // 数据格式: [cmd(1)][block_id(2)][total_blocks(2)][cfg(1)][payload(N)][crc16(2)]
-        // Data format: [cmd(1)][block_id(2)][total_blocks(2)][cfg(1)][payload(N)][crc16(2)]
-        // cfg字节: 低4位=图层(0x0F=黑白层, 0x00=颜色层), 高4位=是否首块(0x00=首块, 0xF0=续块)
-        // cfg byte: low nibble=layer(0x0F=BW, 0x00=color), high nibble=first flag(0x00=first, 0xF0=continue)
-        case EPD_CMD_WRITE_BLOCK:
-            if (length < 8) return;  // 最小长度: cmd(1) + block_id(2) + total(2) + cfg(1) + crc(2)
-            if (p_epd->epd == NULL) return;
-            {
-                // 解析数据包
-                uint16_t block_id = p_data[1] | (p_data[2] << 8);
-                uint16_t total_blocks = p_data[3] | (p_data[4] << 8);
-                uint8_t cfg = p_data[5];  // 图层+首块标志
-                uint16_t payload_len = length - 8;  // 减去协议头尾
-                uint8_t* payload = &p_data[6];
-                uint16_t recv_crc = p_data[length - 2] | (p_data[length - 1] << 8);
-                
-                // 计算CRC并验证 (只校验payload部分)
-                uint16_t calc_crc = crc16_compute(payload, payload_len);
-                
-                if (calc_crc == recv_crc) {
-                    // CRC正确
-                    
-                    // 1. 检查block_id合法性
-                    if (block_id >= EPD_MAX_BLOCKS || block_id >= total_blocks) {
-                        NRF_LOG_WARNING("[EPD]: Block %d invalid (max=%d, total=%d)\n",
-                                       block_id, EPD_MAX_BLOCKS, total_blocks);
-                        send_block_response(p_epd, block_id, 0x02);  // NACK - invalid block ID
-                        break;
-                    }
-                    
-                    // 2. 检查total_blocks合法性
-                    if (total_blocks == 0 || total_blocks > EPD_MAX_BLOCKS) {
-                        NRF_LOG_WARNING("[EPD]: Invalid total_blocks=%d\n", total_blocks);
-                        send_block_response(p_epd, block_id, 0x02);  // NACK - invalid total
-                        break;
-                    }
-                    
-                    // 初始化或更新传输上下文
-                    if (block_id == 0 || !p_epd->transfer_ctx.transfer_active) {
-                        // 新传输或第一个块
-                        p_epd->transfer_ctx.total_blocks = total_blocks;
-                        p_epd->transfer_ctx.received_blocks = 0;
-                        memset(p_epd->transfer_ctx.block_bitmap, 0, EPD_BLOCK_BITMAP_SIZE);
-                        p_epd->transfer_ctx.transfer_active = true;
-                        
-                        // 如果在时钟模式，需先切换到图片模式
-                        if (p_epd->config.display_mode == MODE_CLOCK || 
-                            p_epd->config.display_mode == MODE_CLOCK_CALENDAR) {
-                            NRF_LOG_INFO("Switch mode: block\n");
-                            epd_switch_from_clock_mode(p_epd);
-                        }
-                        epd_update_display_mode(p_epd, MODE_PICTURE);
-                    } else if (p_epd->transfer_ctx.total_blocks != total_blocks) {
-                        // 3. 检测total_blocks在传输中途变化(可能是APP端bug或新传输)
-                        NRF_LOG_WARNING("[EPD]: total_blocks changed mid-transfer: %d -> %d, resetting\n",
-                                       p_epd->transfer_ctx.total_blocks, total_blocks);
-                        // 重置传输上下文
-                        p_epd->transfer_ctx.total_blocks = total_blocks;
-                        p_epd->transfer_ctx.received_blocks = 0;
-                        memset(p_epd->transfer_ctx.block_bitmap, 0, EPD_BLOCK_BITMAP_SIZE);
-                    }
-                    
-                    // 检查是否重复块(断点续传时可能重发)
-                    uint16_t byte_idx = block_id / 8;
-                    uint8_t bit_idx = block_id % 8;
-                    if (byte_idx < EPD_BLOCK_BITMAP_SIZE && 
-                        !(p_epd->transfer_ctx.block_bitmap[byte_idx] & (1 << bit_idx))) {
-                        // 新块: 写入EPD RAM
-                        // 使用APP传入的cfg参数，包含图层信息和首块标志
-                        p_epd->epd->drv->write_ram(p_epd->epd, cfg, payload, payload_len);
-                        
-                        // 标记块已接收
-                        p_epd->transfer_ctx.block_bitmap[byte_idx] |= (1 << bit_idx);
-                        p_epd->transfer_ctx.received_blocks++;
-                        
-                        NRF_LOG_DEBUG("[EPD]: Block %d/%d received, cfg=0x%02X, CRC OK\n", 
-                                     block_id, total_blocks, cfg);
-                    } else {
-                        NRF_LOG_DEBUG("[EPD]: Block %d already received (duplicate)\n", block_id);
-                    }
-                    
-                    // 发送ACK
-                    send_block_response(p_epd, block_id, 0x00);
-                } else {
-                    // CRC错误，发送NACK请求重传
-                    NRF_LOG_WARNING("[EPD]: Block %d CRC mismatch! recv=0x%04X, calc=0x%04X\n",
-                                   block_id, recv_crc, calc_crc);
-                    send_block_response(p_epd, block_id, 0x01);
-                }
-            }
-            app_feed_wdt();
-            break;
-
-        // ====================================================================
-        // 查询传输状态命令 (0x32) - 用于断点续传
-        // Query Transfer Status Command - for Resume Upload
-        // ====================================================================
-        case EPD_CMD_QUERY_STATUS:
-            send_transfer_status(p_epd);
-            break;
-
-        // ====================================================================
-        // 重置传输状态命令 (0x33)
-        // Reset Transfer State Command
-        // ====================================================================
-        case EPD_CMD_RESET_TRANSFER:
-            memset(&p_epd->transfer_ctx, 0, sizeof(image_transfer_ctx_t));
-            if (length > 1) {
-                p_epd->transfer_ctx.session_id = p_data[1];
-            }
-            p_epd->transfer_ctx.transfer_active = false;
-            NRF_LOG_INFO("[EPD]: Transfer state reset, session_id=%d\n", p_epd->transfer_ctx.session_id);
-            break;
-
-        // ====================================================================
-        // 外置Flash资源擦除命令 (0x40)
-        // External Resource Flash Erase Command
-        // Format: [cmd][address24_le][length32_le]
-        // ====================================================================
-        case EPD_CMD_RES_ERASE: {
-            ret_code_t ret;
-            uint32_t address;
-            uint32_t erase_len;
-
-            if (length < 8) {
-                send_resource_op_response(p_epd, EPD_CMD_RES_ERASE, 0, NRF_ERROR_INVALID_LENGTH);
-                break;
-            }
-
-            address = epd_parse_u24_le(&p_data[1]);
-            erase_len = epd_parse_u32_le(&p_data[4]);
-            ret = epd_resources_ensure_ready();
-            if (ret == NRF_SUCCESS) {
-                ret = epd_ext_resource_erase(address, erase_len);
-            }
-            if (ret == NRF_SUCCESS) {
-                /* 擦除会使 manifest 失效，同步重置农历库缓存以免读到已失效数据。 */
-                lunar_db_reset();
-                /* 失效 UI/月历渲染缓存：擦除后若继续用旧缓存渲染，会从已擦除(0xFF)的
-                 * Flash 读取到乱码，导致红屏/异常全刷。重建失败时缓存被标记为无效，
-                 * 后续渲染回退到干净白屏而非乱码。 */
-                if (p_epd->epd != NULL) {
-                    (void)GUI_ReloadUICache(p_epd->epd->width, p_epd->epd->height, (uint8_t)p_epd->epd->color);
-                }
-            }
-            send_resource_op_response(p_epd, EPD_CMD_RES_ERASE, 0, ret);
-            app_feed_wdt();
-        } break;
-
-        // ====================================================================
-        // 外置Flash资源分片写入命令 (0x41)
-        // External Resource Flash Chunk Write Command
-        // Format: [cmd][seq16_le][address24_le][payload][crc16_le(payload)]
-        // ====================================================================
-        case EPD_CMD_RES_WRITE: {
-            ret_code_t ret;
-            uint16_t seq;
-            uint32_t address;
-            uint8_t* payload;
-            uint16_t payload_len;
-            uint16_t recv_crc;
-            uint16_t calc_crc;
-
-            if (length < 8) {
-                send_resource_op_response(p_epd, EPD_CMD_RES_WRITE, 0, NRF_ERROR_INVALID_LENGTH);
-                break;
-            }
-
-            seq = (uint16_t)p_data[1] | ((uint16_t)p_data[2] << 8);
-            address = epd_parse_u24_le(&p_data[3]);
-            payload = &p_data[6];
-            payload_len = length - 8;
-            recv_crc = (uint16_t)p_data[length - 2] | ((uint16_t)p_data[length - 1] << 8);
-            calc_crc = crc16_compute(payload, payload_len);
-
-            if (calc_crc != recv_crc) {
-                send_resource_op_response(p_epd, EPD_CMD_RES_WRITE, seq, NRF_ERROR_INVALID_DATA);
-                break;
-            }
-
-            ret = epd_resources_ensure_ready();
-            if (ret == NRF_SUCCESS) {
-                ret = epd_ext_resource_write(address, payload, payload_len);
-            }
-            send_resource_op_response(p_epd, EPD_CMD_RES_WRITE, seq, ret);
-            app_feed_wdt();
-        } break;
-
-        // ====================================================================
-        // 外置Flash资源manifest提交命令 (0x42)
-        // External Resource Manifest Commit Command
-        // ====================================================================
-        case EPD_CMD_RES_COMMIT: {
-            ret_code_t ret = epd_resources_ensure_ready();
-            if (ret == NRF_SUCCESS) {
-                ret = epd_ext_resource_commit_staging();
-            }
-            if (ret == NRF_SUCCESS) {
-                /* 新资源已激活：重置农历库初始化/单日缓存，使更新后的数据库
-                 * 无需重启设备即可生效（配合下方 UI/月历缓存重建）。 */
-                lunar_db_reset();
-                if (p_epd->epd != NULL) {
-                    ret_code_t ui_ret = GUI_ReloadUICache(p_epd->epd->width, p_epd->epd->height, (uint8_t)p_epd->epd->color);
-                    if (ui_ret != NRF_SUCCESS) {
-                        NRF_LOG_WARNING("[EPD]: UI cache reload after resource commit failed: %lu",
-                                        (unsigned long)ui_ret);
-                    }
-                }
-            }
-            /* 提交结束资源会话(无论成功与否)，恢复周期刷新以立即呈现新资源；
-             * 失败时 web 会从擦除重新开始，届时会再次进入会话。 */
-            p_epd->res_session_active = false;
-            send_resource_op_response(p_epd, EPD_CMD_RES_COMMIT, 0, ret);
-            app_feed_wdt();
-        } break;
-
-        // ====================================================================
-        // 外置Flash资源状态查询命令 (0x43)
-        // External Resource Status Query Command
-        // ====================================================================
-        case EPD_CMD_RES_STATUS: {
-            ret_code_t ret = epd_resources_ensure_ready();
-            send_resource_status(p_epd, ret);
-            app_feed_wdt();
-        } break;
-
-        // ====================================================================
-        // 外置Flash资源原始读取命令 (0x44)
-        // External Resource Raw Read Command
-        // Format: [cmd][seq16_le][address24_le][length]
-        // ====================================================================
-        case EPD_CMD_RES_READ: {
-            uint8_t buffer[BLE_EPD_MAX_DATA_LEN];
-            ret_code_t ret;
-            uint16_t seq;
-            uint32_t address;
-            uint8_t read_len;
-            uint16_t max_payload = p_epd->max_data_len > 10 ? (p_epd->max_data_len - 10) : 0;
-
-            if (length < 7) {
-                send_resource_read_response(p_epd, 0, 0, NRF_ERROR_INVALID_LENGTH, NULL, 0);
-                break;
-            }
-
-            seq = (uint16_t)p_data[1] | ((uint16_t)p_data[2] << 8);
-            address = epd_parse_u24_le(&p_data[3]);
-            read_len = p_data[6];
-            if (read_len > max_payload || read_len > sizeof(buffer)) {
-                send_resource_read_response(p_epd, seq, address, NRF_ERROR_INVALID_LENGTH, NULL, 0);
-                break;
-            }
-
-            ret = epd_resources_ensure_ready();
-            if (ret == NRF_SUCCESS) {
-                ret = epd_ext_resource_read_raw(address, buffer, read_len);
-            }
-            send_resource_read_response(p_epd, seq, address, ret, buffer, (ret == NRF_SUCCESS) ? read_len : 0);
-            app_feed_wdt();
-        } break;
-
-        // ====================================================================
-        // 设置配置命令 (0x90)
-        // Set Configuration Command
-        // ====================================================================
-        case EPD_CMD_SET_CONFIG:
-            if (length < 2) return;
-            {
-                display_mode_t old_mode = (display_mode_t)p_epd->config.display_mode;
-                memcpy(&p_epd->config, &p_data[1], (length - 1 > EPD_CONFIG_SIZE) ? EPD_CONFIG_SIZE : length - 1);
-                epd_config_write(&p_epd->config);
-
-                // If display mode changed, update LED control and handle mode transitions
-                // 如果显示模式改变,更新LED控制并处理模式转换
-                if (p_epd->config.display_mode != old_mode) {
-                    NRF_LOG_INFO("[EPD]: display_mode changed via SET_CONFIG: %d -> %d\n", old_mode, p_epd->config.display_mode);
-
-                    // If switched to CLOCK or CLOCK_CALENDAR mode, force full refresh to clear residual data
-                    // 如果切换到时钟或时钟+日历模式,强制全刷以清除残影
-                    if ((p_epd->config.display_mode == MODE_CLOCK || p_epd->config.display_mode == MODE_CLOCK_CALENDAR) &&
-                        old_mode != p_epd->config.display_mode) {
-                        p_epd->force_full_refresh = true;
-                        ble_epd_on_timer(p_epd, timestamp(), true);
-                    }
-                }
-            }
-            app_feed_wdt();  // Feed watchdog after set config. 设置配置后喂狗
-            break;
-
-        // ====================================================================
-        // 系统睡眠命令 (0x92) - 紧急命令
-        // System Sleep Command - Urgent Command
-        // ====================================================================
-        case EPD_CMD_SYS_SLEEP:
-            sleep_mode_enter();
-            app_feed_wdt();  // Feed watchdog after sleep (may not execute). 睡眠后喂狗(可能不会执行)
-            break;
-
-        // ====================================================================
-        // 系统复位命令 (0x91) - 紧急命令
-        // System Reset Command - Urgent Command
-        // ====================================================================
-        case EPD_CMD_SYS_RESET:
-            nrf_pwr_mgmt_shutdown(NRF_PWR_MGMT_SHUTDOWN_RESET);
-            break;
-
-        // ====================================================================
-        // 擦除配置命令 (0x99) - 紧急命令
-        // Erase Configuration Command - Urgent Command
-        // ====================================================================
-        case EPD_CMD_CFG_ERASE:
-            epd_config_clear(&p_epd->config);
-            nrf_delay_ms(100);  // required. 必需的延时
-            NVIC_SystemReset();
-            break;
-
-        default:
-            break;
+        case EPD_CMD_SET_PINS:        cmd_set_pins(p_epd, p_data, length);        break;
+        case EPD_CMD_INIT:            cmd_init(p_epd, p_data, length);            break;
+        case EPD_CMD_CLEAR:           cmd_clear(p_epd, p_data, length);           break;
+        case EPD_CMD_SEND_COMMAND:    cmd_send_command(p_epd, p_data, length);    break;
+        case EPD_CMD_SEND_DATA:       cmd_send_data(p_epd, p_data, length);       break;
+        case EPD_CMD_REFRESH:         cmd_refresh(p_epd, p_data, length);         break;
+        case EPD_CMD_SLEEP:           cmd_sleep(p_epd, p_data, length);           break;
+        case EPD_CMD_SET_TIME:        cmd_set_time(p_epd, p_data, length);        break;
+        case EPD_CMD_SYNC_TIME_SILENT: cmd_sync_time_silent(p_epd, p_data, length); break;
+        case EPD_CMD_SET_WEEK_START:  cmd_set_week_start(p_epd, p_data, length);  break;
+        case EPD_CMD_SET_MODE:        cmd_set_mode(p_epd, p_data, length);        break;
+        case EPD_CMD_WRITE_IMAGE:     cmd_write_image(p_epd, p_data, length);     break;
+        case EPD_CMD_WRITE_BLOCK:     cmd_write_block(p_epd, p_data, length);     break;
+        case EPD_CMD_QUERY_STATUS:    cmd_query_status(p_epd, p_data, length);    break;
+        case EPD_CMD_RESET_TRANSFER:  cmd_reset_transfer(p_epd, p_data, length);  break;
+        case EPD_CMD_RES_ERASE:       cmd_res_erase(p_epd, p_data, length);       break;
+        case EPD_CMD_RES_WRITE:       cmd_res_write(p_epd, p_data, length);       break;
+        case EPD_CMD_RES_COMMIT:      cmd_res_commit(p_epd, p_data, length);      break;
+        case EPD_CMD_RES_STATUS:      cmd_res_status(p_epd, p_data, length);      break;
+        case EPD_CMD_RES_READ:        cmd_res_read(p_epd, p_data, length);        break;
+        case EPD_CMD_SET_CONFIG:      cmd_set_config(p_epd, p_data, length);      break;
+        case EPD_CMD_SYS_SLEEP:       cmd_sys_sleep(p_epd, p_data, length);       break;
+        case EPD_CMD_SYS_RESET:       cmd_sys_reset(p_epd, p_data, length);       break;
+        case EPD_CMD_CFG_ERASE:       cmd_cfg_erase(p_epd, p_data, length);       break;
+        default: break;
     }
 
     // Feed watchdog after command execution
@@ -1879,7 +1735,7 @@ static void epd_service_on_write(ble_epd_t* p_epd, uint8_t* p_data, uint16_t len
     if (p_data == NULL || length <= 0) return;
 
     if (p_data[0] != 0x31 && p_data[0] != 0x41) {
-        ble_log("[CMD]: Recv 0x%02x, len=%d", p_data[0], length);
+        ble_log("[CMD]:%02x/%d", p_data[0], length);
     }
 
     // Resource flash commands share SPI/power state with GUI resource loading and
@@ -1949,9 +1805,7 @@ static void on_write(ble_epd_t* p_epd, ble_evt_t* p_ble_evt) {
             // Notification enabled, send config to peer
             NRF_LOG_DEBUG("notification enabled\n");
             p_epd->is_notification_enabled = true;
-            ble_log("[SYS]: BLE notifications enabled, MTU=%d", p_epd->max_data_len);
-            extern uint32_t m_resetreas;
-            ble_log("[SYS]: Reset reason: 0x%08X", m_resetreas);
+            ble_log("[SYS]:mtu=%d rst=0x%X", p_epd->max_data_len, get_reset_reason());
             static uint16_t length = sizeof(epd_config_t);
             NRF_LOG_DEBUG("send epd config\n");
             uint32_t err_code = ble_epd_string_send(p_epd, (uint8_t*)&p_epd->config, length);
@@ -2134,6 +1988,7 @@ uint32_t ble_epd_init(ble_epd_t* p_epd) {
     p_epd->conn_handle = BLE_CONN_HANDLE_INVALID;
     p_epd->is_notification_enabled = false;
     p_epd->force_full_refresh = false;  // Initialize force refresh flag. 初始化强制刷新标志
+    p_epd->last_full_clear    = 0;      // No full refresh yet. 尚未全刷
     p_epd->is_refreshing = false;       // Initialize refreshing flag. 初始化刷新中标志
     p_epd->low_battery_screen_active = false;  // Low-battery page inactive by default. 默认未进入低电量页
     p_epd->res_session_active = false;  // No resource update session at boot. 启动时无资源更新会话
