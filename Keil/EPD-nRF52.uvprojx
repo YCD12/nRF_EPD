@@ -439,6 +439,16 @@
               <FileType>5</FileType>
               <FilePath>..\EPD\epd_ext_resources.h</FilePath>
             </File>
+            <File>
+              <FileName>epd_clock_diff.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\EPD\epd_clock_diff.c</FilePath>
+            </File>
+            <File>
+              <FileName>res_hal.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\EPD\res_hal.c</FilePath>
+            </File>
           </Files>
         </Group>
         <Group>
@@ -1221,6 +1231,16 @@
               <FileType>5</FileType>
               <FilePath>..\EPD\epd_ext_resources.h</FilePath>
             </File>
+            <File>
+              <FileName>epd_clock_diff.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\EPD\epd_clock_diff.c</FilePath>
+            </File>
+            <File>
+              <FileName>res_hal.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\EPD\res_hal.c</FilePath>
+            </File>
           </Files>
         </Group>
         <Group>
@@ -1250,6 +1270,16 @@
               <FileName>Adafruit_GFX.c</FileName>
               <FileType>1</FileType>
               <FilePath>..\GUI\Adafruit_GFX.c</FilePath>
+            </File>
+            <File>
+              <FileName>gui_porting_hal.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\GUI\gui_porting_hal.c</FilePath>
+            </File>
+            <File>
+              <FileName>ui_runtime.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\GUI\ui_runtime.c</FilePath>
             </File>
           </Files>
         </Group>
