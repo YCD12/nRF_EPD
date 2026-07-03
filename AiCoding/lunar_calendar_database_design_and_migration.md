@@ -961,6 +961,41 @@ UC8179 全刷/局刷发出 `DRF` 后 `EPD_WaitBusy` 最长等待 30s。原实现
 - 功能应与旧版一致（超时/释放语义不变）；真机可用电流表对比全刷期间平均电流，或确认刷新完成后显示/局刷/跨天更新仍正常。
 
 #### P4 仍暂缓
-- 资源 HAL 抽象（优化 15）+ 模拟器 `emulator.c` 对齐。
-- 黄金图回归（建议 A2，依赖 HAL）。
+- ~~资源 HAL 抽象（优化 15）~~ → **已落地，见 7.17**。
+- 黄金图回归（建议 A2，依赖 HAL 已具备主机读路径，待补渲染测试）。
 - `epd_gui_update` 完全异步化（刷新命令发出后立即返回 scheduler，由 BUSY 中断续跑 `finish_refresh`）——收益边际递减，暂不做。
+
+### 7.17 P4 落地：资源读取 HAL 抽象 (Implementation Log)
+
+> 承接路线图 P4（优化 15）：把 L1 资源读取从 SPI Flash 物理驱动中抽离为平台无关契约，为 PC 主机回归与后续 `emulator.c` 对齐铺路。
+
+#### 接口（`EPD/res_hal.h`）
+```c
+ret_code_t res_hal_get_info(uint16_t type, uint16_t id, epd_ext_resource_entry_t* entry);
+ret_code_t res_hal_read(uint16_t type, uint16_t id, uint32_t offset, void* buf, size_t len);
+```
+
+#### 双端实现
+| 平台 | 文件 | 行为 |
+| --- | --- | --- |
+| nRF 真机 | `EPD/res_hal.c` | 薄封装，转发 `epd_ext_resource_get_info/read`（含 wake/边界校验） |
+| PC 主机 | `tools/res_hal_host.c` | `res_hal_host_init(path)` 加载 `epd_resources.bin`，按 manifest 解析 type/id 偏移后 `memcpy` |
+
+#### 上层切换（只经 HAL，不再直调 Flash API）
+- `GUI/Lunar.c`：LCDB 全部 `res_hal_read`
+- `GUI/GUI.c`：`ui_bundle_read` / `ui_read_header` 用 `res_hal_*`
+- `GUI/u8g2_font.c`：外置字模缓存用 `res_hal_*`
+
+`EPD_service.c` 的 BLE 原始读写、`epd_ext_resources.c` 的 manifest/擦写仍走底层 Flash API（属 L0 管理面，不经过 HAL）。
+
+#### 测试收敛
+- `tools/test/test_lunar_db.c` 删除内联 manifest 模拟，改链 `res_hal_host.c`；编译命令见文件头注释。
+- 等价回归仍为 2025–2027 全年 1095 天 0 不一致。
+
+#### 验证
+- 固件 `-Werror` 编译通过（`res_hal.c` 仅转发，ROM 增量极小）。
+- 主机等价测试通过。
+
+#### 仍暂缓
+- `emulator.c`（Win32 GDI）接入 `res_hal_host` + 800×480 布局渲染（与真机像素对齐的黄金图 A2）。
+- BLE 资源管理仍直读 Flash，无需 HAL。

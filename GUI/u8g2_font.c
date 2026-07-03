@@ -42,6 +42,7 @@
 #include <stdint.h>
 
 #include "epd_ext_resources.h"
+#include "res_hal.h"
 
 extern void app_feed_wdt(void);
 
@@ -95,7 +96,7 @@ static uint8_t u8g2_font_read_byte(const uint8_t* font) {
         uint32_t base_offset = offset & ~(uint32_t)(U8G2_EXT_FONT_CACHE_SIZE - 1U);
         size_t chunk_len = U8G2_EXT_FONT_CACHE_SIZE;
 
-        ret = epd_ext_resource_get_info(EPD_EXT_RES_TYPE_FONT, font_id, &entry);
+        ret = res_hal_get_info(EPD_EXT_RES_TYPE_FONT, font_id, &entry);
         if (ret != NRF_SUCCESS || base_offset >= entry.length) {
             return 0;
         }
@@ -103,7 +104,7 @@ static uint8_t u8g2_font_read_byte(const uint8_t* font) {
             chunk_len = (size_t)(entry.length - base_offset);
         }
 
-        ret = epd_ext_resource_read(EPD_EXT_RES_TYPE_FONT, font_id, base_offset,
+        ret = res_hal_read(EPD_EXT_RES_TYPE_FONT, font_id, base_offset,
                                     m_u8g2_ext_font_cache.data, chunk_len);
         if (ret != NRF_SUCCESS) {
             m_u8g2_ext_font_cache.valid = false;

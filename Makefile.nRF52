@@ -70,6 +70,7 @@ SRC_FILES += \
   $(PROJ_DIR)/EPD/EPD_service.c \
   $(PROJ_DIR)/EPD/fm25q04b.c \
   $(PROJ_DIR)/EPD/epd_ext_resources.c \
+  $(PROJ_DIR)/EPD/res_hal.c \
   $(PROJ_DIR)/EPD/UC8179.c \
   $(PROJ_DIR)/EPD/epd_clock_diff.c \
   $(PROJ_DIR)/GUI/GUI.c \

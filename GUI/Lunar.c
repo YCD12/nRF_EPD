@@ -1,6 +1,7 @@
 ﻿#include "Lunar.h"
 
 #include "../EPD/epd_ext_resources.h"
+#include "../EPD/res_hal.h"
 
 #define LUNAR_YEAR_BASE         2024U
 #define LUNAR_YEAR_COUNT        6U
@@ -77,7 +78,7 @@ int lunar_db_init(void) {
     s_db_inited = true;
     s_db_valid = false;
 
-    if (epd_ext_resource_read(EPD_EXT_RES_TYPE_LUNAR_DB, EPD_EXT_LUNAR_DB_ENTRY, 0, header, sizeof(header)) !=
+    if (res_hal_read(EPD_EXT_RES_TYPE_LUNAR_DB, EPD_EXT_LUNAR_DB_ENTRY, 0, header, sizeof(header)) !=
         NRF_SUCCESS) {
         return -2;
     }
@@ -102,7 +103,7 @@ int lunar_db_init(void) {
     }
 
     /* 年份偏移表紧随 16B 主头部，按小端 uint32 存储，与 MCU 字节序一致，直接读入。 */
-    if (epd_ext_resource_read(EPD_EXT_RES_TYPE_LUNAR_DB, EPD_EXT_LUNAR_DB_ENTRY, 16, s_db_year_offsets,
+    if (res_hal_read(EPD_EXT_RES_TYPE_LUNAR_DB, EPD_EXT_LUNAR_DB_ENTRY, 16, s_db_year_offsets,
                               (size_t)s_db_year_count * 4U) != NRF_SUCCESS) {
         return -5;
     }
@@ -118,7 +119,7 @@ static int lunar_db_read_year_header(uint16_t eff_year, uint32_t* block_offset, 
     uint8_t idx = (uint8_t)(eff_year - s_db_start_year);
     uint32_t base = s_db_year_offsets[idx];
 
-    if (epd_ext_resource_read(EPD_EXT_RES_TYPE_LUNAR_DB, EPD_EXT_LUNAR_DB_ENTRY, base, yh, sizeof(yh)) !=
+    if (res_hal_read(EPD_EXT_RES_TYPE_LUNAR_DB, EPD_EXT_LUNAR_DB_ENTRY, base, yh, sizeof(yh)) !=
         NRF_SUCCESS) {
         return -1;
     }
@@ -163,7 +164,7 @@ int lunar_db_get_record(uint16_t year, uint8_t month, uint8_t day, daily_record_
     }
 
     addr = base + LUNAR_DB_YEAR_HEADER_SZ + (uint32_t)doy * s_db_record_size;
-    if (epd_ext_resource_read(EPD_EXT_RES_TYPE_LUNAR_DB, EPD_EXT_LUNAR_DB_ENTRY, addr, out_record,
+    if (res_hal_read(EPD_EXT_RES_TYPE_LUNAR_DB, EPD_EXT_LUNAR_DB_ENTRY, addr, out_record,
                               sizeof(daily_record_t)) != NRF_SUCCESS) {
         return -4;
     }
@@ -215,7 +216,7 @@ const char* lunar_db_get_string(uint16_t year, uint16_t offset, char* buffer, si
     addr = base + pool_offset + offset;
     while (i < buffer_len - 1U) {
         uint8_t ch;
-        if (epd_ext_resource_read(EPD_EXT_RES_TYPE_LUNAR_DB, EPD_EXT_LUNAR_DB_ENTRY, addr + i, &ch, 1) !=
+        if (res_hal_read(EPD_EXT_RES_TYPE_LUNAR_DB, EPD_EXT_LUNAR_DB_ENTRY, addr + i, &ch, 1) !=
             NRF_SUCCESS) {
             break;
         }
@@ -248,7 +249,7 @@ static const char* lunar_read_name(uint16_t id, uint8_t index, uint8_t count, ui
 
     read_len = (buffer_len - 1 < item_size) ? buffer_len - 1 : item_size;
     buffer[0] = '\0';
-    ret = epd_ext_resource_read(EPD_EXT_RES_TYPE_LUNAR, id, (uint32_t)index * item_size, buffer, read_len);
+    ret = res_hal_read(EPD_EXT_RES_TYPE_LUNAR, id, (uint32_t)index * item_size, buffer, read_len);
     if (ret != NRF_SUCCESS) {
         return lunar_copy_fallback(fallback, buffer, buffer_len);
     }
