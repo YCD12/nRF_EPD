@@ -44,7 +44,7 @@ typedef enum {
     UI_TEXT_SSID = 9,
 } ui_text_data_id_t;
 
-typedef struct {
+typedef struct __attribute__((packed)) {
     uint8_t type;
     uint8_t data_id;
     uint8_t font_id;
@@ -61,7 +61,7 @@ typedef struct {
     uint16_t text_offset;
 } ui_component_record_t;
 
-typedef struct {
+typedef struct __attribute__((packed)) {
     uint8_t mode_id;
     uint8_t update_policy;
     uint8_t component_start;
@@ -71,6 +71,7 @@ typedef struct {
     uint16_t partial_w;
     uint16_t partial_h;
     uint16_t flags;
+    uint8_t reserved[2];
 } ui_mode_record_t;
 
 static inline uint16_t ui_runtime_clamp_u16(int16_t value, uint16_t min_value, uint16_t max_value) {
