@@ -1115,11 +1115,9 @@ void DrawGUI(gui_data_t* data, buffer_callback callback, void* callback_data) {
     // __HEAP_SIZE是总堆大小，减去512字节保留空间，再除以每行需要的字节数(width/8)
     int16_t ph = (__HEAP_SIZE - 512) / (data->width / 8);
 
-    // 根据颜色模式初始化GFX | Initialize GFX based on color mode
+    // 根据颜色模式初始化GFX | Initialize GFX based on color mode (BWR 3-color or monochrome fallback)
     if (data->color == 2)
         GFX_begin_3c(&gfx, data->width, data->height, ph);  // 三色屏幕 | 3-color screen
-    else if (data->color == 3)
-        GFX_begin_4c(&gfx, data->width, data->height, ph);  // 四色屏幕 | 4-color screen
     else
         GFX_begin(&gfx, data->width, data->height, ph);     // 黑白屏幕 | B/W screen
 
@@ -1452,8 +1450,6 @@ void DrawResourceMissingScreen(gui_data_t* data, buffer_callback callback, void*
 
     if (data->color == 2) {
         GFX_begin_3c(&gfx, data->width, data->height, ph);
-    } else if (data->color == 3) {
-        GFX_begin_4c(&gfx, data->width, data->height, ph);
     } else {
         GFX_begin(&gfx, data->width, data->height, ph);
     }

@@ -790,6 +790,112 @@ def build_manifest(entries):
     return bytes(manifest), manifest_crc
 
 
+def get_u8g2_font_supported_chars(font_bytes):
+    start_pos_unicode = int.from_bytes(font_bytes[21:23], byteorder='big')
+    supported = set()
+    idx = 23
+    while idx + 1 < len(font_bytes):
+        glyph_size = font_bytes[idx + 1]
+        if glyph_size == 0:
+            break
+        encoding = font_bytes[idx]
+        supported.add(chr(encoding))
+        idx += glyph_size
+    lookup_table_start = 23 + start_pos_unicode
+    if lookup_table_start < len(font_bytes):
+        first_subblock_rel_offset = int.from_bytes(font_bytes[lookup_table_start:lookup_table_start+2], byteorder='big')
+        num_entries = first_subblock_rel_offset // 4
+        current_subblock_offset = lookup_table_start
+        for i in range(num_entries):
+            entry_offset = lookup_table_start + i * 4
+            rel_offset = int.from_bytes(font_bytes[entry_offset:entry_offset+2], byteorder='big')
+            current_subblock_offset += rel_offset
+            idx = current_subblock_offset
+            while idx + 2 < len(font_bytes):
+                e_val = int.from_bytes(font_bytes[idx:idx+2], byteorder='big')
+                if e_val == 0:
+                    break
+                glyph_size = font_bytes[idx + 2]
+                if glyph_size == 0:
+                    break
+                supported.add(chr(e_val))
+                idx += glyph_size
+    return supported
+
+
+def validate_font_characters(resources, ui_layout):
+    fonts = {}
+    for res_type, res_id, payload, name in resources:
+        if res_type == RES_TYPE_FONT:
+            fonts[name] = get_u8g2_font_supported_chars(payload)
+
+    # Base sets of characters that must be supported
+    required_chinese = set()
+    for _, _, name in SOLAR_FESTIVALS:
+        required_chinese.update(name)
+    for _, _, name in LUNAR_FESTIVALS:
+        required_chinese.update(name)
+
+    SOLAR_TERMS = [
+        "小寒", "大寒", "立春", "雨水", "惊蛰", "春分", "清明", "谷雨",
+        "立夏", "小满", "芒种", "夏至", "小暑", "大暑", "立秋", "处暑",
+        "白露", "秋分", "寒露", "霜降", "立冬", "小雪", "大雪", "冬至"
+    ]
+    for term in SOLAR_TERMS:
+        required_chinese.update(term)
+
+    # 1. wqy9 required characters (used for all small UI text elements)
+    wqy9_required = set(required_chinese)
+    # Fixed Chinese calendar strings/stems/branches/zodiacs (excluding '卅' as it is never used)
+    wqy9_required.update("闰月年周星期日一二三四五六初十甲乙丙丁戊己庚辛壬癸子丑寅卯辰巳午未申酉戌亥鼠牛虎兔龙蛇马羊猴鸡狗猪℃[]")
+    wqy9_ascii = set("0123456789-:. ")
+
+    # 2. wqy12 required characters (used for large grid days, sync screen etc.)
+    wqy12_required = set(required_chinese)
+    wqy12_required.update("闰月年周星期日一二三四五六初十甲乙丙丁戊己庚辛壬癸子丑寅卯辰巳午未申酉戌亥鼠牛虎兔龙蛇马羊猴鸡狗猪℃离还有天")
+    wqy12_ascii = set("0123456789")
+
+    # Traverse ui_layout for any future static text values
+    def find_static_texts(obj):
+        texts = []
+        if isinstance(obj, dict):
+            for k, v in obj.items():
+                if k == "text" and isinstance(v, str):
+                    texts.append(v)
+                else:
+                    texts.extend(find_static_texts(v))
+        elif isinstance(obj, list):
+            for item in obj:
+                texts.extend(find_static_texts(item))
+        return texts
+
+    for text in find_static_texts(ui_layout):
+        wqy9_required.update(text)
+        wqy12_required.update(text)
+
+    # Font: wqy9
+    if "u8g2_font_wqy9_t_lunar" in fonts:
+        supported = fonts["u8g2_font_wqy9_t_lunar"]
+        missing_cn = sorted(list(wqy9_required - supported))
+        if missing_cn:
+            raise ValueError(f"Font validation failed: 'u8g2_font_wqy9_t_lunar' is missing required characters: {''.join(missing_cn)}")
+        missing_ascii = sorted(list(wqy9_ascii - supported))
+        if missing_ascii:
+            raise ValueError(f"Font validation failed: 'u8g2_font_wqy9_t_lunar' is missing required ASCII characters: {''.join(missing_ascii)}")
+
+    # Font: wqy12
+    if "u8g2_font_wqy12_t_lunar" in fonts:
+        supported = fonts["u8g2_font_wqy12_t_lunar"]
+        missing_cn = sorted(list(wqy12_required - supported))
+        if missing_cn:
+            raise ValueError(f"Font validation failed: 'u8g2_font_wqy12_t_lunar' is missing required characters: {''.join(missing_cn)}")
+        missing_ascii = sorted(list(wqy12_ascii - supported))
+        if missing_ascii:
+            raise ValueError(f"Font validation failed: 'u8g2_font_wqy12_t_lunar' is missing required ASCII characters: {''.join(missing_ascii)}")
+
+    print("Font character validation passed! All required characters are supported by Chinese fonts.")
+
+
 def main():
     ui_layout = default_ui_layout()
     resources = parse_fonts() + parse_lunar_resources() + parse_holiday_resources() + parse_lunar_db_resources() + [
@@ -797,6 +903,10 @@ def main():
     ]
     if INCLUDE_EXTERNAL_LUT_RESOURCES:
         resources += parse_lut_resources()
+
+    # Validate that the fonts contain all required Chinese and ASCII characters
+    validate_font_characters(resources, ui_layout)
+
     if len(resources) > MAX_ENTRIES:
         raise ValueError(f"Too many resources: {len(resources)} > {MAX_ENTRIES}")
 
