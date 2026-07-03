@@ -182,35 +182,6 @@ void GFX_begin_3c(Adafruit_GFX* gfx, int16_t w, int16_t h, int16_t buffer_height
     // 重新计算总页数 | Recalculate total pages
     gfx->total_pages = (gfx->HEIGHT / gfx->page_height) + (gfx->HEIGHT % gfx->page_height > 0);
 }
-
-/**************************************************************************/
-/*!
-   @brief    Instatiate a 4-color GFX context for graphics
-             初始化四色图形上下文（黑/白/红/黄 或其他四色组合）
-   @param    w   Display width, in pixels
-             显示宽度（像素）
-   @param    h   Display height, in pixels
-             显示高度（像素）
-   @param    buffer_height Page buffer height, should be multiple of 2
-             页面缓冲区高度，应为2的倍数
-   @note     四色模式下，每个像素使用2位来表示颜色（00=黑，01=白，10=黄，11=红）。
-             缓冲区布局与三色模式不同，color指针指向buffer自身，用于标识4色模式。
-
-             In 4-color mode, each pixel uses 2 bits for color (00=black, 01=white, 10=yellow, 11=red).
-             Buffer layout differs from 3-color mode; color pointer points to buffer itself
-             to identify 4-color mode.
-*/
-/**************************************************************************/
-void GFX_begin_4c(Adafruit_GFX* gfx, int16_t w, int16_t h, int16_t buffer_height) {
-    GFX_begin(gfx, w, h, buffer_height);
-    gfx->page_height /= 2;
-    // color指向buffer自身，作为4色模式的标识
-    // color points to buffer itself as a marker for 4-color mode
-    gfx->color = gfx->buffer;
-    gfx->total_pages = (gfx->HEIGHT / gfx->page_height) + (gfx->HEIGHT % gfx->page_height > 0);
-}
-
-/**************************************************************************/
 /**
  * @brief   结束绘图并释放分配的缓冲区内存
  *          End drawing and free allocated buffer memory
@@ -379,79 +350,6 @@ void GFX_setWindow(Adafruit_GFX* gfx, uint16_t x, uint16_t y, uint16_t w, uint16
     gfx->px -= gfx->px % 8;                          // 向下对齐到8的倍数 | Align down to multiple of 8
 }
 
-/**************************************************************************/
-/**
- * @brief   将16位RGB565颜色转换为4色电子纸的2位颜色值
- *          Convert 16-bit RGB565 color to 2-bit color value for 4-color e-paper
- * @param   color  16位RGB565颜色值 | 16-bit RGB565 color value
- * @return  2位颜色值: 0x00=黑, 0x01=白, 0x02=黄, 0x03=红
- *          2-bit color value: 0x00=black, 0x01=white, 0x02=yellow, 0x03=red
- * @note    使用静态变量缓存上次转换结果以提高性能
- *          Uses static variables to cache last conversion result for performance
- */
-/**************************************************************************/
-static uint8_t color4(uint16_t color) {
-    // 缓存上次转换结果 | Cache last conversion result
-    static uint16_t _prev_color = GFX_BLACK;
-    static uint8_t _prev_color4 = 0x00;  // black 黑色
-    if (color == _prev_color) return _prev_color4;
-
-    uint8_t cv4 = 0x00;
-    // 处理预定义颜色 | Handle predefined colors
-    switch (color) {
-        case GFX_BLACK:
-            cv4 = 0x00;  // 黑色 | Black
-            break;
-        case GFX_WHITE:
-            cv4 = 0x01;  // 白色 | White
-            break;
-        case GFX_GREEN:
-            cv4 = 0x02;  // 绿色映射为黄色 | Green maps to yellow
-            break;  // use yellow?
-        case GFX_BLUE:
-            cv4 = 0x00;  // 蓝色映射为黑色 | Blue maps to black
-            break;  // use black
-        case GFX_RED:
-            cv4 = 0x03;  // 红色 | Red
-            break;
-        case GFX_YELLOW:
-            cv4 = 0x02;  // 黄色 | Yellow
-            break;
-        case GFX_ORANGE:
-            cv4 = 0x02;  // 橙色映射为黄色 | Orange maps to yellow
-            break;  // use yellow?
-        default: {
-            // 根据RGB分量判断最接近的4色 | Determine closest 4-color based on RGB components
-            // 从RGB565格式提取并扩展各颜色分量 | Extract and expand color components from RGB565
-            uint16_t red = color & 0xF800;           // 红色分量（高5位）
-            uint16_t green = (color & 0x07E0) << 5;  // 绿色分量（中6位），左移对齐
-            uint16_t blue = (color & 0x001F) << 11;  // 蓝色分量（低5位），左移对齐
-            if ((red < 0x8000) && (green < 0x8000) && (blue < 0x8000))
-                cv4 = 0x00;  // black 暗色 -> 黑色
-            else if ((red >= 0x8000) && (green >= 0x8000) && (blue >= 0x8000))
-                cv4 = 0x01;  // white 亮色 -> 白色
-            else if ((red >= 0x8000) && (blue >= 0x8000))
-                cv4 = 0x03;  //  red, blue > red 红蓝混合 -> 红色
-            else if ((green >= 0x8000) && (blue >= 0x8000))
-                cv4 = 0x01;  //  green, blue > white 青色 -> 白色
-            else if ((red >= 0x8000) && (green >= 0xC000))
-                cv4 = 0x02;  // yellow 高亮黄 -> 黄色
-            else if ((red >= 0x8000) && (green >= 0x4000))
-                cv4 = 0x03;  // orange > red 橙色 -> 红色
-            else if (red >= 0x8000)
-                cv4 = 0x03;  // red 纯红 -> 红色
-            else if (green >= 0x8000)
-                cv4 = 0x00;  // green > black 纯绿 -> 黑色
-            else
-                cv4 = 0x03;  // blue 蓝色 -> 红色
-        } break;
-    }
-    // 更新缓存 | Update cache
-    _prev_color = color;
-    _prev_color4 = cv4;
-    return cv4;
-}
-/**************************************************************************/
 /*!
    @brief    Draw a pixel
              绘制单个像素点
@@ -520,28 +418,7 @@ void GFX_drawPixel(Adafruit_GFX* gfx, int16_t x, int16_t y, uint16_t color) {
     if (y < 0 || y >= gfx->page_height) return;
 
     // 根据颜色模式写入像素数据 | Write pixel data based on color mode
-    if (gfx->color == gfx->buffer) {  // 4c 四色模式
-        // 四色模式：每像素2位，每字节存储4个像素
-        // 4-color mode: 2 bits per pixel, 4 pixels per byte
-        uint32_t i = x / 4 + ((uint32_t)y) * (gfx->pw / 4);
-        uint8_t pv = color4(color);  // 转换为2位颜色值 | Convert to 2-bit color value
-        // 根据像素在字节中的位置写入对应的2位
-        // Write 2 bits based on pixel position within byte
-        switch (x % 4) {
-            case 0:  // 最高2位 | Highest 2 bits (bits 7-6)
-                gfx->buffer[i] = (gfx->buffer[i] & 0x3F) | (pv << 6);
-                break;
-            case 1:  // 次高2位 | Second highest 2 bits (bits 5-4)
-                gfx->buffer[i] = (gfx->buffer[i] & 0xCF) | (pv << 4);
-                break;
-            case 2:  // 次低2位 | Second lowest 2 bits (bits 3-2)
-                gfx->buffer[i] = (gfx->buffer[i] & 0xF3) | (pv << 2);
-                break;
-            case 3:  // 最低2位 | Lowest 2 bits (bits 1-0)
-                gfx->buffer[i] = (gfx->buffer[i] & 0xFC) | pv;
-                break;
-        }
-    } else if (gfx->color != NULL) {  // 3c 三色模式
+    if (gfx->color != NULL) {  // 3c 三色模式
         // 三色模式：使用两个独立的缓冲区
         // - buffer: 黑白信息（1=白，0=黑）
         // - color: 彩色信息（0=彩色，1=非彩色）
@@ -772,13 +649,8 @@ void GFX_fillScreen(Adafruit_GFX* gfx, uint16_t color) {
     // 计算单页缓冲区大小（字节数）| Calculate page buffer size in bytes
     uint32_t size = ((gfx->WIDTH + 7) / 8) * gfx->page_height;
 
-    if (gfx->color == gfx->buffer) {        // 4c 四色模式
-        // 四色模式：每字节4个像素，用转换后的颜色值复制填充整个字节
-        // 4-color mode: 4 pixels per byte, replicate converted color to fill entire byte
-        uint8_t pv = color4(color) * 0x55;  // 0b01010101 将2位颜色值扩展到8位
-        memset(gfx->buffer, pv, size * 2);  // 两倍大小（包含黑白和彩色数据）
-    } else {
-        // 单色或三色模式 | Mono or 3-color mode
+    // 单色或三色模式 | Mono or 3-color mode
+    {
         // 填充黑白缓冲区 | Fill black/white buffer
         memset(gfx->buffer, color == GFX_WHITE ? 0xFF : 0x00, size);
         // 如果是三色模式，填充彩色缓冲区 | If 3-color mode, fill color buffer
