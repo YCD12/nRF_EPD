@@ -112,9 +112,10 @@ bool epd_clock_diff_try_partial(epd_model_t *epd, uint32_t timestamp, display_mo
     x_offsets[2] = 2 * digit_w + 4 * cS;
     x_offsets[3] = 2 * digit_w + 4 * cS + digit_w;
 
-    // Partition the global graphics buffer to save RAM
+    // Partition the global graphics buffer dynamically based on actual digit layout size
     uint8_t *old_bm = s_gfx_buffer;
-    uint8_t *new_bm = s_gfx_buffer + 1500;
+    uint32_t single_digit_size = (align_w / 8) * digit_h;
+    uint8_t *new_bm = s_gfx_buffer + single_digit_size;
 
     bool min_tens_changed = (new_vals[2] != old_vals[2]);  // 分钟十位是否改变 | Whether minute tens digit has changed
     bool hour_changed = (new_vals[0] != old_vals[0] || new_vals[1] != old_vals[1]);  // 小时是否改变 | Whether hour digits have changed
