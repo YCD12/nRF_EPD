@@ -103,6 +103,13 @@
 
 #define LOW_BATTERY_POLL_INTERVAL_S 10  // Low-battery mode voltage polling interval in seconds | 低电量模式电压轮询周期(秒)
 
+// 资源更新会话空闲超时(秒)。收到擦除/写入/提交命令后进入会话并暂停周期刷新，
+// 超过该时长未收到新的资源命令(视为上传中断)则自动恢复周期刷新。
+// Idle timeout (s) for a resource update session. Periodic refresh is paused while a
+// session is active; if no new resource command arrives within this window (upload aborted),
+// the session auto-expires and periodic refresh resumes.
+#define EPD_RES_SESSION_TIMEOUT_S 15U
+
 extern void UC8179_Set_Partial_Strong_BW_Allowed(bool allowed);
 
 
@@ -479,6 +486,72 @@ static void epd_process_next_command(void* p_event_data, uint16_t event_size);
 // End of Command Queue Management Functions
 // ============================================================================
 
+/**@brief 资源缺失提示屏——GFX 分页回调：把每页黑平面顺序流式写入已打开的 DTM1 数据流。
+ *
+ * @details 关键：**不使用 PTIN/局部窗口(PTL)寻址**。真机多轮验证表明，全刷 `write_image`
+ *          走 PTIN+`_setPartialRamArea` 的逐页局部窗口寻址，在"空 Flash 上电"这种上下文里
+ *          极不稳定(白屏/红黑白噪点/无反应)；而 `UC8179_Clear` 用的"DTM1/DTM2 顺序写整帧
+ *          (不带 PTIN)"是可靠的(clear(true) 真机能出干净白屏)。
+ *          本回调即复用该顺序写方式：调用前已 `EPD_WriteCmd(DTM1)`(复位 RAM 写指针到 0)，
+ *          这里按页把黑平面数据连续写入，各页拼接正好铺满整帧(与 EPD_FillRAM 同构)。
+ *          红平面(DTM2)由外层统一填 0xFF(无红)，故此处忽略 color。
+ */
+static void epd_resmiss_seq_black_cb(void* user_data, uint8_t* black, uint8_t* color,
+                                     uint16_t x, uint16_t y, uint16_t w, uint16_t h) {
+    (void)user_data;
+    (void)color;
+    (void)x;
+    (void)y;
+    if (black == NULL) {
+        return;
+    }
+    uint16_t wb = (uint16_t)((w + 7) / 8);
+    uint32_t total = (uint32_t)wb * (uint32_t)h;
+    uint32_t offset = 0;
+    while (total > 0) {
+        uint8_t chunk = (total > 128) ? 128 : (uint8_t)total;
+        EPD_WriteData(black + offset, chunk);
+        offset += chunk;
+        total -= chunk;
+        app_feed_wdt();
+    }
+}
+
+/**@brief 绘制"资源缺失/失效"提示屏（诚实降级兜底，顺序写整帧）
+ *
+ * @details 外置 Flash 被清空(全 0xFF)或资源损坏时调用。与 `UC8179_Clear(refresh=true)`
+ *          完全同构(该路径真机验证可靠)，仅把 DTM1 的常量填充换成提示屏黑平面的真实数据：
+ *            1. `EPD_WriteCmd(DTM1)` 打开黑平面数据流(复位 RAM 写指针);
+ *            2. `DrawResourceMissingScreen(seq_black_cb)` 逐页顺序流式写入黑平面(自包含
+ *               内置位图字体，不读外置 Flash);
+ *            3. `EPD_FillRAM(DTM2, 0xFF)` 红平面全填无红;
+ *            4. `drv->refresh` 全刷显示(用 OTP 内置波形，不依赖外置 Flash)。
+ *          全程不用 PTIN/PTL 局部窗口寻址，从根上规避 write_image 在本场景的不稳定。
+ */
+static void epd_draw_resource_missing_screen(epd_model_t* epd, gui_data_t* data) {
+    if (epd == NULL || epd->drv == NULL || data == NULL) {
+        return;
+    }
+    EPD_LED_OFF();
+
+    uint32_t ram_bytes = (uint32_t)((epd->width + 7) / 8) * (uint32_t)epd->height;
+
+    // DTM1(黑平面)：顺序流式写入提示屏
+    EPD_WriteCmd(UC81xx_DTM1);
+    DrawResourceMissingScreen(data, epd_resmiss_seq_black_cb, epd);
+    app_feed_wdt();
+
+    // DTM2(红平面)：全 0xFF = 无红
+    EPD_FillRAM(UC81xx_DTM2, 0xFF, ram_bytes);
+    app_feed_wdt();
+
+    // 全刷显示(与 UC8179_Clear(refresh=true) 相同的收尾)
+    if (epd->drv->refresh != NULL) {
+        epd->drv->refresh(epd);
+    }
+    app_feed_wdt();
+}
+
 /**@brief GUI更新函数(由app_scheduler调度)
  *        GUI update function scheduled by app_scheduler
  *
@@ -529,6 +602,7 @@ static void epd_gui_update(void* p_event_data, uint16_t event_size) {
     cached_voltage_mv = EPD_ReadVoltageAndCache();
     display_mode_t mode = (display_mode_t)p_epd->config.display_mode;
     bool use_partial = false;
+    bool resources_missing = false;
 
     // 准备GUI数据
     // Prepare GUI data
@@ -574,17 +648,35 @@ static void epd_gui_update(void* p_event_data, uint16_t event_size) {
                         (unsigned long)resource_wake_ret);
     }
 
-    if (resource_wake_ret != NRF_SUCCESS || !epd_resources_manifest_ready()) {
-        NRF_LOG_WARNING("[EPD]: External resources missing/invalid — drawing sync hint");
-        EPD_LED_OFF();
-        if (epd->drv && epd->drv->refresh && epd->drv->write_image) {
-            app_feed_wdt();
-            DrawResourceMissingScreen(&data, (buffer_callback)epd->drv->write_image, epd);
-            app_feed_wdt();
-            epd->drv->refresh(epd);
-            app_feed_wdt();
+    // ========================================================================
+    // 资源缺失判定 + 提示屏渲染(顺序写整帧，避开 write_image 的 PTIN/PTL 局部窗口寻址)
+    // Resource-missing detection + hint render (whole-frame sequential write)
+    // ========================================================================
+    // 判定条件:
+    // 1. 唤醒外置 Flash 失败，或 manifest 无效(空 Flash / 损坏)。
+    // 2. manifest 有效但当前模式的 UI 组件加载不出(部分擦除/损坏)——否则 DrawGUI 会读到
+    //    已擦除(0xFF)的字体/组件渲染成红色乱码。低电量页与图片模式不参与此判断。
+    resources_missing = (resource_wake_ret != NRF_SUCCESS) || !epd_resources_manifest_ready();
+    if (!resources_missing && !low_battery &&
+        (mode == MODE_CALENDAR || mode == MODE_CLOCK || mode == MODE_CLOCK_CALENDAR) &&
+        !GUI_ModeExists((uint8_t)mode, epd->width, epd->height)) {
+        resources_missing = true;
+    }
+
+    // 避免空 Flash 时每个刷新周期都全刷提示屏(伤屏且闪烁)：提示屏画过一次后就跳过，
+    // 直到强制全刷(模式切换)或资源恢复。资源恢复时复位标志，让正常画面重新绘制。
+    static bool resource_hint_drawn = false;
+    if (resources_missing) {
+        if (resource_hint_drawn && !p_epd->force_full_refresh) {
+            NRF_LOG_INFO("[EPD]: Resource hint already shown, skipping redundant refresh\n");
+            goto finish_refresh;
         }
+        resource_hint_drawn = true;
+        NRF_LOG_WARNING("[EPD]: External resources missing/invalid — drawing sync hint (sequential full frame)");
+        epd_draw_resource_missing_screen(epd, &data);
         goto finish_refresh;
+    } else {
+        resource_hint_drawn = false;
     }
 
     // DrawGUI(&data, (buffer_callback)epd->drv->write_image, epd);
@@ -1512,6 +1604,16 @@ static void epd_execute_command(ble_epd_t* p_epd, uint8_t* p_data, uint16_t leng
             if (ret == NRF_SUCCESS) {
                 ret = epd_ext_resource_erase(address, erase_len);
             }
+            if (ret == NRF_SUCCESS) {
+                /* 擦除会使 manifest 失效，同步重置农历库缓存以免读到已失效数据。 */
+                lunar_db_reset();
+                /* 失效 UI/月历渲染缓存：擦除后若继续用旧缓存渲染，会从已擦除(0xFF)的
+                 * Flash 读取到乱码，导致红屏/异常全刷。重建失败时缓存被标记为无效，
+                 * 后续渲染回退到干净白屏而非乱码。 */
+                if (p_epd->epd != NULL) {
+                    (void)GUI_ReloadUICache(p_epd->epd->width, p_epd->epd->height);
+                }
+            }
             send_resource_op_response(p_epd, EPD_CMD_RES_ERASE, 0, ret);
             app_feed_wdt();
         } break;
@@ -1564,13 +1666,21 @@ static void epd_execute_command(ble_epd_t* p_epd, uint8_t* p_data, uint16_t leng
             if (ret == NRF_SUCCESS) {
                 ret = epd_ext_resource_commit_staging();
             }
-            if (ret == NRF_SUCCESS && p_epd->epd != NULL) {
-                ret_code_t ui_ret = GUI_ReloadUICache(p_epd->epd->width, p_epd->epd->height);
-                if (ui_ret != NRF_SUCCESS) {
-                    NRF_LOG_WARNING("[EPD]: UI cache reload after resource commit failed: %lu",
-                                    (unsigned long)ui_ret);
+            if (ret == NRF_SUCCESS) {
+                /* 新资源已激活：重置农历库初始化/单日缓存，使更新后的数据库
+                 * 无需重启设备即可生效（配合下方 UI/月历缓存重建）。 */
+                lunar_db_reset();
+                if (p_epd->epd != NULL) {
+                    ret_code_t ui_ret = GUI_ReloadUICache(p_epd->epd->width, p_epd->epd->height);
+                    if (ui_ret != NRF_SUCCESS) {
+                        NRF_LOG_WARNING("[EPD]: UI cache reload after resource commit failed: %lu",
+                                        (unsigned long)ui_ret);
+                    }
                 }
             }
+            /* 提交结束资源会话(无论成功与否)，恢复周期刷新以立即呈现新资源；
+             * 失败时 web 会从擦除重新开始，届时会再次进入会话。 */
+            p_epd->res_session_active = false;
             send_resource_op_response(p_epd, EPD_CMD_RES_COMMIT, 0, ret);
             app_feed_wdt();
         } break;
@@ -1777,6 +1887,15 @@ static void epd_service_on_write(ble_epd_t* p_epd, uint8_t* p_data, uint16_t len
         NRF_LOG_WARNING("[EPD]: Resource command 0x%02x rejected while refreshing", p_data[0]);
         send_resource_busy_response(p_epd, p_data, length);
         return;
+    }
+
+    // 资源变更命令(擦除/写入/提交)进入资源会话，暂停周期刷新，避免刷新占用SPI导致写入失败。
+    // 每条命令续期空闲超时；提交完成后由执行器结束会话。查询类命令(STATUS/READ)只读，不进入会话。
+    if (p_data[0] == EPD_CMD_RES_ERASE ||
+        p_data[0] == EPD_CMD_RES_WRITE ||
+        p_data[0] == EPD_CMD_RES_COMMIT) {
+        p_epd->res_session_active = true;
+        p_epd->res_session_deadline = timestamp() + EPD_RES_SESSION_TIMEOUT_S;
     }
 
     // Urgent commands bypass queue and execute immediately
@@ -2016,6 +2135,8 @@ uint32_t ble_epd_init(ble_epd_t* p_epd) {
     p_epd->force_full_refresh = false;  // Initialize force refresh flag. 初始化强制刷新标志
     p_epd->is_refreshing = false;       // Initialize refreshing flag. 初始化刷新中标志
     p_epd->low_battery_screen_active = false;  // Low-battery page inactive by default. 默认未进入低电量页
+    p_epd->res_session_active = false;  // No resource update session at boot. 启动时无资源更新会话
+    p_epd->res_session_deadline = 0;
 
     // Initialize command queue
     // 初始化命令队列
@@ -2164,15 +2285,58 @@ void ble_epd_on_timer(ble_epd_t* p_epd, uint32_t timestamp, bool force_update) {
         }
     }
 
+    // 资源更新会话进行中：暂停周期刷新，避免屏幕刷新占用SPI导致资源写入失败。
+    // 空闲超过 EPD_RES_SESSION_TIMEOUT_S 秒(上传中断)则自动恢复周期刷新。
+    if (p_epd->res_session_active) {
+        if ((int32_t)(timestamp - p_epd->res_session_deadline) >= 0) {
+            p_epd->res_session_active = false;
+            NRF_LOG_INFO("[EPD]: Resource session idle timeout, resuming periodic refresh\n");
+        } else if (!force_update) {
+            return;
+        }
+    }
+
+    // ========================================================================
+    // 跨天判定链 (Cross-day detection)
+    // ========================================================================
+    // 设备时间戳按本地时区递增，day = timestamp / 86400。日期发生跨天时，对"显示日期"
+    // 的模式(日历 / 时钟+日历)强制一次全刷：
+    //   - 正确性：时钟+日历模式平时只对时间做差分局刷，日期/农历不会随分钟刷新更新；
+    //     跨天全刷确保午夜后日期、星期、农历、节气、节日立即刷新，不必等下一次整点全刷。
+    //   - I/O：跨天后 lunar_db 单日缓存(按年月日)自动失效，新一天的记录重读一次即缓存，
+    //     配合单日缓存实现"今日记录严格 1 读/天"。
+    // 放在低电量 / 资源会话早退之后：若跨天恰逢这些暂停期，恢复后仍能在下一 tick 补触发。
+    static uint32_t s_last_tick_day = 0;
+    static bool s_tick_day_inited = false;
+    uint32_t current_day = timestamp / 86400U;
+    bool day_rolled_over = false;
+    if (!s_tick_day_inited) {
+        s_tick_day_inited = true;
+        s_last_tick_day = current_day;
+    } else if (current_day != s_last_tick_day) {
+        s_last_tick_day = current_day;
+        day_rolled_over = true;
+    }
+
     uint8_t update_policy = GUI_UPDATE_MANUAL;
     if (p_epd->epd != NULL && p_epd->config.display_mode != MODE_PICTURE) {
         update_policy = GUI_GetModeUpdatePolicy((uint8_t)p_epd->config.display_mode,
                                                 p_epd->epd->width, p_epd->epd->height);
     }
 
+    // 跨天仅对含日期的模式有意义(纯时钟无日期、图片模式显示用户图像，均不参与)。
+    bool day_change_refresh = day_rolled_over &&
+                              (p_epd->config.display_mode == MODE_CALENDAR ||
+                               p_epd->config.display_mode == MODE_CLOCK_CALENDAR);
+
     if (force_update ||
+        day_change_refresh ||
         (update_policy == GUI_UPDATE_DAILY && timestamp % 86400 == 0) ||
         (update_policy == GUI_UPDATE_MINUTE && timestamp % 60 == 0)) {
+        // 跨天走全刷重绘日期/农历，而非仅对时间局刷。
+        if (day_change_refresh) {
+            p_epd->force_full_refresh = true;
+        }
         // 通过app_scheduler调度GUI更新
         // Schedule GUI update via app_scheduler
         epd_gui_update_event_t event = {p_epd, timestamp};

@@ -222,6 +222,13 @@ typedef struct {
     bool low_battery_screen_active; /**< Low-battery warning screen is currently shown. */
                                     /**< 当前是否处于低电量警告页面，激活后暂停自动刷新。 */
 
+    // 资源更新会话控制
+    bool res_session_active;        /**< A resource update session (erase/write) is in progress. */
+                                    /**< 外部资源更新会话(擦除/写入)进行中。
+                                     *   激活期间暂停周期刷新，避免刷新与SPI写冲突导致上传失败 */
+    uint32_t res_session_deadline;  /**< Timestamp (s) after which an idle resource session auto-expires. */
+                                    /**< 资源会话空闲超时时间戳(秒)，超时后自动恢复周期刷新 */
+
     // 命令队列
     epd_cmd_queue_t cmd_queue;    /**< Command queue for sequential command execution. */
                                   /**< 用于顺序执行命令的命令队列 */

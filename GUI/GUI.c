@@ -26,7 +26,6 @@
 #define UI_BUNDLE_COMPONENT_SIZE 24U
 #define UI_CACHE_MAX_MODES 8U
 #define UI_RENDER_COMPONENT_CACHE_MAX 18U
-#define MONTH_HOLIDAY_MARK_MAX 48U
 
 #define UI_MODE_LOW_BATTERY 250U
 
@@ -109,14 +108,6 @@ typedef struct {
     uint16_t text_offset;
 } ui_component_record_t;
 
-// 节日数据结构体
-// Festival data structure
-typedef struct {
-    uint8_t month;      // 月份 | Month
-    uint8_t day;        // 日期 | Day
-    char name[10];      // 节日名称(3x3+1) 最多3个汉字 | Festival name (max 3 Chinese characters)
-} Festival;
-
 typedef struct {
     char label[10];
     uint8_t is_festival;
@@ -193,133 +184,43 @@ static void BatteryPercentToText(uint8_t percent, char* text, size_t text_size) 
     }
 }
 
-static uint8_t GetFestivalCount(uint16_t resource_id) {
-    epd_ext_resource_entry_t entry;
-
-    if (epd_ext_resource_get_info(EPD_EXT_RES_TYPE_HOLIDAY, resource_id, &entry) != NRF_SUCCESS) {
-        return 0;
-    }
-    return (uint8_t)(entry.length / sizeof(Festival));
-}
-
-static bool ReadFestival(uint16_t resource_id, uint8_t index, Festival* festival) {
-    if (festival == NULL) {
-        return false;
-    }
-    return epd_ext_resource_read(EPD_EXT_RES_TYPE_HOLIDAY, resource_id,
-                                 (uint32_t)index * sizeof(Festival), festival, sizeof(Festival)) == NRF_SUCCESS;
-}
-
-static bool ReadHolidayHeader(uint16_t* year, uint16_t* count) {
-    uint16_t header[2];
-
-    if (year == NULL || count == NULL) {
-        return false;
-    }
-    if (epd_ext_resource_read(EPD_EXT_RES_TYPE_HOLIDAY, EPD_EXT_HOLIDAY_ADJUSTMENTS,
-                              0, header, sizeof(header)) != NRF_SUCCESS) {
-        return false;
-    }
-
-    *year = header[0];
-    *count = header[1];
-    return true;
-}
-
 /**
- * @brief 获取指定日期的节日名称
- *        Get festival name for a specific date
+ * @brief 获取指定日期的节日名称（数据驱动版）
+ *        Get festival name for a specific date (data-driven)
  *
  * @param year    公历年份 | Gregorian year
  * @param mon     公历月份(1-12) | Gregorian month (1-12)
  * @param day     公历日期(1-31) | Gregorian day (1-31)
- * @param week    星期几(0=周日, 6=周六) | Day of week (0=Sunday, 6=Saturday)
- * @param Lunar   农历日期结构体指针 | Pointer to lunar date structure
- * @param festival 输出缓冲区，用于存储节日名称 | Output buffer for festival name
+ * @param week    星期几(未使用，保留兼容签名) | Day of week (unused, kept for ABI)
+ * @param Lunar   农历日期结构体指针(未使用，保留兼容签名) | Lunar date (unused)
+ * @param festival 输出缓冲区(至少 10 字节) | Output buffer (>= 10 bytes)
  * @return true 找到节日 | Festival found
- * @return false 无节日 | No festival
  *
- * 查询优先级(Priority order)：
- * 1. 农历节日(Lunar festivals)
- * 2. 特殊计算的节日：除夕、母亲节、父亲节、感恩节 | Special calculated festivals
- * 3. 公历节日(Gregorian festivals)
- * 4. 二十四节气(24 Solar Terms)
+ * 所有节日/规则节日/调休均已在打包端预计算并固化进 LCDB。此处仅按优先级读取：
+ * 1. 数据库节日字符串(festival_offset)
+ * 2. 二十四节气(solar_term)，清明补"节"字
  */
 static bool GetFestival(uint16_t year, uint8_t mon, uint8_t day, uint8_t week, struct Lunar_Date* Lunar,
                         char* festival) {
-    Festival item;
-    uint8_t festival_count;
+    daily_record_t rec;
 
-    // 农历节日
-    // Lunar calendar festivals
-    festival_count = GetFestivalCount(EPD_EXT_HOLIDAY_LUNAR_FESTIVALS);
-    for (uint8_t i = 0; i < festival_count; i++) {
-        if (ReadFestival(EPD_EXT_HOLIDAY_LUNAR_FESTIVALS, i, &item) &&
-            Lunar->Month == item.month && Lunar->Date == item.day) {
-            strcpy(festival, item.name);
-            return true;
-        }
+    (void)week;
+    (void)Lunar;
+
+    if (lunar_db_get_record(year, mon, day, &rec) != 0) {
+        return false;
     }
 
-    // 除夕：春节前一天（12/29 或 12/30），12/30 已在上面判断
-    // New Year's Eve: day before Spring Festival (lunar 12/29 or 12/30)
-    // 需要判断次日是否为正月初一，因为农历大小月不固定
-    // Must check if next day is lunar 1/1, as lunar months vary in length
-    if (Lunar->Month == 12 && Lunar->Date == 29) {
-        struct Lunar_Date nextLunar;
-        struct devtm tm = {year, mon, day, 0, 0, 0, week};
-        // 计算次日的农历日期 | Calculate next day's lunar date
-        transformTime(transformTimeStruct(&tm) + 86400, &tm);  // +86400秒(1天) | +86400s (1 day)
-        LUNAR_SolarToLunar(&nextLunar, tm.tm_year + YEAR0, tm.tm_mon + 1, tm.tm_mday);
-        if (nextLunar.Month == 1 && nextLunar.Date == 1) {
-            strcpy(festival, "除夕");
-            return true;
-        }
-    }
-    // 母亲节: 五月第二个星期日
-    // Mother's Day: 2nd Sunday of May
-    if (mon == 5 && week == 0 && day >= 8 && day <= 14) {
-        strcpy(festival, "母亲节");
-        return true;
-    }
-    // 父亲节: 六月第三个星期日
-    // Father's Day: 3rd Sunday of June
-    if (mon == 6 && week == 0 && day >= 15 && day <= 21) {
-        strcpy(festival, "父亲节");
-        return true;
-    }
-    // 感恩节：十一月第四个星期四
-    // Thanksgiving: 4th Thursday of November
-    if (mon == 11 && week == 4 && day >= 22 && day <= 28) {
-        strcpy(festival, "感恩节");
-        return true;
+    if (rec.festival_offset != 0xFFFF) {
+        lunar_db_get_string(year, rec.festival_offset, festival, 10);
+        return festival[0] != '\0';
     }
 
-    // 公历节日
-    // Gregorian calendar festivals
-    festival_count = GetFestivalCount(EPD_EXT_HOLIDAY_SOLAR_FESTIVALS);
-    for (uint8_t i = 0; i < festival_count; i++) {
-        if (ReadFestival(EPD_EXT_HOLIDAY_SOLAR_FESTIVALS, i, &item) && mon == item.month && day == item.day) {
-            strcpy(festival, item.name);
-            return true;
-        }
-    }
-
-    // 二十四节气
-    // 24 Solar Terms
-    // 节气是中国传统历法的重要组成部分，用于指导农业生产
-    // Solar terms are important components of Chinese traditional calendar for agricultural guidance
-    uint8_t JQdate;
-    if (GetJieQi(year, mon, day, &JQdate) && JQdate == day) {
-        // 计算节气索引：每月2个节气，day>=15则为第二个节气
-        // Calculate solar term index: 2 per month, if day>=15 then it's the 2nd one
-        uint8_t JQ = (mon - 1) * 2;
-        if (day >= 15) JQ++;
-        LUNAR_GetJieQiName(JQ, festival, 10);
-        if (JQ == 6)  // 清明
-            // 清明既是节气又是节日，需要加"节"字 | Qingming is both solar term and festival
+    if (rec.solar_term != 0) {
+        LUNAR_GetJieQiName((uint8_t)(rec.solar_term - 1), festival, 10);
+        if ((rec.solar_term - 1) == 6) {  // 清明既是节气又是节日
             strcat(festival, "节");
-
+        }
         return true;
     }
 
@@ -333,10 +234,6 @@ static void month_cache_copy_label(month_day_render_cache_t* cache, const char* 
 
 static const month_render_cache_t* PrepareMonthRenderCache(uint16_t year, uint8_t month) {
     uint8_t month_days;
-    uint16_t holiday_year = 0;
-    uint16_t holiday_count = 0;
-    uint16_t holiday_marks[MONTH_HOLIDAY_MARK_MAX];
-    bool holiday_marks_valid = false;
 
     if (m_month_render_cache.valid &&
         m_month_render_cache.year == year &&
@@ -354,24 +251,11 @@ static const month_render_cache_t* PrepareMonthRenderCache(uint16_t year, uint8_
     m_month_render_cache.year = year;
     m_month_render_cache.month = month;
     m_month_render_cache.days = month_days;
-    if (ReadHolidayHeader(&holiday_year, &holiday_count) &&
-        holiday_year == year &&
-        holiday_count <= MONTH_HOLIDAY_MARK_MAX) {
-        bool read_ok = true;
-        for (uint16_t i = 0; i < holiday_count; i++) {
-            if (epd_ext_resource_read(EPD_EXT_RES_TYPE_HOLIDAY, EPD_EXT_HOLIDAY_ADJUSTMENTS,
-                                      4U + (uint32_t)i * sizeof(holiday_marks[0]),
-                                      &holiday_marks[i], sizeof(holiday_marks[0])) != NRF_SUCCESS) {
-                read_ok = false;
-                break;
-            }
-        }
-        holiday_marks_valid = read_ok;
-    }
 
     for (uint8_t day = 1; day <= month_days; day++) {
         month_day_render_cache_t* cache = &m_month_render_cache.days_cache[day - 1U];
         struct Lunar_Date day_lunar;
+        daily_record_t day_rec;
         char label[10] = {0};
         uint8_t actual_week = (uint8_t)((get_first_day_week(year, month) + day - 1U) % 7U);
 
@@ -391,16 +275,10 @@ static const month_render_cache_t* PrepareMonthRenderCache(uint16_t year, uint8_
             month_cache_copy_label(cache, LUNAR_GetDateName(day_lunar.Date, label, sizeof(label)));
         }
 
-        if (holiday_marks_valid) {
-            for (uint16_t i = 0; i < holiday_count; i++) {
-                uint16_t value = holiday_marks[i];
-                if (((value >> 8) & 0xF) != month || (value & 0xFF) != day) {
-                    continue;
-                }
-                cache->has_holiday_mark = 1U;
-                cache->holiday_work = (((value >> 12) & 0xF) > 0) ? 1U : 0U;
-                break;
-            }
+        /* 调休标志直接取自 LCDB 预计算记录：1=休(放假)，2=班(补班)。 */
+        if (lunar_db_get_record(year, month, day, &day_rec) == 0 && day_rec.holiday_type != 0U) {
+            cache->has_holiday_mark = 1U;
+            cache->holiday_work = (day_rec.holiday_type == 2U) ? 1U : 0U;
         }
     }
 
@@ -1576,7 +1454,10 @@ static void ui_render_component(Adafruit_GFX* gfx, const ui_component_record_t* 
             DrawLowBatteryTip(gfx, data);
             break;
         case UI_COMP_TIME_SYNC_TIP:
-            if ((tm->tm_year + YEAR0 == 2025) && (tm->tm_mon + 1 == 1)) {
+            /* 触发条件：未校时(默认 2025-01)，或当前年份农历数据缺失/超出 LCDB 范围
+             * (诚实降级)。后者复用同一提示框，因两种情况的修复手段都是联网同步/更新。 */
+            if (((tm->tm_year + YEAR0 == 2025) && (tm->tm_mon + 1 == 1)) ||
+                !lunar_db_year_supported((uint16_t)(tm->tm_year + YEAR0))) {
                 DrawTimeSyncTip(gfx, data);
             }
             break;
@@ -1995,7 +1876,8 @@ static void fallback_paint(Adafruit_GFX* gfx, gui_data_t* data) {
     int16_t url_x = box_x + (box_w - url_w) / 2;
     int16_t title_y = box_y + pad;
     int16_t url_y = title_y + title_h + gap;
-    uint16_t title_color = (data->color == 2) ? GFX_RED : GFX_BLACK;
+    /* 提示屏统一用黑色：兜底渲染走全屏局刷路径(仅黑白)，红色在局刷下不显示。 */
+    uint16_t title_color = GFX_BLACK;
 
     GFX_fillScreen(gfx, GFX_WHITE);
     GFX_fillRect(gfx, box_x, box_y, box_w, box_h, GFX_WHITE);
@@ -2014,8 +1896,11 @@ void DrawResourceMissingScreen(gui_data_t* data, buffer_callback callback, void*
     if (data == NULL || callback == NULL) return;
     if (data->width == 0) return;
 
+    // 与 DrawGUI 保持完全一致：ph 可能为负(如 __HEAP_SIZE=0 时为 -5)，
+    // 交给 GFX_begin 的 "<=0 → max_height" 兜底。切勿钳成 1，否则三色屏
+    // page_height/=2 会得到 0，触发 color==buffer 被误判为 4C 模式 + 除零，
+    // 缓冲区与字节数全乱 → 屏幕黑白麻点。
     ph = (__HEAP_SIZE - 512) / (data->width / 8);
-    if (ph <= 0) ph = 1;
 
     if (data->color == 2) {
         GFX_begin_3c(&gfx, data->width, data->height, ph);

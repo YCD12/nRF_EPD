@@ -32,6 +32,14 @@
 #define EPD_EXT_RES_TYPE_HOLIDAY           3U
 #define EPD_EXT_RES_TYPE_UI                4U
 #define EPD_EXT_RES_TYPE_LUT               5U
+#define EPD_EXT_RES_TYPE_LUNAR_DB          6U
+
+/* Lunar Calendar Database (LCDB): a single resource holding pre-computed daily
+ * records (lunar date, jiazi, solar term, festival, holiday adjustment) for a
+ * range of years. Generated on the packaging side; MCU is a pure query engine.
+ * See AiCoding/lunar_calendar_database_design_and_migration.md. */
+#define EPD_EXT_LUNAR_DB_ENTRY             1U
+#define EPD_EXT_LUNAR_DB_MAGIC             0x4C434442UL  /* "LCDB" */
 
 /* UC8179 partial-refresh LUTs.
  * One resource per temperature tier (id = 0..10), each entry contains 6 tables
