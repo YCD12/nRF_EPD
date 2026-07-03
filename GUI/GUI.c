@@ -19,8 +19,10 @@
 #define BATTERY_FULL_MV 3300
 #define BATTERY_EMPTY_MV LOW_BATTERY_THRESHOLD_MV
 
-#define UI_BUNDLE_MAGIC 0x314C4955UL
-#define UI_BUNDLE_VERSION 1U
+#define UI_BUNDLE_MAGIC EPD_EXT_UI_BUNDLE_MAGIC
+#define UI_BUNDLE_VERSION EPD_EXT_UI_BUNDLE_VERSION
+#define UI_BUNDLE_SCHEMA_MAJOR EPD_EXT_UI_SCHEMA_MAJOR
+#define UI_BUNDLE_SCHEMA_MINOR EPD_EXT_UI_SCHEMA_MINOR
 #define UI_BUNDLE_HEADER_SIZE 28U
 #define UI_BUNDLE_MODE_SIZE 16U
 #define UI_BUNDLE_COMPONENT_SIZE 24U
@@ -77,6 +79,9 @@ typedef struct {
     uint16_t component_offset;
     uint16_t string_offset;
     uint16_t string_length;
+    uint8_t schema_major;
+    uint8_t schema_minor;
+    uint8_t required_color_depth;
 } ui_bundle_header_t;
 
 typedef struct {
@@ -128,6 +133,7 @@ extern void app_feed_wdt(void);
 static bool m_ui_cache_valid;
 static uint16_t m_ui_cache_width;
 static uint16_t m_ui_cache_height;
+static ret_code_t m_ui_bundle_last_error;
 static ui_bundle_header_t m_ui_cached_header;
 static ui_mode_record_t m_ui_cached_modes[UI_CACHE_MAX_MODES];
 
@@ -1140,8 +1146,25 @@ static uint16_t ui_clamp_u16(int16_t value, uint16_t min_value, uint16_t max_val
     return (uint16_t)value;
 }
 
+static bool ui_component_is_known(uint8_t type) {
+    switch (type) {
+        case UI_COMP_WEEK_HEADER:
+        case UI_COMP_MONTH_GRID:
+        case UI_COMP_TIME_7SEG:
+        case UI_COMP_BATTERY:
+        case UI_COMP_LINE:
+        case UI_COMP_LOW_BATTERY_TIP:
+        case UI_COMP_TIME_SYNC_TIP:
+        case UI_COMP_TEXT_FIELD:
+            return true;
+        default:
+            return false;
+    }
+}
+
 static bool ui_component_valid(const ui_bundle_header_t* header, const ui_component_record_t* comp) {
     if (header == NULL || comp == NULL) return false;
+    if (!ui_component_is_known(comp->type)) return false;
     if (header->string_length == 0 || comp->text_offset >= header->string_length) return false;
 
     switch (comp->type) {
@@ -1176,7 +1199,8 @@ static bool ui_component_valid(const ui_bundle_header_t* header, const ui_compon
     }
 }
 
-static ret_code_t ui_read_header(ui_bundle_header_t* header, uint16_t screen_w, uint16_t screen_h) {
+static ret_code_t ui_read_header(ui_bundle_header_t* header, uint16_t screen_w, uint16_t screen_h,
+                                 uint8_t epd_color_depth) {
     uint8_t raw[UI_BUNDLE_HEADER_SIZE];
     uint32_t magic;
     epd_ext_resource_entry_t entry;
@@ -1205,10 +1229,38 @@ static ret_code_t ui_read_header(ui_bundle_header_t* header, uint16_t screen_w, 
     header->component_offset = ui_read_u16(&raw[14]);
     header->string_offset = ui_read_u16(&raw[16]);
     header->string_length = ui_read_u16(&raw[18]);
+    header->schema_major = raw[20];
+    header->schema_minor = raw[21];
+    header->required_color_depth = raw[22];
 
-    if (header->version != UI_BUNDLE_VERSION ||
-        header->width != screen_w || header->height != screen_h ||
-        header->mode_count == 0 || header->component_count == 0 ||
+    /* Legacy bundles (pre-P3) left bytes 20-22 as zero: treat as schema v1, skip color check. */
+    if (header->schema_major == 0U) {
+        header->schema_major = UI_BUNDLE_SCHEMA_MAJOR;
+        header->schema_minor = 0U;
+    }
+
+    if (header->version != UI_BUNDLE_VERSION) {
+        return NRF_ERROR_INVALID_DATA;
+    }
+
+    /* Schema major handshake: template newer than firmware parser -> reject (honest fallback). */
+    if (header->schema_major > UI_BUNDLE_SCHEMA_MAJOR) {
+        return NRF_ERROR_NOT_SUPPORTED;
+    }
+
+    /* Screen spec: target resolution must match active driver (optimization 8). */
+    if (header->width != screen_w || header->height != screen_h) {
+        return NRF_ERROR_INVALID_DATA;
+    }
+
+    /* Color depth: only enforced when bundle declares a non-zero requirement. */
+    if (header->required_color_depth != 0U &&
+        epd_color_depth != 0U &&
+        header->required_color_depth != epd_color_depth) {
+        return NRF_ERROR_INVALID_DATA;
+    }
+
+    if (header->mode_count == 0 || header->component_count == 0 ||
         header->string_length == 0 ||
         header->mode_offset < UI_BUNDLE_HEADER_SIZE ||
         header->component_offset < header->mode_offset ||
@@ -1266,7 +1318,7 @@ static ret_code_t ui_find_mode(uint8_t mode_id, uint16_t screen_w, uint16_t scre
     ret_code_t ret;
 
     if (!m_ui_cache_valid || m_ui_cache_width != screen_w || m_ui_cache_height != screen_h) {
-        ret = GUI_ReloadUICache(screen_w, screen_h);
+        ret = GUI_ReloadUICache(screen_w, screen_h, 0U);
         if (ret != NRF_SUCCESS) return ret;
     }
 
@@ -1286,14 +1338,15 @@ static ret_code_t ui_find_mode(uint8_t mode_id, uint16_t screen_w, uint16_t scre
     return NRF_ERROR_NOT_FOUND;
 }
 
-ret_code_t GUI_ReloadUICache(uint16_t width, uint16_t height) {
+ret_code_t GUI_ReloadUICache(uint16_t width, uint16_t height, uint8_t epd_color_depth) {
     ui_bundle_header_t header;
     ui_mode_record_t mode;
-    ret_code_t ret = ui_read_header(&header, width, height);
+    ret_code_t ret = ui_read_header(&header, width, height, epd_color_depth);
 
     m_ui_cache_valid = false;
     m_ui_render_cache_valid = false;
     m_month_render_cache.valid = false;
+    m_ui_bundle_last_error = ret;
     if (ret != NRF_SUCCESS) return ret;
     if (header.mode_count > UI_CACHE_MAX_MODES) {
         return NRF_ERROR_NO_MEM;
@@ -1310,10 +1363,16 @@ ret_code_t GUI_ReloadUICache(uint16_t width, uint16_t height) {
     m_ui_cache_width = width;
     m_ui_cache_height = height;
     m_ui_cache_valid = true;
+    m_ui_bundle_last_error = NRF_SUCCESS;
     return NRF_SUCCESS;
 }
 
-static ret_code_t ui_read_component(const ui_bundle_header_t* header, uint8_t index, ui_component_record_t* comp) {
+ret_code_t GUI_GetUIBundleLastError(void) {
+    return m_ui_bundle_last_error;
+}
+
+static ret_code_t ui_read_component_raw(const ui_bundle_header_t* header, uint8_t index,
+                                        ui_component_record_t* comp) {
     uint8_t raw[UI_BUNDLE_COMPONENT_SIZE];
     ret_code_t ret;
 
@@ -1337,11 +1396,6 @@ static ret_code_t ui_read_component(const ui_bundle_header_t* header, uint8_t in
     comp->p1 = ui_read_i16(&raw[18]);
     comp->p2 = ui_read_i16(&raw[20]);
     comp->text_offset = ui_read_u16(&raw[22]);
-
-    if (!ui_component_valid(header, comp)) {
-        return NRF_ERROR_INVALID_DATA;
-    }
-
     return NRF_SUCCESS;
 }
 
@@ -1360,17 +1414,36 @@ static ret_code_t ui_load_mode_components(uint8_t mode_id, uint16_t screen_w, ui
     *component_count = 0;
     ret = ui_find_mode(mode_id, screen_w, screen_h, &header, mode);
     if (ret != NRF_SUCCESS) return ret;
-    if (mode->component_count > max_components) {
-        return NRF_ERROR_NO_MEM;
-    }
+
+    bool skip_unknown = header.schema_minor > UI_BUNDLE_SCHEMA_MINOR;
+    uint8_t loaded = 0;
 
     for (uint8_t i = 0; i < mode->component_count; i++) {
-        ret = ui_read_component(&header, mode->component_start + i, &components[i]);
+        ui_component_record_t comp;
+        ret = ui_read_component_raw(&header, mode->component_start + i, &comp);
         if (ret != NRF_SUCCESS) return ret;
+
+        if (!ui_component_is_known(comp.type)) {
+            if (skip_unknown) {
+                continue;
+            }
+            return NRF_ERROR_INVALID_DATA;
+        }
+        if (!ui_component_valid(&header, &comp)) {
+            return NRF_ERROR_INVALID_DATA;
+        }
+        if (loaded >= max_components) {
+            return NRF_ERROR_NO_MEM;
+        }
+        components[loaded++] = comp;
         app_feed_wdt();
     }
 
-    *component_count = mode->component_count;
+    if (loaded == 0U) {
+        return NRF_ERROR_INVALID_DATA;
+    }
+
+    *component_count = loaded;
     return NRF_SUCCESS;
 }
 

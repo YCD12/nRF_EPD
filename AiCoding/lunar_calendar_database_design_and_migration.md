@@ -903,3 +903,64 @@ Glyph Fallback 是**运行时保命**；真正治本是打包期字集拦截—�
 - 固件 `-Werror` 编译通过，`text=56364B`（较 7.13 +208B），`bss=12076B`，仍在 56KB 预算内。
 - 数据层等价回归不受影响（纯渲染层改动，不触及 LCDB 查询）。
 - 真机待验证：故意渲染子集外汉字应显示 □ 占位而非空白/塌缩。
+
+### 7.15 P3 落地：Schema 握手 + 屏幕规格校验 (Implementation Log)
+
+> 承接 7.14，本轮落地 P3 优化 7/8 的核心部分：**不改 28B 头部总长度**，复用原保留字节 `raw[20..22]` 写入 schema 与色深约束，旧资源包（三字节为 0）自动按 schema v1 兜底、跳过色深校验，平滑升级。
+
+#### 头部布局（28B 不变）
+| 偏移 | 字段 | 说明 |
+| --- | --- | --- |
+| 0-3 | magic | `0x314C4955` |
+| 4-5 | version | 结构版本，当前 `1` |
+| 6-9 | width/height | 目标屏宽高（与驱动物理分辨率比对） |
+| 10-19 | counts/offsets | 原有字段 |
+| **20** | **schema_major** | 主版本；`> firmware` → `NRF_ERROR_NOT_SUPPORTED` → 诚实降级 |
+| **21** | **schema_minor** | 次版本；`> firmware` 时未知组件类型**跳过**而非整包失败 |
+| **22** | **required_color_depth** | `1=BW, 2=BWR, 3=BWRY`（对齐 `epd_color_t`）；`0` = 不校验（旧包） |
+| 23-27 | reserved | 保留 |
+
+#### 固件改动
+- `EPD/epd_ext_resources.h`：集中定义 `EPD_EXT_UI_SCHEMA_MAJOR/MINOR`、`EPD_EXT_UI_COLOR_DEPTH_*`。
+- `GUI/GUI.c`：`ui_read_header(..., epd_color_depth)` 增加 schema 握手 + 色深校验；`ui_load_mode_components` 在 `schema_minor` 超前时跳过未知组件；`GUI_ReloadUICache(w,h,color)` / `GUI_GetUIBundleLastError()`。
+- `EPD/EPD_service.c`：资源擦除/提交/预加载时传入 `epd->color` 做色深校验。
+
+#### 打包端改动
+- `tools/build_ext_resources.py`：`default_ui_layout` 增加 `schema` + `screen.colorDepth=2(BWR)`；头部 `struct.pack("<IHHHBBHHHHBBBBI", ...)` 写入三字段。
+- 重生 `tools/epd_resources.bin`（manifest CRC 更新）。
+
+#### 验证
+- UI 头解析抽样：`schema=1/0, colorDepth=2, 800×480`。
+- LCDB 等价回归：1095 天 0 不一致。
+- 固件 `-Werror` 编译通过，`text=56636B`（较 7.14 +272B），`bss=12084B`，仍在 56KB 预算内。
+
+#### 仍暂缓（P3 剩余）
+- 逻辑色通道（优化 12）：组件 `fg/bg` 改逻辑通道映射，需改组件格式 + 渲染路径。
+- BLE 上报 schema 不匹配状态码：可复用 `RES_STATUS` 的 `init_ret` 字段或扩展应答，后续对接网页。
+
+### 7.16 P4 落地：EPD 刷新等待低功耗睡眠 (Implementation Log)
+
+> 承接路线图 P4（优化 16）的首个增量：**不拆异步状态机**，先把全刷/局刷共用的 `EPD_WaitBusy` 从 `delay(1)` 忙等改为 **BUSY 引脚 sense 唤醒 + `sd_app_evt_wait()` 睡眠**，刷新波形期间 CPU 不再 64MHz 空转。
+
+#### 现象与根因
+UC8179 全刷/局刷发出 `DRF` 后 `EPD_WaitBusy` 最长等待 30s。原实现每 1ms `delay(1)` 轮询 BUSY，CPU 全程活跃（数 mA），对纽扣电池价签是主要功耗来源之一。
+
+#### 修复（`EPD/EPD_driver.c`）
+- 进入等待前：`nrf_gpio_cfg_sense_set(BUSY, 释放边沿)`——本板 BUSY **低电平=忙**，配置 `NRF_GPIO_PIN_SENSE_HIGH`，BUSY 变高即产生 PORT 事件唤醒。
+- 等待循环：`sd_app_evt_wait()` 进入 System ON 睡眠，由 BLE SoftDevice 事件、RTC/app_timer 或 BUSY 边沿唤醒后复检引脚。
+- 超时：`app_timer_cnt_get()` + `app_timer_cnt_diff_compute()` 保持毫秒级超时语义（与旧版一致）。
+- 看门狗：每 500ms `app_feed_wdt()`，避免长刷新触发复位。
+- 退出：`nrf_gpio_cfg_sense_set(BUSY, NOSENSE)` 清除 sense，避免干扰后续 GPIO 操作。
+
+#### 设计取舍
+- **未**把 `epd_gui_update` 拆成异步状态机（改动面大、需处理刷新中途 BLE 断开等竞态）；先在最底层等待点省电，全刷/局刷/PON/POF 所有 `UC8179_WaitBusy` 路径自动受益。
+- 完整 GPIOTE 中断回调方案与 `main.c` 睡眠唤醒引脚共用 GPIOTE 模块，留作后续若需进一步压缩唤醒延迟时再上。
+
+#### 验证
+- 固件 `-Werror` 编译通过，`text=56748B`（较 7.15 +112B），`bss=12084B`，仍在 56KB 预算内。
+- 功能应与旧版一致（超时/释放语义不变）；真机可用电流表对比全刷期间平均电流，或确认刷新完成后显示/局刷/跨天更新仍正常。
+
+#### P4 仍暂缓
+- 资源 HAL 抽象（优化 15）+ 模拟器 `emulator.c` 对齐。
+- 黄金图回归（建议 A2，依赖 HAL）。
+- `epd_gui_update` 完全异步化（刷新命令发出后立即返回 scheduler，由 BUSY 中断续跑 `finish_refresh`）——收益边际递减，暂不做。

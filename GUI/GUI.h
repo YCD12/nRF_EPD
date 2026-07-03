@@ -65,7 +65,8 @@ void GetTimeRefreshOrigin(uint16_t* x, uint16_t* y);
 
 bool GUI_ModeExists(uint8_t mode, uint16_t width, uint16_t height);
 uint8_t GUI_GetModeUpdatePolicy(uint8_t mode, uint16_t width, uint16_t height);
-ret_code_t GUI_ReloadUICache(uint16_t width, uint16_t height);
+ret_code_t GUI_ReloadUICache(uint16_t width, uint16_t height, uint8_t epd_color_depth);
+ret_code_t GUI_GetUIBundleLastError(void);
 
 void DrawResourceMissingScreen(gui_data_t* data, buffer_callback callback, void* callback_data);
 void Draw7Number(Adafruit_GFX *gfx, int n, unsigned int xLoc, unsigned int yLoc, char cS, unsigned int fC, unsigned int bC, int nD);
