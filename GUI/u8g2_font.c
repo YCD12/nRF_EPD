@@ -44,24 +44,29 @@
 #include "epd_ext_resources.h"
 #include "res_hal.h"
 
-extern void app_feed_wdt(void);
+#include "gui_porting_hal.h"
 
 #define U8G2_EXT_FONT_TOKEN_BASE 0xF0000000UL
 #define U8G2_EXT_FONT_TOKEN_MASK 0xFF000000UL
 /* u8g2 binary-searches inside external font payloads. Keep a modest block
  * cache so CJK glyph rendering avoids byte-at-a-time SPI reads while leaving
- * enough RAM margin on nRF52811. */
-#define U8G2_EXT_FONT_CACHE_SIZE 256U
+ * enough RAM margin on nRF52811.
+ * We optimize this to a 3-way multi-channel cache with 128-byte block size
+ * to prevent SPI cache thrashing during concurrent font renders. */
+#define U8G2_EXT_FONT_CACHE_SIZE 128U
+#define U8G2_EXT_FONT_CACHE_WAYS 3
 
 typedef struct {
     bool valid;
     uint16_t font_id;
     uint32_t base_offset;
     size_t length;
+    uint32_t last_used;
     uint8_t data[U8G2_EXT_FONT_CACHE_SIZE];
 } u8g2_ext_font_cache_t;
 
-static u8g2_ext_font_cache_t m_u8g2_ext_font_cache;
+static u8g2_ext_font_cache_t m_u8g2_ext_font_caches[U8G2_EXT_FONT_CACHE_WAYS];
+static uint32_t m_u8g2_cache_access_count = 0;
 
 static bool u8g2_font_external_ref(const uint8_t* font, uint16_t* font_id, uint32_t* offset) {
     uintptr_t value = (uintptr_t)font;
@@ -89,40 +94,68 @@ static uint8_t u8g2_font_read_byte(const uint8_t* font) {
         return u8x8_pgm_read(font);
     }
 
-    if (!m_u8g2_ext_font_cache.valid ||
-        m_u8g2_ext_font_cache.font_id != font_id ||
-        offset < m_u8g2_ext_font_cache.base_offset ||
-        offset >= m_u8g2_ext_font_cache.base_offset + m_u8g2_ext_font_cache.length) {
-        uint32_t base_offset = offset & ~(uint32_t)(U8G2_EXT_FONT_CACHE_SIZE - 1U);
-        size_t chunk_len = U8G2_EXT_FONT_CACHE_SIZE;
-
-        ret = res_hal_get_info(EPD_EXT_RES_TYPE_FONT, font_id, &entry);
-        if (ret != NRF_SUCCESS || base_offset >= entry.length) {
-            return 0;
+    int cache_idx = -1;
+    for (int i = 0; i < U8G2_EXT_FONT_CACHE_WAYS; i++) {
+        if (m_u8g2_ext_font_caches[i].valid &&
+            m_u8g2_ext_font_caches[i].font_id == font_id &&
+            offset >= m_u8g2_ext_font_caches[i].base_offset &&
+            offset < m_u8g2_ext_font_caches[i].base_offset + m_u8g2_ext_font_caches[i].length) {
+            cache_idx = i;
+            break;
         }
-        if (chunk_len > (size_t)(entry.length - base_offset)) {
-            chunk_len = (size_t)(entry.length - base_offset);
-        }
-
-        ret = res_hal_read(EPD_EXT_RES_TYPE_FONT, font_id, base_offset,
-                                    m_u8g2_ext_font_cache.data, chunk_len);
-        if (ret != NRF_SUCCESS) {
-            m_u8g2_ext_font_cache.valid = false;
-            return 0;
-        }
-
-        m_u8g2_ext_font_cache.valid = true;
-        m_u8g2_ext_font_cache.font_id = font_id;
-        m_u8g2_ext_font_cache.base_offset = base_offset;
-        m_u8g2_ext_font_cache.length = chunk_len;
-
-        /* Cache miss requires an SPI read to external Flash. Drawing a CJK
-         * page can incur hundreds of misses; feed the watchdog so a slow
-         * paint pass cannot trigger a reset. */
-        app_feed_wdt();
     }
 
-    return m_u8g2_ext_font_cache.data[offset - m_u8g2_ext_font_cache.base_offset];
+    if (cache_idx != -1) {
+        m_u8g2_cache_access_count++;
+        m_u8g2_ext_font_caches[cache_idx].last_used = m_u8g2_cache_access_count;
+        return m_u8g2_ext_font_caches[cache_idx].data[offset - m_u8g2_ext_font_caches[cache_idx].base_offset];
+    }
+
+    // Cache miss, select victim using LRU
+    int victim_idx = 0;
+    uint32_t min_used = 0xFFFFFFFFUL;
+    for (int i = 0; i < U8G2_EXT_FONT_CACHE_WAYS; i++) {
+        if (!m_u8g2_ext_font_caches[i].valid) {
+            victim_idx = i;
+            break;
+        }
+        if (m_u8g2_ext_font_caches[i].last_used < min_used) {
+            min_used = m_u8g2_ext_font_caches[i].last_used;
+            victim_idx = i;
+        }
+    }
+
+    uint32_t base_offset = offset & ~(uint32_t)(U8G2_EXT_FONT_CACHE_SIZE - 1U);
+    size_t chunk_len = U8G2_EXT_FONT_CACHE_SIZE;
+
+    ret = res_hal_get_info(EPD_EXT_RES_TYPE_FONT, font_id, &entry);
+    if (ret != NRF_SUCCESS || base_offset >= entry.length) {
+        return 0;
+    }
+    if (chunk_len > (size_t)(entry.length - base_offset)) {
+        chunk_len = (size_t)(entry.length - base_offset);
+    }
+
+    ret = res_hal_read(EPD_EXT_RES_TYPE_FONT, font_id, base_offset,
+                       m_u8g2_ext_font_caches[victim_idx].data, chunk_len);
+    if (ret != NRF_SUCCESS) {
+        m_u8g2_ext_font_caches[victim_idx].valid = false;
+        return 0;
+    }
+
+    m_u8g2_ext_font_caches[victim_idx].valid = true;
+    m_u8g2_ext_font_caches[victim_idx].font_id = font_id;
+    m_u8g2_ext_font_caches[victim_idx].base_offset = base_offset;
+    m_u8g2_ext_font_caches[victim_idx].length = chunk_len;
+    m_u8g2_cache_access_count++;
+    m_u8g2_ext_font_caches[victim_idx].last_used = m_u8g2_cache_access_count;
+
+    /* Cache miss requires an SPI read to external Flash. Drawing a CJK
+     * page can incur hundreds of misses; feed the watchdog so a slow
+     * paint pass cannot trigger a reset. */
+    gui_porting_feed_wdt();
+
+    return m_u8g2_ext_font_caches[victim_idx].data[offset - base_offset];
 }
 
 // 从字体数据中读取单个字节

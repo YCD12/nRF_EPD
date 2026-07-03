@@ -11,7 +11,8 @@ SRCS = tools/test/host_stubs.c \
        GUI/Lunar.c \
        GUI/Adafruit_GFX.c \
        GUI/u8g2_font.c \
-       GUI/fonts.c
+       GUI/fonts.c \
+       GUI/gui_porting_hal.c
 
 TARGET = /tmp/test_gui_golden
 RES_BIN = tools/epd_resources.bin

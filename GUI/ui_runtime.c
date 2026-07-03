@@ -36,7 +36,7 @@ typedef struct __attribute__((packed)) {
     uint8_t reserved[5];
 } ui_bundle_header_t;
 
-extern void app_feed_wdt(void);
+#include "gui_porting_hal.h"
 
 static bool m_ui_cache_valid;
 static uint16_t m_ui_cache_width;
@@ -255,7 +255,7 @@ ret_code_t GUI_ReloadUICache(uint16_t width, uint16_t height, uint8_t epd_color_
         ret = ui_read_mode_at(&header, i, &mode);
         if (ret != NRF_SUCCESS) return ret;
         m_ui_cached_modes[i] = mode;
-        app_feed_wdt();
+        gui_porting_feed_wdt();
     }
 
     m_ui_cached_header = header;
@@ -315,7 +315,7 @@ static ret_code_t ui_load_mode_components(uint8_t mode_id, uint16_t screen_w, ui
             return NRF_ERROR_NO_MEM;
         }
         components[loaded++] = comp;
-        app_feed_wdt();
+        gui_porting_feed_wdt();
     }
 
     if (loaded == 0U) {

@@ -92,7 +92,8 @@ SRC_FILES += \
   $(PROJ_DIR)/GUI/Lunar.c \
   $(PROJ_DIR)/GUI/fonts.c \
   $(PROJ_DIR)/GUI/Adafruit_GFX.c \
-  $(PROJ_DIR)/GUI/u8g2_font.c
+  $(PROJ_DIR)/GUI/u8g2_font.c \
+  $(PROJ_DIR)/GUI/gui_porting_hal.c
 
 # =============================================================================
 # 根据 USE_RTT 条件性加入 SEGGER RTT 及 LOG 库源文件
