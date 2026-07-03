@@ -394,7 +394,6 @@ bool EPD_WaitBusy(uint32_t value, uint16_t timeout) {
     uint32_t start_ticks;
     uint32_t last_wdt_ticks;
     uint32_t timeout_ticks;
-    nrf_gpio_pin_sense_t release_sense;
 
     NRF_LOG_DEBUG("[EPD]: check busy\n");
     if (digitalRead(EPD_BUSY_PIN) != value) {
@@ -406,28 +405,20 @@ bool EPD_WaitBusy(uint32_t value, uint16_t timeout) {
     last_wdt_ticks = start_ticks;
     timeout_ticks = (uint32_t)timeout * ticks_per_ms;
 
-    /* 忙电平为 LOW 时，释放边沿为上升沿；反之亦然。 */
-    release_sense = (value == LOW) ? NRF_GPIO_PIN_SENSE_HIGH : NRF_GPIO_PIN_SENSE_LOW;
-    nrf_gpio_cfg_sense_set(EPD_BUSY_PIN, release_sense);
-
     while (digitalRead(EPD_BUSY_PIN) == value) {
-        (void)sd_app_evt_wait();
+        delay(1);
 
-        {
-            uint32_t now_ticks = app_timer_cnt_get();
-            if (app_timer_cnt_diff_compute(now_ticks, start_ticks) >= timeout_ticks) {
-                NRF_LOG_WARNING("[EPD]: busy timeout!\n");
-                nrf_gpio_cfg_sense_set(EPD_BUSY_PIN, NRF_GPIO_PIN_NOSENSE);
-                return false;
-            }
-            if (app_timer_cnt_diff_compute(now_ticks, last_wdt_ticks) >= (500UL * ticks_per_ms)) {
-                app_feed_wdt();
-                last_wdt_ticks = now_ticks;
-            }
+        uint32_t now_ticks = app_timer_cnt_get();
+        if (app_timer_cnt_diff_compute(now_ticks, start_ticks) >= timeout_ticks) {
+            NRF_LOG_WARNING("[EPD]: busy timeout!\n");
+            return false;
+        }
+        if (app_timer_cnt_diff_compute(now_ticks, last_wdt_ticks) >= (500UL * ticks_per_ms)) {
+            app_feed_wdt();
+            last_wdt_ticks = now_ticks;
         }
     }
 
-    nrf_gpio_cfg_sense_set(EPD_BUSY_PIN, NRF_GPIO_PIN_NOSENSE);
     NRF_LOG_DEBUG("[EPD]: busy release\n");
     return true;
 }
