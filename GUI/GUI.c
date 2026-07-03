@@ -4,6 +4,7 @@
 
 #include "EPD_driver.h"
 #include "../EPD/epd_ext_resources.h"
+#include "../EPD/res_hal.h"
 #include "Lunar.h"
 #include "fonts.h"
 #include "nrf_log.h"
@@ -1115,7 +1116,7 @@ static uint32_t ui_read_u32(const uint8_t* data) {
 }
 
 static ret_code_t ui_bundle_read(uint32_t offset, void* data, size_t length) {
-    return epd_ext_resource_read(EPD_EXT_RES_TYPE_UI, EPD_EXT_UI_BUNDLE, offset, data, length);
+    return res_hal_read(EPD_EXT_RES_TYPE_UI, EPD_EXT_UI_BUNDLE, offset, data, length);
 }
 
 static bool ui_range_fits(uint32_t offset, uint32_t count, uint32_t item_size, uint32_t limit) {
@@ -1210,7 +1211,7 @@ static ret_code_t ui_read_header(ui_bundle_header_t* header, uint16_t screen_w, 
 
     if (header == NULL) return NRF_ERROR_NULL;
 
-    ret = epd_ext_resource_get_info(EPD_EXT_RES_TYPE_UI, EPD_EXT_UI_BUNDLE, &entry);
+    ret = res_hal_get_info(EPD_EXT_RES_TYPE_UI, EPD_EXT_UI_BUNDLE, &entry);
     if (ret != NRF_SUCCESS) return ret;
     if (entry.length < UI_BUNDLE_HEADER_SIZE) return NRF_ERROR_INVALID_LENGTH;
 
