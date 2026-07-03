@@ -1,9 +1,7 @@
 #include "ui_runtime.h"
 
 #include <string.h>
-
-#include "../EPD/epd_ext_resources.h"
-#include "../EPD/res_hal.h"
+#include "gui_porting_hal.h"
 
 void ui_render_invalidate_month_cache(void);
 

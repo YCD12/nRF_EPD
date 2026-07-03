@@ -118,7 +118,7 @@ static void GFX_u8g2_draw_hv_line(u8g2_font_t* u8g2, int16_t x, int16_t y, int16
              then the buffer is cleared for the next page.
 */
 /**************************************************************************/
-uint8_t s_gfx_buffer[7680];
+uint8_t s_gfx_buffer[4800];
 
 void GFX_begin(Adafruit_GFX* gfx, int16_t w, int16_t h, int16_t buffer_height) {
     // 清零整个GFX结构体 | Zero out the entire GFX structure

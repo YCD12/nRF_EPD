@@ -1,7 +1,6 @@
 #include "Lunar.h"
 
-#include "../EPD/epd_ext_resources.h"
-#include "../EPD/res_hal.h"
+#include "gui_porting_hal.h"
 
 #define LUNAR_YEAR_BASE         2024U
 #define LUNAR_YEAR_COUNT        6U

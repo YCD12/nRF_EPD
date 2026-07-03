@@ -469,6 +469,16 @@
               <FileType>1</FileType>
               <FilePath>..\GUI\Adafruit_GFX.c</FilePath>
             </File>
+            <File>
+              <FileName>gui_porting_hal.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\GUI\gui_porting_hal.c</FilePath>
+            </File>
+            <File>
+              <FileName>ui_runtime.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\GUI\ui_runtime.c</FilePath>
+            </File>
           </Files>
         </Group>
         <Group>

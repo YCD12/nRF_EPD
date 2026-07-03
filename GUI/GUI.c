@@ -2,9 +2,7 @@
 
 #include <string.h>
 
-#include "EPD_driver.h"
-#include "../EPD/epd_ext_resources.h"
-#include "../EPD/res_hal.h"
+#include "gui_porting_hal.h"
 #include "Lunar.h"
 #include "fonts.h"
 #include "nrf_log.h"
@@ -1462,5 +1460,3 @@ void DrawResourceMissingScreen(gui_data_t* data, buffer_callback callback, void*
 
     GFX_end(&gfx);
 }
-
-#include "ui_runtime.c"

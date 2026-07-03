@@ -40,10 +40,6 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
-
-#include "epd_ext_resources.h"
-#include "res_hal.h"
-
 #include "gui_porting_hal.h"
 
 #define U8G2_EXT_FONT_TOKEN_BASE 0xF0000000UL
