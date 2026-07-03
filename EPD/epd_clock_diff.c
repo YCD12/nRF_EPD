@@ -1,5 +1,6 @@
 #include "epd_clock_diff.h"
 #include "Lunar.h"
+#include "ui_runtime.h"
 
 // Reference to the global graphics page buffer from Adafruit_GFX.c
 extern uint8_t s_gfx_buffer[];
@@ -44,14 +45,10 @@ static void draw_digit_bitmap(Adafruit_GFX *gfx, uint8_t *bm, uint16_t w, uint16
  * @brief 绘制时钟冒号到局部缓冲区
  * @param gfx 临时图形句柄
  * @param bm 目标图像缓冲区指针
- * @param w 缓冲区宽度 (24像素)
+ * @param w 缓冲区宽度 (4 * cS 像素)
  * @param h 缓冲区高度
- * @param cS 缩放因子 (6)
+ * @param cS 缩放因子
  * @param margin_y 垂直边距
- *
- * 功能说明:
- * 在 24 像素宽的缓冲区内，以 x = 0 绘制一个黑色的双点冒号，背景为白色。
- * 坐标计算与 GUI.c 中的 DrawTime 保持完全一致，确保与屏幕上的物理冒号完全对齐。
  */
 static void draw_colon_bitmap(Adafruit_GFX *gfx, uint8_t *bm, uint16_t w, uint16_t h, uint16_t cS, uint16_t margin_y) {
     GFX_begin(gfx, w, h, h);
@@ -79,24 +76,41 @@ bool epd_clock_diff_try_partial(epd_model_t *epd, uint32_t timestamp, display_mo
 
     uint8_t old_vals[4] = {s_clock_prev.h1, s_clock_prev.h2, s_clock_prev.m1, s_clock_prev.m2};
 
-    // Hardcode scale and position parameters for MODE_CLOCK_CALENDAR on 800x480
-    // comp_x = 56, comp_y = 182, cS = 6, nD = 2
+    // Query scale and position parameters dynamically from ui_runtime cache
     int16_t comp_x = 56;
     int16_t comp_y = 182;
     uint16_t cS = 6;
+
+    ui_mode_record_t cached_mode;
+    const ui_component_record_t* cached_components = NULL;
+    uint8_t cached_component_count = 0;
+    ret_code_t ui_ret = ui_runtime_load_render_cache(MODE_CLOCK_CALENDAR, epd->width, epd->height,
+                                                     &cached_mode, &cached_components,
+                                                     &cached_component_count);
+    if (ui_ret == NRF_SUCCESS && cached_components != NULL) {
+        for (uint8_t i = 0; i < cached_component_count; i++) {
+            if (cached_components[i].type == UI_COMP_TIME_7SEG) {
+                comp_x = cached_components[i].x;
+                comp_y = cached_components[i].y;
+                cS = cached_components[i].p0;
+                break;
+            }
+        }
+    }
+
     uint16_t margin_y = 8;
+    uint16_t digit_h = 20 * cS + 4 + 2 * margin_y;
+    uint16_t digit_w = 11 * cS + 2;
+    uint16_t align_w = ((digit_w + 7) / 8) * 8;
 
-    uint16_t digit_h = 20 * cS + 4 + 2 * margin_y; // 140
-    uint16_t align_w = 72;          // ((68 + 7) / 8) * 8
-
-    int16_t min_x = 800;
+    int16_t min_x = epd->width;
     int16_t max_x = 0;
 
     int16_t x_offsets[4];
     x_offsets[0] = 0;
-    x_offsets[1] = 68;              // d
-    x_offsets[2] = 160;             // 2 * d + 4 * cS = 136 + 24
-    x_offsets[3] = 228;             // 2 * d + 4 * cS + d = 160 + 68
+    x_offsets[1] = digit_w;
+    x_offsets[2] = 2 * digit_w + 4 * cS;
+    x_offsets[3] = 2 * digit_w + 4 * cS + digit_w;
 
     // Partition the global graphics buffer to save RAM
     uint8_t *old_bm = s_gfx_buffer;
@@ -127,18 +141,17 @@ bool epd_clock_diff_try_partial(epd_model_t *epd, uint32_t timestamp, display_mo
 
     if (changed) {
         if (max_x > min_x && epd->drv->refresh_partial) {
-            // 如果分钟十位改变，或者小时改变，主动将窗口左边界扩展至覆盖冒号位置（192像素对齐）
-            // 并向芯片的 RAM 写入相同的冒号图像，确保该区域的 DTM1 和 DTM2 完全相同（no change），
-            // 使得冒号在该瞬间被同步扫描时，通过 Source 极与 VCOM 摆动同步（LUTKK）物理释放偏置电荷，
-            // 且不会因为 RAM 内容不匹配而导致高电压驱动和串扰。
+            // 如果分钟十位改变，或者小时改变，主动将窗口左边界扩展至覆盖冒号位置
             if (min_tens_changed || hour_changed) {
+                int16_t colon_x = comp_x + 2 * digit_w;
+                uint16_t colon_w = 4 * cS;
                 Adafruit_GFX temp_gfx;
-                draw_colon_bitmap(&temp_gfx, old_bm, 24, digit_h, cS, margin_y);
-                draw_colon_bitmap(&temp_gfx, new_bm, 24, digit_h, cS, margin_y);
-                UC8179_Partial_Diff_Push(epd, 192, comp_y - margin_y, 24, digit_h, old_bm, new_bm);
+                draw_colon_bitmap(&temp_gfx, old_bm, colon_w, digit_h, cS, margin_y);
+                draw_colon_bitmap(&temp_gfx, new_bm, colon_w, digit_h, cS, margin_y);
+                UC8179_Partial_Diff_Push(epd, colon_x, comp_y - margin_y, colon_w, digit_h, old_bm, new_bm);
 
-                if (min_x > 192) {
-                    min_x = 192;
+                if (min_x > colon_x) {
+                    min_x = colon_x;
                 }
             }
             epd->drv->refresh_partial(epd, min_x, comp_y - margin_y, max_x - min_x, digit_h);
@@ -148,6 +161,5 @@ bool epd_clock_diff_try_partial(epd_model_t *epd, uint32_t timestamp, display_mo
         s_clock_prev.m1 = new_vals[2];
         s_clock_prev.m2 = new_vals[3];
     }
-
     return true;
 }

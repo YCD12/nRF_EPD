@@ -19,7 +19,8 @@ void ui_render_invalidate_month_cache(void);
 
 #define UI_UPDATE_MANUAL GUI_UPDATE_MANUAL
 
-typedef struct {
+typedef struct __attribute__((packed)) {
+    uint32_t magic;
     uint16_t version;
     uint16_t width;
     uint16_t height;
@@ -32,6 +33,7 @@ typedef struct {
     uint8_t schema_major;
     uint8_t schema_minor;
     uint8_t required_color_depth;
+    uint8_t reserved[5];
 } ui_bundle_header_t;
 
 extern void app_feed_wdt(void);
@@ -50,19 +52,6 @@ static uint16_t m_ui_render_cache_height;
 static ui_mode_record_t m_ui_render_cached_mode;
 static ui_component_record_t m_ui_render_cached_components[UI_RENDER_COMPONENT_CACHE_MAX];
 static uint8_t m_ui_render_cached_count;
-
-static uint16_t ui_read_u16(const uint8_t* data) {
-    return (uint16_t)data[0] | ((uint16_t)data[1] << 8);
-}
-
-static int16_t ui_read_i16(const uint8_t* data) {
-    return (int16_t)ui_read_u16(data);
-}
-
-static uint32_t ui_read_u32(const uint8_t* data) {
-    return ((uint32_t)data[0]) | ((uint32_t)data[1] << 8) |
-           ((uint32_t)data[2] << 16) | ((uint32_t)data[3] << 24);
-}
 
 static ret_code_t ui_bundle_read(uint32_t offset, void* data, size_t length) {
     return res_hal_read(EPD_EXT_RES_TYPE_UI, EPD_EXT_UI_BUNDLE, offset, data, length);
@@ -111,25 +100,18 @@ static bool ui_component_valid(const ui_bundle_header_t* header, const ui_compon
     if (!ui_component_is_known(comp->type)) return false;
     if (header->string_length == 0 || comp->text_offset >= header->string_length) return false;
 
-    switch (comp->type) {
-        case UI_COMP_WEEK_HEADER:
-        case UI_COMP_MONTH_GRID:
-        case UI_COMP_LINE:
-        case UI_COMP_LOW_BATTERY_TIP:
-        case UI_COMP_TIME_SYNC_TIP:
-            return ui_rect_fits_screen(comp->x, comp->y, comp->w, comp->h, header->width, header->height);
+    if (comp->type != UI_COMP_BATTERY) {
+        if (!ui_rect_fits_screen(comp->x, comp->y, comp->w, comp->h, header->width, header->height)) {
+            return false;
+        }
+    }
 
+    switch (comp->type) {
         case UI_COMP_TEXT_FIELD:
-            if (!ui_rect_fits_screen(comp->x, comp->y, comp->w, comp->h, header->width, header->height)) {
-                return false;
-            }
             if (comp->data_id < UI_TEXT_DATE_YMD || comp->data_id > UI_TEXT_SSID) return false;
             return comp->p0 <= 0 || comp->p0 < (int16_t)header->height;
 
         case UI_COMP_TIME_7SEG:
-            if (!ui_rect_fits_screen(comp->x, comp->y, comp->w, comp->h, header->width, header->height)) {
-                return false;
-            }
             return comp->p0 >= UI_TIME_SCALE_MIN && comp->p0 <= UI_TIME_SCALE_MAX &&
                    comp->p1 >= UI_TIME_DIGITS_MIN && comp->p1 <= UI_TIME_DIGITS_MAX;
 
@@ -139,14 +121,12 @@ static bool ui_component_valid(const ui_bundle_header_t* header, const ui_compon
             return comp->y >= 0 && comp->y + 12 <= (int16_t)header->height;
 
         default:
-            return false;
+            return true;
     }
 }
 
 static ret_code_t ui_read_header(ui_bundle_header_t* header, uint16_t screen_w, uint16_t screen_h,
                                  uint8_t epd_color_depth) {
-    uint8_t raw[UI_BUNDLE_HEADER_SIZE];
-    uint32_t magic;
     epd_ext_resource_entry_t entry;
     uint32_t mode_end;
     uint32_t component_end;
@@ -158,24 +138,10 @@ static ret_code_t ui_read_header(ui_bundle_header_t* header, uint16_t screen_w, 
     if (ret != NRF_SUCCESS) return ret;
     if (entry.length < UI_BUNDLE_HEADER_SIZE) return NRF_ERROR_INVALID_LENGTH;
 
-    ret = ui_bundle_read(0, raw, sizeof(raw));
+    ret = ui_bundle_read(0, header, UI_BUNDLE_HEADER_SIZE);
     if (ret != NRF_SUCCESS) return ret;
 
-    magic = ui_read_u32(&raw[0]);
-    if (magic != UI_BUNDLE_MAGIC) return NRF_ERROR_INVALID_DATA;
-
-    header->version = ui_read_u16(&raw[4]);
-    header->width = ui_read_u16(&raw[6]);
-    header->height = ui_read_u16(&raw[8]);
-    header->mode_count = raw[10];
-    header->component_count = raw[11];
-    header->mode_offset = ui_read_u16(&raw[12]);
-    header->component_offset = ui_read_u16(&raw[14]);
-    header->string_offset = ui_read_u16(&raw[16]);
-    header->string_length = ui_read_u16(&raw[18]);
-    header->schema_major = raw[20];
-    header->schema_minor = raw[21];
-    header->required_color_depth = raw[22];
+    if (header->magic != UI_BUNDLE_MAGIC) return NRF_ERROR_INVALID_DATA;
 
     /* Legacy bundles (pre-P3) left bytes 20-22 as zero: treat as schema v1, skip color check. */
     if (header->schema_major == 0U) {
@@ -228,24 +194,13 @@ static ret_code_t ui_read_header(ui_bundle_header_t* header, uint16_t screen_w, 
 }
 
 static ret_code_t ui_read_mode_at(const ui_bundle_header_t* header, uint8_t index, ui_mode_record_t* mode) {
-    uint8_t raw[UI_BUNDLE_MODE_SIZE];
     ret_code_t ret;
 
     if (header == NULL || mode == NULL) return NRF_ERROR_NULL;
     if (index >= header->mode_count) return NRF_ERROR_NOT_FOUND;
 
-    ret = ui_bundle_read(header->mode_offset + (uint32_t)index * UI_BUNDLE_MODE_SIZE, raw, sizeof(raw));
+    ret = ui_bundle_read(header->mode_offset + (uint32_t)index * UI_BUNDLE_MODE_SIZE, mode, UI_BUNDLE_MODE_SIZE);
     if (ret != NRF_SUCCESS) return ret;
-
-    mode->mode_id = raw[0];
-    mode->update_policy = raw[1];
-    mode->component_start = raw[2];
-    mode->component_count = raw[3];
-    mode->partial_x = ui_read_u16(&raw[4]);
-    mode->partial_y = ui_read_u16(&raw[6]);
-    mode->partial_w = ui_read_u16(&raw[8]);
-    mode->partial_h = ui_read_u16(&raw[10]);
-    mode->flags = ui_read_u16(&raw[12]);
 
     if ((uint16_t)mode->component_start + mode->component_count > header->component_count) {
         return NRF_ERROR_INVALID_DATA;
@@ -317,30 +272,10 @@ ret_code_t GUI_GetUIBundleLastError(void) {
 
 static ret_code_t ui_read_component_raw(const ui_bundle_header_t* header, uint8_t index,
                                         ui_component_record_t* comp) {
-    uint8_t raw[UI_BUNDLE_COMPONENT_SIZE];
-    ret_code_t ret;
-
     if (header == NULL || comp == NULL) return NRF_ERROR_NULL;
     if (index >= header->component_count) return NRF_ERROR_NOT_FOUND;
 
-    ret = ui_bundle_read(header->component_offset + (uint32_t)index * UI_BUNDLE_COMPONENT_SIZE, raw, sizeof(raw));
-    if (ret != NRF_SUCCESS) return ret;
-
-    comp->type = raw[0];
-    comp->data_id = raw[1];
-    comp->font_id = raw[2];
-    comp->flags = raw[3];
-    comp->x = ui_read_i16(&raw[4]);
-    comp->y = ui_read_i16(&raw[6]);
-    comp->w = ui_read_i16(&raw[8]);
-    comp->h = ui_read_i16(&raw[10]);
-    comp->fg = ui_read_u16(&raw[12]);
-    comp->bg = ui_read_u16(&raw[14]);
-    comp->p0 = ui_read_i16(&raw[16]);
-    comp->p1 = ui_read_i16(&raw[18]);
-    comp->p2 = ui_read_i16(&raw[20]);
-    comp->text_offset = ui_read_u16(&raw[22]);
-    return NRF_SUCCESS;
+    return ui_bundle_read(header->component_offset + (uint32_t)index * UI_BUNDLE_COMPONENT_SIZE, comp, UI_BUNDLE_COMPONENT_SIZE);
 }
 
 static ret_code_t ui_load_mode_components(uint8_t mode_id, uint16_t screen_w, uint16_t screen_h,
