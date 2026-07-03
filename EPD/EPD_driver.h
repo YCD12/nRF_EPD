@@ -114,6 +114,8 @@ typedef struct epd_driver {
     void (*clear_partial)(epd_model_t *epd, bool refresh);  /**< Clear screen using partial refresh - 使用部分刷新方式清屏 */
     void (*write_image_partial)(epd_model_t *epd, uint8_t *black, uint8_t *color, uint16_t x, uint16_t y, uint16_t w, uint16_t h); /**< write image for partial refresh - 写入图像数据用于部分刷新 */
     void (*refresh_partial)(epd_model_t *epd, uint16_t x, uint16_t y, uint16_t w, uint16_t h);  /**< Partial refresh a specific area - 局部刷新指定区域 */
+    void (*diff_push)(epd_model_t *epd, uint16_t x, uint16_t y, uint16_t w, uint16_t h,
+                      const uint8_t *old_bm, const uint8_t *new_bm);  /**< Push old/new diff bitmaps for per-digit partial RAM write - 写入差分老/新帧到EPD RAM */
 } epd_driver_t;
 
 // GPIO电平定义 - GPIO level definitions
@@ -162,7 +164,7 @@ uint8_t EPD_ReadByte(void);                            // 读取单字节数据
     } while (0)
 void EPD_FillRAM(uint8_t cmd, uint8_t value, uint32_t len);  // 填充显存(用相同的值填充指定长度)
 void EPD_Reset(uint32_t value, uint16_t duration);           // 复位EPD(通过复位引脚)
-void EPD_WaitBusy(uint32_t value, uint16_t timeout);         // 等待EPD忙状态结束
+bool EPD_WaitBusy(uint32_t value, uint16_t timeout);         // 等待EPD忙状态结束，超时返回false
 
 // LED Control (active low: LOW = ON, HIGH = OFF)
 // LED控制(低电平有效: LOW=点亮, HIGH=熄灭)

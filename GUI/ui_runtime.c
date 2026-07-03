@@ -2,8 +2,7 @@
 
 #include <string.h>
 #include "gui_porting_hal.h"
-
-void ui_render_invalidate_month_cache(void);
+#include "Lunar.h"
 
 #define UI_BUNDLE_MAGIC EPD_EXT_UI_BUNDLE_MAGIC
 #define UI_BUNDLE_VERSION EPD_EXT_UI_BUNDLE_VERSION
@@ -240,6 +239,7 @@ ret_code_t GUI_ReloadUICache(uint16_t width, uint16_t height, uint8_t epd_color_
     ui_mode_record_t mode;
     ret_code_t ret = ui_read_header(&header, width, height, epd_color_depth);
 
+    lunar_db_reset();
     m_ui_cache_valid = false;
     m_ui_render_cache_valid = false;
     ui_render_invalidate_month_cache();
@@ -403,4 +403,111 @@ uint8_t GUI_GetModeUpdatePolicy(uint8_t mode_id, uint16_t width, uint16_t height
     }
 
     return UI_UPDATE_MANUAL;
+}
+
+/* ============================================================================
+ * Partial-refresh geometry helpers.
+ *
+ * Moved from GUI.c: these functions compute the EPD hardware refresh window
+ * for the clock area and maintain the last-refresh timestamp used to shrink
+ * the window to only the changed digit(s).  They depend only on ui_runtime
+ * data (ui_runtime_get_partial_rect) and a local timestamp, so they belong
+ * in the ui_runtime translation unit rather than in the renderer.
+ * ============================================================================ */
+
+  // 宽度是384(不是392)，为x=390处的分隔线留出空间
+  // 这样可以防止局部刷新影响分隔线
+  #define TIME_REFRESH_X      0    // Start from left edge | 从左边缘开始
+  #define TIME_REFRESH_Y      169  // Adjusted so time top aligns at y=182 | 调整使时间顶部对齐到y=182
+  #define TIME_REFRESH_WIDTH  384  // Leave 8px margin for separator line (at x=390) | 为分隔线留8px边距
+  #define TIME_REFRESH_HEIGHT 150  // Time display height (124 + 26px margin) | 时间显示高度(124+26px边距)
+
+static uint32_t s_last_time_refresh_ts = 0;
+
+void GUI_MarkTimeRefreshTimestamp(uint32_t timestamp) {
+    s_last_time_refresh_ts = timestamp;
+}
+
+void GetTimeRefreshArea(uint32_t timestamp, uint16_t* x, uint16_t* y, uint16_t* w, uint16_t* h) {
+    uint16_t base_x = TIME_REFRESH_X;
+    uint16_t base_y = TIME_REFRESH_Y;
+    uint16_t base_w = TIME_REFRESH_WIDTH;
+    uint16_t base_h = TIME_REFRESH_HEIGHT;
+
+    (void)ui_runtime_get_partial_rect(MODE_CLOCK_CALENDAR, 800, 480, &base_x, &base_y, &base_w, &base_h);
+
+    const uint16_t cS = 6;
+    const uint16_t nD = 2;
+    const uint16_t digit_advance = 11 * cS + 2;
+    const uint16_t digit_block_width = nD * (11 * cS + 2) - 2 * cS;
+    const uint16_t time_width = 2 * digit_block_width + 4 * cS;
+
+    uint16_t window_x_local = (base_w - time_width) / 2;
+    uint16_t window_w = time_width;
+
+    uint16_t time_height = 20 * cS + 4;
+    int16_t window_y_local = (int16_t)((base_h - time_height) / 2);
+    int16_t window_h = (int16_t)time_height;
+    const int16_t margin_y = 8;
+    if (window_y_local > margin_y) {
+        window_y_local -= margin_y;
+        window_h += margin_y;
+    }
+    if (window_y_local + window_h + margin_y <= (int16_t)base_h) {
+        window_h += margin_y;
+    }
+
+    if (s_last_time_refresh_ts != 0 && timestamp > s_last_time_refresh_ts &&
+        (timestamp - s_last_time_refresh_ts) <= 600) {
+        uint32_t prev_minutes = (s_last_time_refresh_ts / 60) % (24 * 60);
+        uint32_t curr_minutes = (timestamp / 60) % (24 * 60);
+
+        uint8_t prev_hour = (uint8_t)(prev_minutes / 60);
+        uint8_t prev_min  = (uint8_t)(prev_minutes % 60);
+        uint8_t curr_hour = (uint8_t)(curr_minutes / 60);
+        uint8_t curr_min  = (uint8_t)(curr_minutes % 60);
+
+        uint8_t prev_ht = prev_hour / 10;
+        uint8_t prev_hu = prev_hour % 10;
+        uint8_t prev_mt = prev_min  / 10;
+        uint8_t prev_mu = prev_min  % 10;
+
+        uint8_t curr_ht = curr_hour / 10;
+        uint8_t curr_hu = curr_hour % 10;
+        uint8_t curr_mt = curr_min  / 10;
+        uint8_t curr_mu = curr_min  % 10;
+
+        uint16_t minute_start = window_x_local + digit_block_width + 6 * cS;
+        const uint16_t digit_margin_x = cS;
+        bool hour_unchanged  = (prev_ht == curr_ht) && (prev_hu == curr_hu);
+        bool minute_changed  = (prev_mt != curr_mt) || (prev_mu != curr_mu);
+
+        if (hour_unchanged && minute_changed) {
+            uint16_t left  = (minute_start > digit_margin_x) ?
+                             (uint16_t)(minute_start - digit_margin_x) : minute_start;
+            uint16_t right = (uint16_t)(minute_start + (2 * digit_advance) + digit_margin_x);
+            if (right > base_w) right = base_w;
+            window_x_local = left;
+            window_w = (uint16_t)(right - left);
+        }
+        (void)prev_mu; (void)curr_mu;  /* used via minute_changed */
+    }
+
+    s_last_time_refresh_ts = timestamp;
+
+    *x = base_x + window_x_local;
+    *y = base_y + (uint16_t)window_y_local;
+    *w = window_w;
+    *h = (uint16_t)window_h;
+}
+
+void GetTimeRefreshOrigin(uint16_t* x, uint16_t* y) {
+    uint16_t base_x = TIME_REFRESH_X;
+    uint16_t base_y = TIME_REFRESH_Y;
+    uint16_t base_w = TIME_REFRESH_WIDTH;
+    uint16_t base_h = TIME_REFRESH_HEIGHT;
+    (void)ui_runtime_get_partial_rect(MODE_CLOCK_CALENDAR, 800, 480, &base_x, &base_y, &base_w, &base_h);
+    (void)base_w; (void)base_h;
+    if (x) *x = base_x;
+    if (y) *y = base_y;
 }

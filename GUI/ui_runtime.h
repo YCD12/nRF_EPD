@@ -88,4 +88,11 @@ ret_code_t ui_runtime_load_render_cache(uint8_t mode_id, uint16_t screen_w, uint
 bool ui_runtime_get_partial_rect(uint8_t mode_id, uint16_t screen_w, uint16_t screen_h,
                                  uint16_t* x, uint16_t* y, uint16_t* w, uint16_t* h);
 
+
+/* Partial-refresh geometry helpers (time display window).
+ * Moved from GUI.h: these functions compute EPD hardware refresh coordinates
+ * and maintain the last-drawn-time state used to narrow the partial window. */
+void GetTimeRefreshArea(uint32_t timestamp, uint16_t* x, uint16_t* y, uint16_t* w, uint16_t* h);
+void GetTimeRefreshOrigin(uint16_t* x, uint16_t* y);
+void GUI_MarkTimeRefreshTimestamp(uint32_t timestamp);
 #endif

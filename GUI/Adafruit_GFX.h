@@ -189,4 +189,9 @@ size_t GFX_write(Adafruit_GFX* gfx, const char* buffer, size_t size);
 // 格式化打印（类似printf）| Formatted print (similar to printf)
 size_t GFX_printf(Adafruit_GFX* gfx, const char* format, ...);
 
+/* Returns the shared page buffer and its size in bytes.
+ * Use instead of declaring extern s_gfx_buffer[] in other translation units. */
+uint8_t *GFX_get_buffer(void);
+size_t   GFX_get_buffer_size(void);
+
 #endif  // _ADAFRUIT_GFX_H

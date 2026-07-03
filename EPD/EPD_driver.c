@@ -389,7 +389,7 @@ void EPD_Reset(uint32_t value, uint16_t duration) {
  * 现改为：配置 BUSY 引脚 PORT sense 在“释放”边沿唤醒，循环内 sd_app_evt_wait()
  * 进入 System ON 睡眠，由 BLE/RTC 或 BUSY 边沿事件唤醒后复检引脚。
  */
-void EPD_WaitBusy(uint32_t value, uint16_t timeout) {
+bool EPD_WaitBusy(uint32_t value, uint16_t timeout) {
     const uint32_t ticks_per_ms = APP_TIMER_CLOCK_FREQ / 1000UL;
     uint32_t start_ticks;
     uint32_t last_wdt_ticks;
@@ -399,7 +399,7 @@ void EPD_WaitBusy(uint32_t value, uint16_t timeout) {
     NRF_LOG_DEBUG("[EPD]: check busy\n");
     if (digitalRead(EPD_BUSY_PIN) != value) {
         NRF_LOG_DEBUG("[EPD]: busy release\n");
-        return;
+        return true;
     }
 
     start_ticks = app_timer_cnt_get();
@@ -416,8 +416,9 @@ void EPD_WaitBusy(uint32_t value, uint16_t timeout) {
         {
             uint32_t now_ticks = app_timer_cnt_get();
             if (app_timer_cnt_diff_compute(now_ticks, start_ticks) >= timeout_ticks) {
-                NRF_LOG_DEBUG("[EPD]: busy timeout!\n");
-                break;
+                NRF_LOG_WARNING("[EPD]: busy timeout!\n");
+                nrf_gpio_cfg_sense_set(EPD_BUSY_PIN, NRF_GPIO_PIN_NOSENSE);
+                return false;
             }
             if (app_timer_cnt_diff_compute(now_ticks, last_wdt_ticks) >= (500UL * ticks_per_ms)) {
                 app_feed_wdt();
@@ -428,6 +429,7 @@ void EPD_WaitBusy(uint32_t value, uint16_t timeout) {
 
     nrf_gpio_cfg_sense_set(EPD_BUSY_PIN, NRF_GPIO_PIN_NOSENSE);
     NRF_LOG_DEBUG("[EPD]: busy release\n");
+    return true;
 }
 
 /*

@@ -738,42 +738,6 @@ static void DrawTime(Adafruit_GFX* gfx, tm_t* tm, int16_t x, int16_t y, uint16_t
     Draw7Number(gfx, tm->tm_min, x, y, cS, GFX_BLACK, GFX_WHITE, nD);
 }
 
-// Split screen layout constants for 800x480 screen
-// 800x480屏幕的分屏布局常量
-// Left side: 392 pixels (must be multiple of 8 for byte alignment)
-// 左侧：392像素(必须是8的倍数以便字节对齐)
-// Right side: 408 pixels
-// 右侧：408像素
-#define SPLIT_LEFT_WIDTH 392
-#define SPLIT_RIGHT_START 392
-
-  // Time-only partial refresh area (for MODE_CLOCK_CALENDAR)
-  // Width is 384 (not 392) to leave space for the separator line at x=390
-  // This prevents the partial refresh from affecting the separator line
-  // Y position and height adjusted for layout with 60px top/bottom margins
-  // Content area: y=60 to y=420 (360px height)
-  // Time starts at y=182 (calculated: 128 + (360-128-124)/2), height=124, ends at y=306
-  // 时钟局部刷新区域(用于MODE_CLOCK_CALENDAR模式)
-  // 宽度是384(不是392)，为x=390处的分隔线留出空间
-  // 这样可以防止局部刷新影响分隔线
-  // Y位置和高度根据60px上下边距的布局进行调整
-  // 内容区域：y=60到y=420 (高度360px)
-  // 时间从y=182开始(计算：128 + (360-128-124)/2)，高度=124，结束于y=306
-  #define TIME_REFRESH_X      0    // Start from left edge | 从左边缘开始
-  #define TIME_REFRESH_Y      169  // Adjusted so time top aligns at y=182 | 调整使时间顶部对齐到y=182
-  #define TIME_REFRESH_WIDTH  384  // Leave 8px margin for separator line (at x=390) | 为分隔线留8px边距
-  #define TIME_REFRESH_HEIGHT 150  // Time display height (124 + 26px margin) | 时间显示高度(124+26px边距)
-
-// State for dynamic time refresh window (used by partial refresh)
-// These track the last chosen sub-window inside the TIME_REFRESH area.
-// 动态时间刷新窗口的状态(用于局部刷新)
-// 这些变量追踪TIME_REFRESH区域内最后选择的子窗口
-static uint32_t s_last_time_refresh_ts = 0;               // 上次刷新的时间戳 | Last refresh timestamp
-
-void GUI_MarkTimeRefreshTimestamp(uint32_t timestamp) {
-    s_last_time_refresh_ts = timestamp;
-}
-
 static void ui_draw_date_ymd(Adafruit_GFX* gfx, int16_t x, int16_t y, tm_t* tm, uint8_t flags) {
     const char* fmt = (flags & UI_TEXT_FLAG_ZERO_PAD) ? "%02d" : "%d";
 
@@ -1002,13 +966,13 @@ static void ui_render_text_field(Adafruit_GFX* gfx, const ui_component_record_t*
     }
 }
 
-static void ui_render_component(Adafruit_GFX* gfx, const ui_component_record_t* comp,
+static void __attribute__((noinline)) ui_render_component(Adafruit_GFX* gfx, const ui_component_record_t* comp,
                                 tm_t* tm, struct Lunar_Date* lunar, gui_data_t* data,
-                                bool partial_pass, int16_t origin_x, int16_t origin_y) {
+                                int16_t origin_x, int16_t origin_y) {
     int16_t x = comp->x - origin_x;
     int16_t y = comp->y - origin_y;
 
-    if (((comp->flags & UI_FLAG_PARTIAL_ONLY) != 0) != partial_pass) {
+    if (comp->flags & UI_FLAG_PARTIAL_ONLY) {
         return;
     }
 
@@ -1038,8 +1002,6 @@ static void ui_render_component(Adafruit_GFX* gfx, const ui_component_record_t* 
             DrawLowBatteryTip(gfx, data->voltage_mv, data->color, data->width, data->height);
             break;
         case UI_COMP_TIME_SYNC_TIP:
-            /* 触发条件：未校时(默认 2025-01)，或当前年份农历数据缺失/超出 LCDB 范围
-             * (诚实降级)。后者复用同一提示框，因两种情况的修复手段都是联网同步/更新。 */
             if (((tm->tm_year + YEAR0 == 2025) && (tm->tm_mon + 1 == 1)) ||
                 !lunar_db_year_supported((uint16_t)(tm->tm_year + YEAR0))) {
                 DrawTimeSyncTip(gfx, data->width, data->height);
@@ -1053,42 +1015,19 @@ static void ui_render_component(Adafruit_GFX* gfx, const ui_component_record_t* 
 static void ui_render_component_list(Adafruit_GFX* gfx, const ui_component_record_t* components,
                                      uint8_t component_count, tm_t* tm,
                                      struct Lunar_Date* lunar, gui_data_t* data,
-                                     bool partial_pass, int16_t origin_x, int16_t origin_y) {
+                                     int16_t origin_x, int16_t origin_y) {
     for (uint8_t i = 0; i < component_count; i++) {
-        ui_render_component(gfx, &components[i], tm, lunar, data, partial_pass, origin_x, origin_y);
+        ui_render_component(gfx, &components[i], tm, lunar, data, origin_x, origin_y);
         gui_porting_feed_wdt();
     }
 }
 
-
-
-/**
- * @brief GUI主绘制函数 - 绘制完整界面
- *        Main GUI drawing function - draws complete interface
- *
- * @param data          GUI数据指针 | Pointer to GUI data
- * @param callback      缓冲区回调函数 | Buffer callback function
- * @param callback_data 回调数据 | Callback data
- *
- * 功能(Features)：
- * - 根据显示模式选择不同的界面布局 | Select different layouts based on display mode
- * - 支持黑白/三色/四色屏幕 | Support B/W, 3-color, 4-color screens
- * - 自动计算缓冲区大小以适应可用内存 | Auto calculate buffer size to fit available memory
- * - 使用分页机制处理大屏幕 | Use paging mechanism for large screens
- *
- * 显示模式(Display modes)：
- * - MODE_CALENDAR: 全屏月历 | Full screen calendar
- * - MODE_CLOCK: 全屏时钟 | Full screen clock
- * - MODE_CLOCK_CALENDAR: 分屏时钟+日历 | Split screen clock + calendar
- */
 void DrawGUI(gui_data_t* data, buffer_callback callback, void* callback_data) {
-    // 验证一周起始日参数 | Validate week start parameter
     if (data->week_start > 6) data->week_start = 0;
 
     tm_t tm = {0};
     struct Lunar_Date Lunar;
 
-    // 将UNIX时间戳转换为tm结构 | Convert UNIX timestamp to tm structure
     transformTime(data->timestamp, &tm);
     bool low_battery = (data->voltage_mv <= LOW_BATTERY_THRESHOLD_MV);
     uint8_t render_mode_id = low_battery ? UI_MODE_LOW_BATTERY : (uint8_t)data->mode;
@@ -1108,194 +1047,47 @@ void DrawGUI(gui_data_t* data, buffer_callback callback, void* callback_data) {
         cached_component_count = 0;
     }
 
-
     Adafruit_GFX gfx;
-    // 计算页面高度：根据可用堆内存动态调整 | Calculate page height: dynamically adjust based on available heap
-    // __HEAP_SIZE是总堆大小，减去512字节保留空间，再除以每行需要的字节数(width/8)
     int16_t ph = (__HEAP_SIZE - 512) / (data->width / 8);
 
-    // 根据颜色模式初始化GFX | Initialize GFX based on color mode (BWR 3-color or monochrome fallback)
     if (data->color == 2)
-        GFX_begin_3c(&gfx, data->width, data->height, ph);  // 三色屏幕 | 3-color screen
+        GFX_begin_3c(&gfx, data->width, data->height, ph);
     else
-        GFX_begin(&gfx, data->width, data->height, ph);     // 黑白屏幕 | B/W screen
+        GFX_begin(&gfx, data->width, data->height, ph);
 
     GFX_firstPage(&gfx);
     do {
-        // 填充白色背景 | Fill white background
         GFX_fillScreen(&gfx, GFX_WHITE);
 
         if (low_battery) {
             ui_render_component_list(&gfx, cached_components, cached_component_count,
-                                     &tm, &Lunar, data, false, 0, 0);
+                                     &tm, &Lunar, data, 0, 0);
             continue;
         }
 
         ui_render_component_list(&gfx, cached_components, cached_component_count,
-                                 &tm, &Lunar, data, false, 0, 0);
-    } while (GFX_nextPage(&gfx, callback, callback_data));  // 分页绘制 | Draw with paging
+                                 &tm, &Lunar, data, 0, 0);
+    } while (GFX_nextPage(&gfx, callback, callback_data));
 
     GFX_end(&gfx);
 }
 
-// Draw only the time portion for partial refresh in MODE_CLOCK_CALENDAR
-// This draws to a small area containing only the 7-segment time display
-// 仅绘制时间部分用于MODE_CLOCK_CALENDAR模式的局部刷新
-// 该函数只绘制包含7段数码管样式时间显示的小区域
-/**
- * @brief 绘制时钟时间用于局部刷新(MODE_CLOCK_CALENDAR模式)
- *        Draw clock time for partial refresh (MODE_CLOCK_CALENDAR mode)
- *
- * @param data          GUI数据指针 | Pointer to GUI data
- * @param callback      缓冲区回调函数 | Buffer callback function
- * @param callback_data 回调数据 | Callback data
- *
- * 优化说明(Optimization)：
- * - 只绘制时间显示区域，不绘制其他内容 | Only draw time area, not other content
- * - 配合GFX_setWindow使用，可进一步缩小刷新范围到单个数字 | With GFX_setWindow, can further reduce to single digit
- * - 仅使用黑白模式(局部刷新不支持彩色) | Only use B/W mode (partial refresh doesn't support color)
- * - 大幅减少刷新面积，延长屏幕寿命 | Greatly reduce refresh area, extend screen life
- */
+// Split screen layout constants for 800x480 screen
+// 800x480屏幕的分屏布局常量
+// Left side: 392 pixels (must be multiple of 8 for byte alignment)
+// 左侧：392像素(必须是8的倍数以便字节对齐)
+// Right side: 408 pixels
+// 右侧：408像素
+#define SPLIT_LEFT_WIDTH 392
+#define SPLIT_RIGHT_START 392
 
-
-  // Get the time refresh area parameters for EPD_service
-  // 获取时间刷新区域参数供EPD服务使用
-  /**
-   * @brief 计算并返回时间显示的局部刷新区域
-   *        Calculate and return partial refresh area for time display
-   *
-   * @param timestamp 当前UNIX时间戳 | Current UNIX timestamp
-   * @param x         输出：刷新区域X坐标 | Output: refresh area X coordinate
-   * @param y         输出：刷新区域Y坐标 | Output: refresh area Y coordinate
-   * @param w         输出：刷新区域宽度 | Output: refresh area width
-   * @param h         输出：刷新区域高度 | Output: refresh area height
-   *
-   * 智能优化策略(Smart optimization strategy)：
-   * 1. 默认刷新整个HH:MM时间显示区域(首次/时间大跳变)
-   * 2. 正常分钟更新时,固定刷新完整MM两位数字
-   * 3. 这样避免分钟十位旧段漏刷,同时仍比刷新完整HH:MM面积小
-   *
-   * 刷新区域动态调整(Dynamic refresh area adjustment)：
-   * - 完整时间区域: 约272x128像素
-   * - 正常分钟区域: 约148x128像素
-   * - 小时变化/时间跳变: 刷新完整HH:MM
-   */
-  void GetTimeRefreshArea(uint32_t timestamp, uint16_t* x, uint16_t* y, uint16_t* w, uint16_t* h) {
-      // Base time area (centered HH:MM inside TIME_REFRESH_*)
-      // 基础时间区域(TIME_REFRESH_*内居中的HH:MM)
-      uint16_t base_x = TIME_REFRESH_X;
-      uint16_t base_y = TIME_REFRESH_Y;
-      uint16_t base_w = TIME_REFRESH_WIDTH;
-      uint16_t base_h = TIME_REFRESH_HEIGHT;
-
-      (void)ui_runtime_get_partial_rect(MODE_CLOCK_CALENDAR, 800, 480, &base_x, &base_y, &base_w, &base_h);
-
-      // 7-segment layout parameters (must match DrawTime/Draw7Number)
-      // 7段数码管布局参数(必须与DrawTime/Draw7Number匹配)
-      const uint16_t cS = 6;      // scale factor | 缩放因子
-      const uint16_t nD = 2;      // digits per number (HH / MM) | 每个数字的位数
-      const uint16_t digit_advance = 11 * cS + 2;  // Draw7Number digit stride | 数字步进
-      const uint16_t digit_block_width = nD * (11 * cS + 2) - 2 * cS;  // width of "HH" or "MM" | "HH"或"MM"的宽度
-      const uint16_t time_width = 2 * digit_block_width + 4 * cS;      // nominal HH:MM width (used for centering) | HH:MM总宽度
-
-      // Default window: full HH:MM area (smaller than TIME_REFRESH_* to avoid touching calendar)
-      // 默认窗口：完整的HH:MM区域(小于TIME_REFRESH_*以避免触及日历)
-      uint16_t window_x_local = (base_w - time_width) / 2;
-      uint16_t window_w = time_width;
-
-    // Vertically, restrict to just the digits area (time_height), centered,
-    // but add a small margin above/below to clean residual pixels.
-    // 垂直方向，限制在数字区域(time_height)，居中，
-    // 但在上下添加小边距以清除残留像素
-    uint16_t time_height = 20 * cS + 4;  // must match DrawGUI_ClockOnly | 必须与DrawGUI_ClockOnly匹配
-    int16_t window_y_local = (base_h - time_height) / 2;
-    int16_t window_h = time_height;
-    const int16_t margin_y = 8;
-    // Expand upwards if there is room | 如果有空间则向上扩展
-    if (window_y_local > margin_y) {
-        window_y_local -= margin_y;
-        window_h += margin_y;
-    }
-    // Expand downwards if there is room | 如果有空间则向下扩展
-    if (window_y_local + window_h + margin_y <= (int16_t)base_h) {
-        window_h += margin_y;
-    }
-
-      // Normal minute updates always refresh the full "MM" block. Refreshing
-      // only the changed digit can leave stale segments in the minute-tens
-      // digit, and later minute-ones updates will never touch that area.
-      // 正常分钟更新固定刷新完整"MM"两位。只刷变化数字会漏掉分钟十位残留段。
-      if (s_last_time_refresh_ts != 0 && timestamp > s_last_time_refresh_ts &&
-          (timestamp - s_last_time_refresh_ts) <= 600) {  // ignore large jumps | 忽略大跳跃(>10分钟)
-          // 计算上次和当前的小时和分钟 | Calculate previous and current hours and minutes
-          uint32_t prev_minutes = (s_last_time_refresh_ts / 60) % (24 * 60);
-          uint32_t curr_minutes = (timestamp / 60) % (24 * 60);
-
-          uint8_t prev_hour = prev_minutes / 60;
-          uint8_t prev_min = prev_minutes % 60;
-          uint8_t curr_hour = curr_minutes / 60;
-          uint8_t curr_min = curr_minutes % 60;
-
-          // 分解为十位和个位 | Break down into tens and ones
-          uint8_t prev_ht = prev_hour / 10;  // 小时十位 | Hour tens
-          uint8_t prev_hu = prev_hour % 10;  // 小时个位 | Hour ones
-          uint8_t prev_mt = prev_min / 10;   // 分钟十位 | Minute tens
-          uint8_t prev_mu = prev_min % 10;   // 分钟个位 | Minute ones
-
-          uint8_t curr_ht = curr_hour / 10;
-          uint8_t curr_hu = curr_hour % 10;
-          uint8_t curr_mt = curr_min / 10;
-          uint8_t curr_mu = curr_min % 10;
-
-          uint16_t minute_start = window_x_local + digit_block_width + 6 * cS;
-          const uint16_t digit_margin_x = cS;
-          bool hour_unchanged = (prev_ht == curr_ht) && (prev_hu == curr_hu);
-          bool minute_changed = (prev_mt != curr_mt) || (prev_mu != curr_mu);
-
-          if (hour_unchanged && minute_changed) {
-              uint16_t left = (minute_start > digit_margin_x) ?
-                              (uint16_t)(minute_start - digit_margin_x) : minute_start;
-              uint16_t right = (uint16_t)(minute_start + (2 * digit_advance) + digit_margin_x);
-              if (right > base_w) {
-                  right = base_w;
-              }
-
-              window_x_local = left;
-              window_w = (uint16_t)(right - left);
-          }
-      }
-
-      // Persist the chosen window for DrawGUI_ClockOnly (GFX_setWindow)
-      // 保存选定的窗口供DrawGUI_ClockOnly使用(GFX_setWindow)
-      s_last_time_refresh_ts = timestamp;
-
-      // Return global refresh region for EPD_service
-      // 返回全局刷新区域坐标供EPD服务使用
-    *x = base_x + window_x_local;
-    *y = base_y + (uint16_t)window_y_local;
-    *w = window_w;
-    *h = (uint16_t)window_h;
-  }
-
-// Get the base origin (top-left) of the time refresh area on the full screen
-// 获取时间刷新区域在全屏上的基准原点(左上角)
-/**
- * @brief 返回时间刷新区域的基准起点坐标
- *        Return the base origin coordinates of time refresh area
- *
- * @param x 输出X坐标 | Output X coordinate
- * @param y 输出Y坐标 | Output Y coordinate
- */
-void GetTimeRefreshOrigin(uint16_t* x, uint16_t* y) {
-    uint16_t base_x = TIME_REFRESH_X;
-    uint16_t base_y = TIME_REFRESH_Y;
-    uint16_t base_w = TIME_REFRESH_WIDTH;
-    uint16_t base_h = TIME_REFRESH_HEIGHT;
-    (void)ui_runtime_get_partial_rect(MODE_CLOCK_CALENDAR, 800, 480, &base_x, &base_y, &base_w, &base_h);
-    if (x) *x = base_x;
-    if (y) *y = base_y;
-}
-
+  // Time-only partial refresh area (for MODE_CLOCK_CALENDAR)
+  // Width is 384 (not 392) to leave space for the separator line at x=390
+  // This prevents the partial refresh from affecting the separator line
+  // Y position and height adjusted for layout with 60px top/bottom margins
+  // Content area: y=60 to y=420 (360px height)
+  // Time starts at y=182 (calculated: 128 + (360-128-124)/2), height=124, ends at y=306
+  // 时钟局部刷新区域(用于MODE_CLOCK_CALENDAR模式)
 /* ==========================================================================
  * Resource-missing fallback screen.
  *
@@ -1308,71 +1100,68 @@ void GetTimeRefreshOrigin(uint16_t* x, uint16_t* y) {
 
 #define FALLBACK_SYNC_TITLE  "SYNC TIME!"
 #define FALLBACK_SYNC_URL    "https://ycd12.github.io/EPD-nRF5_DYC/"
-#define FALLBACK_FONT_FIRST  0x20
-#define FALLBACK_FONT_LAST   0x7E
 #define FALLBACK_GLYPH_W     5
 #define FALLBACK_GLYPH_H     7
 #define FALLBACK_GLYPH_ADV   6  /* 5 columns + 1 column spacing */
 
-/* Public-domain 5x7 ASCII font (Adafruit GFX classic), columns LSB-on-top,
- * ASCII 0x20..0x7E = 95 glyphs x 5 bytes = 475 bytes ROM. */
-static const uint8_t fallback_font[95][5] = {
-    {0x00, 0x00, 0x00, 0x00, 0x00}, {0x00, 0x00, 0x5F, 0x00, 0x00},
-    {0x00, 0x07, 0x00, 0x07, 0x00}, {0x14, 0x7F, 0x14, 0x7F, 0x14},
-    {0x24, 0x2A, 0x7F, 0x2A, 0x12}, {0x23, 0x13, 0x08, 0x64, 0x62},
-    {0x36, 0x49, 0x55, 0x22, 0x50}, {0x00, 0x05, 0x03, 0x00, 0x00},
-    {0x00, 0x1C, 0x22, 0x41, 0x00}, {0x00, 0x41, 0x22, 0x1C, 0x00},
-    {0x14, 0x08, 0x3E, 0x08, 0x14}, {0x08, 0x08, 0x3E, 0x08, 0x08},
-    {0x00, 0x50, 0x30, 0x00, 0x00}, {0x08, 0x08, 0x08, 0x08, 0x08},
-    {0x00, 0x60, 0x60, 0x00, 0x00}, {0x20, 0x10, 0x08, 0x04, 0x02},
-    {0x3E, 0x51, 0x49, 0x45, 0x3E}, {0x00, 0x42, 0x7F, 0x40, 0x00},
-    {0x42, 0x61, 0x51, 0x49, 0x46}, {0x21, 0x41, 0x45, 0x4B, 0x31},
-    {0x18, 0x14, 0x12, 0x7F, 0x10}, {0x27, 0x45, 0x45, 0x45, 0x39},
-    {0x3C, 0x4A, 0x49, 0x49, 0x30}, {0x01, 0x71, 0x09, 0x05, 0x03},
-    {0x36, 0x49, 0x49, 0x49, 0x36}, {0x06, 0x49, 0x49, 0x29, 0x1E},
-    {0x00, 0x36, 0x36, 0x00, 0x00}, {0x00, 0x56, 0x36, 0x00, 0x00},
-    {0x08, 0x14, 0x22, 0x41, 0x00}, {0x14, 0x14, 0x14, 0x14, 0x14},
-    {0x00, 0x41, 0x22, 0x14, 0x08}, {0x02, 0x01, 0x51, 0x09, 0x06},
-    {0x32, 0x49, 0x79, 0x41, 0x3E}, {0x7E, 0x11, 0x11, 0x11, 0x7E},
-    {0x7F, 0x49, 0x49, 0x49, 0x36}, {0x3E, 0x41, 0x41, 0x41, 0x22},
-    {0x7F, 0x41, 0x41, 0x22, 0x1C}, {0x7F, 0x49, 0x49, 0x49, 0x41},
-    {0x7F, 0x09, 0x09, 0x01, 0x01}, {0x3E, 0x41, 0x41, 0x51, 0x32},
-    {0x7F, 0x08, 0x08, 0x08, 0x7F}, {0x00, 0x41, 0x7F, 0x41, 0x00},
-    {0x20, 0x40, 0x41, 0x3F, 0x01}, {0x7F, 0x08, 0x14, 0x22, 0x41},
-    {0x7F, 0x40, 0x40, 0x40, 0x40}, {0x7F, 0x02, 0x04, 0x02, 0x7F},
-    {0x7F, 0x04, 0x08, 0x10, 0x7F}, {0x3E, 0x41, 0x41, 0x41, 0x3E},
-    {0x7F, 0x09, 0x09, 0x09, 0x06}, {0x3E, 0x41, 0x51, 0x21, 0x5E},
-    {0x7F, 0x09, 0x19, 0x29, 0x46}, {0x46, 0x49, 0x49, 0x49, 0x31},
-    {0x01, 0x01, 0x7F, 0x01, 0x01}, {0x3F, 0x40, 0x40, 0x40, 0x3F},
-    {0x1F, 0x20, 0x40, 0x20, 0x1F}, {0x7F, 0x20, 0x18, 0x20, 0x7F},
-    {0x63, 0x14, 0x08, 0x14, 0x63}, {0x03, 0x04, 0x78, 0x04, 0x03},
-    {0x61, 0x51, 0x49, 0x45, 0x43}, {0x00, 0x7F, 0x41, 0x41, 0x00},
-    {0x02, 0x04, 0x08, 0x10, 0x20}, {0x00, 0x41, 0x41, 0x7F, 0x00},
-    {0x04, 0x02, 0x01, 0x02, 0x04}, {0x40, 0x40, 0x40, 0x40, 0x40},
-    {0x00, 0x01, 0x02, 0x04, 0x00}, {0x20, 0x54, 0x54, 0x54, 0x78},
-    {0x7F, 0x48, 0x44, 0x44, 0x38}, {0x38, 0x44, 0x44, 0x44, 0x20},
-    {0x38, 0x44, 0x44, 0x48, 0x7F}, {0x38, 0x54, 0x54, 0x54, 0x18},
-    {0x08, 0x7E, 0x09, 0x01, 0x02}, {0x0C, 0x52, 0x52, 0x52, 0x3E},
-    {0x7F, 0x08, 0x04, 0x04, 0x78}, {0x00, 0x44, 0x7D, 0x40, 0x00},
-    {0x20, 0x40, 0x44, 0x3D, 0x00}, {0x7F, 0x10, 0x28, 0x44, 0x00},
-    {0x00, 0x41, 0x7F, 0x40, 0x00}, {0x7C, 0x04, 0x18, 0x04, 0x7C},
-    {0x7C, 0x08, 0x04, 0x04, 0x78}, {0x38, 0x44, 0x44, 0x44, 0x38},
-    {0x7C, 0x14, 0x14, 0x14, 0x08}, {0x08, 0x14, 0x14, 0x18, 0x7C},
-    {0x7C, 0x08, 0x04, 0x04, 0x08}, {0x48, 0x54, 0x54, 0x54, 0x20},
-    {0x04, 0x3F, 0x44, 0x40, 0x20}, {0x3C, 0x40, 0x40, 0x20, 0x7C},
-    {0x1C, 0x20, 0x40, 0x20, 0x1C}, {0x3C, 0x40, 0x30, 0x40, 0x3C},
-    {0x44, 0x28, 0x10, 0x28, 0x44}, {0x0C, 0x50, 0x50, 0x50, 0x3C},
-    {0x44, 0x64, 0x54, 0x4C, 0x44}, {0x00, 0x08, 0x36, 0x41, 0x00},
-    {0x00, 0x00, 0x7F, 0x00, 0x00}, {0x00, 0x41, 0x36, 0x08, 0x00},
-    {0x02, 0x01, 0x02, 0x04, 0x02},
+/* Sparse 5x7 font — only chars in FALLBACK_SYNC_TITLE + FALLBACK_SYNC_URL.
+ * Last entry '?' is the fallback for unknown chars.
+ * keys[]: 37B, glyphs[][5]: 185B = 222B total vs original 475B. */
+static const uint8_t fallback_keys[] = {
+    ' ','!','-','.','/',
+    '1','2','5',':',
+    'C','D','E','F','I','M','N','P','R','S','T','Y','_',
+    'b','c','d','e','g','h','i','n','o','p','s','t','u','y',
+    '?'
+};
+static const uint8_t fallback_glyphs[][FALLBACK_GLYPH_W] = {
+    {0x00,0x00,0x00,0x00,0x00}, /* ' ' */
+    {0x00,0x00,0x5F,0x00,0x00}, /* '!' */
+    {0x08,0x08,0x08,0x08,0x08}, /* '-' */
+    {0x00,0x60,0x60,0x00,0x00}, /* '.' */
+    {0x20,0x10,0x08,0x04,0x02}, /* '/' */
+    {0x00,0x42,0x7F,0x40,0x00}, /* '1' */
+    {0x42,0x61,0x51,0x49,0x46}, /* '2' */
+    {0x27,0x45,0x45,0x45,0x39}, /* '5' */
+    {0x00,0x36,0x36,0x00,0x00}, /* ':' */
+    {0x3E,0x41,0x41,0x41,0x22}, /* 'C' */
+    {0x7F,0x41,0x41,0x22,0x1C}, /* 'D' */
+    {0x7F,0x49,0x49,0x49,0x41}, /* 'E' */
+    {0x7F,0x09,0x09,0x01,0x01}, /* 'F' */
+    {0x00,0x41,0x7F,0x41,0x00}, /* 'I' */
+    {0x7F,0x02,0x04,0x02,0x7F}, /* 'M' */
+    {0x7F,0x04,0x08,0x10,0x7F}, /* 'N' */
+    {0x7F,0x09,0x09,0x09,0x06}, /* 'P' */
+    {0x7F,0x09,0x19,0x29,0x46}, /* 'R' */
+    {0x46,0x49,0x49,0x49,0x31}, /* 'S' */
+    {0x01,0x01,0x7F,0x01,0x01}, /* 'T' */
+    {0x03,0x04,0x78,0x04,0x03}, /* 'Y' */
+    {0x40,0x40,0x40,0x40,0x40}, /* '_' */
+    {0x7F,0x48,0x44,0x44,0x38}, /* 'b' */
+    {0x38,0x44,0x44,0x44,0x20}, /* 'c' */
+    {0x38,0x44,0x44,0x48,0x7F}, /* 'd' */
+    {0x38,0x54,0x54,0x54,0x18}, /* 'e' */
+    {0x0C,0x52,0x52,0x52,0x3E}, /* 'g' */
+    {0x7F,0x08,0x04,0x04,0x78}, /* 'h' */
+    {0x00,0x44,0x7D,0x40,0x00}, /* 'i' */
+    {0x7C,0x08,0x04,0x04,0x78}, /* 'n' */
+    {0x38,0x44,0x44,0x44,0x38}, /* 'o' */
+    {0x7C,0x14,0x14,0x14,0x08}, /* 'p' */
+    {0x48,0x54,0x54,0x54,0x20}, /* 's' */
+    {0x04,0x3F,0x44,0x40,0x20}, /* 't' */
+    {0x3C,0x40,0x40,0x20,0x7C}, /* 'u' */
+    {0x0C,0x50,0x50,0x50,0x3C}, /* 'y' */
+    {0x02,0x01,0x51,0x09,0x06}, /* '?' fallback */
 };
 
 static void fallback_draw_char(Adafruit_GFX* gfx, int16_t x, int16_t y,
                                char ch, uint16_t color, uint8_t scale) {
-    uint8_t code = (uint8_t)ch;
     const uint8_t* glyph;
-    if (code < FALLBACK_FONT_FIRST || code > FALLBACK_FONT_LAST) code = '?';
-    glyph = fallback_font[code - FALLBACK_FONT_FIRST];
+    uint8_t idx = (uint8_t)(sizeof(fallback_keys) - 1U); /* default: '?' */
+    for (uint8_t i = 0; i < sizeof(fallback_keys) - 1U; i++) {
+        if (fallback_keys[i] == (uint8_t)ch) { idx = i; break; }
+    }
+    glyph = fallback_glyphs[idx];
     for (uint8_t col = 0; col < FALLBACK_GLYPH_W; col++) {
         uint8_t bits = glyph[col];
         for (uint8_t row = 0; row < FALLBACK_GLYPH_H; row++) {
