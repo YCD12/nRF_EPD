@@ -24,13 +24,13 @@ int is_leap(int yr); /* 前置声明，实现见本文件下方时间转换区 *
  ******************************************************************************/
 #if EPD_SUPPORT_LUNAR
 #define LUNAR_DB_MAX_YEARS      8U
-#define LUNAR_DB_YEAR_HEADER_SZ 8U
+#define LUNAR_DB_YEAR_HEADER_SZ 16U
 
 static bool     s_db_inited = false;   /* 是否已尝试初始化（幂等） */
 static bool     s_db_valid = false;    /* 数据库是否有效可用 */
 static uint8_t  s_db_year_count = 0;   /* 数据库包含的年份数 */
 static uint16_t s_db_start_year = 0;   /* 起始年份 */
-static uint8_t  s_db_record_size = 12; /* 单日记录大小 */
+static uint8_t  s_db_record_size = 4; /* 单日记录大小 */
 static uint32_t s_db_year_offsets[LUNAR_DB_MAX_YEARS]; /* 各年份块相对资源起始的偏移 */
 
 /* 单日记录缓存（优化1）：LCDB 为只读，按日期缓存永久有效，无需失效。
@@ -93,7 +93,7 @@ int lunar_db_init(void) {
     s_db_start_year = (uint16_t)header[6] | ((uint16_t)header[7] << 8);
     s_db_record_size = header[8];
     if (s_db_record_size == 0) {
-        s_db_record_size = 12;
+        s_db_record_size = 4;
     }
     if (s_db_year_count == 0) {
         return -4;
@@ -112,22 +112,28 @@ int lunar_db_init(void) {
     return 0;
 }
 
-/* 读取指定(降级后)年份块的 8B 年份头部，输出块基址/总天数/字符串池偏移。 */
+/* 读取指定(降级后)年份块的 16B 年份头部，输出块基址/总天数/稀疏表数量/稀疏表偏移/字符串池偏移。 */
 static int lunar_db_read_year_header(uint16_t eff_year, uint32_t* block_offset, uint16_t* total_days,
+                                     uint16_t* sparse_count, uint32_t* sparse_table_offset,
                                      uint32_t* string_pool_offset) {
-    uint8_t yh[LUNAR_DB_YEAR_HEADER_SZ];
+    uint8_t yh[16];
     uint8_t idx = (uint8_t)(eff_year - s_db_start_year);
     uint32_t base = s_db_year_offsets[idx];
 
-    if (res_hal_read(EPD_EXT_RES_TYPE_LUNAR_DB, EPD_EXT_LUNAR_DB_ENTRY, base, yh, sizeof(yh)) !=
+    if (res_hal_read(EPD_EXT_RES_TYPE_LUNAR_DB, EPD_EXT_LUNAR_DB_ENTRY, base, yh, 16) !=
         NRF_SUCCESS) {
         return -1;
     }
     if (block_offset) *block_offset = base;
     if (total_days) *total_days = (uint16_t)yh[2] | ((uint16_t)yh[3] << 8);
+    if (sparse_count) *sparse_count = (uint16_t)yh[4] | ((uint16_t)yh[5] << 8);
+    if (sparse_table_offset) {
+        *sparse_table_offset = (uint32_t)yh[6] | ((uint32_t)yh[7] << 8) |
+                               ((uint32_t)yh[8] << 16) | ((uint32_t)yh[9] << 24);
+    }
     if (string_pool_offset) {
-        *string_pool_offset = (uint32_t)yh[4] | ((uint32_t)yh[5] << 8) | ((uint32_t)yh[6] << 16) |
-                              ((uint32_t)yh[7] << 24);
+        *string_pool_offset = (uint32_t)yh[10] | ((uint32_t)yh[11] << 8) |
+                              ((uint32_t)yh[12] << 16) | ((uint32_t)yh[13] << 24);
     }
     return 0;
 }
@@ -136,8 +142,12 @@ int lunar_db_get_record(uint16_t year, uint8_t month, uint8_t day, daily_record_
     uint16_t eff_year;
     uint32_t base = 0;
     uint16_t total_days = 0;
+    uint16_t sparse_count = 0;
+    uint32_t sparse_table_offset = 0;
     uint16_t doy;
     uint32_t addr;
+    uint32_t packed_val = 0;
+    bool has_festival, has_special;
 
     if (out_record == NULL || month < 1 || month > 12 || day < 1 || day > 31) {
         return -1;
@@ -154,7 +164,7 @@ int lunar_db_get_record(uint16_t year, uint8_t month, uint8_t day, daily_record_
     }
 
     eff_year = lunar_db_effective_year(year);
-    if (lunar_db_read_year_header(eff_year, &base, &total_days, NULL) != 0 || total_days == 0) {
+    if (lunar_db_read_year_header(eff_year, &base, &total_days, &sparse_count, &sparse_table_offset, NULL) != 0 || total_days == 0) {
         return -3;
     }
 
@@ -164,9 +174,47 @@ int lunar_db_get_record(uint16_t year, uint8_t month, uint8_t day, daily_record_
     }
 
     addr = base + LUNAR_DB_YEAR_HEADER_SZ + (uint32_t)doy * s_db_record_size;
-    if (res_hal_read(EPD_EXT_RES_TYPE_LUNAR_DB, EPD_EXT_LUNAR_DB_ENTRY, addr, out_record,
-                              sizeof(daily_record_t)) != NRF_SUCCESS) {
+    if (res_hal_read(EPD_EXT_RES_TYPE_LUNAR_DB, EPD_EXT_LUNAR_DB_ENTRY, addr, &packed_val, 4) != NRF_SUCCESS) {
         return -4;
+    }
+
+    // Bit shifting to unpack bitfield
+    uint8_t l_mon = (uint8_t)(packed_val & 0x0FU);
+    uint8_t is_leap_m = (uint8_t)((packed_val >> 4) & 0x01U);
+    out_record->lunar_month = l_mon | (is_leap_m ? 0x80U : 0x00U);
+    out_record->lunar_day = (uint8_t)((packed_val >> 5) & 0x1FU);
+    out_record->jiazi_year = (uint8_t)((packed_val >> 10) & 0x3FU);
+    out_record->solar_term = (uint8_t)((packed_val >> 16) & 0x1FU);
+    out_record->holiday_type = (uint8_t)((packed_val >> 21) & 0x03U);
+    out_record->reserved = 0;
+    out_record->festival_offset = 0xFFFFU;
+    out_record->special_label = 0xFFFFU;
+
+    has_festival = (bool)((packed_val >> 23) & 0x01U);
+    has_special = (bool)((packed_val >> 24) & 0x01U);
+
+    if ((has_festival || has_special) && sparse_count > 0) {
+        int low = 0;
+        int high = (int)sparse_count - 1;
+        while (low <= high) {
+            int mid = low + (high - low) / 2;
+            uint8_t entry_buf[6];
+            uint32_t entry_addr = base + sparse_table_offset + (uint32_t)mid * 6U;
+            if (res_hal_read(EPD_EXT_RES_TYPE_LUNAR_DB, EPD_EXT_LUNAR_DB_ENTRY, entry_addr, entry_buf, 6) == NRF_SUCCESS) {
+                uint16_t entry_doy = (uint16_t)entry_buf[0] | ((uint16_t)entry_buf[1] << 8);
+                if (entry_doy == doy) {
+                    out_record->festival_offset = (uint16_t)entry_buf[2] | ((uint16_t)entry_buf[3] << 8);
+                    out_record->special_label   = (uint16_t)entry_buf[4] | ((uint16_t)entry_buf[5] << 8);
+                    break;
+                } else if (entry_doy < doy) {
+                    low = mid + 1;
+                } else {
+                    high = mid - 1;
+                }
+            } else {
+                break;
+            }
+        }
     }
 
     s_rec_cache_year = year;
@@ -208,7 +256,7 @@ const char* lunar_db_get_string(uint16_t year, uint16_t offset, char* buffer, si
     }
 
     eff_year = lunar_db_effective_year(year);
-    if (lunar_db_read_year_header(eff_year, &base, NULL, &pool_offset) != 0) {
+    if (lunar_db_read_year_header(eff_year, &base, NULL, NULL, NULL, &pool_offset) != 0) {
         return buffer;
     }
 

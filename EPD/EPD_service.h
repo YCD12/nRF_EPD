@@ -126,7 +126,7 @@ enum EPD_CMDS {
  * 2. 缓冲BLE快速发送的多个命令
  * 3. 支持长时间操作(如刷新)期间接收新命令
  */
-#define EPD_CMD_QUEUE_SIZE 4  /**< Command queue size (max 4 pending normal commands). 普通命令队列大小 */
+#define EPD_CMD_QUEUE_SIZE 2  /**< Command queue size (max 2 pending normal commands). 普通命令队列大小 */
 #define EPD_CMD_MAX_DATA_LEN BLE_EPD_MAX_DATA_LEN  /**< Maximum command data length. 单个命令的最大数据长度 */
 
 /**@brief Command queue item structure.

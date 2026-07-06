@@ -52,8 +52,6 @@ typedef struct {
     uint8_t lunar_month;      /* 农历月份 (1-12)，最高位 Bit7=1 表示闰月 */
     uint8_t lunar_day;        /* 农历日期 (1-30) */
     uint8_t jiazi_year;       /* 六十甲子年索引 (0-59) */
-    uint8_t jiazi_month;      /* 干支月 (预留) */
-    uint8_t jiazi_day;        /* 干支日 (预留) */
     uint8_t solar_term;       /* 24节气索引 (0:无, 1-24 对应 LUNAR_GetJieQiName 索引+1) */
     uint8_t holiday_type;     /* 调休状态 (0:普通, 1:休, 2:班) */
     uint8_t reserved;         /* 对齐字节 */
