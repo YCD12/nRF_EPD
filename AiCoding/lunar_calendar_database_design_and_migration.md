@@ -1126,3 +1126,73 @@ make -f Makefile.nRF52_linux              # text=56748, 仍在 0xE000 内
 - 固件运行时 `ui_collect_dirty_rects()`：多动态组件各自脏标记 → 合并包围盒
 - `epd_clock_diff.c` 去硬编码：读 `ui_runtime` 布局或打包导出 `epd_layout.h` 常量
 - 网页拖拽组件后仅需重打 UI bundle，partial 随 `PARTIAL_ONLY` 自动更新
+
+---
+
+## 7.22 EasyDMA 问题分析记录（提交 `1568d74` 引入）
+
+> 记录时间：2026-07-06，对应提交 `1568d74`（flash 优化）
+
+### 问题现象
+
+提交 `1568d74` 刷机后，设备上电即出现屏幕异常刷新。
+
+### 根因
+
+`1568d74` 将 `SDK/17.1.0_ddde560/sdk_config.h` 中：
+
+```c
+// 修改前
+#define SPI0_USE_EASY_DMA 0
+// 修改后
+#define SPI0_USE_EASY_DMA 1
+```
+
+激活了 nRF5 SDK SPI 驱动的 EasyDMA 模式。
+
+**EasyDMA 的限制**：传入 `nrf_drv_spi_transfer()` 的 buffer 指针必须指向 RAM，不能指向 Flash。
+
+UC8179 驱动在写 LUT 时：
+
+```c
+// UC8179.c UC8179_Load_LUT_Tier()
+const uint8_t* luts[6] = {
+    LUT_WW_BB_VCOM_7IN5_V2_PART,  // const 数组 → 编译器放 Flash
+    LUT_BW_7IN5_V2_PART,
+    LUT_WB_7IN5_V2_PART,
+    ...
+};
+EPD_WriteData((uint8_t*)luts[i], 42);  // Flash 地址传给 EasyDMA → 未定义行为
+```
+
+`LUT_*` 数组均为 `const`，链接到 Flash。EasyDMA 无法访问 Flash，导致 LUT 数据传输乱码，波形配置错误，屏幕刷新异常。
+
+### 已还原
+
+```c
+#define SPI0_USE_EASY_DMA 0  // 恢复 CPU 搬运模式
+```
+
+### EasyDMA 的收益与改造工程量
+
+EasyDMA 的目的是减少 CPU 占用（SPI 传输由 DMA 完成，CPU 可以做其他事），**不节省 Flash**。
+
+如果未来需要启用 EasyDMA，需在每个 Flash 地址传入点做 RAM staging：
+
+```c
+// 改法示例：UC8179_Load_LUT_Tier
+uint8_t lut_ram[42];
+memcpy(lut_ram, luts[i], 42);   // Flash → RAM
+EPD_WriteData(lut_ram, 42);     // EasyDMA 可以访问 RAM
+```
+
+需排查的所有 `EPD_WriteData` 调用点：
+
+| 位置 | 数据来源 | 是否需要改 |
+|---|---|---|
+| `UC8179.c:184` LUT 写入 | `const` 数组 → Flash | **需要** |
+| `UC8179.c:635` 图像数据 | `src` 来自调用方（可能是外置 Flash 读出的 RAM buffer） | 需确认调用方 |
+| `UC8179.c:640/681` `temp` 栈数组 | RAM | 不需要 |
+| `UC8179.c:884/905` `data` 参数 | 需确认调用方 | 需确认 |
+
+**结论**：改动面不小，属于独立任务，当前 Flash 余量（1060B）充足，维持 `SPI0_USE_EASY_DMA 0`。

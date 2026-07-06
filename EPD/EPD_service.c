@@ -851,12 +851,17 @@ static void epd_gui_update(void* p_event_data, uint16_t event_size) {
             // Initialize for partial mode (includes reset)
             // 初始化局刷模式(包含复位)
             if (epd->drv->init_partial) {
+                UC8179_ClearBusyTimeout();
                 epd->drv->init_partial(epd);
             } else {
                 NRF_LOG_ERROR("[EPD]: init_partial not available!\n");
                 goto fallback_full_refresh;  // 回退到全刷 / Fallback to full refresh
             }
             app_feed_wdt();  // Feed watchdog after init_partial. 局刷初始化后喂狗
+            if (UC8179_HadBusyTimeout()) {
+                NRF_LOG_ERROR("[EPD]: BUSY timeout during partial init, falling back to full refresh\n");
+                goto fallback_full_refresh;
+            }
 
             // Try true differential clock partial refresh first
             if (epd_clock_diff_try_partial(epd, data.timestamp, data.mode)) {

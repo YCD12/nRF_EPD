@@ -117,8 +117,12 @@ bool epd_clock_diff_try_partial(epd_model_t *epd, uint32_t timestamp, display_mo
     x_offsets[3] = 2 * digit_w + 4 * cS + digit_w;
 
     // Partition the shared GFX page buffer into old / new digit bitmaps.
+    // Two bitmaps (old + new) must both fit; if not, abort and fall back to full refresh.
     uint8_t *buf = GFX_get_buffer();
     uint32_t single_digit_size = (align_w / 8) * digit_h;
+    if (single_digit_size * 2 > GFX_get_buffer_size()) {
+        return false;
+    }
     uint8_t *old_bm = buf;
     uint8_t *new_bm = buf + single_digit_size;
 
