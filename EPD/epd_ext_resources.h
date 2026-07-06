@@ -11,16 +11,18 @@
 /*
  * FM25Q04B resource layout:
  *   0x01000-0x7CFFF  resource data
- *   0x7E000-0x7EFFF  active manifest
- *   0x7F000-0x7FFFF  reserved
+ *   0x7E000-0x7EFFF  primary manifest (= staging; web updater writes here)
+ *   0x7F000-0x7FFFF  backup manifest  (firmware-managed; client cannot access)
  *
  * The web updater writes all resource data first, verifies it, writes the
- * manifest sector last, then COMMIT validates and activates it in RAM.
+ * manifest sector last, then COMMIT validates, activates it in RAM, and copies
+ * it to the backup slot. On init, if the primary is invalid the backup is tried.
  */
 #define EPD_EXT_RES_MAIN_MANIFEST_ADDR     0x7E000UL
 #define EPD_EXT_RES_DATA_START_ADDR        0x01000UL
 #define EPD_EXT_RES_DATA_END_ADDR          0x7CFFFUL
 #define EPD_EXT_RES_STAGING_MANIFEST_ADDR  0x7E000UL
+#define EPD_EXT_RES_BACKUP_MANIFEST_ADDR   0x7F000UL
 #define EPD_EXT_RES_RESERVED_START_ADDR    0x7F000UL
 
 #define EPD_EXT_RES_MAGIC                  0x45505253UL
