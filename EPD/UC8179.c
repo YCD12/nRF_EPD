@@ -108,7 +108,8 @@ static void UC8179_PowerOn(void) {
  */
 static void UC8179_PowerOff(void) {
     EPD_WriteCmd(UC81xx_POF);  // 发送电源关闭命令
-    UC8179_WaitBusy(200);      // 等待电源完全关闭
+    UC8179_WaitBusy(200);      // 等待 BUSY 释放（POF 完成）
+    delay(500);                // 等待升压电容放电完毕，防止紧接上电时状态异常
 }
 
 /**
