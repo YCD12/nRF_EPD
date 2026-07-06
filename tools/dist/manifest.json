@@ -1,7 +1,7 @@
 {
   "magic": "EPDR",
   "version": 1,
-  "manifestCrc32": "0x8086AA69",
+  "manifestCrc32": "0xF74E5101",
   "entries": [
     {
       "type": 1,
@@ -160,14 +160,14 @@
       "id": 1,
       "name": "lunar_db",
       "offset": 15072,
-      "length": 14047,
-      "crc32": "0x3E57FE69"
+      "length": 5833,
+      "crc32": "0xB56ED2E8"
     },
     {
       "type": 4,
       "id": 1,
       "name": "ui_bundle",
-      "offset": 29120,
+      "offset": 20908,
       "length": 1029,
       "crc32": "0x7E4EE159"
     }

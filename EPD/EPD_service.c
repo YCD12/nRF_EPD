@@ -661,6 +661,9 @@ static void epd_gui_update(void* p_event_data, uint16_t event_size) {
     uint32_t err_code;
     uint16_t refresh_voltage_mv = 3300;  /* updated by battery guard, readable at finish_refresh */
     bool critical_battery = false;
+    bool low_battery = false;
+    gui_data_t data;
+    resource_guard_result_t res;
 
     // Set refreshing flag to prevent BLE disconnect from interrupting refresh
     // 设置刷新标志,防止BLE断开中断刷新过程
@@ -684,10 +687,10 @@ static void epd_gui_update(void* p_event_data, uint16_t event_size) {
         critical_battery   = bat.critical;
         if (bat.skip) goto finish_refresh;
     }
-    bool low_battery = (refresh_voltage_mv <= LOW_BATTERY_THRESHOLD_MV);
+    low_battery = (refresh_voltage_mv <= LOW_BATTERY_THRESHOLD_MV);
 
     // ── Prepare GUI data ─────────────────────────────────────────────────────
-    gui_data_t data = {
+    data = (gui_data_t){
         .mode        = mode,
         .color       = epd->color,
         .width       = epd->width,
@@ -703,7 +706,7 @@ static void epd_gui_update(void* p_event_data, uint16_t event_size) {
     if (err_code == NRF_SUCCESS && dev_name_len > 0) data.ssid[dev_name_len] = '\0';
 
     // ── Resource guard ───────────────────────────────────────────────────────
-    resource_guard_result_t res = epd_resource_guard(p_epd, epd, mode, low_battery);
+    res = epd_resource_guard(p_epd, epd, mode, low_battery);
     if (res.skip)       goto finish_refresh;
     if (res.draw_hint)  { epd_draw_resource_missing_screen(epd, &data); goto finish_refresh; }
 

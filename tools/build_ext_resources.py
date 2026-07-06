@@ -33,7 +33,7 @@ RES_TYPE_LUNAR_DB = 6
 LUNAR_DB_ENTRY = 1
 LUNAR_DB_MAGIC = 0x4C434442  # "LCDB"
 LUNAR_DB_VERSION = 1
-LUNAR_DB_RECORD_SIZE = 12
+LUNAR_DB_RECORD_SIZE = 4
 # Years with a dedicated data block. Firmware degrades other years to the first.
 # 含 2025：设备默认时间戳为 2025-01-01，未校时开机需正确显示 2025 农历。
 LUNAR_DB_YEARS = [2025, 2026, 2027]
@@ -520,6 +520,7 @@ def _build_lunar_db_year_block(year):
         return offset
 
     records = bytearray()
+    sparse_entries = []
     day0 = datetime.date(year, 1, 1)
     for doy in range(total_days):
         cur = day0 + datetime.timedelta(days=doy)
@@ -531,28 +532,47 @@ def _build_lunar_db_year_block(year):
         solar_term = get_solar_term(year, month, day)
         festival = get_festival(year, month, day, dow_sun0, lunar)
         festival_offset = intern(festival) if festival else 0xFFFF
+        special_label = 0xFFFF
         holiday_type = _holiday_type(year, month, day)
         # 干支年基于农历年，且沿用固件既有名词数组语义 (index % 10 / % 12)。
         jiazi_year = lunar_year % 60
-        lunar_month_byte = (lunar_month & 0x7F) | (0x80 if is_leap else 0x00)
 
-        records += struct.pack(
-            "<BBBBBBBBHH",
-            lunar_month_byte,  # lunar_month (bit7 = leap)
-            lunar_day,         # lunar_day
-            jiazi_year,        # jiazi_year (0-59)
-            0,                 # jiazi_month (reserved)
-            0,                 # jiazi_day (reserved)
-            solar_term,        # solar_term (0 或 1-24)
-            holiday_type,      # holiday_type (0/1/2)
-            0,                 # reserved
-            festival_offset,   # festival_offset (0xFFFF = none)
-            0xFFFF,            # special_label (0xFFFF = none)
+        has_festival = 1 if festival_offset != 0xFFFF else 0
+        has_special = 1 if special_label != 0xFFFF else 0
+
+        # Pack to 32-bit uint
+        packed_val = (
+            (lunar_month & 0x0F) |
+            ((1 if is_leap else 0) << 4) |
+            ((lunar_day & 0x1F) << 5) |
+            ((jiazi_year & 0x3F) << 10) |
+            ((solar_term & 0x1F) << 16) |
+            ((holiday_type & 0x03) << 21) |
+            (has_festival << 23) |
+            (has_special << 24)
         )
 
-    string_pool_offset = 8 + len(records)  # relative to year block start
-    header = struct.pack("<HHI", year, total_days, string_pool_offset)
-    return header + bytes(records) + bytes(string_pool)
+        records += struct.pack("<I", packed_val)
+
+        if has_festival or has_special:
+            sparse_entries.append((doy, festival_offset, special_label))
+
+    sparse_data = bytearray()
+    for doy_idx, fest_off, spec_off in sparse_entries:
+        sparse_data += struct.pack("<HHH", doy_idx, fest_off, spec_off)
+
+    sparse_offset = 16 + len(records)
+    string_pool_offset = sparse_offset + len(sparse_data)
+    header = struct.pack(
+        "<HHHIIBB",
+        year,
+        total_days,
+        len(sparse_entries),
+        sparse_offset,
+        string_pool_offset,
+        0, 0
+    )
+    return header + bytes(records) + bytes(sparse_data) + bytes(string_pool)
 
 
 def parse_lunar_db_resources():
