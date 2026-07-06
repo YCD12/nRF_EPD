@@ -196,14 +196,45 @@ static ret_code_t epd_ext_resources_reload(void) {
         return NRF_ERROR_INVALID_STATE;
     }
 
-    ret = fm25q04b_read(EPD_EXT_RES_MAIN_MANIFEST_ADDR, &m_manifest, sizeof(m_manifest));
+    ret_code_t read_ret = fm25q04b_read(EPD_EXT_RES_MAIN_MANIFEST_ADDR, &m_manifest, sizeof(m_manifest));
+    ret = (read_ret == NRF_SUCCESS) ? epd_ext_validate_manifest(&m_manifest) : read_ret;
+
     if (ret != NRF_SUCCESS) {
-        m_manifest_valid = false;
-        return ret;
+        if (read_ret != NRF_SUCCESS) {
+            NRF_LOG_WARNING("[RES]: Primary manifest SPI read failed (%u), trying backup", read_ret);
+        } else {
+            NRF_LOG_WARNING("[RES]: Primary manifest CRC/format invalid (%u), trying backup", ret);
+        }
+        ret = fm25q04b_read(EPD_EXT_RES_BACKUP_MANIFEST_ADDR, &m_manifest, sizeof(m_manifest));
+        if (ret == NRF_SUCCESS) {
+            ret = epd_ext_validate_manifest(&m_manifest);
+        }
+        if (ret == NRF_SUCCESS) {
+            NRF_LOG_INFO("Restored from backup manifest");
+        }
     }
 
-    ret = epd_ext_validate_manifest(&m_manifest);
     m_manifest_valid = (ret == NRF_SUCCESS);
+
+    if (m_manifest_valid) {
+        epd_ext_resource_manifest_t bk;
+        bool bk_ok = false;
+        if (fm25q04b_read(EPD_EXT_RES_BACKUP_MANIFEST_ADDR, &bk, sizeof(bk)) == NRF_SUCCESS &&
+            bk.magic == EPD_EXT_RES_MAGIC &&
+            bk.version == EPD_EXT_RES_VERSION &&
+            bk.resource_count <= EPD_EXT_RES_MAX_ENTRIES) {
+            uint32_t stored_crc = bk.crc32;
+            bk.crc32 = 0;
+            uint32_t computed_crc = epd_ext_crc32_finalize(
+                epd_ext_crc32_update(epd_ext_crc32_init(), &bk, sizeof(bk)));
+            bk.crc32 = stored_crc;
+            bk_ok = (computed_crc == stored_crc);
+        }
+        if (!bk_ok) {
+            NRF_LOG_WARNING("[RES]: Backup manifest invalid or missing, will repair on next commit");
+        }
+    }
+
     return ret;
 }
 
@@ -356,5 +387,15 @@ ret_code_t epd_ext_resource_commit_staging(void) {
 
     m_manifest = staging;
     m_manifest_valid = true;
+
+    // 将已验证的 manifest 写入 backup 槽（非关键路径：失败不影响本次 commit）
+    ret_code_t backup_ret = fm25q04b_erase_sector(EPD_EXT_RES_BACKUP_MANIFEST_ADDR);
+    if (backup_ret == NRF_SUCCESS) {
+        backup_ret = fm25q04b_write(EPD_EXT_RES_BACKUP_MANIFEST_ADDR, &staging, sizeof(staging));
+    }
+    if (backup_ret != NRF_SUCCESS) {
+        NRF_LOG_WARNING("Backup manifest write failed: %u", backup_ret);
+    }
+
     return NRF_SUCCESS;
 }

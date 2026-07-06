@@ -385,15 +385,11 @@ void EPD_Reset(uint32_t value, uint16_t duration) {
  * @param value 忙状态时 BUSY 引脚的电平（本板 BUSY 低电平=忙）
  * @param timeout 超时时间(毫秒)
  *
- * 刷新波形期间 UC8179 可能持续数秒。原实现用 delay(1) 轮询，CPU 全程活跃。
- * 现改为：配置 BUSY 引脚 PORT sense 在“释放”边沿唤醒，循环内 sd_app_evt_wait()
- * 进入 System ON 睡眠，由 BLE/RTC 或 BUSY 边沿事件唤醒后复检引脚。
+ * 刷新波形期间 UC8179 可能持续数秒。循环内 delay(1) 每 1ms 轮询一次，
+ * 并每 500ms 喂狗一次。
  */
 bool EPD_WaitBusy(uint32_t value, uint16_t timeout) {
     const uint32_t ticks_per_ms = APP_TIMER_CLOCK_FREQ / 1000UL;
-    uint32_t start_ticks;
-    uint32_t last_wdt_ticks;
-    uint32_t timeout_ticks;
 
     NRF_LOG_DEBUG("[EPD]: check busy\n");
     if (digitalRead(EPD_BUSY_PIN) != value) {
@@ -401,15 +397,18 @@ bool EPD_WaitBusy(uint32_t value, uint16_t timeout) {
         return true;
     }
 
-    start_ticks = app_timer_cnt_get();
-    last_wdt_ticks = start_ticks;
-    timeout_ticks = (uint32_t)timeout * ticks_per_ms;
+    uint32_t start_ticks    = app_timer_cnt_get();
+    uint32_t last_wdt_ticks = start_ticks;
+    uint32_t timeout_ticks  = (uint32_t)timeout * ticks_per_ms;
 
     while (digitalRead(EPD_BUSY_PIN) == value) {
         delay(1);
 
         uint32_t now_ticks = app_timer_cnt_get();
         if (app_timer_cnt_diff_compute(now_ticks, start_ticks) >= timeout_ticks) {
+            if (digitalRead(EPD_BUSY_PIN) != value) {
+                break;  // BUSY 在最后一次 delay 期间释放，非真超时
+            }
             NRF_LOG_WARNING("[EPD]: busy timeout!\n");
             return false;
         }
