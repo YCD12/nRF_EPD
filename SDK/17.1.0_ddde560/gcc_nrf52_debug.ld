@@ -1,0 +1,134 @@
+/* Linker script to configure memory regions. */
+
+SEARCH_DIR(.)
+GROUP(-lgcc -lc -lnosys)
+
+MEMORY
+{
+  /* App 代码区上限 = 0x27000（其上 0x27000-0x29000 为 FDS 应用数据区，0x29000 起为 Bootloader）。
+     原值 0x17000 会一直延伸到 0x30000，覆盖 FDS 与 Bootloader，导致超大固件静默越界。
+     0xE000 = 0x27000 - 0x19000，超出会在链接期报错而非踩坏 Bootloader。
+     本地调试模式下，扩充至 0x15000 (84KB)，配合 Chip Erase 使 FDS 自动向后移到末端。 */
+  FLASH (rx) : ORIGIN = 0x19000, LENGTH = 0x15000
+  RAM (rwx) :  ORIGIN = 0x200022d8, LENGTH = 0x3d28
+}
+
+SECTIONS
+{
+}
+
+SECTIONS
+{
+  . = ALIGN(4);
+  .mem_section_dummy_ram :
+  {
+  }
+  .cli_sorted_cmd_ptrs :
+  {
+    PROVIDE(__start_cli_sorted_cmd_ptrs = .);
+    KEEP(*(.cli_sorted_cmd_ptrs))
+    PROVIDE(__stop_cli_sorted_cmd_ptrs = .);
+  } > RAM
+  .fs_data :
+  {
+    PROVIDE(__start_fs_data = .);
+    KEEP(*(.fs_data))
+    PROVIDE(__stop_fs_data = .);
+  } > RAM
+  .log_dynamic_data :
+  {
+    PROVIDE(__start_log_dynamic_data = .);
+    KEEP(*(SORT(.log_dynamic_data*)))
+    PROVIDE(__stop_log_dynamic_data = .);
+  } > RAM
+  .log_filter_data :
+  {
+    PROVIDE(__start_log_filter_data = .);
+    KEEP(*(SORT(.log_filter_data*)))
+    PROVIDE(__stop_log_filter_data = .);
+  } > RAM
+
+} INSERT AFTER .data;
+
+SECTIONS
+{
+  .mem_section_dummy_rom :
+  {
+  }
+  .sdh_soc_observers :
+  {
+    PROVIDE(__start_sdh_soc_observers = .);
+    KEEP(*(SORT(.sdh_soc_observers*)))
+    PROVIDE(__stop_sdh_soc_observers = .);
+  } > FLASH
+  .sdh_ble_observers :
+  {
+    PROVIDE(__start_sdh_ble_observers = .);
+    KEEP(*(SORT(.sdh_ble_observers*)))
+    PROVIDE(__stop_sdh_ble_observers = .);
+  } > FLASH
+  .pwr_mgmt_data :
+  {
+    PROVIDE(__start_pwr_mgmt_data = .);
+    KEEP(*(SORT(.pwr_mgmt_data*)))
+    PROVIDE(__stop_pwr_mgmt_data = .);
+  } > FLASH
+  .sdh_req_observers :
+  {
+    PROVIDE(__start_sdh_req_observers = .);
+    KEEP(*(SORT(.sdh_req_observers*)))
+    PROVIDE(__stop_sdh_req_observers = .);
+  } > FLASH
+  .sdh_state_observers :
+  {
+    PROVIDE(__start_sdh_state_observers = .);
+    KEEP(*(SORT(.sdh_state_observers*)))
+    PROVIDE(__stop_sdh_state_observers = .);
+  } > FLASH
+  .sdh_stack_observers :
+  {
+    PROVIDE(__start_sdh_stack_observers = .);
+    KEEP(*(SORT(.sdh_stack_observers*)))
+    PROVIDE(__stop_sdh_stack_observers = .);
+  } > FLASH
+    .nrf_queue :
+  {
+    PROVIDE(__start_nrf_queue = .);
+    KEEP(*(.nrf_queue))
+    PROVIDE(__stop_nrf_queue = .);
+  } > FLASH
+    .nrf_balloc :
+  {
+    PROVIDE(__start_nrf_balloc = .);
+    KEEP(*(.nrf_balloc))
+    PROVIDE(__stop_nrf_balloc = .);
+  } > FLASH
+    .cli_command :
+  {
+    PROVIDE(__start_cli_command = .);
+    KEEP(*(.cli_command))
+    PROVIDE(__stop_cli_command = .);
+  } > FLASH
+  .crypto_data :
+  {
+    PROVIDE(__start_crypto_data = .);
+    KEEP(*(SORT(.crypto_data*)))
+    PROVIDE(__stop_crypto_data = .);
+  } > FLASH
+  .log_const_data :
+  {
+    PROVIDE(__start_log_const_data = .);
+    KEEP(*(SORT(.log_const_data*)))
+    PROVIDE(__stop_log_const_data = .);
+  } > FLASH
+  .log_backends :
+  {
+    PROVIDE(__start_log_backends = .);
+    KEEP(*(SORT(.log_backends*)))
+    PROVIDE(__stop_log_backends = .);
+  } > FLASH
+
+} INSERT AFTER .text
+
+
+INCLUDE "nrf_common.ld"
