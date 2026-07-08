@@ -16,6 +16,7 @@ STAGING_MANIFEST = 0x7E000
 # this sector and activates it in RAM; it does not copy manifest sectors.
 MAIN_MANIFEST = STAGING_MANIFEST
 SCRATCH = 0x7F000
+SECTOR_SIZE = 4096
 MAGIC = 0x45505253
 VERSION = 1
 MAX_ENTRIES = 24
@@ -796,6 +797,10 @@ def align4(value):
     return (value + 3) & ~3
 
 
+def align_sector(value):
+    return (value + SECTOR_SIZE - 1) & ~(SECTOR_SIZE - 1)
+
+
 def build_manifest(entries):
     manifest = bytearray()
     manifest += struct.pack("<IHH", MAGIC, VERSION, len(entries))
@@ -934,7 +939,7 @@ def main():
     entries = []
     address = DATA_START
     for res_type, res_id, payload, name in resources:
-        address = DATA_START + align4(len(data))
+        address = DATA_START + align_sector(len(data))
         padding = address - (DATA_START + len(data))
         if padding:
             data += b"\xFF" * padding

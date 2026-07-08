@@ -171,7 +171,7 @@ LIB_FILES += \
 #   已由 gcc_sbrk.c 的带边界 _sbrk 把堆限制在链接器保留区 [__HeapBase,__HeapLimit)
 #   内(超出返回 ENOMEM)，行为对齐 Keil/armcc 的"堆/栈各自固定区"，因此可安全用 8192。
 # =============================================================================
-OPT = -Os -g3
+OPT = -Os -g3 -flto
 
 CFLAGS += $(OPT)
 CFLAGS += -DAPP_TIMER_V2
@@ -189,7 +189,7 @@ CFLAGS += -DSOFTDEVICE_PRESENT
 
 # 根据 USE_RTT 确定是否禁用 BLE 日志重定向以启用原生 RTT
 ifeq ($(USE_RTT),1)
-CFLAGS += -DBLE_LOG_REDIRECT_ALL_NRF_LOG=0
+CFLAGS += -DBLE_LOG_REDIRECT_ALL_NRF_LOG=0 -DNRF_LOG_ENABLED=1
 endif
 CFLAGS += -mcpu=cortex-m4
 CFLAGS += -mthumb -mabi=aapcs
@@ -222,12 +222,29 @@ LDFLAGS += -mthumb -mabi=aapcs -L$(SDK_ROOT)/modules/nrfx/mdk -T$(LINKER_SCRIPT)
 LDFLAGS += -mcpu=cortex-m4
 LDFLAGS += -Wl,--gc-sections
 LDFLAGS += --specs=nano.specs
+LDFLAGS += -Wl,-u,SWI2_IRQHandler
+LDFLAGS += -Wl,-u,RTC1_IRQHandler
+LDFLAGS += -Wl,-u,GPIOTE_IRQHandler
+LDFLAGS += -Wl,-u,WDT_IRQHandler
+LDFLAGS += -Wl,-u,SPIM0_SPIS0_SPI0_IRQHandler
+LDFLAGS += -Wl,-u,TWIM0_TWIS0_TWI0_SPIM1_SPIS1_SPI1_IRQHandler
 
 # 与 Keil 工程一致：HEAP=8192，STACK=2048
 nrf52811_xxaa: CFLAGS += -D__HEAP_SIZE=0
 nrf52811_xxaa: CFLAGS += -D__STACK_SIZE=2048
 nrf52811_xxaa: ASMFLAGS += -D__HEAP_SIZE=0
 nrf52811_xxaa: ASMFLAGS += -D__STACK_SIZE=2048
+
+$(OUTPUT_DIRECTORY)/nrf52811_xxaa/ble_dfu.c.o: CFLAGS += -fno-lto
+$(OUTPUT_DIRECTORY)/nrf52811_xxaa/ble_dfu_unbonded.c.o: CFLAGS += -fno-lto
+$(OUTPUT_DIRECTORY)/nrf52811_xxaa/nrf_dfu_svci.c.o: CFLAGS += -fno-lto
+$(OUTPUT_DIRECTORY)/nrf52811_xxaa/drv_rtc.c.o: CFLAGS += -fno-lto
+$(OUTPUT_DIRECTORY)/nrf52811_xxaa/nrf_sdh.c.o: CFLAGS += -fno-lto
+$(OUTPUT_DIRECTORY)/nrf52811_xxaa/nrfx_gpiote.c.o: CFLAGS += -fno-lto
+$(OUTPUT_DIRECTORY)/nrf52811_xxaa/nrfx_wdt.c.o: CFLAGS += -fno-lto
+$(OUTPUT_DIRECTORY)/nrf52811_xxaa/nrfx_spi.c.o: CFLAGS += -fno-lto
+$(OUTPUT_DIRECTORY)/nrf52811_xxaa/nrfx_spim.c.o: CFLAGS += -fno-lto
+
 
 LIB_FILES += -lc -lnosys -lm
 

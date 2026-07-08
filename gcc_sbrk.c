@@ -10,6 +10,7 @@
  * 该文件只被 Makefile.nRF52_linux 引用，不会进入 Keil 工程，故不影响 armcc 构建。
  */
 #include <errno.h>
+#include <stdint.h>
 #include <sys/types.h>
 
 /* 由 nrf_common.ld 提供 */
@@ -25,7 +26,7 @@ void *_sbrk(int incr)
         heap = &__HeapBase;
     }
 
-    if (incr > 0 && (heap + incr) > &__HeapLimit) {
+    if (incr > 0 && (uintptr_t)(heap + incr) > (uintptr_t)&__HeapLimit) {
         errno = ENOMEM;
         return (void *)-1;
     }

@@ -131,7 +131,7 @@ LIB_FILES += \
 # Optimization flags
 OPT = -Os -g3
 # Uncomment the line below to enable link time optimization
-#OPT += -flto
+OPT += -flto
 
 # C flags common to all targets
 CFLAGS += $(OPT)
@@ -184,11 +184,28 @@ LDFLAGS += -mcpu=cortex-m4
 LDFLAGS += -Wl,--gc-sections
 # use newlib in nano version
 LDFLAGS += --specs=nano.specs
+LDFLAGS += -Wl,-u,SWI2_IRQHandler
+LDFLAGS += -Wl,-u,RTC1_IRQHandler
+LDFLAGS += -Wl,-u,GPIOTE_IRQHandler
+LDFLAGS += -Wl,-u,WDT_IRQHandler
+LDFLAGS += -Wl,-u,SPIM0_SPIS0_SPI0_IRQHandler
+LDFLAGS += -Wl,-u,TWIM0_TWIS0_TWI0_SPIM1_SPIS1_SPI1_IRQHandler
 
 nrf52811_xxaa: CFLAGS += -D__HEAP_SIZE=2048
 nrf52811_xxaa: CFLAGS += -D__STACK_SIZE=2048
 nrf52811_xxaa: ASMFLAGS += -D__HEAP_SIZE=2048
 nrf52811_xxaa: ASMFLAGS += -D__STACK_SIZE=2048
+
+$(OUTPUT_DIRECTORY)/nrf52811_xxaa/ble_dfu.c.o: CFLAGS += -fno-lto
+$(OUTPUT_DIRECTORY)/nrf52811_xxaa/ble_dfu_unbonded.c.o: CFLAGS += -fno-lto
+$(OUTPUT_DIRECTORY)/nrf52811_xxaa/nrf_dfu_svci.c.o: CFLAGS += -fno-lto
+$(OUTPUT_DIRECTORY)/nrf52811_xxaa/drv_rtc.c.o: CFLAGS += -fno-lto
+$(OUTPUT_DIRECTORY)/nrf52811_xxaa/nrf_sdh.c.o: CFLAGS += -fno-lto
+$(OUTPUT_DIRECTORY)/nrf52811_xxaa/nrfx_gpiote.c.o: CFLAGS += -fno-lto
+$(OUTPUT_DIRECTORY)/nrf52811_xxaa/nrfx_wdt.c.o: CFLAGS += -fno-lto
+$(OUTPUT_DIRECTORY)/nrf52811_xxaa/nrfx_spi.c.o: CFLAGS += -fno-lto
+$(OUTPUT_DIRECTORY)/nrf52811_xxaa/nrfx_spim.c.o: CFLAGS += -fno-lto
+
 
 # Add standard libraries at the very end of the linker input, after all objects
 # that may need symbols provided by these libraries.

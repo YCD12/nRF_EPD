@@ -110,7 +110,14 @@ static ret_code_t epd_ext_crc32_flash(uint32_t address, size_t length, uint32_t*
     return NRF_SUCCESS;
 }
 
-static ret_code_t epd_ext_validate_manifest(epd_ext_resource_manifest_t* manifest) {
+/**@brief Quick manifest validation — header + entries CRC only (no flash I/O).
+ *
+ * Used on boot/wake (PRD §US-2.2). Validates magic, version, entry count, and
+ * the manifest struct's own CRC32. Does NOT read individual resource data from
+ * flash, so it completes in < 10 ms. Full per-resource CRC verification is
+ * deferred to commit time (epd_ext_validate_manifest_full).
+ */
+static ret_code_t epd_ext_validate_manifest_quick(epd_ext_resource_manifest_t* manifest) {
     uint32_t stored_crc;
     uint32_t computed_crc;
 
@@ -133,14 +140,32 @@ static ret_code_t epd_ext_validate_manifest(epd_ext_resource_manifest_t* manifes
         return NRF_ERROR_INVALID_DATA;
     }
 
+    /* Sanity-check entry address ranges (cheap, no flash I/O). */
+    for (uint16_t i = 0; i < manifest->resource_count; i++) {
+        if (!epd_ext_resource_range_is_valid(manifest->entries[i].offset,
+                                             manifest->entries[i].length)) {
+            return NRF_ERROR_INVALID_ADDR;
+        }
+    }
+
+    return NRF_SUCCESS;
+}
+
+/**@brief Full manifest + per-resource flash CRC validation.
+ *
+ * Used only during commit (epd_ext_resource_commit_staging) to verify that
+ * every resource on flash matches its manifest CRC32 entry. Reads all resource
+ * data from flash — can take hundreds of ms on large resource sets.
+ */
+static ret_code_t epd_ext_validate_manifest_full(epd_ext_resource_manifest_t* manifest) {
+    ret_code_t ret = epd_ext_validate_manifest_quick(manifest);
+    if (ret != NRF_SUCCESS) {
+        return ret;
+    }
+
     for (uint16_t i = 0; i < manifest->resource_count; i++) {
         const epd_ext_resource_entry_t* entry = &manifest->entries[i];
         uint32_t resource_crc = 0;
-        ret_code_t ret;
-
-        if (!epd_ext_resource_range_is_valid(entry->offset, entry->length)) {
-            return NRF_ERROR_INVALID_ADDR;
-        }
 
         ret = epd_ext_crc32_flash(entry->offset, entry->length, &resource_crc);
         if (ret != NRF_SUCCESS) {
@@ -197,7 +222,7 @@ static ret_code_t epd_ext_resources_reload(void) {
     }
 
     ret_code_t read_ret = fm25q04b_read(EPD_EXT_RES_MAIN_MANIFEST_ADDR, &m_manifest, sizeof(m_manifest));
-    ret = (read_ret == NRF_SUCCESS) ? epd_ext_validate_manifest(&m_manifest) : read_ret;
+    ret = (read_ret == NRF_SUCCESS) ? epd_ext_validate_manifest_quick(&m_manifest) : read_ret;
 
     if (ret != NRF_SUCCESS) {
         if (read_ret != NRF_SUCCESS) {
@@ -207,7 +232,7 @@ static ret_code_t epd_ext_resources_reload(void) {
         }
         ret = fm25q04b_read(EPD_EXT_RES_BACKUP_MANIFEST_ADDR, &m_manifest, sizeof(m_manifest));
         if (ret == NRF_SUCCESS) {
-            ret = epd_ext_validate_manifest(&m_manifest);
+            ret = epd_ext_validate_manifest_quick(&m_manifest);
         }
         if (ret == NRF_SUCCESS) {
             NRF_LOG_INFO("Restored from backup manifest");
@@ -379,7 +404,7 @@ ret_code_t epd_ext_resource_commit_staging(void) {
         return ret;
     }
 
-    ret = epd_ext_validate_manifest(&staging);
+    ret = epd_ext_validate_manifest_full(&staging);
     if (ret != NRF_SUCCESS) {
         NRF_LOG_WARNING("External resource staging manifest validation failed: %u", ret);
         return ret;

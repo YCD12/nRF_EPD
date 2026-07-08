@@ -198,6 +198,7 @@ async function write(cmd, data, withResponse = true) {
         await epdCharacteristic.writeValueWithoutResponse(Uint8Array.from(payload));
     } catch (e) {
       console.error(e);
+      window.writeErrorCount = (window.writeErrorCount || 0) + 1;
       if (e.message) addLog("write: " + e.message);
       return false;
     }
@@ -268,9 +269,50 @@ function getWeekStart() {
   return weekStartValue !== null && weekStartValue !== '' ? parseInt(weekStartValue) : 1;
 }
 
+/**
+ * PRD §US-3.1: Estimate physical refresh duration (seconds) for the current
+ * screen model. Used to pre-compensate the SET_TIME timestamp so the clock
+ * shows the correct time after the display finishes refreshing.
+ */
+function getEstimatedRefreshSeconds() {
+  const epdDriverSelect = document.getElementById('epddriver');
+  if (!epdDriverSelect) return 6;
+  const selectedOption = epdDriverSelect.options[epdDriverSelect.selectedIndex];
+  const sizeData = selectedOption ? selectedOption.getAttribute('data-size') : null;
+  const colorMode = selectedOption ? selectedOption.getAttribute('data-color') : 'blackWhiteColor';
+
+  // Parse screen area (width × height) to estimate refresh time
+  let area = 0;
+  if (sizeData) {
+    const parts = sizeData.split('_');
+    if (parts.length >= 3) {
+      const w = parseInt(parts[1], 10);
+      const h = parseInt(parts[2], 10);
+      if (!isNaN(w) && !isNaN(h)) {
+        area = w * h;
+      } else {
+        console.warn(`[EPD] getEstimatedRefreshSeconds: invalid data-size format "${sizeData}", using fallback 6s`);
+      }
+    } else {
+      console.warn(`[EPD] getEstimatedRefreshSeconds: unexpected data-size format "${sizeData}", using fallback 6s`);
+    }
+  }
+
+  // Tri-color screens take ~2× longer than BW due to red sub-frame
+  const isTriColor = (colorMode === 'threeColor' || colorMode === 'fourColor');
+
+  if (area >= 400000) return isTriColor ? 25 : 15; // ≥10" screens
+  if (area >= 200000) return isTriColor ? 18 : 10; // 7.5" class
+  if (area >= 100000) return isTriColor ? 15 : 8;  // 5.8" class
+  if (area >= 40000)  return isTriColor ? 12 : 6;  // 4.2" class
+  return isTriColor ? 10 : 5;                       // small screens
+}
+
 // 辅助函数：构建时间数据包
-function buildTimeData(mode = null) {
-  const timestamp = Math.floor(new Date().getTime() / 1000);
+// PRD §US-3.1: Optional compensationSeconds pre-advances the timestamp
+// to account for rendering + physical refresh latency.
+function buildTimeData(mode = null, compensationSeconds = 0) {
+  const timestamp = Math.floor(new Date().getTime() / 1000) + compensationSeconds;
   const payload = [
     (timestamp >> 24) & 0xFF,
     (timestamp >> 16) & 0xFF,
@@ -301,8 +343,10 @@ async function sendTimeCommand(mode, modeName) {
     addLog(`星期第一天未变化(${weekDays[weekStart]})，跳过设置命令`);
   }
 
-  // 发送时间数据
-  if (await write(EpdCmd.SET_TIME, buildTimeData(mode))) {
+  // 发送时间数据（PRD §US-3.1: 预补偿屏幕刷新耗时）
+  const compensation = getEstimatedRefreshSeconds();
+  addLog(`校时预补偿: +${compensation}s (估算刷新耗时)`);
+  if (await write(EpdCmd.SET_TIME, buildTimeData(mode, compensation))) {
     addLog(`${modeName}已启用！`);
     addLog(weekStartChanged ? `星期第一天已设置为：${weekDays[weekStart]}` : `星期第一天保持为：${weekDays[weekStart]}`);
     addLog("屏幕刷新完成前请不要操作。");
@@ -348,6 +392,20 @@ async function syncTimeLegacy() {
   if (!confirm('确认切换到老款时钟模式？\n\n⚠️ 警告：时钟模式会加速屏幕老化导致损坏！\n• 请勿长时间使用\n• 此模式仅适用于UC8179 7.5寸屏幕\n• 费电')) return;
 
   await sendTimeCommand(3, '老款时钟模式');
+}
+
+async function syncTimeOnly() {
+  if (appVersion < 0x21) {
+    addLog('当前固件不支持静默校时，无法同步时间');
+    return;
+  }
+  addLog('正在同步时间...');
+  const ok = await write(EpdCmd.SYNC_TIME_SILENT, buildTimeData(), false);
+  if (ok) {
+    addLog('时间同步指令已发送');
+  } else {
+    addLog('时间同步指令发送失败');
+  }
 }
 
 async function clearScreen() {
@@ -879,6 +937,16 @@ async function requestBleDevice() {
 async function preConnect() {
   if (gattServer != null && gattServer.connected) {
     if (bleDevice != null && bleDevice.gatt.connected) {
+      const resourceBusy = typeof ResourceManager !== 'undefined' && ResourceManager.isBusy;
+      if (!resourceBusy && appVersion >= 0x21) {
+        try {
+          addLog('正在断开，自动校准最新时间到设备...');
+          await write(EpdCmd.SYNC_TIME_SILENT, buildTimeData(), false);
+          addLog('自动时间校准已完成。');
+        } catch (e) {
+          console.warn('Failed to sync time on disconnect:', e);
+        }
+      }
       bleDevice.gatt.disconnect();
     }
   }
@@ -1008,6 +1076,8 @@ async function connect() {
   }
   if (bleDevice == null || epdCharacteristic != null) return;
   isConnecting = true;
+  window.connectStartTime = Date.now();
+  window.writeErrorCount = 0;
   const targetDevice = bleDevice;
   if (!targetDevice.gatt) {
     addLog('连接失败: 设备GATT不可用');
@@ -1148,6 +1218,8 @@ async function connect() {
       setTimeout(() => {
         addLog(`如遇到问题，请联系购买商家，可访问旧版本上位机: ${oldURL}`);
       }, 500);
+    } else if (appVersion < 0x21) {
+      showWarningToast("当前固件版本较低，建议进行固件升级 (DFU) 以启用增量同步与静默校时功能。");
     }
 
     try {
@@ -1164,18 +1236,54 @@ async function connect() {
     }
 
     const initOk = await write(EpdCmd.INIT);
-    if (initOk) {
-      await syncTimeOnConnect();
-    }
 
     // Initialize CRC transfer module if available
     if (typeof BleTransfer !== 'undefined') {
       BleTransfer.init();
     }
 
+    // PRD §US-1.1 AC3: Resource check runs FIRST (before time sync).
+    // This prevents SET_TIME from triggering a refresh that would cause the
+    // subsequent resource status query to hit NRF_ERROR_BUSY.
+    let checkResult = null;
     if (typeof ResourceManager !== 'undefined') {
       ResourceManager.init();
-      await ResourceManager.checkOnConnect(appVersion);
+      checkResult = await ResourceManager.checkOnConnect(appVersion);
+    }
+
+    // Time sync runs AFTER resource check to avoid busy conflicts.
+    // However, if external resources need an update, we MUST NOT auto-sync time now.
+    // Time sync is suspended until the resource update process successfully finishes.
+    if (initOk) {
+      if (checkResult && checkResult.needsUpdate) {
+        addLog('检测到资源需要更新，已挂起自动时间同步，将在资源更新完成后执行。');
+        if (ResourceManager.latestStatus && ResourceManager.latestStatus.flashReady) {
+          setTimeout(async () => {
+            if (confirm('检测到外置Flash资源与网页端不一致，是否现在更新？\n(更新过程中请保持设备供电和蓝牙连接)')) {
+              try {
+                await ResourceManager.updateResources();
+              } catch (e) {
+                console.error(e);
+                addLog(`资源更新失败: ${e.message}`);
+                if (typeof showToast === 'function') showToast(`资源更新失败: ${e.message}`, 4200);
+              }
+            }
+          }, 100);
+        }
+      } else {
+        await syncTimeOnConnect();
+      }
+    }
+
+    try {
+      const handshakeDuration = Date.now() - window.connectStartTime;
+      recordConnectionMetrics({
+        handshakeMs: handshakeDuration,
+        writeErrors: window.writeErrorCount || 0,
+        updateMs: null
+      });
+    } catch (e) {
+      console.error('Failed to record handshake metrics:', e);
     }
 
     if (clearLogOnNextSuccessfulConnect) {
@@ -1207,6 +1315,22 @@ function showToast(message, duration = 2600) {
   if (toastTimer) clearTimeout(toastTimer);
   toastTimer = setTimeout(() => {
     toast.style.display = 'none';
+    toastTimer = null;
+  }, duration);
+}
+
+function showWarningToast(message, duration = 5000) {
+  const toast = document.getElementById('toast');
+  if (!toast) return;
+  toast.innerText = message;
+  toast.style.background = '#f59e0b'; // Yellow/Amber
+  toast.style.color = '#ffffff';
+  toast.style.display = 'block';
+  if (toastTimer) clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => {
+    toast.style.display = 'none';
+    toast.style.background = ''; // restore to CSS default
+    toast.style.color = '';
     toastTimer = null;
   }, duration);
 }
@@ -1584,3 +1708,97 @@ document.body.onload = () => {
     initDfuPanel();
   }
 }
+
+function recordConnectionMetrics(metrics) {
+  try {
+    let stored = localStorage.getItem('epd_connection_metrics');
+    let list = stored ? JSON.parse(stored) : [];
+    if (!Array.isArray(list)) list = [];
+    
+    // Create new entry
+    const entry = {
+      timestamp: new Date().toISOString(),
+      handshakeMs: metrics.handshakeMs,
+      writeErrors: metrics.writeErrors,
+      updateMs: metrics.updateMs
+    };
+    
+    // Add to list, limit to 50 entries
+    list.push(entry);
+    if (list.length > 50) {
+      list.shift();
+    }
+    
+    localStorage.setItem('epd_connection_metrics', JSON.stringify(list));
+  } catch (e) {
+    console.error('Failed to save metrics to localStorage:', e);
+  }
+}
+
+function exportDiagnostics() {
+  try {
+    const metrics = localStorage.getItem('epd_connection_metrics') || '[]';
+    const parsedMetrics = JSON.parse(metrics);
+    
+    let text = "==================================================\n";
+    text += "           EPD CONTROL PANEL DIAGNOSTIC LOG       \n";
+    text += `Export Time: ${new Date().toISOString()}\n`;
+    text += `User Agent: ${navigator.userAgent}\n`;
+    text += "==================================================\n\n";
+    
+    text += "--- Connection Metrics (Last 50 Sessions) ---\n";
+    if (parsedMetrics.length === 0) {
+      text += "(No connection metrics recorded yet)\n";
+    } else {
+      parsedMetrics.forEach((m, idx) => {
+        text += `[Session ${idx + 1}] Time: ${m.timestamp}\n`;
+        text += `  Handshake Duration: ${m.handshakeMs !== null ? m.handshakeMs + ' ms' : 'N/A'}\n`;
+        text += `  Write Errors: ${m.writeErrors}\n`;
+        text += `  Resource Update Duration: ${m.updateMs !== null ? m.updateMs + ' ms' : 'N/A'}\n`;
+      });
+    }
+    text += "\n";
+    
+    text += "--- Console UI Logs ---\n";
+    const logDiv = document.getElementById("log");
+    if (logDiv) {
+      const lines = logDiv.querySelectorAll('.log-line');
+      lines.forEach(l => {
+        text += l.innerText + "\n";
+      });
+    } else {
+      text += "(Log container not found)\n";
+    }
+    
+    const blob = new Blob([text], { type: 'text/plain;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `epd_diagnostics_${new Date().toISOString().slice(0,10)}.txt`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+    
+    showToast("调试日志已成功导出");
+  } catch (e) {
+    console.error('Failed to export diagnostics:', e);
+    showToast("导出调试日志失败: " + e.message);
+  }
+}
+
+// Sync time right before page unload/navigation if connected
+function syncTimeBeforeExit() {
+  if (gattServer != null && gattServer.connected) {
+    const resourceBusy = typeof ResourceManager !== 'undefined' && ResourceManager.isBusy;
+    if (!resourceBusy && bleDevice != null && bleDevice.gatt.connected && appVersion >= 0x21) {
+      try {
+        write(EpdCmd.SYNC_TIME_SILENT, buildTimeData(), false);
+      } catch (e) {
+        console.warn('Failed to sync time on page exit:', e);
+      }
+    }
+  }
+}
+window.addEventListener('pagehide', syncTimeBeforeExit);
+window.addEventListener('beforeunload', syncTimeBeforeExit);

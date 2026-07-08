@@ -474,10 +474,18 @@ static int8_t u8g2_font_decode_glyph(u8g2_font_t* u8g2, const uint8_t* glyph_dat
         decode->y = 0;
 
         /* decode glyph */
+        uint16_t outer_guard = 0;
         for (;;) {
+            if (++outer_guard > 1000) {
+                break;
+            }
             a = u8g2_font_decode_get_unsigned_bits(decode, u8g2->font_info.bits_per_0);
             b = u8g2_font_decode_get_unsigned_bits(decode, u8g2->font_info.bits_per_1);
+            uint16_t inner_guard = 0;
             do {
+                if (++inner_guard > 255) {
+                    break;
+                }
                 u8g2_font_decode_len(u8g2, a, 0);
                 u8g2_font_decode_len(u8g2, b, 1);
             } while (u8g2_font_decode_get_unsigned_bits(decode, 1) != 0);
@@ -501,6 +509,13 @@ static int8_t u8g2_font_decode_glyph(u8g2_font_t* u8g2, const uint8_t* glyph_dat
         字形数据的地址，如果字体中不存在该编码则返回NULL
 */
 const uint8_t* u8g2_font_get_glyph_data(u8g2_font_t* u8g2, uint16_t encoding) {
+    uint16_t font_id = 0;
+    if (u8g2_font_external_ref(u8g2->font, &font_id, NULL)) {
+        epd_ext_resource_entry_t entry;
+        if (res_hal_get_info(EPD_EXT_RES_TYPE_FONT, font_id, &entry) != NRF_SUCCESS) {
+            return NULL;
+        }
+    }
     const uint8_t* font = u8g2->font;
     font += 23;
 
@@ -531,7 +546,11 @@ const uint8_t* u8g2_font_get_glyph_data(u8g2_font_t* u8g2, uint16_t encoding) {
 
         /* u8g2 issue 596: search for the glyph start in the unicode lookup table */
         /* u8g2 issue 596: 在 Unicode 查找表中搜索字形起始位置 */
+        uint16_t lookup_guard = 0;
         do {
+            if (++lookup_guard > 2000) {
+                return NULL;
+            }
             font += u8g2_font_get_word(unicode_lookup_table, 0);
             e = u8g2_font_get_word(unicode_lookup_table, 2);
             unicode_lookup_table += 4;
@@ -540,7 +559,11 @@ const uint8_t* u8g2_font_get_glyph_data(u8g2_font_t* u8g2, uint16_t encoding) {
         /* variable "font" is now updated according to the lookup table */
         /* 变量 "font" 现在已根据查找表更新 */
 
+        uint16_t search_guard = 0;
         for (;;) {
+            if (++search_guard > 1000) {
+                break;
+            }
             e = u8g2_font_read_byte(font);
             e <<= 8;
             e |= u8g2_font_read_byte(font + 1);
@@ -548,7 +571,9 @@ const uint8_t* u8g2_font_get_glyph_data(u8g2_font_t* u8g2, uint16_t encoding) {
             if (e == encoding) {
                 return font + 3; /* skip encoding and glyph size */
             }
-            font += u8g2_font_read_byte(font + 2);
+            uint8_t step = u8g2_font_read_byte(font + 2);
+            if (step == 0) break;
+            font += step;
         }
     }
     return NULL;

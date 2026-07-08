@@ -1,7 +1,7 @@
 {
   "magic": "EPDR",
   "version": 1,
-  "manifestCrc32": "0xF74E5101",
+  "manifestCrc32": "0xE882BE9A",
   "entries": [
     {
       "type": 1,
@@ -15,7 +15,7 @@
       "type": 1,
       "id": 2,
       "name": "u8g2_font_wqy12_t_lunar",
-      "offset": 8412,
+      "offset": 12288,
       "length": 4830,
       "crc32": "0x5DA27322"
     },
@@ -23,7 +23,7 @@
       "type": 1,
       "id": 3,
       "name": "u8g2_font_helvB14_tn",
-      "offset": 13244,
+      "offset": 20480,
       "length": 287,
       "crc32": "0x7301EB2F"
     },
@@ -31,7 +31,7 @@
       "type": 1,
       "id": 4,
       "name": "u8g2_font_helvB18_tn",
-      "offset": 13532,
+      "offset": 24576,
       "length": 389,
       "crc32": "0x22A4716A"
     },
@@ -39,7 +39,7 @@
       "type": 2,
       "id": 1,
       "name": "lunar_month_names",
-      "offset": 13924,
+      "offset": 28672,
       "length": 91,
       "crc32": "0x951200A7"
     },
@@ -47,7 +47,7 @@
       "type": 2,
       "id": 2,
       "name": "lunar_leap_names",
-      "offset": 14016,
+      "offset": 32768,
       "length": 8,
       "crc32": "0x2BBAB340"
     },
@@ -55,7 +55,7 @@
       "type": 2,
       "id": 3,
       "name": "lunar_date_names",
-      "offset": 14024,
+      "offset": 36864,
       "length": 217,
       "crc32": "0x75853CE8"
     },
@@ -63,7 +63,7 @@
       "type": 2,
       "id": 4,
       "name": "lunar_day_names",
-      "offset": 14244,
+      "offset": 40960,
       "length": 28,
       "crc32": "0x0D826C56"
     },
@@ -71,7 +71,7 @@
       "type": 2,
       "id": 5,
       "name": "lunar_zodiac_names",
-      "offset": 14272,
+      "offset": 45056,
       "length": 48,
       "crc32": "0x3F299BB3"
     },
@@ -79,7 +79,7 @@
       "type": 2,
       "id": 6,
       "name": "lunar_stem_names",
-      "offset": 14320,
+      "offset": 49152,
       "length": 40,
       "crc32": "0xD7CC996F"
     },
@@ -87,7 +87,7 @@
       "type": 2,
       "id": 7,
       "name": "lunar_branch_names",
-      "offset": 14360,
+      "offset": 53248,
       "length": 48,
       "crc32": "0x75282B8E"
     },
@@ -95,7 +95,7 @@
       "type": 2,
       "id": 8,
       "name": "lunar_jieqi_names",
-      "offset": 14408,
+      "offset": 57344,
       "length": 168,
       "crc32": "0xE17EC4AD"
     },
@@ -103,7 +103,7 @@
       "type": 2,
       "id": 9,
       "name": "lunar_month_days",
-      "offset": 14576,
+      "offset": 61440,
       "length": 28,
       "crc32": "0xCEE55C95"
     },
@@ -111,7 +111,7 @@
       "type": 2,
       "id": 10,
       "name": "lunar_solar_1_1",
-      "offset": 14604,
+      "offset": 65536,
       "length": 28,
       "crc32": "0x8A6437D0"
     },
@@ -119,7 +119,7 @@
       "type": 2,
       "id": 11,
       "name": "lunar_jieqi_year_bits",
-      "offset": 14632,
+      "offset": 69632,
       "length": 18,
       "crc32": "0x2E9B3FB4"
     },
@@ -127,7 +127,7 @@
       "type": 2,
       "id": 12,
       "name": "lunar_jieqi_base_days",
-      "offset": 14652,
+      "offset": 73728,
       "length": 24,
       "crc32": "0xA1A93A24"
     },
@@ -135,7 +135,7 @@
       "type": 3,
       "id": 1,
       "name": "solar_festivals",
-      "offset": 14676,
+      "offset": 77824,
       "length": 180,
       "crc32": "0xE5F55E38"
     },
@@ -143,7 +143,7 @@
       "type": 3,
       "id": 2,
       "name": "lunar_festivals",
-      "offset": 14856,
+      "offset": 81920,
       "length": 132,
       "crc32": "0x773338C4"
     },
@@ -151,7 +151,7 @@
       "type": 3,
       "id": 3,
       "name": "holiday_adjustments",
-      "offset": 14988,
+      "offset": 86016,
       "length": 82,
       "crc32": "0xC0F7DE64"
     },
@@ -159,7 +159,7 @@
       "type": 6,
       "id": 1,
       "name": "lunar_db",
-      "offset": 15072,
+      "offset": 90112,
       "length": 5833,
       "crc32": "0xB56ED2E8"
     },
@@ -167,7 +167,7 @@
       "type": 4,
       "id": 1,
       "name": "ui_bundle",
-      "offset": 20908,
+      "offset": 98304,
       "length": 1029,
       "crc32": "0x7E4EE159"
     }

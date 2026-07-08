@@ -20,6 +20,7 @@
 					<button id="reconnectbutton" type="button" class="secondary" onclick="reConnect()">重连</button>
 					<button id="deviceFilterToggle" type="button" class="secondary" onclick="toggleDeviceFilter()">不过滤设备</button>
 					<button type="button" class="secondary" onclick="clearLog()">清空日志</button>
+					<button id="exportDiagnosticsButton" type="button" class="secondary" onclick="exportDiagnostics()">导出调试日志</button>
 				</div>
 				<div class="flex-group right debug">
 					<label for="epddriver">驱动</label>
@@ -76,6 +77,7 @@
 					<button id="clockmodebutton" type="button" class="primary" onclick="syncTime(3)">纯时钟模式</button>
 					<button id="legacyclockbutton" type="button" class="primary" onclick="syncTimeLegacy()"
 						style="display:none;">老款时钟</button>
+					<button id="synctimeonlybutton" type="button" class="secondary" onclick="syncTimeOnly()">时间同步</button>
 					<button id="clearscreenbutton" type="button" class="secondary" onclick="clearScreen()">清除屏幕</button>
 				</div>
 				<div class="flex-group right debug">
@@ -109,11 +111,38 @@
 				<b>校验：</b><span id="resourceCheckResult">等待检查</span>
 				<span id="resourceProgress" class="resource-progress"></span>
 			</div>
-			<div class="flex-container">
+			<div id="resourceUpdateNotice" class="resource-notice" style="display: none;">
+				<div class="notice-icon">⚠️</div>
+				<div class="notice-content">
+					<div class="notice-title">检测到外置 Flash 资源需要更新</div>
+					<div class="notice-desc">设备上的某些资源模块已缺失或版本与网页端不符。您可以选择更新全部资源，或在下方子模块列表中选择独立更新特定模块。</div>
+				</div>
+				<button type="button" class="primary notice-btn" onclick="updateExternalResources()">更新全部资源</button>
+			</div>
+			<div class="flex-container" style="margin-top: 15px;">
 				<div class="flex-group">
 					<button id="checkResourceButton" type="button" class="secondary" onclick="checkExternalResources()">检查资源</button>
 					<button id="updateResourceButton" type="button" class="primary" onclick="updateExternalResources()" disabled>更新资源</button>
 					<button id="clearResourceButton" type="button" class="danger" onclick="clearExternalFlash()" disabled>强制清空全部</button>
+				</div>
+			</div>
+			<div id="resourceModulesContainer" style="margin-top: 15px; display: none;">
+				<h3 style="margin-top: 10px; margin-bottom: 8px;">子模块列表</h3>
+				<div class="table-responsive">
+					<table class="resource-modules-table">
+						<thead>
+							<tr>
+								<th>模块名称</th>
+								<th>大小</th>
+								<th>当前版本</th>
+								<th>网页版本</th>
+								<th>状态</th>
+								<th>操作</th>
+							</tr>
+						</thead>
+						<tbody id="resourceModulesList">
+						</tbody>
+					</table>
 				</div>
 			</div>
 			<div class="ui-editor">

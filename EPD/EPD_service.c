@@ -84,6 +84,7 @@
 #include <string.h>
 
 #include "app_scheduler.h"
+#include "app_timer.h"
 #include "ble_srv_common.h"
 #include "main.h"
 #include "nrf_delay.h"
@@ -110,6 +111,13 @@
 // session is active; if no new resource command arrives within this window (upload aborted),
 // the session auto-expires and periodic refresh resumes.
 #define EPD_RES_SESSION_TIMEOUT_S 15U
+
+// 刷新消抖保护窗口(秒)。收到时间同步后，若上一次刷新距离当前周期 Tick 不足该时间，
+// 则跳过本次周期刷新，防止校时后连续双重刷新(PRD §1.3 / US 3.2)。
+#define EPD_REFRESH_DEBOUNCE_S 45U
+
+// SET_TIME 频率限制(秒)。同一时间窗口内仅允许一次 SET_TIME 触发屏幕更新(PRD §4.3)。
+#define EPD_SET_TIME_RATE_LIMIT_S 10U
 
 #include "UC8179.h"
 
@@ -559,9 +567,13 @@ static resource_guard_result_t epd_resource_guard(ble_epd_t *p_epd, epd_model_t 
     }
 
     r.missing = (wake_ret != NRF_SUCCESS) || !epd_resources_manifest_ready();
+    bool mode_exists = GUI_ModeExists((uint8_t)mode, epd->width, epd->height);
+    NRF_LOG_WARNING("[EPD]: Guard: wake=%lu, manifest=%d, low_bat=%d, mode=%d, exists=%d",
+                    (unsigned long)wake_ret, (int)epd_resources_manifest_ready(), (int)low_battery,
+                    (int)mode, (int)mode_exists);
     if (!r.missing && !low_battery &&
         (mode == MODE_CALENDAR || mode == MODE_CLOCK || mode == MODE_CLOCK_CALENDAR) &&
-        !GUI_ModeExists((uint8_t)mode, epd->width, epd->height)) {
+        !mode_exists) {
         r.missing = true;
     }
 
@@ -669,6 +681,8 @@ static void epd_gui_update(void* p_event_data, uint16_t event_size) {
     // 设置刷新标志,防止BLE断开中断刷新过程
     // 当BLE断开时,on_disconnect会检查此标志,如果正在刷新则跳过sleep操作
     p_epd->is_refreshing = true;
+    p_epd->last_refresh_start = event->timestamp;
+    p_epd->last_refresh_start_ticks = app_timer_cnt_get();
 
     app_feed_wdt();  // Feed watchdog at the beginning. 开始时喂狗
     EPD_GPIO_Init();  // 初始化GPIO / Initialize GPIO
@@ -947,6 +961,8 @@ fallback_full_refresh:
         }
 
         EPD_LED_OFF();
+        p_epd->last_full_clear = event->timestamp;
+        p_epd->force_full_refresh = false;
         NRF_LOG_INFO("[EPD]: === Full refresh complete ===\n");
         ble_log("[EPD]:full ok");
 
@@ -1000,6 +1016,19 @@ finish_refresh:
     // Clear refreshing flag after refresh is complete
     // 刷新完成后清除刷新标志
     p_epd->is_refreshing = false;
+
+#if NRF_LOG_ENABLED && NRF_LOG_DEFAULT_LEVEL >= 3
+    /* PRD §US-3.1 AC2: Fine-grained latency diagnostics.
+     * Use app_timer RTC ticks (32768 Hz, ~0.03 ms resolution) to measure
+     * the physical refresh duration in milliseconds. */
+    {
+        uint32_t end_ticks = app_timer_cnt_get();
+        uint32_t diff_ticks = app_timer_cnt_diff_compute(end_ticks, p_epd->last_refresh_start_ticks);
+        uint32_t render_ms = (uint32_t)(((uint64_t)diff_ticks * 1000U) / APP_TIMER_CLOCK_FREQ);
+        NRF_LOG_INFO("[EPD] Render duration: %u ms, ts_start=%u ts_end=%u",
+                     render_ms, p_epd->last_refresh_start, timestamp());
+    }
+#endif
 
     app_feed_wdt();  // 最后喂狗 / Final watchdog feed
 }
@@ -1325,12 +1354,25 @@ static void cmd_sleep(ble_epd_t *p_epd, uint8_t *p_data, uint16_t length) {
 
 static void cmd_set_time(ble_epd_t *p_epd, uint8_t *p_data, uint16_t length) {
     if (length < 5) return;
+
+    /* PRD §4.3: SET_TIME rate limit — reject if less than 10 s since last
+     * accepted SET_TIME to prevent high-frequency refresh abuse. */
+    uint32_t now = timestamp();
+    if (p_epd->last_set_time_ts != 0 &&
+        (now - p_epd->last_set_time_ts) < EPD_SET_TIME_RATE_LIMIT_S) {
+        NRF_LOG_WARNING("[EPD]: SET_TIME rate-limited (last %u s ago)",
+                        now - p_epd->last_set_time_ts);
+        app_feed_wdt();
+        return;
+    }
+
     NRF_LOG_DEBUG("time: %02x %02x %02x %02x\n", p_data[1], p_data[2], p_data[3], p_data[4]);
     if (length > 5) {
         NRF_LOG_DEBUG("timezone: %d\n", (int8_t)p_data[5]);
     }
     uint32_t ts = epd_parse_time_payload(p_data, length);
     set_timestamp(ts);
+    p_epd->last_set_time_ts = now;  // Record device-local time, not the (pre-compensated) payload ts.
     if (length > 6) {
         epd_update_display_mode_with_refresh(p_epd, (display_mode_t)p_data[6], false);
     }
@@ -1339,11 +1381,11 @@ static void cmd_set_time(ble_epd_t *p_epd, uint8_t *p_data, uint16_t length) {
 }
 
 static void cmd_sync_time_silent(ble_epd_t *p_epd, uint8_t *p_data, uint16_t length) {
-    (void)p_epd;
     if (length < 5) return;
     uint32_t ts = epd_parse_time_payload(p_data, length);
     set_timestamp(ts);
     NRF_LOG_INFO("[EPD]: Time synced silently\n");
+    epd_send_time(p_epd);
     app_feed_wdt();
 }
 
@@ -1481,6 +1523,7 @@ static void cmd_res_erase(ble_epd_t *p_epd, uint8_t *p_data, uint16_t length) {
         if (p_epd->epd != NULL) {
             (void)GUI_ReloadUICache(p_epd->epd->width, p_epd->epd->height, (uint8_t)p_epd->epd->color);
         }
+        p_epd->force_full_refresh = true;
     }
     send_resource_op_response(p_epd, EPD_CMD_RES_ERASE, 0, ret);
     app_feed_wdt();
@@ -1515,7 +1558,8 @@ static void cmd_res_commit(ble_epd_t *p_epd, uint8_t *p_data, uint16_t length) {
     if (ret == NRF_SUCCESS) {
         ret = epd_ext_resource_commit_staging();
     }
-    if (ret == NRF_SUCCESS) {
+    bool commit_success = (ret == NRF_SUCCESS);
+    if (commit_success) {
         /* 新资源已激活：GUI_ReloadUICache 会同步重置农历库缓存并重建
          * UI/月历渲染缓存，使更新后的数据库无需重启设备即可生效。 */
         if (p_epd->epd != NULL) {
@@ -1525,11 +1569,17 @@ static void cmd_res_commit(ble_epd_t *p_epd, uint8_t *p_data, uint16_t length) {
                                 (unsigned long)ui_ret);
             }
         }
+        p_epd->force_full_refresh = true;
     }
     /* 提交结束资源会话(无论成功与否)，恢复周期刷新以立即呈现新资源；
      * 失败时 web 会从擦除重新开始，届时会再次进入会话。 */
     p_epd->res_session_active = false;
     send_resource_op_response(p_epd, EPD_CMD_RES_COMMIT, 0, ret);
+    
+    if (commit_success) {
+        // Trigger immediate screen redraw using the newly committed resources
+        ble_epd_on_timer(p_epd, timestamp(), true);
+    }
     app_feed_wdt();
 }
 
@@ -1564,17 +1614,14 @@ static void cmd_res_read(ble_epd_t *p_epd, uint8_t *p_data, uint16_t length) {
 
 static void cmd_set_config(ble_epd_t *p_epd, uint8_t *p_data, uint16_t length) {
     if (length < 2) return;
-    display_mode_t old_mode = (display_mode_t)p_epd->config.display_mode;
     memcpy(&p_epd->config, &p_data[1], (length - 1 > EPD_CONFIG_SIZE) ? EPD_CONFIG_SIZE : length - 1);
     epd_config_write(&p_epd->config);
-    if (p_epd->config.display_mode != old_mode) {
-        NRF_LOG_INFO("[EPD]: display_mode changed via SET_CONFIG: %d -> %d\n", old_mode, p_epd->config.display_mode);
-        if ((p_epd->config.display_mode == MODE_CLOCK || p_epd->config.display_mode == MODE_CLOCK_CALENDAR) &&
-            old_mode != p_epd->config.display_mode) {
-            p_epd->force_full_refresh = true;
-            ble_epd_on_timer(p_epd, timestamp(), true);
-        }
-    }
+    
+    // Always force full refresh and trigger update when config is updated,
+    // so any changes (mode, week_start, etc.) are immediately visible.
+    p_epd->force_full_refresh = true;
+    ble_epd_on_timer(p_epd, timestamp(), true);
+    
     app_feed_wdt();
 }
 
@@ -1617,9 +1664,10 @@ static void cmd_cfg_erase(ble_epd_t *p_epd, uint8_t *p_data, uint16_t length) {
  * @param[in] length  命令数据长度 / Length of command data
  */
 static void epd_execute_command(ble_epd_t* p_epd, uint8_t* p_data, uint16_t length) {
+    if (p_data == NULL || length == 0) return;
+
     NRF_LOG_DEBUG("[EPD]: Executing command 0x%02x, LEN=%d\n", p_data[0], length);
     NRF_LOG_HEXDUMP_DEBUG(p_data, length);
-    if (p_data == NULL || length <= 0) return;
 
     // Feed watchdog before command execution
     // 命令执行前喂狗
@@ -1740,7 +1788,7 @@ static void epd_process_next_command(void* p_event_data, uint16_t event_size) {
 static void epd_service_on_write(ble_epd_t* p_epd, uint8_t* p_data, uint16_t length) {
     NRF_LOG_DEBUG("[EPD]: on_write received command 0x%02x, LEN=%d\n",
                   p_data ? p_data[0] : 0, length);
-    if (p_data == NULL || length <= 0) return;
+    if (p_data == NULL || length == 0) return;
 
     if (p_data[0] != 0x31 && p_data[0] != 0x41) {
         ble_log("[CMD]:%02x/%d", p_data[0], length);
@@ -1909,7 +1957,6 @@ static uint32_t epd_service_init(ble_epd_t* p_epd) {
     VERIFY_SUCCESS(sd_ble_uuid_vs_add(&base_uuid, &ble_uuid.type));
 
     // 添加主服务 / Add primary service
-    ble_uuid.type = ble_uuid.type;
     ble_uuid.uuid = BLE_UUID_EPD_SVC;
     VERIFY_SUCCESS(sd_ble_gatts_service_add(BLE_GATTS_SRVC_TYPE_PRIMARY, &ble_uuid, &p_epd->service_handle));
 
@@ -2001,6 +2048,9 @@ uint32_t ble_epd_init(ble_epd_t* p_epd) {
     p_epd->low_battery_screen_active = false;  // Low-battery page inactive by default. 默认未进入低电量页
     p_epd->res_session_active = false;  // No resource update session at boot. 启动时无资源更新会话
     p_epd->res_session_deadline = 0;
+    p_epd->last_refresh_start = 0;            // No refresh yet. 尚未刷新
+    p_epd->last_refresh_start_ticks = 0;     // No refresh ticks yet. 尚未刷新
+    p_epd->last_set_time_ts = 0;             // No SET_TIME yet. 尚未校时
 
     // Initialize command queue
     // 初始化命令队列
@@ -2010,13 +2060,6 @@ uint32_t ble_epd_init(ble_epd_t* p_epd) {
     // Initialize and read config
     epd_config_init(&p_epd->config);
     epd_config_read(&p_epd->config);
-
-    ret_code_t resource_ret = epd_ext_resources_init();
-    if (resource_ret != NRF_SUCCESS) {
-        NRF_LOG_ERROR("[EPD]: External resource flash init failed, ret=%lu "
-                      "(LUT/font/lunar reads will be unavailable)",
-                      (unsigned long)resource_ret);
-    }
 
     // write default config
     // 如果配置为空,写入默认配置
@@ -2034,11 +2077,17 @@ uint32_t ble_epd_init(ble_epd_t* p_epd) {
     // 加载配置
     EPD_GPIO_Load(&p_epd->config);
 
-    // Initialize EPD driver based on config
-    // 根据配置初始化EPD驱动
+    // Initialize EPD driver and external flash resources while power (EN pin) is active
+    // 根据配置初始化EPD驱动，并在电源(EN引脚)有效时初始化外部Flash资源
     EPD_GPIO_Init();
     p_epd->epd = epd_init((epd_model_id_t)p_epd->config.model_id);
-    EPD_GPIO_Uninit();
+
+    ret_code_t resource_ret = epd_ext_resources_init();
+    if (resource_ret != NRF_SUCCESS) {
+        NRF_LOG_ERROR("[EPD]: External resource flash init failed, ret=%lu "
+                      "(LUT/font/lunar reads will be unavailable)",
+                      (unsigned long)resource_ret);
+    }
 
     if (resource_ret == NRF_SUCCESS && p_epd->epd != NULL) {
         ret_code_t ui_ret = GUI_ReloadUICache(p_epd->epd->width, p_epd->epd->height, (uint8_t)p_epd->epd->color);
@@ -2055,6 +2104,8 @@ uint32_t ble_epd_init(ble_epd_t* p_epd) {
                             (unsigned long)flash_sleep_ret);
         }
     }
+
+    EPD_GPIO_Uninit();
 
     // Add the service.
     // 添加BLE服务
@@ -2089,7 +2140,19 @@ uint32_t ble_epd_string_send(ble_epd_t* p_epd, uint8_t* p_string, uint16_t lengt
     hvx_params.p_len = &length;
     hvx_params.type = BLE_GATT_HVX_NOTIFICATION;
 
-    return sd_ble_gatts_hvx(p_epd->conn_handle, &hvx_params);
+    uint32_t err_code;
+    int retries = 50;
+    do {
+        err_code = sd_ble_gatts_hvx(p_epd->conn_handle, &hvx_params);
+        if (err_code == NRF_ERROR_RESOURCES) {
+            nrf_delay_ms(5);
+            retries--;
+        } else {
+            break;
+        }
+    } while (retries > 0);
+
+    return err_code;
 }
 
 /**@brief 定时器事件处理函数,触发GUI更新
@@ -2197,7 +2260,23 @@ void ble_epd_on_timer(ble_epd_t* p_epd, uint32_t timestamp, bool force_update) {
         day_change_refresh ||
         (update_policy == GUI_UPDATE_DAILY && timestamp % 86400 == 0) ||
         (update_policy == GUI_UPDATE_MINUTE && timestamp % 60 == 0)) {
-        // 跨天走全刷重绘日期/农历，而非仅对时间局刷。
+
+        /* PRD §US-3.2: Refresh debounce guard window.
+         * If the last physical refresh started less than EPD_REFRESH_DEBOUNCE_S
+         * seconds ago, skip this periodic tick to prevent double-refresh
+         * after time sync that crosses a minute boundary.
+         * force_update (manual mode switch / initial draw) and day_change_refresh
+         * are exempt. */
+        if (!force_update && !day_change_refresh && p_epd->last_refresh_start != 0) {
+            uint32_t elapsed = timestamp - p_epd->last_refresh_start;
+            if (elapsed < EPD_REFRESH_DEBOUNCE_S) {
+                NRF_LOG_INFO("[EPD]: Refresh debounce: skipping (last refresh %u s ago, guard=%u s)",
+                             elapsed, EPD_REFRESH_DEBOUNCE_S);
+                return;
+            }
+        }
+
+        // 跨天走全刷重绘日期/农历，而非仅对时间做差分局刷。
         if (day_change_refresh) {
             p_epd->force_full_refresh = true;
         }
