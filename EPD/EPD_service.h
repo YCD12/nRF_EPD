@@ -232,6 +232,14 @@ typedef struct {
     uint32_t res_session_deadline;  /**< Timestamp (s) after which an idle resource session auto-expires. */
                                     /**< 资源会话空闲超时时间戳(秒)，超时后自动恢复周期刷新 */
 
+    // 刷新消抖与校时保护
+    uint32_t last_refresh_start;    /**< Timestamp (s) when the last physical refresh began. */
+                                    /**< 上一次物理刷新开始的时间戳(秒)，用于消抖保护 */
+    uint32_t last_refresh_start_ticks; /**< app_timer ticks at refresh start, for ms-precision latency log. */
+                                       /**< 刷新开始时的 app_timer tick 计数，用于毫秒级延迟诊断日志 */
+    uint32_t last_set_time_ts;      /**< Timestamp (s) of last accepted SET_TIME. 0 = never. */
+                                    /**< 上一次接受 SET_TIME 的时间戳(秒)，用于频率限制 */
+
     // 命令队列
     epd_cmd_queue_t cmd_queue;    /**< Command queue for sequential command execution. */
                                   /**< 用于顺序执行命令的命令队列 */
