@@ -46,6 +46,10 @@
 #include "nrf_pwr_mgmt.h"
 #include "nrf_log_default_backends.h"
 
+#ifdef USE_SYSVIEW
+#include "SEGGER_SYSVIEW.h"
+#endif
+
 // clang-format off
 #define CENTRAL_LINK_COUNT              0                                               /**< Number of central links used by the application. When changing this number remember to adjust the RAM settings*/
                                                                                         /**< 应用程序使用的中心链接数量。更改此数字时请记得调整RAM设置 */
@@ -843,8 +847,19 @@ static void power_management_init(void) {
 static void idle_state_handle(void) {
     app_feed_wdt();  // 喂看门狗，防止系统复位
 
+#ifdef USE_SYSVIEW
+    // 裸机模式下，如果调用 nrf_pwr_mgmt_run() 进入 WFE 睡眠，CPU 时钟将被关断，
+    // 这会导致 Cortex-M 内核的 DWT 周期计数器停止计数，造成 SystemView 时间轴停滞。
+    // 因此在性能分析模式下我们跳过睡眠模式，保持 CPU 处于活动状态。
+    static uint32_t loop_count = 0;
+    if (++loop_count >= 1000000) {
+        loop_count = 0;
+        SEGGER_SYSVIEW_Mark(1); // 触发主循环空闲事件标记
+    }
+#else
     if (NRF_LOG_PROCESS() == false)  // 处理日志缓冲区，如果没有待处理的日志
         nrf_pwr_mgmt_run();          // 进入低功耗模式（等待事件唤醒）
+#endif
 }
 
 /**
@@ -889,10 +904,16 @@ void wdt_event_handler(void) {
 int main(void) {
     log_init();  // 初始化日志系统
 
+#ifdef USE_SYSVIEW
+    SEGGER_SYSVIEW_Conf();
+    SEGGER_SYSVIEW_Start();
+    SEGGER_SYSVIEW_NameMarker(1, "Main Loop Idle");
+#endif
+
     // Save reset reason.
     // 保存复位原因
     m_resetreas = NRF_POWER->RESETREAS;  // 读取复位原因寄存器
-    NRF_POWER->RESETREAS |= NRF_POWER->RESETREAS;  // 清除复位原因标志
+    NRF_POWER->RESETREAS = m_resetreas;  // 清除复位原因标志
     NRF_LOG_DEBUG("== RESET REASON: %d ===\n", m_resetreas);
 
     // 如果复位是由看门狗引起，且电压严重不足（低于临界关机阈值），
