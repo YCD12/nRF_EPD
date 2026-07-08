@@ -7,13 +7,20 @@ set -e
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 cd "$SCRIPT_DIR"
 
+# 检查第一个参数是否是特定的 Makefile 便捷目标
+TARGET="flash_full"
+if [[ "$1" =~ ^(clean|erase|flash_softdevice|rebuild|ota|size|info)$ ]]; then
+    TARGET="$1"
+    shift
+fi
+
 echo "========================================="
-echo " 开始通过 J-Link 烧录完整固件..."
+echo " 开始执行 Make Target: $TARGET..."
 echo "========================================="
 
-# 执行 Makefile 中的 flash_full 目标
-make -f Makefile.nRF52_linux flash_full
+# 执行 Makefile 中的对应目标，并传递剩余的所有参数
+make -f Makefile.nRF52_linux "$TARGET" "$@"
 
 echo "========================================="
-echo " 固件烧录及复位成功！"
+echo " 执行 $TARGET 成功！"
 echo "========================================="

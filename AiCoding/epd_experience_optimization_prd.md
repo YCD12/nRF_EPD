@@ -320,3 +320,140 @@ graph TD
     NRF_ERROR_NOT_SUPPORTED: 6,  // 修正（原 11）
     ```
 *   **状态**：✅ 已修复
+
+---
+
+### 5.5 运行时缺陷与优化（第三轮——局刷回退循环与校时可靠性）
+
+> **发现时间**：2026-07-08（在完整资源恢复且执行校时测试期间）
+> **现象**：
+> 1. 部分局刷（如差分局刷或局刷 init 忙超时）触发 fallback 全刷后，屏幕在之后的每个 tick（每分钟）中持续执行全量全刷闪烁。
+> 2. 手动点击单独的时间同步按钮时，网页控制台日志偶尔缺失设备端返回的“远端时间”数据包，或者大块数据传输时有偶发协议超时。
+
+#### BUG-09：局刷异常回退至全刷后未清除 `force_full_refresh` 导致屏幕在每个 tick 持续全刷
+*   **严重等级**：中等 (影响用户体验，高频全刷伤屏/费电)
+*   **对应 Story**：US-3.2（屏幕全刷与局刷调度逻辑）
+*   **缺陷描述**：
+    在 `epd_gui_update` 中，若判定可以使用局刷，但由于驱动层 `init_partial` 忙超时或时钟日历差分局刷 `epd_clock_diff_try_partial` 失败时，会跳转到 `fallback_full_refresh` 分支执行常规全刷。
+    然而在此分支成功执行全刷后，固件并未将 `p_epd->force_full_refresh` 标志清零，也未更新 `p_epd->last_full_clear` 为当前时间戳。这导致下一分钟 tick 来临时，固件依然认为“需要全刷清除屏幕”，重新执行 fallback 全刷，陷入死循环。
+*   **修复方案**：
+    在 `fallback_full_refresh` 的成功执行末尾，显式清除该标志，并更新时间戳：
+    ```c
+    p_epd->last_full_clear = event->timestamp;
+    p_epd->force_full_refresh = false;
+    ```
+*   **状态**：✅ 已修复
+
+#### BUG-10：高频蓝牙数据包发送导致 `sd_ble_gatts_hvx` 返回 `NRF_ERROR_RESOURCES` 丢包
+*   **严重等级**：中等 (导致时间同步回传失败，也可能导致资源大块读写校验时偶发丢包/超时)
+*   **对应 Story**：US-3.1（蓝牙数据回传及日志通知）
+*   **缺陷描述**：
+    设备向网页端发送蓝牙通知数据包时，若多包并发（例如设备在时间同步成功后，在微秒内连续发出多条 `ble_log` 和 `t=` 时间包），由于 nRF52811 的 SoftDevice 发送缓冲区很小，调用 `sd_ble_gatts_hvx` 会因缓冲区溢出而直接返回 `NRF_ERROR_RESOURCES`。因为此前未对该返回值做任何重试处理，导致数据包被默默丢弃。
+*   **修复方案**：
+    在 `ble_epd_string_send` 底层发送通知逻辑中，增加针对 `NRF_ERROR_RESOURCES` 的重试检查：在发送队列满时自动延时（5毫秒）并重试，最多重试 50 次（延时上限 250 毫秒），确保高频数据能平滑入队发送。
+*   **状态**：✅ 已修复
+
+#### Feature-01：设备控制区域增加“时间同步”按钮（仅校时，不刷新）
+*   **对应 Story**：US-3.1（校时与消抖）
+*   **优化说明**：
+    在网页端设备控制面板中新增“时间同步”按钮，点击后发送 `SYNC_TIME_SILENT` (`0x23`) 命令，仅对设备进行静默时间校准而不触发屏幕全刷。同步成功后设备会通过蓝牙回传其当前时钟戳，网页端在日志区域清晰打印出“远端时间”和“本地时间”供用户比对确认。
+*   **状态**：✅ 已完成
+
+---
+
+### 5.6 静态分析缺陷（第四轮——Cppcheck 扫描隐患）
+
+> **发现时间**：2026-07-08（引入本地 Cppcheck 静态扫描工具链后）
+> **现象**：通过 Cppcheck 工具对全工程进行静态审查，发现了几处关于内存安全、未定义行为（UB）以及冗余写法的隐患。
+
+#### BUG-11：`EPD/EPD_service.c` 中 `epd_execute_command` 存在潜在的 NULL 指针先解引用风险
+*   **严重等级**：严重（若传入空数据包将直接导致 HardFault 崩溃）
+*   **对应 Story**：US-3.1（蓝牙协议处理安全性）
+*   **缺陷描述**：
+    在命令执行入口函数 `epd_execute_command` 顶部，调试输出语句中强行提取并打印了 `p_data[0]`。但在后面的第 1669 行处，才针对 `p_data == NULL` 进行拦截检查。在极端空包数据场景下，会导致程序先解引用空指针而崩溃。
+*   **修复方案**：
+    将 `p_data` 的 `NULL` 与 `length == 0` 判断整体上移至函数首行。
+*   **状态**：✅ 已修复
+
+#### BUG-12：`gcc_sbrk.c` 堆界限指针大小比较存在未定义行为 (Undefined Behavior)
+*   **严重等级**：中等（可能导致编译器因激进优化而使堆越界检查失效）
+*   **对应 Story**：GCC/Linux 堆栈安全分配支持
+*   **缺陷描述**：
+    在 malloc 调用扩展堆空间时，判断 `(heap + incr) > &__HeapLimit`。因为 `heap` 变量首地址派生自外部变量 `__HeapBase`，在标准 C 规范中，属于不同物理变量指针的大小比较为 Undefined Behavior。
+*   **修复方案**：
+    将比较双方均强制转换为 `uintptr_t` 整型，然后再执行纯数值比较。
+*   **状态**：✅ 已修复
+
+#### BUG-13：`main.c` 中冗余清除复位原因寄存器标志（duplicateExpression）
+*   **严重等级**：低（代码风格问题）
+*   **缺陷描述**：
+    清除复位寄存器标志时使用了 `NRF_POWER->RESETREAS |= NRF_POWER->RESETREAS;`。由于 nRF52 芯片复位状态寄存器为写 1 清零（RW1C），使用 `|=` 较繁琐，且 Cppcheck 检测到两侧表达式相同。
+*   **修复方案**：
+    修改为直接赋值 `NRF_POWER->RESETREAS = m_resetreas;`。
+*   **状态**：✅ 已修复
+
+#### BUG-14：`EPD/EPD_service.c` 中无符号长度判断逻辑与自我赋值
+*   **严重等级**：低（代码冗余）
+*   **缺陷描述**：
+    1. 判断命令长度 `length <= 0`。因 `length` 为 `uint16_t` 无符号整数，判断小于 0 永远为假；
+    2. 在 `epd_service_init` 中包含了无意义的 `ble_uuid.type = ble_uuid.type;` 自我赋值。
+*   **修复方案**：
+    1. 将判断统一修改为 `length == 0`；
+    2. 移除冗余的自我赋值。
+*   **状态**：✅ 已修复
+
+---
+
+### 5.7 性能与行为分析工具集成（第五轮——SystemView 固件端监控集成）
+
+> **集成时间**：2026-07-08
+> **意图**：通过 J-Link 接口引入 SEGGER SystemView 工具链，对裸机（NoOS）时钟系统的事件、中断响应、函数执行时间进行精确的可视化实时监测与分析。
+
+#### 1. 基础配置与修改
+*   **硬件参数对齐**：针对 nRF52811 平台（基于 Cortex-M4 内核，无硬件浮点，RAM 基地址为 `0x20000000`），在 `SystemView/SEGGER_SYSVIEW_Config_NoOS.c` 中进行了配置修改：
+    *   `SYSVIEW_RAM_BASE` 调整为 `0x20000000`；
+    *   `SYSVIEW_DEVICE_NAME` 调整为 `"nRF52811"`；
+    *   `SYSVIEW_APP_NAME` 调整为 `"EPD Clock App"`。
+*   **主入口挂载**：在 `main.c` 中包含 `#include "SEGGER_SYSVIEW.h"` 头文件，并在 `main()` 入口 `log_init()` 后立即调用初始化与启动例程：
+    ```c
+    #ifdef USE_SYSVIEW
+        SEGGER_SYSVIEW_Conf();
+        SEGGER_SYSVIEW_Start();
+    #endif
+    ```
+
+#### 2. 工具链依赖处理
+*   **问题**：SystemView Target 源码依赖最新版本的 SEGGER RTT 支持，而 Nordic SDK 17.1 中自带的 RTT 缺少 `SEGGER_RTT_ConfDefaults.h`、`SEGGER.h` 等依赖，且缺少底层的汇编加速以至于链接报错。
+*   **解决**：
+    1. 从 Segger 官方最新仓库提取了匹配的完整 RTT 依赖放入 `SystemView/` 目录中，包括：
+       * `SEGGER_RTT.c` & `SEGGER_RTT.h`
+       * `SEGGER_RTT_ConfDefaults.h` & `SEGGER_RTT_Conf.h`
+       * `SEGGER_RTT_printf.c` & `SEGGER_RTT_Syscalls_GCC.c`
+       * `SEGGER_RTT_ASM_ARMv7M.S` (底层的 Cortex-M4 汇编加速 RTT 写)
+       * `SEGGER.h` & `Global.h`
+    2. 修改 `Makefile.nRF52_linux` 的条件编译逻辑：
+       * 当指定 `USE_SYSVIEW=1` 时，自动开启 `USE_RTT=1`。
+       * 条件包含 `SystemView/` 作为头文件检索目录，并将本地的 `SEGGER_RTT` 模块与 SystemView 源文件加入编译。
+
+#### 3. Flash 空间超限优化
+*   **瓶颈**：初次完整编译 SystemView + 原生 RTT 日志重定向时，由于 nRF52811 的 Flash 空间极其有限（仅 56KB 且 SoftDevice 占用了绝大多数），导致链接器报出 **FLASH overflowed by 13604 bytes** 错误。
+*   **优化**：
+    *   由于 SystemView 和 RTT 会接管或作为更底层的调试通道，当开启 `USE_SYSVIEW=1` 时，在编译期强制将原生的 `NRF_LOG_ENABLED` 设为 `0`（屏蔽所有 `NRF_LOG_XXX` 语句），以此裁剪掉庞大的格式化字符串和日志前/后端。
+    *   由于 `-flto` 全局优化开启，裁剪后的固件总 Flash 体积成功缩减至 **51.4 KB**（比不带 SystemView 的默认固件 55.0 KB 还小了 3.6 KB），实现无溢出顺利编译！
+
+#### 4. 运行与编译方法
+*   **编译带有 SystemView 监控功能的固件**：
+    ```bash
+    make -f Makefile.nRF52_linux clean && make -f Makefile.nRF52_linux build USE_SYSVIEW=1
+    ```
+*   **编译常规生产/测试固件**（默认关闭 SystemView 和 RTT）：
+    ```bash
+    make -f Makefile.nRF52_linux clean && make -f Makefile.nRF52_linux build
+    ```
+*   **SystemView 联调方式**：
+    1. 使用 `nrfjprog --program _build/nrf52811_xxaa.hex --sectorerase --reset` 将固件烧录进板子。
+    2. 开启 J-Link RTT 通道；
+    3. 打开上位机 SystemView 软件，新建连接（Device 选择 `nRF52811`，Interface 选择 `SWD`，RTT Base Address 选择 `0x20000000` 或自动识别），点击 Start 即可进行实时性能图表监控。
+*   **状态**：✅ 集成完毕且编译通过
+
+
