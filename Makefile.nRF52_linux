@@ -28,13 +28,24 @@ SDK_ROOT := $(PROJ_DIR)/SDK/17.1.0_ddde560
 # =============================================================================
 USE_RTT ?= 0
 USE_SYSVIEW ?= 0
+DEBUG_LAYOUT ?= 0
+
+# 调试布局默认强制开启 RTT
+ifeq ($(DEBUG_LAYOUT),1)
+USE_RTT := 1
+endif
 
 ifeq ($(USE_SYSVIEW),1)
 USE_RTT := 1
 endif
 
+ifeq ($(DEBUG_LAYOUT),1)
+$(OUTPUT_DIRECTORY)/nrf52811_xxaa.out: \
+  LINKER_SCRIPT  := $(SDK_ROOT)/gcc_nrf52_debug.ld
+else
 $(OUTPUT_DIRECTORY)/nrf52811_xxaa.out: \
   LINKER_SCRIPT  := $(SDK_ROOT)/gcc_nrf52.ld
+endif
 
 # =============================================================================
 # 源文件（与 Keil 工程一致，Keil 专属文件替换为 GCC 等价文件）
@@ -211,7 +222,11 @@ CFLAGS += -DSOFTDEVICE_PRESENT
 # 根据 USE_RTT 确定是否禁用 BLE 日志重定向以启用原生 RTT
 ifeq ($(USE_RTT),1)
 ifeq ($(USE_SYSVIEW),1)
+ifeq ($(DEBUG_LAYOUT),1)
+CFLAGS += -DBLE_LOG_REDIRECT_ALL_NRF_LOG=0 -DNRF_LOG_ENABLED=1
+else
 CFLAGS += -DBLE_LOG_REDIRECT_ALL_NRF_LOG=0 -DNRF_LOG_ENABLED=0
+endif
 else
 CFLAGS += -DBLE_LOG_REDIRECT_ALL_NRF_LOG=0 -DNRF_LOG_ENABLED=1
 endif
