@@ -410,6 +410,13 @@ const ResourceManager = {
       this.setUiStatus('写入staging manifest');
       await this.writeSegment(bundle.stagingManifestAddress, manifestBytesToWrite, 'manifest');
 
+      /* Post-write verification of the manifest itself */
+      this.setUiStatus('校验staging manifest');
+      const readManifest = await this.readRaw(bundle.stagingManifestAddress, manifestBytesToWrite.length);
+      if (!this.bytesEqual(readManifest, manifestBytesToWrite)) {
+        throw new Error('staging manifest 写入校验不一致');
+      }
+
       /* Post-write verification (only targetEntry / changedEntries for single-module update, otherwise all). */
       this.setUiStatus('写后完整校验');
       const verifyEntries = targetEntry ? changedEntries : bundle.entries;

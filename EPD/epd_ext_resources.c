@@ -125,9 +125,13 @@ static ret_code_t epd_ext_validate_manifest_quick(epd_ext_resource_manifest_t* m
         return NRF_ERROR_NULL;
     }
     if (manifest->magic != EPD_EXT_RES_MAGIC || manifest->version != EPD_EXT_RES_VERSION) {
+        NRF_LOG_WARNING("Manifest magic/version mismatch: magic=0x%08x (expected 0x%08x), version=%u (expected %u)",
+                        manifest->magic, EPD_EXT_RES_MAGIC, manifest->version, EPD_EXT_RES_VERSION);
         return NRF_ERROR_INVALID_DATA;
     }
     if (manifest->resource_count > EPD_EXT_RES_MAX_ENTRIES) {
+        NRF_LOG_WARNING("Manifest resource count exceeds limit: %u > %u",
+                        manifest->resource_count, EPD_EXT_RES_MAX_ENTRIES);
         return NRF_ERROR_INVALID_LENGTH;
     }
 
@@ -137,6 +141,7 @@ static ret_code_t epd_ext_validate_manifest_quick(epd_ext_resource_manifest_t* m
         epd_ext_crc32_update(epd_ext_crc32_init(), manifest, sizeof(*manifest)));
     manifest->crc32 = stored_crc;
     if (computed_crc != stored_crc) {
+        NRF_LOG_WARNING("Manifest self-CRC mismatch: computed=0x%08x, stored=0x%08x", computed_crc, stored_crc);
         return NRF_ERROR_INVALID_DATA;
     }
 
@@ -144,6 +149,8 @@ static ret_code_t epd_ext_validate_manifest_quick(epd_ext_resource_manifest_t* m
     for (uint16_t i = 0; i < manifest->resource_count; i++) {
         if (!epd_ext_resource_range_is_valid(manifest->entries[i].offset,
                                              manifest->entries[i].length)) {
+            NRF_LOG_WARNING("Manifest entry %u out of bounds: offset=0x%08x, length=%u",
+                            i, manifest->entries[i].offset, manifest->entries[i].length);
             return NRF_ERROR_INVALID_ADDR;
         }
     }
@@ -172,7 +179,8 @@ static ret_code_t epd_ext_validate_manifest_full(epd_ext_resource_manifest_t* ma
             return ret;
         }
         if (resource_crc != entry->crc32) {
-            NRF_LOG_WARNING("External resource CRC mismatch type=%u id=%u", entry->type, entry->id);
+            NRF_LOG_WARNING("External resource CRC mismatch type=%u id=%u: computed=0x%08x, expected=0x%08x",
+                            entry->type, entry->id, resource_crc, entry->crc32);
             return NRF_ERROR_INVALID_DATA;
         }
         app_feed_wdt();

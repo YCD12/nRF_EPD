@@ -41,7 +41,7 @@
  * to its low byte and returns NRF_SUCCESS with unread/unwritten data.
  * ASSERT in fm25q04b_read guards this; fm25q04b_write caps chunk to this value.
  */
-#define FM25Q04B_SPI_PAYLOAD_MAX      251U
+#define FM25Q04B_SPI_PAYLOAD_MAX      128U
 #define FM25Q04B_READ_CHUNK_MAX       FM25Q04B_SPI_PAYLOAD_MAX
 #define FM25Q04B_ERASE_TIMEOUT_MS     5000U
 #define FM25Q04B_PROGRAM_TIMEOUT_MS   1000U
