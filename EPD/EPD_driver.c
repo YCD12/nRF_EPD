@@ -241,7 +241,26 @@ void EPD_SPI_Write(uint8_t* value, uint8_t len) {
         // 设置SPI引脚: SCK, MOSI, 禁用MISO
         nrf_spi_pins_set(HAL_SPI_INSTANCE, EPD_SCLK_PIN, EPD_MOSI_PIN, NRF_SPI_PIN_NOT_CONNECTED);
     }
+
+#if (SPI0_USE_EASY_DMA == 1)
+    // 如果启用 EasyDMA，检测地址是否在 Flash 中。如果是，复制到 RAM 中再传输。
+    if ((uint32_t)value < 0x20000000 && len > 0) {
+        uint8_t ram_buf[128];
+        uint8_t remaining = len;
+        uint8_t* ptr = value;
+        while (remaining > 0) {
+            uint8_t chunk = (remaining > 128) ? 128 : remaining;
+            memcpy(ram_buf, ptr, chunk);
+            APP_ERROR_CHECK(nrf_drv_spi_transfer(&spi, ram_buf, chunk, NULL, 0));
+            ptr += chunk;
+            remaining -= chunk;
+        }
+    } else {
+        APP_ERROR_CHECK(nrf_drv_spi_transfer(&spi, value, len, NULL, 0));
+    }
+#else
     APP_ERROR_CHECK(nrf_drv_spi_transfer(&spi, value, len, NULL, 0));
+#endif
 }
 
 /**
