@@ -848,6 +848,7 @@ static void idle_state_handle(void) {
     app_feed_wdt();  // 喂看门狗，防止系统复位
 
 #ifdef USE_SYSVIEW
+    (void)NRF_LOG_PROCESS();
     // 裸机模式下，如果调用 nrf_pwr_mgmt_run() 进入 WFE 睡眠，CPU 时钟将被关断，
     // 这会导致 Cortex-M 内核的 DWT 周期计数器停止计数，造成 SystemView 时间轴停滞。
     // 因此在性能分析模式下我们跳过睡眠模式，保持 CPU 处于活动状态。
