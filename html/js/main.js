@@ -472,7 +472,7 @@ async function sendimg() {
   const ditherMode = document.getElementById('ditherMode').value;
   const epdDriverSelect = document.getElementById('epddriver');
   const selectedOption = epdDriverSelect.options[epdDriverSelect.selectedIndex];
-  const driverSize = selectedOption.getAttribute('data-size');
+  const driverSize = selectedOption ? selectedOption.getAttribute('data-size') : null;
 
   let expectedWidth = canvas.width;
   let expectedHeight = canvas.height;
@@ -487,10 +487,10 @@ async function sendimg() {
   const isExactMatch = (canvas.width === expectedWidth && canvas.height === expectedHeight);
   const isRotatedMatch = (canvas.width === expectedHeight && canvas.height === expectedWidth);
 
-  if (!isExactMatch && !isRotatedMatch && selectedOption.getAttribute('data-size') !== canvasSize) {
+  if (!isExactMatch && !isRotatedMatch && (!selectedOption || selectedOption.getAttribute('data-size') !== canvasSize)) {
     if (!confirm("警告：画布尺寸和驱动不匹配，是否继续？")) return;
   }
-  if (selectedOption.getAttribute('data-color') !== ditherMode) {
+  if (!selectedOption || selectedOption.getAttribute('data-color') !== ditherMode) {
     if (!confirm("警告：颜色模式和驱动不匹配，是否继续？")) return;
   }
 
@@ -982,6 +982,20 @@ async function reConnect() {
   setTimeout(async function () { await connect(); }, 300);
 }
 
+function isEpdConfig(data) {
+  // epd_config_t is usually 11 to 15 bytes (currently 14 bytes)
+  if (data.length < 11 || data.length > 15) {
+    return false;
+  }
+  // Check if first 7 bytes are valid GPIO pin numbers (0-31 or 0xFF)
+  for (let i = 0; i < 7; i++) {
+    if (data[i] > 31 && data[i] !== 0xFF) {
+      return false;
+    }
+  }
+  return true;
+}
+
 function handleNotify(value, idx) {
   const data = new Uint8Array(value.buffer, value.byteOffset, value.byteLength);
 
@@ -1000,7 +1014,7 @@ function handleNotify(value, idx) {
     return;
   }
 
-  if (idx == 0) {
+  if (isEpdConfig(data)) {
     addLog(`收到配置：${bytes2hex(data)}`);
     const epdpins = document.getElementById("epdpins");
     const epddriver = document.getElementById("epddriver");
@@ -1512,8 +1526,8 @@ function updateCanvasSize() {
 function updateDitcherOptions() {
   const epdDriverSelect = document.getElementById('epddriver');
   const selectedOption = epdDriverSelect.options[epdDriverSelect.selectedIndex];
-  const colorMode = selectedOption.getAttribute('data-color');
-  const canvasSize = selectedOption.getAttribute('data-size');
+  const colorMode = selectedOption ? selectedOption.getAttribute('data-color') : null;
+  const canvasSize = selectedOption ? selectedOption.getAttribute('data-size') : null;
 
   if (colorMode) document.getElementById('ditherMode').value = colorMode;
   if (canvasSize) document.getElementById('canvasSize').value = canvasSize;
