@@ -1575,11 +1575,7 @@ static void cmd_res_commit(ble_epd_t *p_epd, uint8_t *p_data, uint16_t length) {
      * 失败时 web 会从擦除重新开始，届时会再次进入会话。 */
     p_epd->res_session_active = false;
     send_resource_op_response(p_epd, EPD_CMD_RES_COMMIT, 0, ret);
-    
-    if (commit_success) {
-        // Trigger immediate screen redraw using the newly committed resources
-        ble_epd_on_timer(p_epd, timestamp(), true);
-    }
+
     app_feed_wdt();
 }
 

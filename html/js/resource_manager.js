@@ -993,11 +993,8 @@ const ResourceManager = {
     const bytes = new Uint8Array(bundle.manifest.length); // 396 bytes
     const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
     
-    // Sort entries by type (ascending) and then id (ascending)
-    const sorted = [...entries].sort((a, b) => {
-      if (a.type !== b.type) return a.type - b.type;
-      return a.id - b.id;
-    });
+    // Sort entries by offset (ascending) to match the bundle's original layout order
+    const sorted = [...entries].sort((a, b) => a.offset - b.offset);
     
     view.setUint32(0, bundle.magic, true);
     view.setUint16(4, bundle.version, true);
