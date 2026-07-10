@@ -635,6 +635,7 @@ void gatt_evt_handler(nrf_ble_gatt_t* p_gatt, nrf_ble_gatt_evt_t const* p_evt) {
                   p_gatt->att_mtu_desired_periph);
 }
 
+#if BLE_LOG_REDIRECT_ALL_NRF_LOG
 static void long_to_str(char **out, char *end, long val, int radix, int width, char pad, bool sign, bool upper) {
     char buf[12];  // max 10 digits for 32-bit + sign + NUL
     int len = 0;
@@ -773,6 +774,7 @@ void ble_log_hexdump(const void *p_data, uint16_t len) {
         ble_epd_string_send(&m_epd, (uint8_t*)buf, send_len);
     }
 }
+#endif
 
 /**@brief Function for initializing the GATT library.
  * GATT库初始化函数
@@ -977,3 +979,14 @@ int main(void) {
         idle_state_handle();  // 处理空闲状态（喂狗、日志处理、进入低功耗）
     }
 }
+
+#if !defined(NRF_STRERROR_ENABLED) || NRF_STRERROR_ENABLED == 0
+char const * nrf_strerror_get(uint32_t code) {
+    (void)code;
+    return "";
+}
+char const * nrf_strerror_find(uint32_t code) {
+    (void)code;
+    return NULL;
+}
+#endif

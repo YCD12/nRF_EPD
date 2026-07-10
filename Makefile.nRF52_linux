@@ -24,11 +24,13 @@ SDK_ROOT := $(PROJ_DIR)/SDK/17.1.0_ddde560
 # =============================================================================
 # 调试选项：启用 RTT View 或 BLE 日志重定向
 #   USE_RTT ?= 1 : 编译并使用原生的 SEGGER RTT View 输出日志 (此时会超 56KB 空间，仅用于调试)
-#   USE_RTT ?= 0 : 默认值，不包含 RTT 模块，使用轻量级 BLE 日志重定向输出 (在 56KB 内)
+#   USE_RTT ?= 0 : 默认值，不包含 RTT 模块 (在 56KB 内)
+#   USE_BLE_LOG ?= 1 : 开启轻量级 BLE 日志重定向输出 (默认不开启以优化 Flash/RAM)
 # =============================================================================
 USE_RTT ?= 0
 USE_SYSVIEW ?= 0
 DEBUG_LAYOUT ?= 0
+USE_BLE_LOG ?= 0
 
 # 调试布局默认强制开启 RTT
 ifeq ($(DEBUG_LAYOUT),1)
@@ -219,17 +221,25 @@ CFLAGS += -DNRF_SD_BLE_API_VERSION=7
 CFLAGS += -DS112
 CFLAGS += -DSOFTDEVICE_PRESENT
 
-# 根据 USE_RTT 确定是否禁用 BLE 日志重定向以启用原生 RTT
+# 根据 USE_BLE_LOG 与 USE_RTT 确定日志配置
+ifeq ($(USE_BLE_LOG),1)
+CFLAGS += -DBLE_LOG_REDIRECT_ALL_NRF_LOG=1
+else
+CFLAGS += -DBLE_LOG_REDIRECT_ALL_NRF_LOG=0
+endif
+
 ifeq ($(USE_RTT),1)
 ifeq ($(USE_SYSVIEW),1)
 ifeq ($(DEBUG_LAYOUT),1)
-CFLAGS += -DBLE_LOG_REDIRECT_ALL_NRF_LOG=0 -DNRF_LOG_ENABLED=1
+CFLAGS += -DNRF_LOG_ENABLED=1
 else
-CFLAGS += -DBLE_LOG_REDIRECT_ALL_NRF_LOG=0 -DNRF_LOG_ENABLED=0
+CFLAGS += -DNRF_LOG_ENABLED=0
 endif
 else
-CFLAGS += -DBLE_LOG_REDIRECT_ALL_NRF_LOG=0 -DNRF_LOG_ENABLED=1
+CFLAGS += -DNRF_LOG_ENABLED=1
 endif
+else
+CFLAGS += -DNRF_LOG_ENABLED=0 -DNRF_STRERROR_ENABLED=0
 endif
 CFLAGS += -mcpu=cortex-m4
 CFLAGS += -mthumb -mabi=aapcs
