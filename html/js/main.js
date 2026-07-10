@@ -356,13 +356,11 @@ async function sendTimeCommand(mode, modeName) {
 }
 
 async function syncTimeOnConnect() {
-  if (appVersion < 0x21) {
-    addLog('当前固件不支持静默校时，已跳过自动时间同步');
-    return false;
-  }
-
-  const ok = await write(EpdCmd.SYNC_TIME_SILENT, buildTimeData(), false);
-  addLog(ok ? '已自动同步当前时间到设备' : '自动时间同步失败');
+  const mode = window.deviceDisplayMode !== undefined ? window.deviceDisplayMode : null;
+  const compensation = getEstimatedRefreshSeconds();
+  addLog(`校时预补偿: +${compensation}s (估算刷新耗时)`);
+  const ok = await write(EpdCmd.SET_TIME, buildTimeData(mode, compensation), true);
+  addLog(ok ? '已同步当前时间并触发屏幕刷新' : '时间同步失败');
   return ok;
 }
 
@@ -1022,6 +1020,11 @@ function handleNotify(value, idx) {
     if (data.length > 10) epdpins.value += bytes2hex(data.slice(10, 11));
     epddriver.value = bytes2hex(data.slice(7, 8));
     updateDitcherOptions();
+
+    // 记录设备当前的显示模式 / Record device current display mode
+    if (data.length > 11) {
+      window.deviceDisplayMode = data[11];
+    }
 
     // 解析并显示设备型号和尺寸
     const driverCode = bytes2hex(data.slice(7, 8));
