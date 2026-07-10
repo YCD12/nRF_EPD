@@ -16,6 +16,14 @@ if [[ "$1" =~ ^(clean|build|erase|flash|flash_full|flash_softdevice|rebuild|ota|
     shift
 fi
 
+# 如果是编译或烧录相关的目标，先执行 clean 以防止不同编译配置（如 RTT/BLE 日志）的缓存干扰
+if [[ "$TARGET" =~ ^(flash_full|flash|ota|rebuild|build)$ ]]; then
+    echo "========================================="
+    echo " 正在清理编译缓存..."
+    echo "========================================="
+    make -f Makefile.nRF52_linux clean
+fi
+
 echo "========================================="
 echo " 开始执行 Make Target: $TARGET..."
 echo "========================================="
