@@ -831,6 +831,7 @@ static void epd_gui_update(void* p_event_data, uint16_t event_size) {
             app_feed_wdt();  // Feed watchdog before drawing GUI. 绘制GUI前喂狗
             DrawGUI(&data, (buffer_callback)epd->drv->write_image, epd);
             app_feed_wdt();  // Feed watchdog after drawing GUI. 绘制GUI后喂狗
+            UC8179_ClearBusyTimeout();  // 清除前置辅助操作（如读取温度）产生的超时状态
             epd->drv->refresh(epd);
             app_feed_wdt();  // Feed watchdog after refresh. 刷新后喂狗
             if (UC8179_HadBusyTimeout()) {
@@ -1024,7 +1025,8 @@ finish_refresh:
     {
         uint32_t end_ticks = app_timer_cnt_get();
         uint32_t diff_ticks = app_timer_cnt_diff_compute(end_ticks, p_epd->last_refresh_start_ticks);
-        uint32_t render_ms = (uint32_t)(((uint64_t)diff_ticks * 1000U) / APP_TIMER_CLOCK_FREQ);
+        uint32_t rtc_freq = APP_TIMER_CLOCK_FREQ / (APP_TIMER_CONFIG_RTC_FREQUENCY + 1);
+        uint32_t render_ms = (uint32_t)(((uint64_t)diff_ticks * 1000U) / rtc_freq);
         NRF_LOG_INFO("[EPD] Render duration: %u ms, ts_start=%u ts_end=%u",
                      render_ms, p_epd->last_refresh_start, timestamp());
     }

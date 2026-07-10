@@ -269,7 +269,7 @@ LDFLAGS += -Wl,-u,WDT_IRQHandler
 LDFLAGS += -Wl,-u,SPIM0_SPIS0_SPI0_IRQHandler
 LDFLAGS += -Wl,-u,TWIM0_TWIS0_TWI0_SPIM1_SPIS1_SPI1_IRQHandler
 
-# 与 Keil 工程一致：HEAP=8192，STACK=2048
+# 与 Keil 工程一致：HEAP=0（帧缓冲由静态 s_gfx_buffer 承担），STACK=2048
 nrf52811_xxaa: CFLAGS += -D__HEAP_SIZE=0
 nrf52811_xxaa: CFLAGS += -D__STACK_SIZE=2048
 nrf52811_xxaa: ASMFLAGS += -D__HEAP_SIZE=0

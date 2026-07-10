@@ -118,7 +118,7 @@ static void GFX_u8g2_draw_hv_line(u8g2_font_t* u8g2, int16_t x, int16_t y, int16
              then the buffer is cleared for the next page.
 */
 /**************************************************************************/
-uint8_t s_gfx_buffer[2560];
+uint8_t s_gfx_buffer[4800];
 
 uint8_t *GFX_get_buffer(void)      { return s_gfx_buffer; }
 size_t   GFX_get_buffer_size(void) { return sizeof(s_gfx_buffer); }
@@ -261,6 +261,43 @@ bool GFX_nextPage(Adafruit_GFX* gfx, buffer_callback callback, void* user_data) 
 
     return gfx->current_page < gfx->total_pages;
 }
+
+bool GFX_isBoxInPage(Adafruit_GFX* gfx, int16_t x, int16_t y, int16_t w, int16_t h) {
+    int16_t ry_min = 0;
+    int16_t ry_max = 0;
+
+    switch (gfx->rotation) {
+        case GFX_ROTATE_0:
+            ry_min = y;
+            ry_max = y + h - 1;
+            break;
+        case GFX_ROTATE_90:
+            ry_min = x;
+            ry_max = x + w - 1;
+            break;
+        case GFX_ROTATE_180:
+            ry_min = gfx->HEIGHT - (y + h);
+            ry_max = gfx->HEIGHT - y - 1;
+            break;
+        case GFX_ROTATE_270:
+            ry_min = gfx->HEIGHT - (x + w);
+            ry_max = gfx->HEIGHT - x - 1;
+            break;
+        default:
+            ry_min = y;
+            ry_max = y + h - 1;
+            break;
+    }
+
+    int16_t page_ys = gfx->py + gfx->current_page * gfx->page_height;
+    int16_t page_ye = page_ys + gfx->page_height - 1;
+
+    if (ry_max < page_ys || ry_min > page_ye) {
+        return false;
+    }
+    return true;
+}
+
 
 /**************************************************************************/
 /*!

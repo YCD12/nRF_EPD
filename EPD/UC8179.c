@@ -96,7 +96,7 @@ static void UC8179_WaitBusy(uint16_t timeout) {
  */
 static void UC8179_PowerOn(void) {
     EPD_WriteCmd(UC81xx_PON);  // 发送电源开启命令
-    UC8179_WaitBusy(200);      // 等待电源稳定
+    UC8179_WaitBusy(1000);      // 等待电源稳定
 }
 
 /**
@@ -108,7 +108,7 @@ static void UC8179_PowerOn(void) {
  */
 static void UC8179_PowerOff(void) {
     EPD_WriteCmd(UC81xx_POF);  // 发送电源关闭命令
-    UC8179_WaitBusy(200);      // 等待 BUSY 释放（POF 完成）
+    UC8179_WaitBusy(1000);      // 等待 BUSY 释放（POF 完成）
     delay(500);                // 等待升压电容放电完毕，防止紧接上电时状态异常
 }
 
@@ -125,7 +125,7 @@ static void UC8179_PowerOff(void) {
 // 从驱动芯片读取温度
 int8_t UC8179_Read_Temp(epd_model_t* epd) {
     EPD_WriteCmd(UC81xx_TSC);  // 发送温度传感器控制命令
-    UC8179_WaitBusy(100);      // 等待温度转换完成
+    UC8179_WaitBusy(1000);      // 等待温度转换完成
     return (int8_t)EPD_ReadByte();  // 读取温度值
 }
 
@@ -324,6 +324,7 @@ void UC8179_Dump_OTP(void) {
  */
 void UC8179_Init(epd_model_t* epd) {
     EPD_Reset(HIGH, 10);  // 硬件复位,等待10ms
+    UC8179_WaitBusy(1000);  // 等待复位后芯片就绪
 
     //    UC8179_Dump_OTP();  // 调试用:导出OTP数据
 
@@ -391,6 +392,7 @@ void UC8179_Init_Partial(epd_model_t *epd)
     // Important: Reset first!
     // 重要: 首先执行硬件复位!
     EPD_Reset(HIGH, 10);
+    UC8179_WaitBusy(1000);  // 等待复位后芯片就绪
 
     // PWR: Power Setting / 电源设置
     // 配置升压电路产生驱动电子纸所需的高电压
@@ -497,7 +499,7 @@ void UC8179_Clear_Partial(epd_model_t *epd, bool refresh)
 
     EPD_WriteCmd(UC81xx_PTOUT);  // partial out // 退出局部模式
     delay(100);  // Wait for partial mode to fully exit // 等待局部模式完全退出
-    UC8179_WaitBusy(100);  // Ensure display is ready // 确保显示器就绪
+    UC8179_WaitBusy(1000);  // Ensure display is ready // 确保显示器就绪
 
     // Step 3: Refresh to display white screen
     // 步骤3: 刷新以显示白屏

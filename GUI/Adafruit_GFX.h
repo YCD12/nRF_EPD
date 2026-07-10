@@ -90,6 +90,9 @@ void GFX_firstPage(Adafruit_GFX* gfx);
 bool GFX_nextPage(Adafruit_GFX* gfx, buffer_callback callback, void* user_data);
 // 结束绘图并释放资源 | End drawing and release resources
 void GFX_end(Adafruit_GFX* gfx);
+// 检查逻辑包围盒是否与当前渲染页有物理重叠 | Check if logical bounding box overlaps with current page
+bool GFX_isBoxInPage(Adafruit_GFX* gfx, int16_t x, int16_t y, int16_t w, int16_t h);
+
 
 // =============================================================================
 // DRAW API - 绘图接口

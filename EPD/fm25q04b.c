@@ -241,7 +241,7 @@ ret_code_t fm25q04b_init(void) {
     spi_config.miso_pin = FM25Q04B_MISO_PIN;
     spi_config.sck_pin = FM25Q04B_SCK_PIN;
     spi_config.mosi_pin = FM25Q04B_MOSI_PIN;
-    spi_config.frequency = NRF_DRV_SPI_FREQ_4M;
+    spi_config.frequency = NRF_DRV_SPI_FREQ_8M;
     spi_config.mode = NRF_DRV_SPI_MODE_0;
     spi_config.bit_order = NRF_DRV_SPI_BIT_ORDER_MSB_FIRST;
 

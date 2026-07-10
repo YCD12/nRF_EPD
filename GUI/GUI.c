@@ -572,6 +572,15 @@ static void DrawMonthDaysArea(Adafruit_GFX* gfx, int16_t x, int16_t y, int16_t a
         int16_t displayWeek = (adjustedFirstDay + i) % 7;
         bool weekend = (actualWeek == 0) || (actualWeek == 6);
 
+        int16_t cell_x = x + displayWeek * bw;
+        int16_t cell_y = y + (i + adjustedFirstDay) / 7 * bh;
+        // 增加上下各 4 像素的裁剪缓冲区，防止字符溢出当前格而在分页边缘被截断
+        if (!GFX_isBoxInPage(gfx, cell_x, cell_y - 4, bw, bh + 8)) {
+            continue;
+        }
+
+
+
         // 计算日期圆圈的半径和位置 | Calculate circle radius and position for date
         int16_t cr = large ? 13 : 10;  // 圆圈半径 | Circle radius
         int16_t bx = x + (bw - 2 * cr) / 2 + displayWeek * bw;  // 单元格内居中X | Cell-centered X
@@ -975,6 +984,16 @@ static void __attribute__((noinline)) ui_render_component(Adafruit_GFX* gfx, con
     if (comp->flags & UI_FLAG_PARTIAL_ONLY) {
         return;
     }
+
+    if (comp->type == UI_COMP_MONTH_GRID) {
+        if (comp->w > 0 && comp->h > 0) {
+            if (!GFX_isBoxInPage(gfx, x, y, comp->w, comp->h)) {
+                return;
+            }
+        }
+    }
+
+
 
     switch (comp->type) {
         case UI_COMP_WEEK_HEADER:
