@@ -169,6 +169,7 @@ void EPD_GPIO_Init(void) {
     if (EPD_EN_PIN != 0xFF) {
         pinMode(EPD_EN_PIN, OUTPUT);
         digitalWrite(EPD_EN_PIN, HIGH);  // 设置为高电平(使能)
+        delay(50);                       // 等待电压轨稳定
     }
 
     // 设置初始状态 - Set initial state
@@ -408,7 +409,7 @@ void EPD_Reset(uint32_t value, uint16_t duration) {
  * 并每 500ms 喂狗一次。
  */
 bool EPD_WaitBusy(uint32_t value, uint16_t timeout) {
-    const uint32_t ticks_per_ms = APP_TIMER_CLOCK_FREQ / 1000UL;
+    const uint32_t ticks_per_ms = (APP_TIMER_CLOCK_FREQ / (APP_TIMER_CONFIG_RTC_FREQUENCY + 1)) / 1000UL;
 
     NRF_LOG_DEBUG("[EPD]: check busy\n");
     if (digitalRead(EPD_BUSY_PIN) != value) {
