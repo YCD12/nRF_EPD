@@ -126,7 +126,7 @@ enum EPD_CMDS {
  * 2. 缓冲BLE快速发送的多个命令
  * 3. 支持长时间操作(如刷新)期间接收新命令
  */
-#define EPD_CMD_QUEUE_SIZE 4  /**< Command queue size (max 4 pending normal commands). 普通命令队列大小 */
+#define EPD_CMD_QUEUE_SIZE 2  /**< Command queue size (max 2 pending normal commands). 普通命令队列大小 */
 #define EPD_CMD_MAX_DATA_LEN BLE_EPD_MAX_DATA_LEN  /**< Maximum command data length. 单个命令的最大数据长度 */
 
 /**@brief Command queue item structure.
@@ -216,11 +216,29 @@ typedef struct {
     bool force_full_refresh;      /**< Force full refresh on next GUI update (used for mode switching). */
                                   /**< 下次GUI更新时强制全刷(用于模式切换)。
                                    *   当显示模式切换时设置此标志,确保清除残影 */
+    uint32_t last_full_clear;     /**< Timestamp (s) of the last full-screen clear/refresh. 0 = never. */
+                                  /**< 上次全屏清除/刷新的时间戳(秒)。0 表示从未全刷。
+                                   *   与 force_full_refresh 统一管理，避免状态分散 */
     bool is_refreshing;           /**< Flag to indicate screen refresh is in progress. */
                                   /**< 标志屏幕刷新正在进行中。
                                    *   防止BLE断开时中断刷新过程 */
     bool low_battery_screen_active; /**< Low-battery warning screen is currently shown. */
                                     /**< 当前是否处于低电量警告页面，激活后暂停自动刷新。 */
+
+    // 资源更新会话控制
+    bool res_session_active;        /**< A resource update session (erase/write) is in progress. */
+                                    /**< 外部资源更新会话(擦除/写入)进行中。
+                                     *   激活期间暂停周期刷新，避免刷新与SPI写冲突导致上传失败 */
+    uint32_t res_session_deadline;  /**< Timestamp (s) after which an idle resource session auto-expires. */
+                                    /**< 资源会话空闲超时时间戳(秒)，超时后自动恢复周期刷新 */
+
+    // 刷新消抖与校时保护
+    uint32_t last_refresh_start;    /**< Timestamp (s) when the last physical refresh began. */
+                                    /**< 上一次物理刷新开始的时间戳(秒)，用于消抖保护 */
+    uint32_t last_refresh_start_ticks; /**< app_timer ticks at refresh start, for ms-precision latency log. */
+                                       /**< 刷新开始时的 app_timer tick 计数，用于毫秒级延迟诊断日志 */
+    uint32_t last_set_time_ts;      /**< Timestamp (s) of last accepted SET_TIME. 0 = never. */
+                                    /**< 上一次接受 SET_TIME 的时间戳(秒)，用于频率限制 */
 
     // 命令队列
     epd_cmd_queue_t cmd_queue;    /**< Command queue for sequential command execution. */

@@ -7,99 +7,31 @@
 
 extern void app_feed_wdt(void);
 
-#ifndef EPD_INCLUDE_INTERNAL_UC8179_LUTS
-#define EPD_INCLUDE_INTERNAL_UC8179_LUTS 1
-#endif
 
-#define UC8179_LUT_LUTC   0U
-#define UC8179_LUT_LUTWW  1U
-#define UC8179_LUT_LUTKW  2U
-#define UC8179_LUT_LUTWK  3U
-#define UC8179_LUT_LUTKK  4U
-#define UC8179_LUT_LUTBD  5U
-
-// =============================================================================
-// 温度分段参数定义 - 每3度一档,共11档
-// Temperature tier parameters - 11 tiers with 3°C intervals
-// =============================================================================
-
-// T3 and T4 must always be 0 for partial refresh!
-// T3和T4在局部刷新时必须始终为0!
-#define T3_PARTIAL  0  // MUST BE 0 for partial refresh // 局刷时必须为0
-#define T4_PARTIAL  0  // MUST BE 0 for partial refresh // 局刷时必须为0
 
 #define UC8179_ROW_CHUNK_SIZE 64U
 #define UC8179_WDT_FEED_ROWS  8U
+#define UC8179_STRONG_BW_PARTIAL_MAX_AREA 24000UL
+#define UC8179_STRONG_BW_PARTIAL_MAX_WIDTH 160U
+#define UC8179_STRONG_BW_PARTIAL_GUARD_BYTES 0U
 
-// LUT参数表 - 基于线性插值,从极冷到很热
-// 温度越低,T1/T2越大(驱动时间越长); 温度越高,T1/T2越小(驱动时间越短)
-// T1: 主驱动阶段  T2: 扩展稳定阶段
+static bool m_uc8179_partial_strong_bw_allowed = true;
+static bool m_uc8179_busy_timeout = false;
 
-// Tier 0: < 7°C (极冷/Very Cold)
-#define T1_TIER_0  56
-#define T2_TIER_0  22
+void UC8179_Set_Partial_Strong_BW_Allowed(bool allowed)
+{
+    m_uc8179_partial_strong_bw_allowed = allowed;
+}
 
-// Tier 1: 7-9°C (很冷/Cold)
-#define T1_TIER_1  52
-#define T2_TIER_1  20
+bool UC8179_HadBusyTimeout(void) { return m_uc8179_busy_timeout; }
+void UC8179_ClearBusyTimeout(void) { m_uc8179_busy_timeout = false; }
 
-// Tier 2: 10-12°C (冷/Chilly)
-#define T1_TIER_2  48
-#define T2_TIER_2  18
 
-// Tier 3: 13-15°C (偏冷/Cool)
-#define T1_TIER_3  44
-#define T2_TIER_3  16
-
-// Tier 4: 16-18°C (凉爽/Mild Cool)
-#define T1_TIER_4  48   // 增加驱动时间(原40)
-#define T2_TIER_4  18   // 增加驱动时间(原14)
-
-// Tier 5: 19-21°C (微凉/Mild - 关键区间,解决20°C残影问题)
-// 大幅增加驱动时间以解决黑→白转换不完全的问题
-#define T1_TIER_5  50   // 大幅增加(原36),确保黑色完全擦除
-#define T2_TIER_5  18   // 大幅增加(原12),延长稳定时间
-
-// Tier 6: 22-24°C (适中/Moderate)
-#define T1_TIER_6  42   // 增加驱动时间(原32)
-#define T2_TIER_6  14   // 增加驱动时间(原10)
-
-// Tier 7: 25-27°C (偏暖/Warm)
-#define T1_TIER_7  36   // 增加驱动时间(原28)
-#define T2_TIER_7  12   // 增加驱动时间(原8)
-
-// Tier 8: 28-30°C (暖/Hot)
-#define T1_TIER_8  30   // 增加驱动时间(原24)
-#define T2_TIER_8  10   // 增加驱动时间(原7)
-
-// Tier 9: 31-33°C (热/Very Hot)
-#define T1_TIER_9  20
-#define T2_TIER_9  6
-
-// Tier 10: >= 34°C (很热/Extreme Hot)
-#define T1_TIER_10  16
-#define T2_TIER_10  5
-
-// Temperature range enumeration - 11 tiers
-// 温度范围枚举 - 11档
-typedef enum {
-    TEMP_TIER_0,   // < 7°C   极冷
-    TEMP_TIER_1,   // 7-9°C   很冷
-    TEMP_TIER_2,   // 10-12°C 冷
-    TEMP_TIER_3,   // 13-15°C 偏冷
-    TEMP_TIER_4,   // 16-18°C 凉爽
-    TEMP_TIER_5,   // 19-21°C 微凉 (20°C关键区间)
-    TEMP_TIER_6,   // 22-24°C 适中
-    TEMP_TIER_7,   // 25-27°C 偏暖
-    TEMP_TIER_8,   // 28-30°C 暖
-    TEMP_TIER_9,   // 31-33°C 热
-    TEMP_TIER_10   // >= 34°C 很热
-} temp_range_t;
 
 // LUT tables must be 42 bytes (6 data + 36 padding zeros)
 // LUT表必须为42字节(6字节数据 + 36字节填充零)
-// Each temperature range has its own set of LUT tables
-// 每个温度范围都有自己的一组LUT表
+// A fixed set of LUT tables is used for pixel-level partial refresh.
+// 局部刷新使用固定的LUT表。
 
 /*
  * =============================================================================
@@ -120,10 +52,10 @@ typedef enum {
  * - 0xA8: 白→黑 (LUTWK/LUTWB) - 先拉高电压再推低
  *
  * 时序参数说明:
- * - T1: 第一阶段驱动时间(主要电荷平衡阶段)
- * - T2: 第二阶段驱动时间(扩展稳定阶段)
- * - T3: 第三阶段驱动时间(局刷时必须为0!)
- * - T4: 第四阶段驱动时间(局刷时必须为0!)
+ * - T1: 第一阶段驱动时间 (charge balance pre-phase, 当前为 1)
+ * - T2: 第二阶段驱动时间 (optional extension, 当前为 0x32)
+ * - T3: 第三阶段驱动时间 (color change phase, 当前为 0xA)
+ * - T4: 第四阶段驱动时间 (optional extension for one color, 当前为 0)
  *
  * 各LUT表用途:
  * - LUTC:  通用/清除LUT(不刷新)
@@ -132,26 +64,8 @@ typedef enum {
  * - LUTWK/LUTWB: 白色→黑色 过渡(白变黑)
  * - LUTKK/LUTBB: 黑色→黑色 过渡(保持黑色)
  * - LUTBD: 边框LUT
- *
- * 温度对墨水的影响:
- * - 低温: 墨水粘度高,响应慢,需要更长驱动时间
- * - 高温: 墨水粘度低,响应快,可以使用较短驱动时间
  * =============================================================================
  */
-
-#if EPD_INCLUDE_INTERNAL_UC8179_LUTS
-typedef struct {
-    uint8_t t1;
-    uint8_t t2;
-} uc8179_lut_timing_t;
-
-static const uc8179_lut_timing_t s_uc8179_lut_timings[] = {
-    {T1_TIER_0, T2_TIER_0}, {T1_TIER_1, T2_TIER_1}, {T1_TIER_2, T2_TIER_2},
-    {T1_TIER_3, T2_TIER_3}, {T1_TIER_4, T2_TIER_4}, {T1_TIER_5, T2_TIER_5},
-    {T1_TIER_6, T2_TIER_6}, {T1_TIER_7, T2_TIER_7}, {T1_TIER_8, T2_TIER_8},
-    {T1_TIER_9, T2_TIER_9}, {T1_TIER_10, T2_TIER_10},
-};
-#endif
 
 /*
  * =============================================================================
@@ -167,7 +81,11 @@ static const uc8179_lut_timing_t s_uc8179_lut_timings[] = {
  * UC8179芯片在执行命令时会将BUSY引脚拉高,表示芯片正忙。
  * 此函数等待BUSY信号变为低电平,表示芯片已准备好接收新命令。
  */
-static void UC8179_WaitBusy(uint16_t timeout) { EPD_WaitBusy(LOW, timeout); }
+static void UC8179_WaitBusy(uint16_t timeout) {
+    if (!EPD_WaitBusy(LOW, timeout)) {
+        m_uc8179_busy_timeout = true;
+    }
+}
 
 /**
  * @brief UC8179电源开启
@@ -178,7 +96,7 @@ static void UC8179_WaitBusy(uint16_t timeout) { EPD_WaitBusy(LOW, timeout); }
  */
 static void UC8179_PowerOn(void) {
     EPD_WriteCmd(UC81xx_PON);  // 发送电源开启命令
-    UC8179_WaitBusy(200);      // 等待电源稳定
+    UC8179_WaitBusy(1000);      // 等待电源稳定
 }
 
 /**
@@ -190,7 +108,8 @@ static void UC8179_PowerOn(void) {
  */
 static void UC8179_PowerOff(void) {
     EPD_WriteCmd(UC81xx_POF);  // 发送电源关闭命令
-    UC8179_WaitBusy(200);      // 等待电源完全关闭
+    UC8179_WaitBusy(1000);      // 等待 BUSY 释放（POF 完成）
+    delay(500);                // 等待升压电容放电完毕，防止紧接上电时状态异常
 }
 
 /**
@@ -206,171 +125,87 @@ static void UC8179_PowerOff(void) {
 // 从驱动芯片读取温度
 int8_t UC8179_Read_Temp(epd_model_t* epd) {
     EPD_WriteCmd(UC81xx_TSC);  // 发送温度传感器控制命令
-    UC8179_WaitBusy(100);      // 等待温度转换完成
+    UC8179_WaitBusy(1000);      // 等待温度转换完成
     return (int8_t)EPD_ReadByte();  // 读取温度值
 }
 
-/**
- * @brief 根据温度确定温度范围
- * @param temperature 当前温度(摄氏度)
- * @return 返回温度范围枚举值
- *
- * 功能说明:
- * 将连续的温度值映射到11个离散的温度范围,每3度一档,以便精确选择LUT参数。
- */
-// Determine temperature range based on current temperature
-// 根据当前温度确定温度范围 (11档,每3度一档)
-static temp_range_t UC8179_Get_Temp_Range(int8_t temperature) {
-    if (temperature < 7) {
-        return TEMP_TIER_0;   // < 7°C   极冷
-    } else if (temperature < 10) {
-        return TEMP_TIER_1;   // 7-9°C   很冷
-    } else if (temperature < 13) {
-        return TEMP_TIER_2;   // 10-12°C 冷
-    } else if (temperature < 16) {
-        return TEMP_TIER_3;   // 13-15°C 偏冷
-    } else if (temperature < 19) {
-        return TEMP_TIER_4;   // 16-18°C 凉爽
-    } else if (temperature < 22) {
-        return TEMP_TIER_5;   // 19-21°C 微凉 (20°C关键区间)
-    } else if (temperature < 25) {
-        return TEMP_TIER_6;   // 22-24°C 适中
-    } else if (temperature < 28) {
-        return TEMP_TIER_7;   // 25-27°C 偏暖
-    } else if (temperature < 31) {
-        return TEMP_TIER_8;   // 28-30°C 暖
-    } else if (temperature < 34) {
-        return TEMP_TIER_9;   // 31-33°C 热
-    } else {
-        return TEMP_TIER_10;  // >= 34°C 很热
-    }
-}
 
-/**
- * @brief 根据温度选择合适的LUT集合
- * @param temperature 当前温度(摄氏度)
- * @return 返回对应温度范围的LUT集合指针
- *
- * 功能说明:
- * 根据环境温度自动选择最优的LUT参数集(11档),确保不同温度下都有良好的刷新效果。
- * - 低温时选择长脉冲LUT,补偿墨水响应慢的问题
- * - 高温时选择短脉冲LUT,加快刷新速度
- */
-// Select appropriate LUT tier based on temperature (11 tiers)
-// 根据温度选择合适的LUT档位 (11档)
-static uint8_t UC8179_Select_LUT_Tier(int8_t temperature) {
-    temp_range_t range = UC8179_Get_Temp_Range(temperature);
 
-    switch (range) {
-        case TEMP_TIER_0:
-            NRF_LOG_INFO("[EPD]: Using Tier0 LUT (<7°C, T1=56, T2=22) temp=%d°C\n", temperature);
-            return 0;
-        case TEMP_TIER_1:
-            NRF_LOG_INFO("[EPD]: Using Tier1 LUT (7-9°C, T1=52, T2=20) temp=%d°C\n", temperature);
-            return 1;
-        case TEMP_TIER_2:
-            NRF_LOG_INFO("[EPD]: Using Tier2 LUT (10-12°C, T1=48, T2=18) temp=%d°C\n", temperature);
-            return 2;
-        case TEMP_TIER_3:
-            NRF_LOG_INFO("[EPD]: Using Tier3 LUT (13-15°C, T1=44, T2=16) temp=%d°C\n", temperature);
-            return 3;
-        case TEMP_TIER_4:
-            NRF_LOG_INFO("[EPD]: Using Tier4 LUT (16-18°C, T1=40, T2=14) temp=%d°C\n", temperature);
-            return 4;
-        case TEMP_TIER_5:
-            NRF_LOG_INFO("[EPD]: Using Tier5 LUT (19-21°C, T1=36, T2=12) temp=%d°C\n", temperature);
-            return 5;
-        case TEMP_TIER_6:
-            NRF_LOG_INFO("[EPD]: Using Tier6 LUT (22-24°C, T1=32, T2=10) temp=%d°C\n", temperature);
-            return 6;
-        case TEMP_TIER_7:
-            NRF_LOG_INFO("[EPD]: Using Tier7 LUT (25-27°C, T1=28, T2=8) temp=%d°C\n", temperature);
-            return 7;
-        case TEMP_TIER_8:
-            NRF_LOG_INFO("[EPD]: Using Tier8 LUT (28-30°C, T1=24, T2=7) temp=%d°C\n", temperature);
-            return 8;
-        case TEMP_TIER_9:
-            NRF_LOG_INFO("[EPD]: Using Tier9 LUT (31-33°C, T1=20, T2=6) temp=%d°C\n", temperature);
-            return 9;
-        case TEMP_TIER_10:
-        default:
-            NRF_LOG_INFO("[EPD]: Using Tier10 LUT (>=34°C, T1=16, T2=5) temp=%d°C\n", temperature);
-            return 10;
-    }
-}
+#ifndef UBYTE
+typedef uint8_t UBYTE;
+#endif
 
-/*
- * LUT load path:
- * - Default (EPD_INCLUDE_INTERNAL_UC8179_LUTS=1): stream the in-flash const
- *   tables directly to the UC8179 LUT command registers.
- * - Set EPD_INCLUDE_INTERNAL_UC8179_LUTS=0 to read 6 x 42B from FM25Q04B
- *   external resources instead.
- */
-static const uint8_t s_uc8179_lut_commands[EPD_EXT_LUT_TIER_TABLE_COUNT] = {
-    UC81xx_LUTC,   /* table 0: LUTC  */
-    UC81xx_LUTWW,  /* table 1: LUTWW */
-    UC81xx_LUTBW,  /* table 2: LUTKW (black->white) */
-    UC81xx_LUTWB,  /* table 3: LUTWK (white->black) */
-    UC81xx_LUTBB,  /* table 4: LUTKK (black->black / keep) */
-    0x25,          /* table 5: LUTBD (border) */
+#define T1 1  // charge balance pre-phase
+#define T2 0x32 // optional extension
+#define T3 0xA  // color change phase (b/w)
+#define T4 0  // optional extension for one color
+
+// EPD partial refresh VCOM voltage configuration:
+// 0x22 = -1.0V (factory default, optimal for preventing horizontal red bands)
+// 0x2A = -1.2V (enhanced negative VCOM)
+#define EPD_VCOM_PARTIAL 0x22
+
+// Unified timing to optimize contrast and prevent red particle activation:
+// Shift frames from discharge (T3) to active drive (T2) to increase driving energy:
+// T2_PART = 42 frames (84% of original 50), T3_PART = 2 frames (20% of original 10)
+// Total duration remains 45 frames (virtually identical to 44), keeping crosstalk low.
+#define T2_PART 0x2A
+#define T3_PART 0x02
+
+
+static void _setPartialRamArea(epd_model_t* epd, uint16_t x, uint16_t y, uint16_t w, uint16_t h);
+static void UC8179_Write_Image_Rows(const uint8_t* src, uint16_t wb, uint16_t h, uint8_t fill, bool invert);
+
+const UBYTE LUT_WW_BB_VCOM_7IN5_V2_PART[42] = {
+    0x00, T1, T2_PART, T3_PART, T4, 1,
 };
 
-#if EPD_INCLUDE_INTERNAL_UC8179_LUTS
-static const uint8_t s_uc8179_lut_waveforms[EPD_EXT_LUT_TIER_TABLE_COUNT] = {
-    0x00, 0x20, 0x58, 0xA8, 0x00, 0x00
+const UBYTE LUT_BW_7IN5_V2_PART[42] = {
+    0x20, T1, T2_PART, T3_PART, T4, 1,
 };
 
-static ret_code_t UC8179_Load_LUT_Tier_Internal(uint8_t tier) {
-    uint8_t lut_data[EPD_EXT_LUT_TIER_TABLE_SIZE];
-
-    if (tier >= (sizeof(s_uc8179_lut_timings) / sizeof(s_uc8179_lut_timings[0]))) {
-        return NRF_ERROR_NOT_FOUND;
-    }
-
-    for (uint8_t i = 0; i < EPD_EXT_LUT_TIER_TABLE_COUNT; i++) {
-        memset(lut_data, 0, sizeof(lut_data));
-        lut_data[0] = s_uc8179_lut_waveforms[i];
-        lut_data[1] = s_uc8179_lut_timings[tier].t1;
-        lut_data[2] = s_uc8179_lut_timings[tier].t2;
-        lut_data[3] = T3_PARTIAL;
-        lut_data[4] = T4_PARTIAL;
-        lut_data[5] = 1;
-        EPD_WriteCmd(s_uc8179_lut_commands[i]);
-        EPD_WriteData(lut_data, sizeof(lut_data));
-        app_feed_wdt();
-    }
-    return NRF_SUCCESS;
-}
-#endif /* EPD_INCLUDE_INTERNAL_UC8179_LUTS */
-
-#if !EPD_INCLUDE_INTERNAL_UC8179_LUTS
-static ret_code_t UC8179_Load_LUT_Tier_External(uint8_t tier) {
-    uint8_t lut_buf[EPD_EXT_LUT_TIER_TABLE_SIZE];
-
-    for (uint8_t i = 0; i < EPD_EXT_LUT_TIER_TABLE_COUNT; i++) {
-        ret_code_t ret = epd_ext_resource_read(
-            EPD_EXT_RES_TYPE_LUT, (uint16_t)tier,
-            (uint32_t)i * EPD_EXT_LUT_TIER_TABLE_SIZE,
-            lut_buf, sizeof(lut_buf));
-        if (ret != NRF_SUCCESS) {
-            NRF_LOG_ERROR("[EPD]: External LUT read failed tier=%u table=%u ret=%lu",
-                          tier, i, (unsigned long)ret);
-            return ret;
-        }
-        EPD_WriteCmd(s_uc8179_lut_commands[i]);
-        EPD_WriteData(lut_buf, sizeof(lut_buf));
-        app_feed_wdt();
-    }
-    return NRF_SUCCESS;
-}
-#endif /* !EPD_INCLUDE_INTERNAL_UC8179_LUTS */
+const UBYTE LUT_WB_7IN5_V2_PART[42] = {
+    0x10, T1, T2_PART, T3_PART, T4, 1,
+};
 
 static ret_code_t UC8179_Load_LUT_Tier(uint8_t tier) {
-#if EPD_INCLUDE_INTERNAL_UC8179_LUTS
-    return UC8179_Load_LUT_Tier_Internal(tier);
-#else
-    return UC8179_Load_LUT_Tier_External(tier);
-#endif
+    (void)tier;
+    static const uint8_t registers[6] = {0x20, 0x21, 0x22, 0x23, 0x24, 0x25};
+    const uint8_t* luts[6] = {
+        LUT_WW_BB_VCOM_7IN5_V2_PART,
+        LUT_WW_BB_VCOM_7IN5_V2_PART,
+        LUT_BW_7IN5_V2_PART,
+        LUT_WB_7IN5_V2_PART,
+        LUT_WW_BB_VCOM_7IN5_V2_PART,
+        LUT_WW_BB_VCOM_7IN5_V2_PART
+    };
+    for (int i = 0; i < 6; i++) {
+        EPD_WriteCmd(registers[i]);
+        EPD_WriteData((uint8_t*)luts[i], 42);
+        app_feed_wdt();
+    }
+    return NRF_SUCCESS;
+}
+
+void UC8179_Partial_Diff_Push(epd_model_t *epd, uint16_t x, uint16_t y, uint16_t w, uint16_t h, 
+                              const uint8_t *old_bm, const uint8_t *new_bm) {
+    uint16_t wb = (w + 7) / 8;
+    x &= 0xFFF8;
+    w = wb * 8;
+    if (x + w > epd->width || y + h > epd->height) return;
+
+    EPD_Write(UC81xx_VDCS, EPD_VCOM_PARTIAL);       // Use configurable VCOM to suppress red ghosting
+    EPD_Write(UC81xx_CDI, 0xA9, 0x07);   // CDI: 0xA9 (Border Hi-Z) to prevent border red fringe/crosstalk
+    EPD_WriteCmd(UC81xx_PTIN);
+    _setPartialRamArea(epd, x, y, w, h);
+
+    EPD_WriteCmd(UC81xx_DTM1);
+    UC8179_Write_Image_Rows(old_bm, wb, h, 0xFF, false);
+
+    EPD_WriteCmd(UC81xx_DTM2);
+    UC8179_Write_Image_Rows(new_bm, wb, h, 0xFF, false);
+
+    EPD_WriteCmd(UC81xx_PTOUT);
 }
 
 /**
@@ -423,6 +258,14 @@ static void _setPartialRamArea(epd_model_t* epd, uint16_t x, uint16_t y, uint16_
  */
 void UC8179_Refresh(epd_model_t* epd) {
     NRF_LOG_DEBUG("[EPD]: refresh begin\n");
+
+    // Safeguard: Ensure we restore full refresh registers (PSR, VDCS, CDI)
+    // even if the last refresh was a partial refresh.
+    // 兜底: 确保即使上次是局刷状态,也能强制回到全刷的配置
+    EPD_Write(UC81xx_PSR, epd->color == EPD_COLOR_BWR ? 0x0F : 0x1F);  // OTP + BWR/BW
+    EPD_Write(UC81xx_VDCS, 0x00);                                       // 全刷不用偏置
+    EPD_Write(UC81xx_CDI, epd->color == EPD_COLOR_BWR ? 0x57 : 0x97);   // 边框设为纯白
+
     UC8179_PowerOn();  // 开启电源
 
     _setPartialRamArea(epd, 0, 0, epd->width, epd->height);  // 设置全屏区域
@@ -481,6 +324,7 @@ void UC8179_Dump_OTP(void) {
  */
 void UC8179_Init(epd_model_t* epd) {
     EPD_Reset(HIGH, 10);  // 硬件复位,等待10ms
+    UC8179_WaitBusy(1000);  // 等待复位后芯片就绪
 
     //    UC8179_Dump_OTP();  // 调试用:导出OTP数据
 
@@ -490,7 +334,8 @@ void UC8179_Init(epd_model_t* epd) {
 
     // CDI: VCOM and Data Interval Setting / VCOM和数据间隔设置
     // 这个设置影响显示对比度和刷新质量
-    EPD_Write(UC81xx_CDI, epd->color == EPD_COLOR_BWR ? 0x77 : 0x97);
+    // 在BWR模式下,使用0x57(BDV[1:0]=01)将最外围边框(Border)设置为纯白(使用LUTW)
+    EPD_Write(UC81xx_CDI, epd->color == EPD_COLOR_BWR ? 0x57 : 0x97);
 }
 
 /*
@@ -547,6 +392,7 @@ void UC8179_Init_Partial(epd_model_t *epd)
     // Important: Reset first!
     // 重要: 首先执行硬件复位!
     EPD_Reset(HIGH, 10);
+    UC8179_WaitBusy(1000);  // 等待复位后芯片就绪
 
     // PWR: Power Setting / 电源设置
     // 配置升压电路产生驱动电子纸所需的高电压
@@ -617,7 +463,7 @@ void UC8179_Clear(epd_model_t* epd, bool refresh) {
  * 1. 进入局部模式(PTIN)
  * 2. 设置刷新区域为全屏
  * 3. 向DTM1(黑色层)写入0xFF(白色)
- * 4. 向DTM2(颜色层)写入0x00(无红色)
+ * 4. 向DTM2(颜色层)写入0xFF(无红色)
  * 5. 退出局部模式(PTOUT)
  * 6. 可选执行刷新显示白屏
  *
@@ -645,16 +491,15 @@ void UC8179_Clear_Partial(epd_model_t *epd, bool refresh)
     NRF_LOG_DEBUG("[EPD]: Writing 0xFF to RAM1 (black layer)\n");
     EPD_FillRAM(UC81xx_DTM1, 0xFF, ram_bytes);  // 黑色层填充白色
 
-    // For EPD_COLOR_BWR screen: 0x00 = no red in color layer (DTM2/0x13)
-    // 对于BWR屏幕: 0x00 = 颜色层中无红色(DTM2/0x13)
-    // Reference code uses ~0xFF = 0x00 for white background
-    // 参考代码使用 ~0xFF = 0x00 作为白色背景
-    NRF_LOG_DEBUG("[EPD]: Writing 0x00 to RAM2 (color layer, no red)\n");
-    EPD_FillRAM(UC81xx_DTM2, 0x00, ram_bytes);  // 颜色层填充零(无红色)
+    // For EPD_COLOR_BWR screen: 0xFF = no red in color layer (DTM2/0x13).
+    // Keep this consistent with UC8179_Clear(); 0 bits in DTM2 can drive red.
+    // 对于BWR屏幕: 0xFF = 颜色层中无红色(DTM2/0x13)。
+    NRF_LOG_DEBUG("[EPD]: Writing 0xFF to RAM2 (color layer, no red)\n");
+    EPD_FillRAM(UC81xx_DTM2, 0xFF, ram_bytes);  // 颜色层填充无红
 
     EPD_WriteCmd(UC81xx_PTOUT);  // partial out // 退出局部模式
     delay(100);  // Wait for partial mode to fully exit // 等待局部模式完全退出
-    UC8179_WaitBusy(100);  // Ensure display is ready // 确保显示器就绪
+    UC8179_WaitBusy(1000);  // Ensure display is ready // 确保显示器就绪
 
     // Step 3: Refresh to display white screen
     // 步骤3: 刷新以显示白屏
@@ -738,18 +583,11 @@ void UC8179_Refresh_Partial(epd_model_t *epd, uint16_t x, uint16_t y, uint16_t w
     if (w1 % 8 > 0) w1 += 8 - w1 % 8;
     x1 -= x1 % 8;
 
-    NRF_LOG_DEBUG("[EPD]: Adjusted area: (%d,%d,%d,%d)\n", x1, y1, w1, h1);
+    NRF_LOG_INFO("[EPD]: Adjusted area: (%d,%d,%d,%d)\n", x1, y1, w1, h1);
 
-    // Read current temperature and select appropriate LUT
-    // 读取当前温度并选择合适的LUT
-    int8_t temperature = UC8179_Read_Temp(epd);
-    uint8_t lut_tier = UC8179_Select_LUT_Tier(temperature);
-
-    // Step 4: Load partial LUT tables based on temperature
-    // 步骤4: 根据温度加载局刷LUT表
-    NRF_LOG_DEBUG("[EPD]: Loading temperature-adaptive partial LUT\n");
-
-    if (UC8179_Load_LUT_Tier(lut_tier) != NRF_SUCCESS) {
+    // Step 4: Load partial LUT tables
+    // 步骤4: 加载局刷LUT表
+    if (UC8179_Load_LUT_Tier(0) != NRF_SUCCESS) {
         return;
     }
 
@@ -763,8 +601,8 @@ void UC8179_Refresh_Partial(epd_model_t *epd, uint16_t x, uint16_t y, uint16_t w
     EPD_Write(UC81xx_TRES, 0x03, 0x20, 0x01, 0xE0);  // 800x480 分辨率
     EPD_Write(0x15, 0x00);  // 双SPI模式禁用
     EPD_Write(UC81xx_TCON, 0x22);  // 时序控制
-    EPD_Write(UC81xx_VDCS, 0x31);  // VCM_DC Setting // VCM直流设置
-    EPD_Write(UC81xx_CDI, 0x39, 0x07);  // VCOM and data interval for partial // 局刷的VCOM和数据间隔
+    EPD_Write(UC81xx_VDCS, EPD_VCOM_PARTIAL);  // Use configurable VCOM to suppress red ghosting
+    EPD_Write(UC81xx_CDI, 0xA9, 0x07);  // VCOM and data interval: 0xA9 (Border Hi-Z) to avoid border red bands
 
     UC8179_PowerOn();  // 启动电源
 
@@ -814,6 +652,45 @@ static void UC8179_Write_Image_Rows(const uint8_t* src, uint16_t wb, uint16_t h,
     }
 }
 
+static void UC8179_Write_Image_Rows_GuardedInvert(const uint8_t* src, uint16_t wb, uint16_t h, uint8_t guard_bytes) {
+    uint8_t temp[UC8179_ROW_CHUNK_SIZE];
+
+    if (src == NULL || wb == 0) {
+        UC8179_Write_Image_Rows(NULL, wb, h, 0xFF, false);
+        return;
+    }
+
+    if ((uint16_t)guard_bytes * 2U >= wb) {
+        guard_bytes = 0;
+    }
+
+    for (uint16_t row = 0; row < h; row++) {
+        uint16_t remaining = wb;
+        uint16_t offset = 0;
+
+        while (remaining > 0) {
+            uint8_t chunk = (remaining > UC8179_ROW_CHUNK_SIZE) ? UC8179_ROW_CHUNK_SIZE : (uint8_t)remaining;
+
+            for (uint8_t i = 0; i < chunk; i++) {
+                uint16_t col = (uint16_t)(offset + i);
+                if (col < guard_bytes || col >= (uint16_t)(wb - guard_bytes)) {
+                    temp[i] = 0xFF;
+                } else {
+                    temp[i] = (uint8_t)~src[row * wb + col];
+                }
+            }
+
+            EPD_WriteData(temp, chunk);
+            offset += chunk;
+            remaining -= chunk;
+        }
+
+        if ((row % UC8179_WDT_FEED_ROWS) == 0) {
+            app_feed_wdt();
+        }
+    }
+}
+
 /**
  * @brief 全刷模式写入图像
  * @param epd EPD设备模型指针
@@ -831,7 +708,7 @@ static void UC8179_Write_Image_Rows(const uint8_t* src, uint16_t wb, uint16_t h,
  * - 每个字节包含8个像素(1位每像素)
  * - 黑色层(DTM1/0x10): 0=黑色, 1=白色
  * - 颜色层(DTM2/0x13):
- *   - BWR模式: 0=无红色, 1=有红色
+ *   - BWR模式: 0=红色, 1=无红色
  *   - BW模式: 直接使用black数据
  *
  * 注意:
@@ -892,19 +769,18 @@ void UC8179_Write_Image(epd_model_t* epd, uint8_t* black, uint8_t* color, uint16
  * │ 颜色支持       │ 黑白红三色      │ 仅黑白          │
  * │ LUT来源        │ OTP默认         │ 外部寄存器      │
  * │ RAM1写入       │ black数据       │ black数据       │
- * │ RAM2写入       │ red数据         │ ~black数据      │
+ * │ RAM2写入       │ red数据         │ 小窗口强黑白/大窗口无红 │
  * │ 适用场景       │ 全新图像/清残影 │ 频繁小区域更新  │
  * └────────────────┴─────────────────┴─────────────────┘
  *
- * 局刷数据写入方法(参考"局刷使用方法.txt" 第141-143行):
+ * 局刷数据写入方法:
  * - RAM1(0x10/DTM1): 写入 black 数据
- * - RAM2(0x13/DTM2): 写入 ~black 数据(取反)
+ * - RAM2(0x13/DTM2): 小/中窗口写入带边界保护的~black增强黑白转换; 大窗口写入0xFF保持无红色
  *
- * 为什么RAM2要写入反转数据?
- * 局刷模式下,芯片通过比较RAM1和RAM2的差异来决定哪些像素需要改变:
- * - RAM1和RAM2相同的位 → 像素不变(节省刷新时间)
- * - RAM1和RAM2不同的位 → 像素需要改变
- * 写入反转数据确保所有black区域都会被正确更新。
+ * 为什么按面积切换RAM2策略?
+ * 数字变化窗口需要足够的黑白转换强度,否则断码白底不够白;
+ * 边界保护字节当前为0,保证8->7这类变化能擦掉旧左竖段;
+ * 完整HH:MM等大窗口如果写~black会让白底0位过多,长时间局刷后容易激活红色残影。
  *
  * 注意:
  * - 局刷只支持黑白,不支持红色!
@@ -913,8 +789,10 @@ void UC8179_Write_Image(epd_model_t* epd, uint8_t* black, uint8_t* color, uint16
  */
 // Write image for UC8179 partial refresh
 // UC8179局刷模式写入图像
-// Step 5: Write black data to old RAM (0x10) and ~black to new RAM (0x13)
-// 步骤5: 向旧RAM(0x10)写入black数据,向新RAM(0x13)写入~black数据
+// Step 5: Write black data to RAM1 (0x10). For small/medium digit windows, use
+// the stronger UC8179 B/W partial drive on RAM2; for larger windows keep RAM2 no-red.
+// 步骤5: 向RAM1(0x10)写入black数据。小/中数字窗口使用更强黑白局刷驱动,
+// 大窗口保持RAM2无红以抑制泛红。
 // This function is called by DrawGUI via the buffer_callback
 // 此函数由DrawGUI通过buffer_callback调用
 void UC8179_Write_Image_Partial(epd_model_t *epd, uint8_t *black, uint8_t *color, uint16_t x, uint16_t y, uint16_t w, uint16_t h)
@@ -931,28 +809,49 @@ void UC8179_Write_Image_Partial(epd_model_t *epd, uint8_t *black, uint8_t *color
 
     NRF_LOG_INFO("[EPD]: UC8179 write image partial at (%d,%d) size (%d,%d)\n", x, y, w, h);
 
+    EPD_Write(UC81xx_VDCS, EPD_VCOM_PARTIAL);       // Use configurable VCOM to suppress red ghosting
+    EPD_Write(UC81xx_CDI, 0xA9, 0x07);   // CDI: 0xA9 (Border Hi-Z) to prevent border red fringe/crosstalk
     EPD_WriteCmd(UC81xx_PTIN); // partial in // 进入局部模式
     _setPartialRamArea(epd, x, y, w, h);  // 设置写入区域
 
-    // Step 5: Write black data to RAM1 (0x10) and ~black to RAM2 (0x13)
-    // 步骤5: 向RAM1(0x10)写入black数据,向RAM2(0x13)写入~black数据
-    // Reference: 局刷使用方法.txt line 141-143
-    // 参考: 局刷使用方法.txt 第141-143行
-    // "0x10 写black 数据, 0x13 写~black 数据"
+    (void)color;
+    bool strong_bw_drive = m_uc8179_partial_strong_bw_allowed &&
+                           (black != NULL) &&
+                           (w <= UC8179_STRONG_BW_PARTIAL_MAX_WIDTH) &&
+                           (((uint32_t)w * (uint32_t)h) <= UC8179_STRONG_BW_PARTIAL_MAX_AREA);
+
+    // Step 5: Write black data to RAM1 (0x10) and RAM2 (0x13).
+    // 步骤5: 向RAM1(0x10)和RAM2(0x13)写入图像数据。
     // NOTE: Partial refresh only supports black/white, no red color!
     // 注意: 局刷仅支持黑白,不支持红色!
 
-    // Write black data to RAM1 (0x10) - directly write GFX data
-    // 向RAM1(0x10)写入黑色数据 - 直接写入GFX数据
-    NRF_LOG_DEBUG("[EPD]: Writing black data to RAM1 (0x10)\n");
-    EPD_WriteCmd(UC81xx_DTM1);  // 选择RAM1(黑色层)
-    UC8179_Write_Image_Rows(black, wb, h, 0xFF, false);  // 0xFF = white // 0xFF = 白色
+    if (strong_bw_drive) {
+        // Write black data to RAM1 (0x10) - directly write GFX data
+        // 向RAM1(0x10)写入黑色数据 - 直接写入GFX数据
+        NRF_LOG_DEBUG("[EPD]: Writing black data to RAM1 (0x10)\n");
+        EPD_WriteCmd(UC81xx_DTM1);  // 选择RAM1(黑色层)
+        UC8179_Write_Image_Rows(black, wb, h, 0xFF, false);  // 0xFF = white // 0xFF = 白色
 
-    // Write ~black data to RAM2 (0x13) - inverted GFX data
-    // 向RAM2(0x13)写入~black数据 - 反转的GFX数据
-    NRF_LOG_DEBUG("[EPD]: Writing ~black data to RAM2 (0x13)\n");
-    EPD_WriteCmd(UC81xx_DTM2);  // 选择RAM2(颜色层)
-    UC8179_Write_Image_Rows(black, wb, h, 0x00, true);  // inverted // 反转数据
+        // Small/medium digit windows need stronger white/black transition.
+        // Guard bytes are disabled so 8->7 can fully erase the old left segments.
+        // 小/中数字窗口需要更强黑白转换; 关闭边界保护以便8->7完整擦掉旧左竖段。
+        NRF_LOG_DEBUG("[EPD]: Writing guarded strong B/W data to RAM2 (0x13)\n");
+        EPD_WriteCmd(UC81xx_DTM2);  // 选择RAM2(颜色层)
+        UC8179_Write_Image_Rows_GuardedInvert(black, wb, h, UC8179_STRONG_BW_PARTIAL_GUARD_BYTES);
+    } else {
+        // For large partial refresh windows (e.g. full screen clock mode fallback):
+        // DTM1 (Old RAM) gets the inverted new frame (~NEW), DTM2 (New RAM) gets the normal new frame (NEW).
+        // This triggers correct transitions (1->0 WK to draw black, 0->1 KW to draw white) on the pre-cleared white screen.
+        // 大面积局刷窗口（例如全屏时钟模式）：DTM1 写入反色图像，DTM2 写入新图像。
+        // 从而在已清白的屏幕上正确触发黑白过渡（1->0 驱黑，0->1 驱白）。
+        NRF_LOG_DEBUG("[EPD]: Writing inverted image to DTM1 and normal image to DTM2\n");
+        
+        EPD_WriteCmd(UC81xx_DTM1);  // 选择RAM1(旧数据)
+        UC8179_Write_Image_Rows(black, wb, h, 0xFF, true);  // DTM1 = ~NEW (invert=true)
+
+        EPD_WriteCmd(UC81xx_DTM2);  // 选择RAM2(新数据)
+        UC8179_Write_Image_Rows(black, wb, h, 0xFF, false); // DTM2 = NEW (invert=false)
+    }
 
     EPD_WriteCmd(UC81xx_PTOUT); // partial out // 退出局部模式
     NRF_LOG_DEBUG("[EPD]: UC8179 write image partial done\n");
@@ -1080,6 +979,7 @@ static epd_driver_t epd_drv_uc8179_partial = {
     .clear_partial = UC8179_Clear_Partial,          // 局刷清屏
     .write_image_partial = UC8179_Write_Image_Partial,  // 局刷写入图像
     .refresh_partial = UC8179_Refresh_Partial,      // 局刷刷新
+    .diff_push = UC8179_Partial_Diff_Push,          // 差分帧写入 (pixel-level partial)
 };
 
 /*

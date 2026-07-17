@@ -1,11 +1,19 @@
+# Build output
+_build/
+
+# 压缩包超过 Gitee 100MB 限制，不入库
+# tools/*.tar.bz2
+# tools/*.tar.gz
+
 # Build and Release Folders
 bin-debug/
 bin-release/
 [Oo]bj/
-[Bb]in/
+/[Bb]in/
 
 # Other files and folders
 .settings/
+.vscode/
 
 # Executables
 *.swf

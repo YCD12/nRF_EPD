@@ -8,8 +8,11 @@
 #include "EPD_driver.h"
 
 #include "app_error.h"
+#include "app_timer.h"
 #include "nrf_drv_spi.h"
+#include "nrf_gpio.h"
 #include "nrf_log.h"
+#include "nrf_soc.h"
 #include "../main.h"
 
 #define ARRAY_SIZE(arr) (sizeof(arr) / sizeof((arr)[0]))  // 计算数组元素个数 - Calculate array size
@@ -166,6 +169,7 @@ void EPD_GPIO_Init(void) {
     if (EPD_EN_PIN != 0xFF) {
         pinMode(EPD_EN_PIN, OUTPUT);
         digitalWrite(EPD_EN_PIN, HIGH);  // 设置为高电平(使能)
+        delay(50);                       // 等待电压轨稳定
     }
 
     // 设置初始状态 - Set initial state
@@ -238,7 +242,26 @@ void EPD_SPI_Write(uint8_t* value, uint8_t len) {
         // 设置SPI引脚: SCK, MOSI, 禁用MISO
         nrf_spi_pins_set(HAL_SPI_INSTANCE, EPD_SCLK_PIN, EPD_MOSI_PIN, NRF_SPI_PIN_NOT_CONNECTED);
     }
+
+#if (SPI0_USE_EASY_DMA == 1)
+    // 如果启用 EasyDMA，检测地址是否在 Flash 中。如果是，复制到 RAM 中再传输。
+    if ((uint32_t)value < 0x20000000 && len > 0) {
+        uint8_t ram_buf[128];
+        uint8_t remaining = len;
+        uint8_t* ptr = value;
+        while (remaining > 0) {
+            uint8_t chunk = (remaining > 128) ? 128 : remaining;
+            memcpy(ram_buf, ptr, chunk);
+            APP_ERROR_CHECK(nrf_drv_spi_transfer(&spi, ram_buf, chunk, NULL, 0));
+            ptr += chunk;
+            remaining -= chunk;
+        }
+    } else {
+        APP_ERROR_CHECK(nrf_drv_spi_transfer(&spi, value, len, NULL, 0));
+    }
+#else
     APP_ERROR_CHECK(nrf_drv_spi_transfer(&spi, value, len, NULL, 0));
+#endif
 }
 
 /**
@@ -376,31 +399,47 @@ void EPD_Reset(uint32_t value, uint16_t duration) {
 }
 
 /**
- * 等待EPD忙状态结束
- * Wait for EPD busy state to end
+ * 等待EPD忙状态结束（低功耗版，P4）
+ * Wait for EPD busy state to end (low-power, P4)
  *
- * @param value 忙状态时BUSY引脚的电平 - BUSY pin level during busy state
- * @param timeout 超时时间(毫秒) - Timeout in milliseconds
+ * @param value 忙状态时 BUSY 引脚的电平（本板 BUSY 低电平=忙）
+ * @param timeout 超时时间(毫秒)
  *
- * 轮询BUSY引脚直到状态改变或超时
- * Polls BUSY pin until state changes or timeout occurs
+ * 刷新波形期间 UC8179 可能持续数秒。循环内 delay(1) 每 1ms 轮询一次，
+ * 并每 500ms 喂狗一次。
  */
-void EPD_WaitBusy(uint32_t value, uint16_t timeout) {
+bool EPD_WaitBusy(uint32_t value, uint16_t timeout) {
+    const uint32_t ticks_per_ms = (APP_TIMER_CLOCK_FREQ / (APP_TIMER_CONFIG_RTC_FREQUENCY + 1)) / 1000UL;
+
     NRF_LOG_DEBUG("[EPD]: check busy\n");
-    uint16_t feed_tick = 0;
+    if (digitalRead(EPD_BUSY_PIN) != value) {
+        NRF_LOG_DEBUG("[EPD]: busy release\n");
+        return true;
+    }
+
+    uint32_t start_ticks    = app_timer_cnt_get();
+    uint32_t last_wdt_ticks = start_ticks;
+    uint32_t timeout_ticks  = (uint32_t)timeout * ticks_per_ms;
+
     while (digitalRead(EPD_BUSY_PIN) == value) {
         delay(1);
-        if (++feed_tick >= 1000) {
-            app_feed_wdt();
-            feed_tick = 0;
+
+        uint32_t now_ticks = app_timer_cnt_get();
+        if (app_timer_cnt_diff_compute(now_ticks, start_ticks) >= timeout_ticks) {
+            if (digitalRead(EPD_BUSY_PIN) != value) {
+                break;  // BUSY 在最后一次 delay 期间释放，非真超时
+            }
+            NRF_LOG_WARNING("[EPD]: busy timeout!\n");
+            return false;
         }
-        timeout--;
-        if (timeout == 0) {
-            NRF_LOG_DEBUG("[EPD]: busy timeout!\n");  // 超时警告 - Timeout warning
-            break;
+        if (app_timer_cnt_diff_compute(now_ticks, last_wdt_ticks) >= (500UL * ticks_per_ms)) {
+            app_feed_wdt();
+            last_wdt_ticks = now_ticks;
         }
     }
-    NRF_LOG_DEBUG("[EPD]: busy release\n");  // 忙状态释放 - Busy released
+
+    NRF_LOG_DEBUG("[EPD]: busy release\n");
+    return true;
 }
 
 /*
@@ -409,22 +448,18 @@ void EPD_WaitBusy(uint32_t value, uint16_t timeout) {
  *
  * LED behavior:
  * LED行为说明:
- * - Full refresh: LED stays ON during refresh, OFF after complete
- *   全刷新: LED在刷新过程中保持点亮,完成后熄灭
- * - Partial refresh: LED stays OFF (no blinking)
- *   部分刷新: LED保持熄灭状态(不闪烁)
+ * - Refresh, low battery, and wakeup: LED stays OFF
+ *   屏幕刷新、低电量和唤醒期间LED保持熄灭
  * - BLE connect/disconnect: LED blinks once
  *   BLE连接/断开: LED闪烁一次
- * - Low battery (<2.8V): LED blinks every 2 seconds
- *   低电量(<2.8V): LED每2秒闪烁一次
  */
 
 /**
  * 点亮LED
  * Turn LED on
  *
- * 主要用于全刷新期间指示屏幕正在更新
- * Mainly used during full refresh to indicate screen is updating
+ * Reserved for explicit/manual LED use. Normal refresh paths keep LED off.
+ * 保留给显式/手动LED控制使用。正常刷新路径保持LED熄灭。
  */
 void EPD_LED_ON(void) {
     if (EPD_LED_PIN != 0xFF) digitalWrite(EPD_LED_PIN, LOW);  // LOW=点亮 - LOW=ON
@@ -434,8 +469,8 @@ void EPD_LED_ON(void) {
  * 熄灭LED
  * Turn LED off
  *
- * 部分刷新期间LED保持熄灭状态
- * LED stays off during partial refresh
+ * Refresh paths call this defensively to keep the LED dark.
+ * 刷新路径防御性调用此函数以保持LED熄灭。
  */
 void EPD_LED_OFF(void) {
     if (EPD_LED_PIN != 0xFF) digitalWrite(EPD_LED_PIN, HIGH);  // HIGH=熄灭 - HIGH=OFF
@@ -445,8 +480,8 @@ void EPD_LED_OFF(void) {
  * LED闪烁一次
  * Blink LED once
  *
- * 用于BLE事件和低电量提示
- * Used for BLE events and low battery indication
+ * Used only for BLE connect/disconnect indication.
+ * 仅用于BLE连接/断开提示。
  *
  * 闪烁时序: 点亮100ms -> 熄灭100ms -> 恢复默认状态
  * Blink sequence: ON 100ms -> OFF 100ms -> restore default state

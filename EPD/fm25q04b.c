@@ -3,6 +3,7 @@
 #include <stdbool.h>
 #include <string.h>
 
+#include "nrf_assert.h"
 #include "nrf_delay.h"
 #include "nrf_drv_spi.h"
 #include "nrf_log.h"
@@ -33,7 +34,15 @@
 #define FM25Q04B_STATUS2_PROTECT_MASK 0x40
 #define FM25Q04B_STATUS2_SRP1_MASK    0x01
 
-#define FM25Q04B_READ_CHUNK_SIZE      128U
+/*
+ * Maximum data payload per SPI transfer. nrf_drv_spi_transfer takes uint8_t
+ * lengths (max 255); the read/write header is always 4 bytes, so usable
+ * payload = 255 - 4 = 251 bytes. Exceeding this silently truncates the length
+ * to its low byte and returns NRF_SUCCESS with unread/unwritten data.
+ * ASSERT in fm25q04b_read guards this; fm25q04b_write caps chunk to this value.
+ */
+#define FM25Q04B_SPI_PAYLOAD_MAX      128U
+#define FM25Q04B_READ_CHUNK_MAX       FM25Q04B_SPI_PAYLOAD_MAX
 #define FM25Q04B_ERASE_TIMEOUT_MS     5000U
 #define FM25Q04B_PROGRAM_TIMEOUT_MS   1000U
 
@@ -196,7 +205,9 @@ static ret_code_t fm25q04b_page_program(uint32_t address, const uint8_t* data, s
     if (length == 0) {
         return NRF_SUCCESS;
     }
-    if (length > FM25Q04B_PAGE_SIZE || (address % FM25Q04B_PAGE_SIZE) + length > FM25Q04B_PAGE_SIZE) {
+    if (length > FM25Q04B_SPI_PAYLOAD_MAX ||
+        length > FM25Q04B_PAGE_SIZE ||
+        (address % FM25Q04B_PAGE_SIZE) + length > FM25Q04B_PAGE_SIZE) {
         return NRF_ERROR_INVALID_LENGTH;
     }
 
@@ -230,7 +241,7 @@ ret_code_t fm25q04b_init(void) {
     spi_config.miso_pin = FM25Q04B_MISO_PIN;
     spi_config.sck_pin = FM25Q04B_SCK_PIN;
     spi_config.mosi_pin = FM25Q04B_MOSI_PIN;
-    spi_config.frequency = NRF_DRV_SPI_FREQ_4M;
+    spi_config.frequency = NRF_DRV_SPI_FREQ_8M;
     spi_config.mode = NRF_DRV_SPI_MODE_0;
     spi_config.bit_order = NRF_DRV_SPI_BIT_ORDER_MSB_FIRST;
 
@@ -412,8 +423,6 @@ static ret_code_t fm25q04b_wait_ready(uint32_t timeout_ms) {
 }
 
 ret_code_t fm25q04b_read(uint32_t address, void* data, size_t length) {
-    uint8_t tx_data[4 + FM25Q04B_READ_CHUNK_SIZE];
-    uint8_t rx_data[4 + FM25Q04B_READ_CHUNK_SIZE];
     uint8_t* out = (uint8_t*)data;
     ret_code_t ret;
 
@@ -425,18 +434,25 @@ ret_code_t fm25q04b_read(uint32_t address, void* data, size_t length) {
     }
 
     while (length > 0) {
-        size_t chunk = (length > FM25Q04B_READ_CHUNK_SIZE) ? FM25Q04B_READ_CHUNK_SIZE : length;
+        size_t chunk = (length > FM25Q04B_READ_CHUNK_MAX) ? FM25Q04B_READ_CHUNK_MAX : length;
 
-        tx_data[0] = FM25Q04B_CMD_READ_DATA;
-        fm25q04b_encode_address(&tx_data[1], address);
-        memset(&tx_data[4], 0xFF, chunk);
+        /* PRD §4.2: VLA boundary guard — prevents oversized stack allocation.
+         * VLA adapts per-call: small reads (font glyphs) stay light,
+         * bulk reads (manifests) get up to 256 bytes per transfer. */
+        ASSERT(chunk <= FM25Q04B_READ_CHUNK_MAX);
+        uint8_t tx_buf[4 + chunk];
+        uint8_t rx_buf[4 + chunk];
 
-        ret = fm25q04b_transfer(tx_data, 4 + chunk, rx_data, 4 + chunk);
+        tx_buf[0] = FM25Q04B_CMD_READ_DATA;
+        fm25q04b_encode_address(&tx_buf[1], address);
+        memset(&tx_buf[4], 0xFF, chunk);
+
+        ret = fm25q04b_transfer(tx_buf, 4 + chunk, rx_buf, 4 + chunk);
         if (ret != NRF_SUCCESS) {
             return ret;
         }
 
-        memcpy(out, &rx_data[4], chunk);
+        memcpy(out, &rx_buf[4], chunk);
         out += chunk;
         address += (uint32_t)chunk;
         length -= chunk;
@@ -460,6 +476,7 @@ ret_code_t fm25q04b_write(uint32_t address, const void* data, size_t length) {
     while (length > 0) {
         size_t page_left = FM25Q04B_PAGE_SIZE - (address % FM25Q04B_PAGE_SIZE);
         size_t chunk = (length < page_left) ? length : page_left;
+        if (chunk > FM25Q04B_SPI_PAYLOAD_MAX) chunk = FM25Q04B_SPI_PAYLOAD_MAX;
 
         ret = fm25q04b_page_program(address, in, chunk);
         if (ret != NRF_SUCCESS) {

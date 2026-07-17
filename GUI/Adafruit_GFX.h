@@ -80,8 +80,6 @@ typedef struct {
 void GFX_begin(Adafruit_GFX* gfx, int16_t w, int16_t h, int16_t buffer_height);
 // 初始化三色图形上下文（黑/白/红或黄）| Initialize 3-color graphics context (black/white/red or yellow)
 void GFX_begin_3c(Adafruit_GFX* gfx, int16_t w, int16_t h, int16_t buffer_height);
-// 初始化四色图形上下文 | Initialize 4-color graphics context
-void GFX_begin_4c(Adafruit_GFX* gfx, int16_t w, int16_t h, int16_t buffer_height);
 // 设置屏幕旋转角度 | Set screen rotation
 void GFX_setRotation(Adafruit_GFX* gfx, GFX_Rotate r);
 // 设置局部刷新窗口 | Set partial refresh window
@@ -92,6 +90,9 @@ void GFX_firstPage(Adafruit_GFX* gfx);
 bool GFX_nextPage(Adafruit_GFX* gfx, buffer_callback callback, void* user_data);
 // 结束绘图并释放资源 | End drawing and release resources
 void GFX_end(Adafruit_GFX* gfx);
+// 检查逻辑包围盒是否与当前渲染页有物理重叠 | Check if logical bounding box overlaps with current page
+bool GFX_isBoxInPage(Adafruit_GFX* gfx, int16_t x, int16_t y, int16_t w, int16_t h);
+
 
 // =============================================================================
 // DRAW API - 绘图接口
@@ -190,5 +191,10 @@ size_t GFX_print(Adafruit_GFX* gfx, const char c);
 size_t GFX_write(Adafruit_GFX* gfx, const char* buffer, size_t size);
 // 格式化打印（类似printf）| Formatted print (similar to printf)
 size_t GFX_printf(Adafruit_GFX* gfx, const char* format, ...);
+
+/* Returns the shared page buffer and its size in bytes.
+ * Use instead of declaring extern s_gfx_buffer[] in other translation units. */
+uint8_t *GFX_get_buffer(void);
+size_t   GFX_get_buffer_size(void);
 
 #endif  // _ADAFRUIT_GFX_H

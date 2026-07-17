@@ -1,6 +1,6 @@
-﻿#include "Lunar.h"
+#include "Lunar.h"
 
-#include "../EPD/epd_ext_resources.h"
+#include "gui_porting_hal.h"
 
 #define LUNAR_YEAR_BASE         2024U
 #define LUNAR_YEAR_COUNT        6U
@@ -12,6 +12,270 @@
 #define LUNAR_NAME_STEM_SIZE    4U
 #define LUNAR_NAME_BRANCH_SIZE  4U
 #define LUNAR_NAME_JIEQI_SIZE   7U
+
+int is_leap(int yr); /* 前置声明，实现见本文件下方时间转换区 */
+
+/*******************************************************************************
+ *          农历数据库 (LCDB, Type 6) 查询引擎 - Lunar DB Query Engine
+ * ----------------------------------------------------------------------------
+ * MCU 端只做"查表不计算"。首次查询时从外置 Flash 读取一次 16B 主头部与年份
+ * 偏移表并缓存于 RAM，后续按日索引直接读取 12B 记录。详见
+ * AiCoding/lunar_calendar_database_design_and_migration.md 第 4 章。
+ ******************************************************************************/
+#if EPD_SUPPORT_LUNAR
+#define LUNAR_DB_MAX_YEARS      8U
+#define LUNAR_DB_YEAR_HEADER_SZ 16U
+
+static bool     s_db_inited = false;   /* 是否已尝试初始化（幂等） */
+static bool     s_db_valid = false;    /* 数据库是否有效可用 */
+static uint8_t  s_db_year_count = 0;   /* 数据库包含的年份数 */
+static uint16_t s_db_start_year = 0;   /* 起始年份 */
+static uint8_t  s_db_record_size = 4; /* 单日记录大小 */
+static uint32_t s_db_year_offsets[LUNAR_DB_MAX_YEARS]; /* 各年份块相对资源起始的偏移 */
+
+/* 单日记录缓存（优化1）：LCDB 为只读，按日期缓存永久有效，无需失效。
+ * 月历渲染循环中同一天会被 LUNAR_SolarToLunar/GetFestival/调休连续查询，
+ * 命中缓存后每日读盘由 3 次降为 1 次。 */
+static bool          s_rec_cache_valid = false;
+static uint16_t      s_rec_cache_year = 0;
+static uint8_t       s_rec_cache_month = 0;
+static uint8_t       s_rec_cache_day = 0;
+static daily_record_t s_rec_cache_value;
+
+/* 计算公历日期在当年的第几天 (0-based)，用于定位每日记录。 */
+static uint16_t lunar_db_day_of_year(uint16_t year, uint8_t month, uint8_t day) {
+    static const uint16_t cum[12] = {0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334};
+    uint16_t doy = cum[(month - 1U) % 12U] + (uint16_t)(day - 1U);
+    if (month > 2U && is_leap((int)year)) {
+        doy += 1U;
+    }
+    return doy;
+}
+
+/* 将请求年份平稳降级到数据库覆盖范围内，返回有效年份。 */
+static uint16_t lunar_db_effective_year(uint16_t year) {
+    if (year < s_db_start_year || year >= (uint16_t)(s_db_start_year + s_db_year_count)) {
+        return s_db_start_year;
+    }
+    return year;
+}
+
+void lunar_db_reset(void) {
+    /* 资源热更新后调用：清除初始化缓存与单日缓存，下次查询自动重新读取新数据库，
+     * 避免"更新资源后必须重启设备才生效"（见 7.10）。 */
+    s_db_inited = false;
+    s_db_valid = false;
+    s_rec_cache_valid = false;
+}
+
+int lunar_db_init(void) {
+    uint8_t header[16];
+    uint32_t magic;
+
+    if (s_db_inited) {
+        return s_db_valid ? 0 : -1;
+    }
+    s_db_inited = true;
+    s_db_valid = false;
+
+    if (res_hal_read(EPD_EXT_RES_TYPE_LUNAR_DB, EPD_EXT_LUNAR_DB_ENTRY, 0, header, sizeof(header)) !=
+        NRF_SUCCESS) {
+        return -2;
+    }
+
+    magic = (uint32_t)header[0] | ((uint32_t)header[1] << 8) | ((uint32_t)header[2] << 16) |
+            ((uint32_t)header[3] << 24);
+    if (magic != EPD_EXT_LUNAR_DB_MAGIC) {
+        return -3;
+    }
+
+    s_db_year_count = header[5];
+    s_db_start_year = (uint16_t)header[6] | ((uint16_t)header[7] << 8);
+    s_db_record_size = header[8];
+    if (s_db_record_size == 0) {
+        s_db_record_size = 4;
+    }
+    if (s_db_year_count == 0) {
+        return -4;
+    }
+    if (s_db_year_count > LUNAR_DB_MAX_YEARS) {
+        s_db_year_count = LUNAR_DB_MAX_YEARS;
+    }
+
+    /* 年份偏移表紧随 16B 主头部，按小端 uint32 存储，与 MCU 字节序一致，直接读入。 */
+    if (res_hal_read(EPD_EXT_RES_TYPE_LUNAR_DB, EPD_EXT_LUNAR_DB_ENTRY, 16, s_db_year_offsets,
+                              (size_t)s_db_year_count * 4U) != NRF_SUCCESS) {
+        return -5;
+    }
+
+    s_db_valid = true;
+    return 0;
+}
+
+/* 读取指定(降级后)年份块的 16B 年份头部，输出块基址/总天数/稀疏表数量/稀疏表偏移/字符串池偏移。 */
+static int lunar_db_read_year_header(uint16_t eff_year, uint32_t* block_offset, uint16_t* total_days,
+                                     uint16_t* sparse_count, uint32_t* sparse_table_offset,
+                                     uint32_t* string_pool_offset) {
+    uint8_t yh[16];
+    uint8_t idx = (uint8_t)(eff_year - s_db_start_year);
+    uint32_t base = s_db_year_offsets[idx];
+
+    if (res_hal_read(EPD_EXT_RES_TYPE_LUNAR_DB, EPD_EXT_LUNAR_DB_ENTRY, base, yh, 16) !=
+        NRF_SUCCESS) {
+        return -1;
+    }
+    if (block_offset) *block_offset = base;
+    if (total_days) *total_days = (uint16_t)yh[2] | ((uint16_t)yh[3] << 8);
+    if (sparse_count) *sparse_count = (uint16_t)yh[4] | ((uint16_t)yh[5] << 8);
+    if (sparse_table_offset) {
+        *sparse_table_offset = (uint32_t)yh[6] | ((uint32_t)yh[7] << 8) |
+                               ((uint32_t)yh[8] << 16) | ((uint32_t)yh[9] << 24);
+    }
+    if (string_pool_offset) {
+        *string_pool_offset = (uint32_t)yh[10] | ((uint32_t)yh[11] << 8) |
+                              ((uint32_t)yh[12] << 16) | ((uint32_t)yh[13] << 24);
+    }
+    return 0;
+}
+
+int lunar_db_get_record(uint16_t year, uint8_t month, uint8_t day, daily_record_t* out_record) {
+    uint16_t eff_year;
+    uint32_t base = 0;
+    uint16_t total_days = 0;
+    uint16_t sparse_count = 0;
+    uint32_t sparse_table_offset = 0;
+    uint16_t doy;
+    uint32_t addr;
+    uint32_t packed_val = 0;
+    bool has_festival, has_special;
+
+    if (out_record == NULL || month < 1 || month > 12 || day < 1 || day > 31) {
+        return -1;
+    }
+
+    if (s_rec_cache_valid && s_rec_cache_year == year && s_rec_cache_month == month &&
+        s_rec_cache_day == day) {
+        *out_record = s_rec_cache_value;
+        return 0;
+    }
+
+    if (!s_db_valid && lunar_db_init() != 0) {
+        return -2;
+    }
+
+    eff_year = lunar_db_effective_year(year);
+    if (lunar_db_read_year_header(eff_year, &base, &total_days, &sparse_count, &sparse_table_offset, NULL) != 0 || total_days == 0) {
+        return -3;
+    }
+
+    doy = lunar_db_day_of_year(eff_year, month, day);
+    if (doy >= total_days) {
+        doy = (uint16_t)(total_days - 1U);
+    }
+
+    addr = base + LUNAR_DB_YEAR_HEADER_SZ + (uint32_t)doy * s_db_record_size;
+    if (res_hal_read(EPD_EXT_RES_TYPE_LUNAR_DB, EPD_EXT_LUNAR_DB_ENTRY, addr, &packed_val, 4) != NRF_SUCCESS) {
+        return -4;
+    }
+
+    // Bit shifting to unpack bitfield
+    uint8_t l_mon = (uint8_t)(packed_val & 0x0FU);
+    uint8_t is_leap_m = (uint8_t)((packed_val >> 4) & 0x01U);
+    out_record->lunar_month = l_mon | (is_leap_m ? 0x80U : 0x00U);
+    out_record->lunar_day = (uint8_t)((packed_val >> 5) & 0x1FU);
+    out_record->jiazi_year = (uint8_t)((packed_val >> 10) & 0x3FU);
+    out_record->solar_term = (uint8_t)((packed_val >> 16) & 0x1FU);
+    out_record->holiday_type = (uint8_t)((packed_val >> 21) & 0x03U);
+    out_record->reserved = 0;
+    out_record->festival_offset = 0xFFFFU;
+    out_record->special_label = 0xFFFFU;
+
+    has_festival = (bool)((packed_val >> 23) & 0x01U);
+    has_special = (bool)((packed_val >> 24) & 0x01U);
+
+    if ((has_festival || has_special) && sparse_count > 0) {
+        int low = 0;
+        int high = (int)sparse_count - 1;
+        while (low <= high) {
+            int mid = low + (high - low) / 2;
+            uint8_t entry_buf[6];
+            uint32_t entry_addr = base + sparse_table_offset + (uint32_t)mid * 6U;
+            if (res_hal_read(EPD_EXT_RES_TYPE_LUNAR_DB, EPD_EXT_LUNAR_DB_ENTRY, entry_addr, entry_buf, 6) == NRF_SUCCESS) {
+                uint16_t entry_doy = (uint16_t)entry_buf[0] | ((uint16_t)entry_buf[1] << 8);
+                if (entry_doy == doy) {
+                    out_record->festival_offset = (uint16_t)entry_buf[2] | ((uint16_t)entry_buf[3] << 8);
+                    out_record->special_label   = (uint16_t)entry_buf[4] | ((uint16_t)entry_buf[5] << 8);
+                    break;
+                } else if (entry_doy < doy) {
+                    low = mid + 1;
+                } else {
+                    high = mid - 1;
+                }
+            } else {
+                break;
+            }
+        }
+    }
+
+    s_rec_cache_year = year;
+    s_rec_cache_month = month;
+    s_rec_cache_day = day;
+    s_rec_cache_value = *out_record;
+    s_rec_cache_valid = true;
+    return 0;
+}
+
+/*
+ * 诚实降级支持：判断某公历年份是否在 LCDB 覆盖范围内（含数据库有效性）。
+ * 返回 false 表示当前显示的是被替代/过期的农历数据，UI 应给出更新提示，
+ * 而非静默呈现"看似正确、实则错误"的内容。
+ */
+bool lunar_db_year_supported(uint16_t year) {
+    if (!s_db_valid && lunar_db_init() != 0) {
+        return false;
+    }
+    return (year >= s_db_start_year) && (year < (uint16_t)(s_db_start_year + s_db_year_count));
+}
+
+const char* lunar_db_get_string(uint16_t year, uint16_t offset, char* buffer, size_t buffer_len) {
+    uint16_t eff_year;
+    uint32_t base = 0;
+    uint32_t pool_offset = 0;
+    uint32_t addr;
+    size_t i = 0;
+
+    if (buffer == NULL || buffer_len == 0) {
+        return "";
+    }
+    buffer[0] = '\0';
+    if (offset == 0xFFFF) {
+        return buffer;
+    }
+    if (!s_db_valid && lunar_db_init() != 0) {
+        return buffer;
+    }
+
+    eff_year = lunar_db_effective_year(year);
+    if (lunar_db_read_year_header(eff_year, &base, NULL, NULL, NULL, &pool_offset) != 0) {
+        return buffer;
+    }
+
+    /* 零拷贝流式读取：每次读 1 字节直至 NUL，RAM 开销 O(1)（见文档优化 6）。 */
+    addr = base + pool_offset + offset;
+    while (i < buffer_len - 1U) {
+        uint8_t ch;
+        if (res_hal_read(EPD_EXT_RES_TYPE_LUNAR_DB, EPD_EXT_LUNAR_DB_ENTRY, addr + i, &ch, 1) !=
+            NRF_SUCCESS) {
+            break;
+        }
+        if (ch == 0) {
+            break;
+        }
+        buffer[i++] = (char)ch;
+    }
+    buffer[i] = '\0';
+    return buffer;
+}
 
 static const char* lunar_copy_fallback(const char* fallback, char* buffer, size_t buffer_len) {
     if (buffer != NULL && buffer_len > 0) {
@@ -33,26 +297,12 @@ static const char* lunar_read_name(uint16_t id, uint8_t index, uint8_t count, ui
 
     read_len = (buffer_len - 1 < item_size) ? buffer_len - 1 : item_size;
     buffer[0] = '\0';
-    ret = epd_ext_resource_read(EPD_EXT_RES_TYPE_LUNAR, id, (uint32_t)index * item_size, buffer, read_len);
+    ret = res_hal_read(EPD_EXT_RES_TYPE_LUNAR, id, (uint32_t)index * item_size, buffer, read_len);
     if (ret != NRF_SUCCESS) {
         return lunar_copy_fallback(fallback, buffer, buffer_len);
     }
     buffer[buffer_len - 1] = '\0';
     return buffer;
-}
-
-static uint32_t lunar_read_u32(uint16_t id, uint8_t index, uint32_t fallback) {
-    uint32_t value = fallback;
-
-    (void)epd_ext_resource_read(EPD_EXT_RES_TYPE_LUNAR, id, (uint32_t)index * sizeof(uint32_t), &value, sizeof(value));
-    return value;
-}
-
-static uint8_t lunar_read_u8(uint16_t id, uint8_t index, uint8_t fallback) {
-    uint8_t value = fallback;
-
-    (void)epd_ext_resource_read(EPD_EXT_RES_TYPE_LUNAR, id, index, &value, sizeof(value));
-    return value;
 }
 
 const char* LUNAR_GetMonthName(uint8_t index, char* buffer, size_t buffer_len) {
@@ -215,9 +465,7 @@ const char* LUNAR_GetJieQiName(uint8_t index, char* buffer, size_t buffer_len) {
  * 示例: GetBitInt(0xABCD, 4, 8)
  *       提取从第8位开始的4位 = 0xB
  */
-static uint32_t GetBitInt(uint32_t data, uint8_t length, uint8_t shift) {
-    return (data & (((1 << length) - 1) << shift)) >> shift;
-}
+/* 农历/节气换算已下放至打包端并固化为 LCDB 数据库，MCU 端不再做位域解码。 */
 
 /**
  * @brief 公历日期转儒略日数 - Solar Date to Julian Day Number
@@ -236,18 +484,6 @@ static uint32_t GetBitInt(uint32_t data, uint8_t length, uint8_t shift) {
  *   2. 计算从公元0年到指定日期的总天数
  *   3. 考虑闰年规则: 4年一闰，100年不闰，400年再闰
  */
-// WARNING: Dates before Oct. 1582 are inaccurate
-static uint16_t SolarToInt(uint16_t y, uint8_t m, uint8_t d) {
-    m = (m + 9) % 12;           /* 将月份重新编号: 3月=0, 4月=1, ..., 2月=11 */
-    y = y - m / 10;             /* 对于1月和2月，年份减1 */
-    /* 计算总天数:
-     * 365*y: 每年365天
-     * y/4 - y/100 + y/400: 闰年修正
-     * (m*306 + 5)/10: 月份内天数累计
-     * (d - 1): 日期
-     */
-    return 365 * y + y / 4 - y / 100 + y / 400 + (m * 306 + 5) / 10 + (d - 1);
-}
 
 /*******************************************************************************
  *                   公历转农历核心函数 - Solar to Lunar Conversion
@@ -272,13 +508,19 @@ static uint16_t SolarToInt(uint16_t y, uint8_t m, uint8_t d) {
  * 有效年份范围: 2025 ~ 2029
  * 超出范围时使用2025年的农历数据，仅显示农历月日，年份不准确
  */
+/*
+ * 数据库模式下的公历转农历兼容接口：直接查询 LCDB 单日记录填充结构体。
+ * 注意 lunar->Year 在此模式下临时充当六十甲子索引 (0-59)，供
+ * LUNAR_GetStem/Branch/Zodiac 按 %10 / %12 取名（语义与旧实现一致）。
+ */
 void LUNAR_SolarToLunar(struct Lunar_Date* lunar, uint16_t solar_year, uint8_t solar_month, uint8_t solar_date) {
-    uint8_t i, lunarM, m, d, leap, dm;
-    uint16_t year_index, lunarY, y, offset;
-    uint32_t solar_data, solar11, days;
+    daily_record_t rec;
 
-    /* 步骤1: 参数有效性检查 - Parameter Validation */
-    if (solar_month < 1 || solar_month > 12 || solar_date < 1 || solar_date > 31) {
+    if (lunar == NULL) {
+        return;
+    }
+    if (solar_month < 1 || solar_month > 12 || solar_date < 1 || solar_date > 31 ||
+        lunar_db_get_record(solar_year, solar_month, solar_date, &rec) != 0) {
         lunar->Year = 0;
         lunar->Month = 0;
         lunar->Date = 0;
@@ -286,94 +528,10 @@ void LUNAR_SolarToLunar(struct Lunar_Date* lunar, uint16_t solar_year, uint8_t s
         return;
     }
 
-    /* 步骤2: 计算年份范围 - Calculate Year Range */
-    uint16_t year_base = (uint16_t)LUNAR_YEAR_BASE;                                  /* 基准年份: 2024 */
-    uint16_t year_count = LUNAR_YEAR_COUNT;                                          /* 数据条目数: 6 */
-    uint16_t year_min = (uint16_t)(year_base + 1);                                  /* 有效起始年: 2025 */
-    uint16_t year_max = (uint16_t)(year_base + year_count - 1);                    /* 有效结束年: 2029 */
-
-    /* 步骤3: 年份范围限制处理 - Year Range Limitation */
-    uint16_t calc_year = solar_year;
-    if (calc_year < year_min || calc_year > year_max) {
-        /* 只保留 2025~2029 的精确数据，其余年份按 2025 年的农历数据显示 */
-        calc_year = year_min;
-    }
-
-    /* 步骤4: 计算数据表索引 - Calculate Table Index */
-    year_index = (uint16_t)(calc_year - year_base + 1);  /* 索引 1~year_count（对应 2024~2029） */
-
-    /* 步骤5: 判断公历日期是否在当年春节之前 - Check if Before Lunar New Year */
-    /* 将公历日期编码为单一数值便于比较 */
-    solar_data = ((uint32_t)calc_year << 9) | ((uint32_t)solar_month << 5) | ((uint32_t)solar_date);
-    if (lunar_read_u32(EPD_EXT_LUNAR_SOLAR_1_1, year_index, 0) > solar_data && year_index > 1) {
-        /* 如果公历日期在该年春节之前，则属于上一个农历年 */
-        year_index -= 1;
-    }
-
-    /* 步骤6: 获取春节日期并解码 - Get and Decode Lunar New Year Date */
-    solar11 = lunar_read_u32(EPD_EXT_LUNAR_SOLAR_1_1, year_index, 0);
-    if (solar11 == 0) {
-        lunar->Year = 0;
-        lunar->Month = 0;
-        lunar->Date = 0;
-        lunar->IsLeap = 0;
-        return;
-    }
-    y = GetBitInt(solar11, 12, 9);    /* 提取春节所在公历年份 */
-    m = GetBitInt(solar11, 4, 5);     /* 提取春节所在公历月份 */
-    d = GetBitInt(solar11, 5, 0);     /* 提取春节所在公历日期 */
-
-    /* 步骤7: 计算公历日期与春节的天数差 - Calculate Days Offset from New Year */
-    offset = SolarToInt(calc_year, solar_month, solar_date) - SolarToInt(y, m, d);
-
-    /* 步骤8: 获取该农历年的月份信息 - Get Lunar Month Information */
-    days = lunar_read_u32(EPD_EXT_LUNAR_MONTH_DAYS, year_index, 0);
-    if (days == 0) {
-        lunar->Year = 0;
-        lunar->Month = 0;
-        lunar->Date = 0;
-        lunar->IsLeap = 0;
-        return;
-    }
-    leap = GetBitInt(days, 4, 13);    /* 提取闰月月份 (0=无闰月, 1-12=闰几月) */
-
-    /* 步骤9: 计算农历年份 - Calculate Lunar Year */
-    lunarY = (uint16_t)(year_base + year_index - 1);
-    lunarM = 1;      /* 从正月开始 */
-    offset += 1;     /* 偏移量加1（因为初一是第1天） */
-
-    /* 步骤10: 逐月累减确定农历月份 - Determine Lunar Month by Subtracting */
-    for (i = 0; i < 13; i++) {
-        /* 获取当月天数: Bit[12-i]为1表示大月(30天)，为0表示小月(29天) */
-        if (GetBitInt(days, 1, 12 - i) == 1) {
-            dm = 30;    /* 大月30天 */
-        } else {
-            dm = 29;    /* 小月29天 */
-        }
-        if (offset > dm) {
-            lunarM += 1;      /* 进入下一个月 */
-            offset -= dm;     /* 减去当月天数 */
-        } else {
-            break;            /* 找到目标月份 */
-        }
-    }
-
-    /* 步骤11: 处理闰月 - Handle Leap Month */
-    lunar->IsLeap = 0;
-    if (leap != 0 && lunarM > leap) {
-        /* 如果存在闰月且当前月份序号大于闰月位置 */
-        if (lunarM == leap + 1) {
-            /* 正好是闰月 */
-            lunar->IsLeap = 1;
-        }
-        /* 闰月后的月份序号需要减1（因为闰月与前一个月同名） */
-        lunarM -= 1;
-    }
-
-    /* 步骤12: 设置返回值 - Set Return Values */
-    lunar->Month = lunarM;      /* 农历月份 */
-    lunar->Date = offset;       /* 农历日期 */
-    lunar->Year = lunarY;       /* 农历年份 */
+    lunar->IsLeap = (uint8_t)(rec.lunar_month >> 7);
+    lunar->Month = (uint8_t)(rec.lunar_month & 0x7F);
+    lunar->Date = rec.lunar_day;
+    lunar->Year = rec.jiazi_year;
 }
 
 /*******************************************************************************
@@ -505,13 +663,6 @@ uint8_t LUNAR_GetBranch(const struct Lunar_Date* lunar) { return lunar->Year % 1
  * 冬至: 白昼最短，冬季中点
  */
 
-/**
- * 每月最大天数表 - Maximum Days per Month
- * 用于日期计算（2月按平年28天计算，闰年需特殊处理）
- */
-const uint8_t MonthDayMax[12] = {
-    31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31,
-};
 
 /*********************************************************************************************************
  ** 函数名称: GetJieQi
@@ -541,51 +692,29 @@ const uint8_t MonthDayMax[12] = {
  **------------------------------------------------------------------------------------------------------
  ********************************************************************************************************/
 uint8_t GetJieQi(uint16_t myear, uint8_t mmonth, uint8_t mday, uint8_t* JQdate) {
-    uint8_t bak1, value, JQ;
+    uint8_t start, end, dd;
 
-    /* 参数检查 - Parameter Validation */
-    if ((mmonth == 0) || (mmonth > 12)) return 0;
-
-    /* 计算年份有效范围 - Calculate Valid Year Range */
-    uint16_t year_base = LUNAR_YEAR_BASE;                        /* 表中起始年: 2024 */
-    uint16_t year_count = LUNAR_YEAR_COUNT;                      /* 共6年数据: 2024~2029 */
-    uint16_t year_min = (uint16_t)(year_base + 1);               /* 有效显示起始年: 2025 */
-    uint16_t year_max = (uint16_t)(year_base + year_count - 1);  /* 有效显示结束年: 2029 */
-
-    /* 年份范围限制 - Year Range Limitation */
-    uint16_t calc_year = myear;
-    if (calc_year < year_min || calc_year > year_max) {
-        /* 只保留 2025~2029 的精确数据，其余年份按 2025 年的节气数据显示 */
-        calc_year = year_min;
-    }
-
-    /* 重复检查（冗余但保留原代码逻辑） */
-    if ((mmonth == 0) || (mmonth > 12)) return 0;
-
-    /* 计算节气序号 - Calculate Solar Term Index */
-    JQ = (mmonth - 1) * 2;  /* 获得节气顺序标号(0～23)，每月2个节气 */
-    if (mday >= 15) JQ++;   /* 判断是否是下半月，下半月取第二个节气 */
-
-    /* 获取修正标志 - Get Correction Flag */
-    bak1 = lunar_read_u8(EPD_EXT_LUNAR_JIEQI_YEAR_BITS,
-                         (uint8_t)((calc_year - year_base) * 3 + JQ / 8), 0);
-    value = ((bak1 << (JQ % 8)) & 0x80);                        /* 获得节气日期修正标志位 */
-
-    /* 计算实际日期 - Calculate Actual Date */
-    *JQdate = lunar_read_u8(EPD_EXT_LUNAR_JIEQI_BASE_DAYS, JQ, 0);
-    if (*JQdate == 0) {
+    if (mmonth == 0 || mmonth > 12 || JQdate == NULL) {
         return 0;
     }
-    if (value != 0) {
-        /* 需要修正日期 */
-        /* 判断年份,以决定节气相对值1代表+1,还是-1 */
-        /* 特殊节气（大寒、夏至、寒露、小雪）在2044年之前，修正值1表示+1天 */
-        if ((JQ == 1 || JQ == 11 || JQ == 18 || JQ == 21) && myear < 2044)
-            (*JQdate)++;    /* 日期加1 */
-        else
-            (*JQdate)--;    /* 日期减1 */
+
+    /* 每半月恰有一个节气：上半月扫描 1~14，下半月扫描 15~月末，命中即返回其公历日。 */
+    if (mday >= 15) {
+        start = 15;
+        end = get_last_day(myear, (uint8_t)(mmonth - 1));
+    } else {
+        start = 1;
+        end = 14;
     }
-    return 1;
+
+    for (dd = start; dd <= end; dd++) {
+        daily_record_t rec;
+        if (lunar_db_get_record(myear, mmonth, dd, &rec) == 0 && rec.solar_term != 0) {
+            *JQdate = dd;
+            return 1;
+        }
+    }
+    return 0;
 }
 
 /*********************************************************************************************************
@@ -613,63 +742,121 @@ uint8_t GetJieQi(uint16_t myear, uint8_t mmonth, uint8_t mday, uint8_t* JQdate) 
  **------------------------------------------------------------------------------------------------------
  ********************************************************************************************************/
 uint8_t GetJieQiStr(uint16_t myear, uint8_t mmonth, uint8_t mday, uint8_t* day) {
-    uint8_t JQdate, JQ, MaxDay;
+    uint16_t yy = myear;
+    uint8_t mm = mmonth, dd = mday, k;
 
-    /* 获取当前半月的节气日期 - Get Solar Term Date */
-    if (GetJieQi(myear, mmonth, mday, &JQdate) == 0) return 0xFF;
-
-    /* 计算节气序号 - Calculate Solar Term Index */
-    JQ = (mmonth - 1) * 2;  /* 获得节气顺序标号(0～23) */
-    if (mday >= 15) JQ++;   /* 判断是否是下半月 */
-
-    /* 情况1: 今天正好是节气日 - Today is a Solar Term Day */
-    if (mday == JQdate)
-    {
-        *day = 0;
-        return JQ;
-    }
-
-    /* 情况2: 今天不是节气日 - Today is NOT a Solar Term Day */
-    /* 需要计算距离下一个节气的天数 */
-
-    if (mday < JQdate)  /* 如果今天日期小于本半月的节气日期 */
-    {
-        /* 下一个节气就在本半月内 */
-        mday = JQdate - mday;    /* 计算天数差 */
-    }
-    else  /* 如果今天日期大于本半月的节气日期（已过该节气） */
-    {
-        JQ++;    /* 指向下一个节气 */
-
-        if (mday < 15) {
-            /* 当前在上半月，下一个节气在下半月 */
-            GetJieQi(myear, mmonth, 15, &JQdate);    /* 获取下半月节气日期 */
-            mday = JQdate - mday;                    /* 计算天数差 */
+    /* 从当天起向后逐日扫描（跨月/跨年），首个带节气标志的记录即为下一个节气。
+     * 节气间隔约 15 天，32 天窗口足以覆盖，返回其名称索引 (0-23) 与距离天数。 */
+    for (k = 0; k < 32; k++) {
+        daily_record_t rec;
+        if (lunar_db_get_record(yy, mm, dd, &rec) == 0 && rec.solar_term != 0) {
+            if (day != NULL) *day = k;
+            return (uint8_t)(rec.solar_term - 1);
         }
-        else  /* 当前在下半月，下一个节气在下个月 - 需要翻月 */
-        {
-            MaxDay = MonthDayMax[mmonth - 1];    /* 获取当月最大天数 */
-
-            /* 处理闰年2月 - Handle February in Leap Year */
-            if (mmonth == 2)
-            {
-                /* 闰年判断: 能被4整除且(不能被100整除或能被400整除) */
-                if ((myear % 4 == 0) && ((myear % 100 != 0) || (myear % 400 == 0))) MaxDay++;
+        dd++;
+        if (dd > get_last_day(yy, (uint8_t)(mm - 1))) {
+            dd = 1;
+            if (++mm > 12) {
+                mm = 1;
+                yy++;
             }
-
-            /* 处理月份进位 - Handle Month Overflow */
-            if (++mmonth == 13) mmonth = 1;    /* 12月之后是1月 */
-
-            /* 获取下个月上半月的节气日期 */
-            GetJieQi(myear, mmonth, 1, &JQdate);
-
-            /* 计算天数差: 本月剩余天数 + 下月节气日期 */
-            mday = MaxDay - mday + JQdate;
         }
     }
-    *day = mday;    /* 输出距离天数 */
-    return JQ;      /* 返回节气索引 */
+    if (day != NULL) *day = 0;
+    return 0xFF;
 }
+#else
+
+void lunar_db_reset(void) {}
+int lunar_db_init(void) { return -1; }
+int lunar_db_get_record(uint16_t year, uint8_t month, uint8_t day, daily_record_t* out_record) {
+    (void)year; (void)month; (void)day;
+    if (out_record) memset(out_record, 0, sizeof(daily_record_t));
+    return -1;
+}
+const char* lunar_db_get_string(uint16_t year, uint16_t offset, char* buffer, size_t buffer_len) {
+    (void)year; (void)offset;
+    if (buffer && buffer_len > 0) buffer[0] = '\0';
+    return "";
+}
+bool lunar_db_year_supported(uint16_t year) {
+    (void)year;
+    return false;
+}
+
+const char* LUNAR_GetMonthName(uint8_t index, char* buffer, size_t buffer_len) {
+    (void)index;
+    if (buffer && buffer_len > 0) buffer[0] = '\0';
+    return "";
+}
+const char* LUNAR_GetLeapName(uint8_t index, char* buffer, size_t buffer_len) {
+    (void)index;
+    if (buffer && buffer_len > 0) buffer[0] = '\0';
+    return "";
+}
+const char* LUNAR_GetDateName(uint8_t index, char* buffer, size_t buffer_len) {
+    (void)index;
+    if (buffer && buffer_len > 0) buffer[0] = '\0';
+    return "";
+}
+const char* LUNAR_GetDayName(uint8_t index, char* buffer, size_t buffer_len) {
+    static const char* const days[] = {"日", "一", "二", "三", "四", "五", "六"};
+    if (buffer && buffer_len > 0) {
+        if (index < 7) {
+            strncpy(buffer, days[index], buffer_len - 1);
+            buffer[buffer_len - 1] = '\0';
+        } else {
+            buffer[0] = '\0';
+        }
+        return buffer;
+    }
+    return (index < 7) ? days[index] : "";
+}
+const char* LUNAR_GetZodiacName(uint8_t index, char* buffer, size_t buffer_len) {
+    (void)index;
+    if (buffer && buffer_len > 0) buffer[0] = '\0';
+    return "";
+}
+const char* LUNAR_GetStemName(uint8_t index, char* buffer, size_t buffer_len) {
+    (void)index;
+    if (buffer && buffer_len > 0) buffer[0] = '\0';
+    return "";
+}
+const char* LUNAR_GetBranchName(uint8_t index, char* buffer, size_t buffer_len) {
+    (void)index;
+    if (buffer && buffer_len > 0) buffer[0] = '\0';
+    return "";
+}
+const char* LUNAR_GetJieQiName(uint8_t index, char* buffer, size_t buffer_len) {
+    (void)index;
+    if (buffer && buffer_len > 0) buffer[0] = '\0';
+    return "";
+}
+
+void LUNAR_SolarToLunar(struct Lunar_Date* lunar, uint16_t solar_year, uint8_t solar_month, uint8_t solar_date) {
+    (void)solar_year; (void)solar_month; (void)solar_date;
+    if (lunar) {
+        lunar->Year = 0;
+        lunar->Month = 0;
+        lunar->Date = 0;
+        lunar->IsLeap = 0;
+    }
+}
+uint8_t LUNAR_GetZodiac(const struct Lunar_Date* lunar) { (void)lunar; return 0; }
+uint8_t LUNAR_GetStem(const struct Lunar_Date* lunar) { (void)lunar; return 0; }
+uint8_t LUNAR_GetBranch(const struct Lunar_Date* lunar) { (void)lunar; return 0; }
+uint8_t GetJieQiStr(uint16_t myear, uint8_t mmonth, uint8_t mday, uint8_t* day) {
+    (void)myear; (void)mmonth; (void)mday;
+    if (day) *day = 0;
+    return 0xFF;
+}
+uint8_t GetJieQi(uint16_t myear, uint8_t mmonth, uint8_t mday, uint8_t* JQdate) {
+    (void)myear; (void)mmonth; (void)mday;
+    if (JQdate) *JQdate = 0;
+    return 0;
+}
+
+#endif
 
 /*******************************************************************************
  *                  时间转换相关常量 - Time Conversion Constants
@@ -889,6 +1076,14 @@ uint32_t transformTimeStruct(struct devtm* result) {
     return (CountDay * SECOND_OF_DAY + (uint32_t)result->tm_sec + (uint32_t)result->tm_min * 60 +
             (uint32_t)result->tm_hour * 3600);
 }
+
+/**
+ * 每月最大天数表 - Maximum Days per Month
+ * 用于日期计算（2月按平年28天计算，闰年需特殊处理）
+ */
+const uint8_t MonthDayMax[12] = {
+    31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31,
+};
 
 /**
  * @brief 获取指定月份的天数 - Get Number of Days in Month

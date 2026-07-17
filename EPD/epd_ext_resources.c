@@ -110,7 +110,14 @@ static ret_code_t epd_ext_crc32_flash(uint32_t address, size_t length, uint32_t*
     return NRF_SUCCESS;
 }
 
-static ret_code_t epd_ext_validate_manifest(epd_ext_resource_manifest_t* manifest) {
+/**@brief Quick manifest validation — header + entries CRC only (no flash I/O).
+ *
+ * Used on boot/wake (PRD §US-2.2). Validates magic, version, entry count, and
+ * the manifest struct's own CRC32. Does NOT read individual resource data from
+ * flash, so it completes in < 10 ms. Full per-resource CRC verification is
+ * deferred to commit time (epd_ext_validate_manifest_full).
+ */
+static ret_code_t epd_ext_validate_manifest_quick(epd_ext_resource_manifest_t* manifest) {
     uint32_t stored_crc;
     uint32_t computed_crc;
 
@@ -118,9 +125,13 @@ static ret_code_t epd_ext_validate_manifest(epd_ext_resource_manifest_t* manifes
         return NRF_ERROR_NULL;
     }
     if (manifest->magic != EPD_EXT_RES_MAGIC || manifest->version != EPD_EXT_RES_VERSION) {
+        NRF_LOG_WARNING("Manifest magic/version mismatch: magic=0x%08x (expected 0x%08x), version=%u (expected %u)",
+                        manifest->magic, EPD_EXT_RES_MAGIC, manifest->version, EPD_EXT_RES_VERSION);
         return NRF_ERROR_INVALID_DATA;
     }
     if (manifest->resource_count > EPD_EXT_RES_MAX_ENTRIES) {
+        NRF_LOG_WARNING("Manifest resource count exceeds limit: %u > %u",
+                        manifest->resource_count, EPD_EXT_RES_MAX_ENTRIES);
         return NRF_ERROR_INVALID_LENGTH;
     }
 
@@ -130,24 +141,46 @@ static ret_code_t epd_ext_validate_manifest(epd_ext_resource_manifest_t* manifes
         epd_ext_crc32_update(epd_ext_crc32_init(), manifest, sizeof(*manifest)));
     manifest->crc32 = stored_crc;
     if (computed_crc != stored_crc) {
+        NRF_LOG_WARNING("Manifest self-CRC mismatch: computed=0x%08x, stored=0x%08x", computed_crc, stored_crc);
         return NRF_ERROR_INVALID_DATA;
+    }
+
+    /* Sanity-check entry address ranges (cheap, no flash I/O). */
+    for (uint16_t i = 0; i < manifest->resource_count; i++) {
+        if (!epd_ext_resource_range_is_valid(manifest->entries[i].offset,
+                                             manifest->entries[i].length)) {
+            NRF_LOG_WARNING("Manifest entry %u out of bounds: offset=0x%08x, length=%u",
+                            i, manifest->entries[i].offset, manifest->entries[i].length);
+            return NRF_ERROR_INVALID_ADDR;
+        }
+    }
+
+    return NRF_SUCCESS;
+}
+
+/**@brief Full manifest + per-resource flash CRC validation.
+ *
+ * Used only during commit (epd_ext_resource_commit_staging) to verify that
+ * every resource on flash matches its manifest CRC32 entry. Reads all resource
+ * data from flash — can take hundreds of ms on large resource sets.
+ */
+static ret_code_t epd_ext_validate_manifest_full(epd_ext_resource_manifest_t* manifest) {
+    ret_code_t ret = epd_ext_validate_manifest_quick(manifest);
+    if (ret != NRF_SUCCESS) {
+        return ret;
     }
 
     for (uint16_t i = 0; i < manifest->resource_count; i++) {
         const epd_ext_resource_entry_t* entry = &manifest->entries[i];
         uint32_t resource_crc = 0;
-        ret_code_t ret;
-
-        if (!epd_ext_resource_range_is_valid(entry->offset, entry->length)) {
-            return NRF_ERROR_INVALID_ADDR;
-        }
 
         ret = epd_ext_crc32_flash(entry->offset, entry->length, &resource_crc);
         if (ret != NRF_SUCCESS) {
             return ret;
         }
         if (resource_crc != entry->crc32) {
-            NRF_LOG_WARNING("External resource CRC mismatch type=%u id=%u", entry->type, entry->id);
+            NRF_LOG_WARNING("External resource CRC mismatch type=%u id=%u: computed=0x%08x, expected=0x%08x",
+                            entry->type, entry->id, resource_crc, entry->crc32);
             return NRF_ERROR_INVALID_DATA;
         }
         app_feed_wdt();
@@ -196,14 +229,45 @@ static ret_code_t epd_ext_resources_reload(void) {
         return NRF_ERROR_INVALID_STATE;
     }
 
-    ret = fm25q04b_read(EPD_EXT_RES_MAIN_MANIFEST_ADDR, &m_manifest, sizeof(m_manifest));
+    ret_code_t read_ret = fm25q04b_read(EPD_EXT_RES_MAIN_MANIFEST_ADDR, &m_manifest, sizeof(m_manifest));
+    ret = (read_ret == NRF_SUCCESS) ? epd_ext_validate_manifest_quick(&m_manifest) : read_ret;
+
     if (ret != NRF_SUCCESS) {
-        m_manifest_valid = false;
-        return ret;
+        if (read_ret != NRF_SUCCESS) {
+            NRF_LOG_WARNING("[RES]: Primary manifest SPI read failed (%u), trying backup", read_ret);
+        } else {
+            NRF_LOG_WARNING("[RES]: Primary manifest CRC/format invalid (%u), trying backup", ret);
+        }
+        ret = fm25q04b_read(EPD_EXT_RES_BACKUP_MANIFEST_ADDR, &m_manifest, sizeof(m_manifest));
+        if (ret == NRF_SUCCESS) {
+            ret = epd_ext_validate_manifest_quick(&m_manifest);
+        }
+        if (ret == NRF_SUCCESS) {
+            NRF_LOG_INFO("Restored from backup manifest");
+        }
     }
 
-    ret = epd_ext_validate_manifest(&m_manifest);
     m_manifest_valid = (ret == NRF_SUCCESS);
+
+    if (m_manifest_valid) {
+        epd_ext_resource_manifest_t bk;
+        bool bk_ok = false;
+        if (fm25q04b_read(EPD_EXT_RES_BACKUP_MANIFEST_ADDR, &bk, sizeof(bk)) == NRF_SUCCESS &&
+            bk.magic == EPD_EXT_RES_MAGIC &&
+            bk.version == EPD_EXT_RES_VERSION &&
+            bk.resource_count <= EPD_EXT_RES_MAX_ENTRIES) {
+            uint32_t stored_crc = bk.crc32;
+            bk.crc32 = 0;
+            uint32_t computed_crc = epd_ext_crc32_finalize(
+                epd_ext_crc32_update(epd_ext_crc32_init(), &bk, sizeof(bk)));
+            bk.crc32 = stored_crc;
+            bk_ok = (computed_crc == stored_crc);
+        }
+        if (!bk_ok) {
+            NRF_LOG_WARNING("[RES]: Backup manifest invalid or missing, will repair on next commit");
+        }
+    }
+
     return ret;
 }
 
@@ -258,10 +322,17 @@ ret_code_t epd_ext_resource_read(uint16_t type, uint16_t id, uint32_t offset, vo
         return NRF_ERROR_INVALID_LENGTH;
     }
 
+    ret = epd_ext_resources_wake();
+    if (ret != NRF_SUCCESS) {
+        return ret;
+    }
+
     return fm25q04b_read(entry.offset + offset, data, length);
 }
 
 ret_code_t epd_ext_resource_read_raw(uint32_t address, void* data, size_t length) {
+    ret_code_t ret;
+
     if (!m_flash_ready) {
         return NRF_ERROR_INVALID_STATE;
     }
@@ -271,6 +342,11 @@ ret_code_t epd_ext_resource_read_raw(uint32_t address, void* data, size_t length
     if (length != 0 && (address >= EPD_EXT_RES_RESERVED_START_ADDR ||
         length > (size_t)(EPD_EXT_RES_RESERVED_START_ADDR - address))) {
         return NRF_ERROR_INVALID_ADDR;
+    }
+
+    ret = epd_ext_resources_wake();
+    if (ret != NRF_SUCCESS) {
+        return ret;
     }
 
     return fm25q04b_read(address, data, length);
@@ -336,7 +412,7 @@ ret_code_t epd_ext_resource_commit_staging(void) {
         return ret;
     }
 
-    ret = epd_ext_validate_manifest(&staging);
+    ret = epd_ext_validate_manifest_full(&staging);
     if (ret != NRF_SUCCESS) {
         NRF_LOG_WARNING("External resource staging manifest validation failed: %u", ret);
         return ret;
@@ -344,5 +420,15 @@ ret_code_t epd_ext_resource_commit_staging(void) {
 
     m_manifest = staging;
     m_manifest_valid = true;
+
+    // 将已验证的 manifest 写入 backup 槽（非关键路径：失败不影响本次 commit）
+    ret_code_t backup_ret = fm25q04b_erase_sector(EPD_EXT_RES_BACKUP_MANIFEST_ADDR);
+    if (backup_ret == NRF_SUCCESS) {
+        backup_ret = fm25q04b_write(EPD_EXT_RES_BACKUP_MANIFEST_ADDR, &staging, sizeof(staging));
+    }
+    if (backup_ret != NRF_SUCCESS) {
+        NRF_LOG_WARNING("Backup manifest write failed: %u", backup_ret);
+    }
+
     return NRF_SUCCESS;
 }

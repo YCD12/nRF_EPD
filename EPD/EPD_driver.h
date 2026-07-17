@@ -114,6 +114,8 @@ typedef struct epd_driver {
     void (*clear_partial)(epd_model_t *epd, bool refresh);  /**< Clear screen using partial refresh - 使用部分刷新方式清屏 */
     void (*write_image_partial)(epd_model_t *epd, uint8_t *black, uint8_t *color, uint16_t x, uint16_t y, uint16_t w, uint16_t h); /**< write image for partial refresh - 写入图像数据用于部分刷新 */
     void (*refresh_partial)(epd_model_t *epd, uint16_t x, uint16_t y, uint16_t w, uint16_t h);  /**< Partial refresh a specific area - 局部刷新指定区域 */
+    void (*diff_push)(epd_model_t *epd, uint16_t x, uint16_t y, uint16_t w, uint16_t h,
+                      const uint8_t *old_bm, const uint8_t *new_bm);  /**< Push old/new diff bitmaps for per-digit partial RAM write - 写入差分老/新帧到EPD RAM */
 } epd_driver_t;
 
 // GPIO电平定义 - GPIO level definitions
@@ -162,20 +164,18 @@ uint8_t EPD_ReadByte(void);                            // 读取单字节数据
     } while (0)
 void EPD_FillRAM(uint8_t cmd, uint8_t value, uint32_t len);  // 填充显存(用相同的值填充指定长度)
 void EPD_Reset(uint32_t value, uint16_t duration);           // 复位EPD(通过复位引脚)
-void EPD_WaitBusy(uint32_t value, uint16_t timeout);         // 等待EPD忙状态结束
+bool EPD_WaitBusy(uint32_t value, uint16_t timeout);         // 等待EPD忙状态结束，超时返回false
 
 // LED Control (active low: LOW = ON, HIGH = OFF)
 // LED控制(低电平有效: LOW=点亮, HIGH=熄灭)
 /**
  * LED行为说明 - LED Behavior:
- * - 全刷新: LED在刷新期间保持点亮,完成后熄灭 - Full refresh: LED stays ON during refresh, OFF after complete
- * - 部分刷新: LED保持熄灭状态(不闪烁) - Partial refresh: LED stays OFF (no blinking)
+ * - 屏幕刷新/低电量/唤醒: LED保持熄灭 - Refresh/low battery/wakeup: LED stays OFF
  * - BLE连接/断开: LED闪烁一次 - BLE connect/disconnect: LED blinks once
- * - 低电量(<2.8V): LED每2秒闪烁一次 - Low battery (<2.8V): LED blinks every 2 seconds
  */
-void EPD_LED_ON(void);    // Turn LED on (for full refresh) - 点亮LED(用于全刷新)
+void EPD_LED_ON(void);    // Turn LED on manually - 手动点亮LED
 void EPD_LED_OFF(void);   // Turn LED off - 熄灭LED
-void EPD_LED_BLINK(void); // Blink LED once (for BLE events, low battery) - LED闪烁一次(用于BLE事件、低电量提示)
+void EPD_LED_BLINK(void); // Blink LED once (BLE connect/disconnect only) - LED闪烁一次(仅用于BLE连接/断开)
 
 // VDD voltage (in millivolts)
 // VDD电压(单位:毫伏)

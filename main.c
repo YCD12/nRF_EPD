@@ -17,6 +17,7 @@
 
 #include <stdint.h>
 #include <string.h>
+#include <stdarg.h>
 
 #include "ble.h"
 #include "ble_advdata.h"
@@ -45,6 +46,10 @@
 #include "nrf_pwr_mgmt.h"
 #include "nrf_log_default_backends.h"
 
+#ifdef USE_SYSVIEW
+#include "SEGGER_SYSVIEW.h"
+#endif
+
 // clang-format off
 #define CENTRAL_LINK_COUNT              0                                               /**< Number of central links used by the application. When changing this number remember to adjust the RAM settings*/
                                                                                         /**< 应用程序使用的中心链接数量。更改此数字时请记得调整RAM设置 */
@@ -53,7 +58,7 @@
 
 #define DEVICE_NAME                      "NRF_EPD"                                      /**< Name of device. Will be included in the advertising data. */
                                                                                         /**< 设备名称。将包含在广播数据中。 */
-#define APP_ADV_INTERVAL                 1600                                           /**< The advertising interval (in units of 0.625 ms. This value corresponds to 1 s). */
+#define APP_ADV_INTERVAL                 400                                           /**< The advertising interval (in units of 0.625 ms. This value corresponds to 1 s). */
                                                                                         /**< 广播间隔（以0.625毫秒为单位。此值对应1秒）。 */
 #define APP_ADV_TIMEOUT_IN_SECONDS       120                                            /**< The advertising timeout (in units of seconds). */
                                                                                         /**< 广播超时时间（以秒为单位）。 */
@@ -113,6 +118,8 @@ APP_TIMER_DEF(m_clock_timer_id);                                                
 static nrf_drv_wdt_channel_id            m_wdt_channel_id;                              /**< 看门狗定时器通道ID */
 static uint32_t                          m_resetreas;                                   /**< 复位原因寄存器值 */
 // clang-format on
+
+uint32_t get_reset_reason(void) { return m_resetreas; }
 
 /**@brief Callback function for asserts in the SoftDevice.
  * SoftDevice中断言的回调函数
@@ -202,7 +209,7 @@ static void advertising_config_get(ble_adv_modes_config_t* p_config) {
 static void ble_dfu_evt_handler(ble_dfu_buttonless_evt_type_t event) {
     switch (event) {
         case BLE_DFU_EVT_BOOTLOADER_ENTER_PREPARE: {
-            NRF_LOG_INFO("Device is preparing to enter bootloader mode.");
+            NRF_LOG_INFO("Prep DFU");
             // 设备正在准备进入引导加载程序模式
 
             // Prevent device from advertising on disconnect.
@@ -222,24 +229,24 @@ static void ble_dfu_evt_handler(ble_dfu_buttonless_evt_type_t event) {
         }
 
         case BLE_DFU_EVT_BOOTLOADER_ENTER:
-            NRF_LOG_INFO("Device will enter bootloader mode.");
+            NRF_LOG_INFO("Enter DFU");
             // 设备将进入引导加载程序模式
             break;
 
         case BLE_DFU_EVT_BOOTLOADER_ENTER_FAILED:
-            NRF_LOG_ERROR("Request to enter bootloader mode failed asynchroneously.");
+            NRF_LOG_ERROR("DFU fail async");
             // 进入引导加载程序模式的请求异步失败
             APP_ERROR_CHECK(false);
             break;
 
         case BLE_DFU_EVT_RESPONSE_SEND_ERROR:
-            NRF_LOG_ERROR("Request to send a response to client failed.");
+            NRF_LOG_ERROR("Resp fail");
             // 向客户端发送响应的请求失败
             APP_ERROR_CHECK(false);
             break;
 
         default:
-            NRF_LOG_ERROR("Unknown event from ble_dfu_buttonless.");
+            NRF_LOG_ERROR("DFU unknown evt");
             // 来自ble_dfu_buttonless的未知事件
             break;
     }
@@ -247,7 +254,7 @@ static void ble_dfu_evt_handler(ble_dfu_buttonless_evt_type_t event) {
 
 /**@brief 时钟定时器超时处理函数
  *
- * @details 每秒调用一次，用于更新时间戳、处理低电量LED闪烁和EPD定时事件
+ * @details 每秒调用一次，用于更新时间戳和EPD定时事件
  *
  * @param[in] p_context 上下文指针（未使用）
  */
@@ -255,14 +262,6 @@ static void clock_timer_timeout_handler(void* p_context) {
     UNUSED_PARAMETER(p_context);
 
     m_timestamp++;  // 时间戳递增（每秒一次）
-
-    // Low battery LED blinking (every 2 seconds)
-    // Uses cached voltage from last screen refresh, no ADC operation here
-    // 低电量LED闪烁（每2秒一次）
-    // 使用上次屏幕刷新时缓存的电压值，此处不进行ADC操作
-    if (m_timestamp % 2 == 0 && EPD_IsLowBattery()) {  // 每2秒检查一次
-        EPD_LED_BLINK();  // 闪烁LED指示低电量
-    }
 
     ble_epd_on_timer(&m_epd, m_timestamp, false);  // 通知EPD服务定时器事件
 }
@@ -463,10 +462,6 @@ void gpiote_evt_handler(nrf_drv_gpiote_pin_t pin, nrf_gpiote_polarity_t action) 
     nrf_drv_gpiote_in_uninit(pin);         // 取消初始化引脚
     nrf_drv_gpiote_uninit();               // 取消初始化GPIOTE模块
 
-    // blink LED on wakeup
-    // 唤醒时闪烁LED
-    EPD_LED_BLINK();
-
     advertising_start();  // 开始广播
 }
 
@@ -640,6 +635,147 @@ void gatt_evt_handler(nrf_ble_gatt_t* p_gatt, nrf_ble_gatt_evt_t const* p_evt) {
                   p_gatt->att_mtu_desired_periph);
 }
 
+#if BLE_LOG_REDIRECT_ALL_NRF_LOG
+static void long_to_str(char **out, char *end, long val, int radix, int width, char pad, bool sign, bool upper) {
+    char buf[12];  // max 10 digits for 32-bit + sign + NUL
+    int len = 0;
+    unsigned long uval = val;
+    if (sign && val < 0) {
+        uval = -val;
+        if (*out < end) {
+            *(*out)++ = '-';
+        }
+    }
+    do {
+        int rem = uval % radix;
+        buf[len++] = (rem < 10) ? (rem + '0') : (rem - 10 + (upper ? 'A' : 'a'));
+        uval /= radix;
+    } while (uval > 0);
+    
+    while (len < width && *out < end) {
+        *(*out)++ = pad;
+        width--;
+    }
+    while (len > 0 && *out < end) {
+        *(*out)++ = buf[--len];
+    }
+}
+
+static int mini_vsnprintf(char *buf, size_t size, const char *format, va_list args) {
+    if (size == 0) return 0;
+    char *p = buf;
+    char *end = buf + size - 1;
+    const char *f = format;
+    
+    while (*f && p < end) {
+        if (*f != '%') {
+            *p++ = *f++;
+            continue;
+        }
+        f++; // Skip '%'
+        
+        char pad = ' ';
+        int width = 0;
+        if (*f == '0') {
+            pad = '0';
+            f++;
+        }
+        while (*f >= '0' && *f <= '9') {
+            width = width * 10 + (*f - '0');
+            f++;
+        }
+        
+        bool is_long = false;
+        if (*f == 'l') {
+            is_long = true;
+            f++;
+        }
+        
+        if (*f == 'd') {
+            long val = is_long ? va_arg(args, long) : va_arg(args, int);
+            long_to_str(&p, end, val, 10, width, pad, true, false);
+            f++;
+        } else if (*f == 'u') {
+            unsigned long val = is_long ? va_arg(args, unsigned long) : va_arg(args, unsigned int);
+            long_to_str(&p, end, val, 10, width, pad, false, false);
+            f++;
+        } else if (*f == 'x' || *f == 'X') {
+            unsigned long val = is_long ? va_arg(args, unsigned long) : va_arg(args, unsigned int);
+            long_to_str(&p, end, val, 16, width, pad, false, (*f == 'X'));
+            f++;
+        } else if (*f == 's') {
+            const char *s = va_arg(args, const char *);
+            if (!s) s = "(null)";
+            while (*s && p < end) {
+                *p++ = *s++;
+            }
+            f++;
+        } else if (*f == 'c') {
+            *p++ = (char)va_arg(args, int);
+            f++;
+        } else {
+            *p++ = *f++;
+        }
+    }
+    *p = '\0';
+    return p - buf;
+}
+
+/**@brief BLE log redirect function to send logs via EPD service notification.
+ */
+void ble_log(const char *format, ...) {
+    // Reentrance guard: ble_log calls sd_ble_gatts_hvx which must not
+    // be invoked recursively (e.g. NRF_LOG inside a BLE event handler
+    // that itself triggers another NRF_LOG).
+    static volatile bool in_ble_log = false;
+    if (in_ble_log) return;
+    if (m_epd.conn_handle == BLE_CONN_HANDLE_INVALID || !m_epd.is_notification_enabled) {
+        return;
+    }
+    in_ble_log = true;
+
+    char buf[80];
+    va_list args;
+    va_start(args, format);
+    int len = mini_vsnprintf(buf, sizeof(buf), format, args);
+    va_end(args);
+
+    if (len > 0) {
+        uint16_t send_len = (len < (int)sizeof(buf)) ? len : (sizeof(buf) - 1);
+        if (send_len > m_epd.max_data_len) {
+            send_len = m_epd.max_data_len;
+        }
+        ble_epd_string_send(&m_epd, (uint8_t*)buf, send_len);
+    }
+    in_ble_log = false;
+}
+
+void ble_log_hexdump(const void *p_data, uint16_t len) {
+    if (m_epd.conn_handle == BLE_CONN_HANDLE_INVALID || !m_epd.is_notification_enabled || p_data == NULL || len == 0) {
+        return;
+    }
+
+    char buf[64];
+    int offset = 0;
+    const uint8_t *data = (const uint8_t *)p_data;
+    for (uint16_t i = 0; i < len && offset < sizeof(buf) - 4; i++) {
+        uint8_t byte = data[i];
+        uint8_t high = byte >> 4;
+        uint8_t low = byte & 0x0F;
+        buf[offset++] = (high < 10) ? (high + '0') : (high - 10 + 'A');
+        buf[offset++] = (low < 10) ? (low + '0') : (low - 10 + 'A');
+        buf[offset++] = ' ';
+    }
+    if (offset > 0) {
+        uint16_t send_len = (offset < sizeof(buf)) ? offset : (sizeof(buf) - 1);
+        if (send_len > m_epd.max_data_len) {
+            send_len = m_epd.max_data_len;
+        }
+        ble_epd_string_send(&m_epd, (uint8_t*)buf, send_len);
+    }
+}
+#endif
+
 /**@brief Function for initializing the GATT library.
  * GATT库初始化函数
  *
@@ -713,8 +849,20 @@ static void power_management_init(void) {
 static void idle_state_handle(void) {
     app_feed_wdt();  // 喂看门狗，防止系统复位
 
+#ifdef USE_SYSVIEW
+    (void)NRF_LOG_PROCESS();
+    // 裸机模式下，如果调用 nrf_pwr_mgmt_run() 进入 WFE 睡眠，CPU 时钟将被关断，
+    // 这会导致 Cortex-M 内核的 DWT 周期计数器停止计数，造成 SystemView 时间轴停滞。
+    // 因此在性能分析模式下我们跳过睡眠模式，保持 CPU 处于活动状态。
+    static uint32_t loop_count = 0;
+    if (++loop_count >= 1000000) {
+        loop_count = 0;
+        SEGGER_SYSVIEW_Mark(1); // 触发主循环空闲事件标记
+    }
+#else
     if (NRF_LOG_PROCESS() == false)  // 处理日志缓冲区，如果没有待处理的日志
         nrf_pwr_mgmt_run();          // 进入低功耗模式（等待事件唤醒）
+#endif
 }
 
 /**
@@ -759,11 +907,27 @@ void wdt_event_handler(void) {
 int main(void) {
     log_init();  // 初始化日志系统
 
+#ifdef USE_SYSVIEW
+    SEGGER_SYSVIEW_Conf();
+    SEGGER_SYSVIEW_Start();
+    SEGGER_SYSVIEW_NameMarker(1, "Main Loop Idle");
+#endif
+
     // Save reset reason.
     // 保存复位原因
     m_resetreas = NRF_POWER->RESETREAS;  // 读取复位原因寄存器
-    NRF_POWER->RESETREAS |= NRF_POWER->RESETREAS;  // 清除复位原因标志
+    NRF_POWER->RESETREAS = m_resetreas;  // 清除复位原因标志
     NRF_LOG_DEBUG("== RESET REASON: %d ===\n", m_resetreas);
+
+    // 如果复位是由看门狗引起，且电压严重不足（低于临界关机阈值），
+    // 则说明我们之前已经在低电量下触发了关机并显示了关机页，看门狗重启了芯片。
+    // 此时无需重新绘制墨水屏，直接进入睡眠即可，避免重复唤醒和刷屏。
+    if (m_resetreas & NRF_POWER_RESETREAS_DOG_MASK) {
+        if (EPD_ReadVoltage() < CRITICAL_BATTERY_SHUTDOWN_MV) {
+            NRF_POWER->SYSTEMOFF = 1;
+            while (1); // 等待进入低功耗睡眠
+        }
+    }
 
     NRF_LOG_DEBUG("init..\n");
 
@@ -815,3 +979,14 @@ int main(void) {
         idle_state_handle();  // 处理空闲状态（喂狗、日志处理、进入低功耗）
     }
 }
+
+#if !defined(NRF_STRERROR_ENABLED) || NRF_STRERROR_ENABLED == 0
+char const * nrf_strerror_get(uint32_t code) {
+    (void)code;
+    return "";
+}
+char const * nrf_strerror_find(uint32_t code) {
+    (void)code;
+    return NULL;
+}
+#endif

@@ -3,7 +3,7 @@
 
 #include <stdint.h>
 
-#include "epd_ext_resources.h"
+#include "gui_porting_hal.h"
 #include "u8g2_font.h"
 
 /**

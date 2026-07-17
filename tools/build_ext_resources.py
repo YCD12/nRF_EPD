@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import base64
 import binascii
+import datetime
 import json
 import pathlib
 import re
@@ -15,6 +16,7 @@ STAGING_MANIFEST = 0x7E000
 # this sector and activates it in RAM; it does not copy manifest sectors.
 MAIN_MANIFEST = STAGING_MANIFEST
 SCRATCH = 0x7F000
+SECTOR_SIZE = 4096
 MAGIC = 0x45505253
 VERSION = 1
 MAX_ENTRIES = 24
@@ -25,6 +27,17 @@ RES_TYPE_LUNAR = 2
 RES_TYPE_HOLIDAY = 3
 RES_TYPE_UI = 4
 RES_TYPE_LUT = 5
+RES_TYPE_LUNAR_DB = 6
+
+# Lunar Calendar Database (LCDB, resource type 6). See
+# AiCoding/lunar_calendar_database_design_and_migration.md.
+LUNAR_DB_ENTRY = 1
+LUNAR_DB_MAGIC = 0x4C434442  # "LCDB"
+LUNAR_DB_VERSION = 1
+LUNAR_DB_RECORD_SIZE = 4
+# Years with a dedicated data block. Firmware degrades other years to the first.
+# 含 2025：设备默认时间戳为 2025-01-01，未校时开机需正确显示 2025 农历。
+LUNAR_DB_YEARS = [2025, 2026, 2027]
 
 FONT_IDS = {
     "u8g2_font_wqy9_t_lunar": 1,
@@ -81,6 +94,9 @@ LUT_TABLES_PER_TIER = 6
 
 UI_MAGIC = 0x314C4955
 UI_VERSION = 1
+UI_SCHEMA_MAJOR = 1
+UI_SCHEMA_MINOR = 0
+UI_COLOR_DEPTH_BWR = 2
 UI_HEADER_SIZE = 28
 UI_MODE_SIZE = 16
 UI_COMPONENT_SIZE = 24
@@ -101,6 +117,25 @@ UI_TEXT_FLAG_RIGHT_ALIGN = 0x02
 UI_TEXT_FLAG_ZERO_PAD = 0x04
 UI_TEXT_FLAG_WITH_ZODIAC = 0x08
 UI_TEXT_FLAG_WEEK_LEADING_SPACE = 0x10
+
+
+def synthesize_mode_partial(mode):
+    """P2: derive mode partial rect from PARTIAL_ONLY component union (pack-time)."""
+    explicit = list(mode.get("partial", [0, 0, 0, 0]))
+    partial_comps = [
+        c for c in mode.get("components", [])
+        if (c.get("flags", 0) & UI_FLAG_PARTIAL_ONLY) and c.get("w", 0) > 0 and c.get("h", 0) > 0
+    ]
+    if not partial_comps:
+        return explicit
+
+    min_x = min(c.get("x", 0) for c in partial_comps)
+    min_y = min(c.get("y", 0) for c in partial_comps)
+    max_x = max(c.get("x", 0) + c.get("w", 0) for c in partial_comps)
+    max_y = max(c.get("y", 0) + c.get("h", 0) for c in partial_comps)
+    if max_x <= min_x or max_y <= min_y:
+        return explicit
+    return [min_x, min_y, max_x - min_x, max_y - min_y]
 
 UI_TEXT = {
     "date_ymd": 1,
@@ -157,12 +192,19 @@ LUNAR_FESTIVALS = [
     (7, 15, "中元节"), (8, 15, "中秋节"), (9, 9, "重阳节"), (10, 1, "寒衣节"), (12, 8, "腊八节"),
     (12, 30, "除夕"),
 ]
+# 调休编码 (per-day, uint16): value = (month << 8) | day.
+#   bit[15:12] (最高半字节) > 0 表示"班"(调休上班)，否则为"休"(法定休假)。
+# 以年份为 Key 组织，支持多年份 LCDB 生成（见文档优化 17）。
 HOLIDAY_YEAR = 2026
-HOLIDAYS = [
-    0x0101, 0x0102, 0x0103, 0x1104, 0x120E, 0x020F, 0x0210, 0x0211, 0x0212, 0x0213, 0x0214, 0x0215, 0x0216,
-    0x0217, 0x121C, 0x0404, 0x0405, 0x0406, 0x0501, 0x0502, 0x0503, 0x0504, 0x0505, 0x1509, 0x0613, 0x0614,
-    0x0615, 0x0919, 0x091A, 0x091B, 0x1914, 0x0A01, 0x0A02, 0x0A03, 0x0A04, 0x0A05, 0x0A06, 0x0A07, 0x1A0A,
-]
+HOLIDAYS = {
+    2026: [
+        0x0101, 0x0102, 0x0103, 0x1104, 0x120E, 0x020F, 0x0210, 0x0211, 0x0212, 0x0213, 0x0214, 0x0215, 0x0216,
+        0x0217, 0x121C, 0x0404, 0x0405, 0x0406, 0x0501, 0x0502, 0x0503, 0x0504, 0x0505, 0x1509, 0x0613, 0x0614,
+        0x0615, 0x0919, 0x091A, 0x091B, 0x1914, 0x0A01, 0x0A02, 0x0A03, 0x0A04, 0x0A05, 0x0A06, 0x0A07, 0x1A0A,
+    ],
+    # 2027 国家法定调休尚未正式公布，先留空占位；公布后填入即可自动进入 LCDB。
+    2027: [],
+}
 
 
 def crc32(data):
@@ -286,8 +328,9 @@ def pack_festivals(items):
 
 
 def pack_holidays():
-    out = bytearray(struct.pack("<HH", HOLIDAY_YEAR, len(HOLIDAYS)))
-    for value in HOLIDAYS:
+    values = HOLIDAYS.get(HOLIDAY_YEAR, [])
+    out = bytearray(struct.pack("<HH", HOLIDAY_YEAR, len(values)))
+    for value in values:
         out += struct.pack("<H", value)
     return bytes(out)
 
@@ -317,10 +360,252 @@ def parse_holiday_resources():
     ]
 
 
+# ---------------------------------------------------------------------------
+# Lunar Calendar Database (LCDB) generation.
+#
+# The algorithms below are 1:1 ports of the firmware routines in GUI/Lunar.c
+# (LUNAR_SolarToLunar / GetJieQi) and GUI/GUI.c (GetFestival). Keeping them
+# byte-for-byte equivalent guarantees the pre-computed database renders exactly
+# like the current on-device computation. The shared lookup tables
+# (LUNAR_SOLAR_1_1 / LUNAR_MONTH_DAYS / LUNAR_JIEQI_*) are indexed as
+# [base_marker(2024), y2024, y2025, ..., y2029], so year Y maps to index
+# Y - 2024 + 1.
+# ---------------------------------------------------------------------------
+
+LUNAR_TABLE_BASE_YEAR = 2024
+LUNAR_TABLE_YEAR_COUNT = 6
+
+
+def _is_leap_year(year):
+    if year % 100 == 0:
+        return year % 400 == 0
+    return year % 4 == 0
+
+
+def _lunar_bitint(data, length, shift):
+    return (data & (((1 << length) - 1) << shift)) >> shift
+
+
+def _solar_to_int(y, m, d):
+    m = (m + 9) % 12
+    y = y - m // 10
+    return 365 * y + y // 4 - y // 100 + y // 400 + (m * 306 + 5) // 10 + (d - 1)
+
+
+def solar_to_lunar(year, month, day):
+    """Port of LUNAR_SolarToLunar. Returns (lunar_month, lunar_day, is_leap, lunar_year)."""
+    year_min = LUNAR_TABLE_BASE_YEAR + 1
+    year_max = LUNAR_TABLE_BASE_YEAR + LUNAR_TABLE_YEAR_COUNT - 1
+    calc_year = year
+    if calc_year < year_min or calc_year > year_max:
+        calc_year = year_min
+    year_index = calc_year - LUNAR_TABLE_BASE_YEAR + 1
+
+    solar_data = (calc_year << 9) | (month << 5) | day
+    if LUNAR_SOLAR_1_1[year_index] > solar_data and year_index > 1:
+        year_index -= 1
+
+    solar11 = LUNAR_SOLAR_1_1[year_index]
+    y = _lunar_bitint(solar11, 12, 9)
+    m = _lunar_bitint(solar11, 4, 5)
+    d = _lunar_bitint(solar11, 5, 0)
+    offset = _solar_to_int(calc_year, month, day) - _solar_to_int(y, m, d)
+
+    days = LUNAR_MONTH_DAYS[year_index]
+    leap = _lunar_bitint(days, 4, 13)
+    lunar_year = LUNAR_TABLE_BASE_YEAR + year_index - 1
+    lunar_month = 1
+    offset += 1
+    for i in range(13):
+        dm = 30 if _lunar_bitint(days, 1, 12 - i) == 1 else 29
+        if offset > dm:
+            lunar_month += 1
+            offset -= dm
+        else:
+            break
+
+    is_leap = 0
+    if leap != 0 and lunar_month > leap:
+        if lunar_month == leap + 1:
+            is_leap = 1
+        lunar_month -= 1
+    return lunar_month, offset, is_leap, lunar_year
+
+
+def _get_jieqi_date(year, month, mday):
+    """Port of GetJieQi: solar-term day-of-month for the half-month, or 0."""
+    if month == 0 or month > 12:
+        return 0
+    year_min = LUNAR_TABLE_BASE_YEAR + 1
+    year_max = LUNAR_TABLE_BASE_YEAR + LUNAR_TABLE_YEAR_COUNT - 1
+    calc_year = year
+    if calc_year < year_min or calc_year > year_max:
+        calc_year = year_min
+
+    jq = (month - 1) * 2
+    if mday >= 15:
+        jq += 1
+    bak1 = LUNAR_JIEQI_YEAR_BITS[(calc_year - LUNAR_TABLE_BASE_YEAR) * 3 + jq // 8]
+    value = ((bak1 << (jq % 8)) & 0x80)
+    jqdate = LUNAR_JIEQI_BASE_DAYS[jq]
+    if jqdate == 0:
+        return 0
+    if value != 0:
+        if jq in (1, 11, 18, 21) and year < 2044:
+            jqdate += 1
+        else:
+            jqdate -= 1
+    return jqdate
+
+
+def get_solar_term(year, month, day):
+    """Return 1..24 (index into LUNAR_JIEQI_NAMES + 1) when the date is a solar term, else 0."""
+    jqdate = _get_jieqi_date(year, month, day)
+    if jqdate != 0 and jqdate == day:
+        jq = (month - 1) * 2 + (1 if day >= 15 else 0)
+        return jq + 1
+    return 0
+
+
+def get_festival(year, month, day, dow_sun0, lunar):
+    """Port of GUI.c GetFestival priority order, excluding solar terms
+    (which are stored separately in daily_record.solar_term)."""
+    lunar_month, lunar_day, _is_leap, _ly = lunar
+
+    for m, d, name in LUNAR_FESTIVALS:
+        if lunar_month == m and lunar_day == d:
+            return name
+
+    # 除夕：农历 12/29 且次日为正月初一（12/30 已在上面命中）。
+    if lunar_month == 12 and lunar_day == 29:
+        nxt = datetime.date(year, month, day) + datetime.timedelta(days=1)
+        n_month, n_day, _nl, _nly = solar_to_lunar(nxt.year, nxt.month, nxt.day)
+        if n_month == 1 and n_day == 1:
+            return "除夕"
+
+    if month == 5 and dow_sun0 == 0 and 8 <= day <= 14:
+        return "母亲节"
+    if month == 6 and dow_sun0 == 0 and 15 <= day <= 21:
+        return "父亲节"
+    if month == 11 and dow_sun0 == 4 and 22 <= day <= 28:
+        return "感恩节"
+
+    for m, d, name in SOLAR_FESTIVALS:
+        if month == m and day == d:
+            return name
+    return None
+
+
+def _holiday_type(year, month, day):
+    """0: 普通; 1: 休; 2: 班. Matches GUI.c decode of holiday_adjustments."""
+    for value in HOLIDAYS.get(year, []):
+        if ((value >> 8) & 0xF) == month and (value & 0xFF) == day:
+            return 2 if ((value >> 12) & 0xF) > 0 else 1
+    return 0
+
+
+def _build_lunar_db_year_block(year):
+    total_days = 366 if _is_leap_year(year) else 365
+
+    string_pool = bytearray(b"\x00")  # index 0 reserved as empty string
+    pool_index = {}
+
+    def intern(text):
+        if text in pool_index:
+            return pool_index[text]
+        offset = len(string_pool)
+        if offset > 0xFFFE:
+            raise ValueError(f"LCDB string pool overflow for year {year}")
+        string_pool.extend(text.encode("utf-8") + b"\x00")
+        pool_index[text] = offset
+        return offset
+
+    records = bytearray()
+    sparse_entries = []
+    day0 = datetime.date(year, 1, 1)
+    for doy in range(total_days):
+        cur = day0 + datetime.timedelta(days=doy)
+        month, day = cur.month, cur.day
+        lunar = solar_to_lunar(year, month, day)
+        lunar_month, lunar_day, is_leap, lunar_year = lunar
+        dow_sun0 = (cur.weekday() + 1) % 7  # Python Mon=0 -> Sun=0 convention
+
+        solar_term = get_solar_term(year, month, day)
+        festival = get_festival(year, month, day, dow_sun0, lunar)
+        festival_offset = intern(festival) if festival else 0xFFFF
+        special_label = 0xFFFF
+        holiday_type = _holiday_type(year, month, day)
+        # 干支年基于农历年，且沿用固件既有名词数组语义 (index % 10 / % 12)。
+        jiazi_year = lunar_year % 60
+
+        has_festival = 1 if festival_offset != 0xFFFF else 0
+        has_special = 1 if special_label != 0xFFFF else 0
+
+        # Pack to 32-bit uint
+        packed_val = (
+            (lunar_month & 0x0F) |
+            ((1 if is_leap else 0) << 4) |
+            ((lunar_day & 0x1F) << 5) |
+            ((jiazi_year & 0x3F) << 10) |
+            ((solar_term & 0x1F) << 16) |
+            ((holiday_type & 0x03) << 21) |
+            (has_festival << 23) |
+            (has_special << 24)
+        )
+
+        records += struct.pack("<I", packed_val)
+
+        if has_festival or has_special:
+            sparse_entries.append((doy, festival_offset, special_label))
+
+    sparse_data = bytearray()
+    for doy_idx, fest_off, spec_off in sparse_entries:
+        sparse_data += struct.pack("<HHH", doy_idx, fest_off, spec_off)
+
+    sparse_offset = 16 + len(records)
+    string_pool_offset = sparse_offset + len(sparse_data)
+    header = struct.pack(
+        "<HHHIIBB",
+        year,
+        total_days,
+        len(sparse_entries),
+        sparse_offset,
+        string_pool_offset,
+        0, 0
+    )
+    return header + bytes(records) + bytes(sparse_data) + bytes(string_pool)
+
+
+def parse_lunar_db_resources():
+    years = LUNAR_DB_YEARS
+    year_count = len(years)
+
+    blocks = [_build_lunar_db_year_block(y) for y in years]
+
+    header_size = 16
+    offset_table_size = year_count * 4
+    offsets = []
+    cursor = header_size + offset_table_size
+    for block in blocks:
+        offsets.append(cursor)
+        cursor += len(block)
+
+    out = bytearray()
+    out += struct.pack("<IBBHB", LUNAR_DB_MAGIC, LUNAR_DB_VERSION, year_count, years[0], LUNAR_DB_RECORD_SIZE)
+    out += b"\x00" * 7  # reserved, pads master header to 16 bytes
+    for offset in offsets:
+        out += struct.pack("<I", offset)
+    for block in blocks:
+        out += block
+
+    return [(RES_TYPE_LUNAR_DB, LUNAR_DB_ENTRY, bytes(out), "lunar_db")]
+
+
 def default_ui_layout():
     return {
         "version": UI_VERSION,
-        "screen": {"width": 800, "height": 480},
+        "schema": {"major": UI_SCHEMA_MAJOR, "minor": UI_SCHEMA_MINOR},
+        "screen": {"width": 800, "height": 480, "colorDepth": UI_COLOR_DEPTH_BWR},
         "modes": [
             {
                 "id": 1,
@@ -343,7 +628,6 @@ def default_ui_layout():
                 "id": 2,
                 "name": "clock_calendar",
                 "updatePolicy": 2,
-                "partial": [0, 169, 384, 150],
                 "components": [
                     {"type": "line", "x": 15, "y": 45, "w": 770, "h": 2, "fg": 0},
                     {"type": "line", "x": 15, "y": 435, "w": 770, "h": 2, "fg": 0},
@@ -376,11 +660,11 @@ def default_ui_layout():
                     {"type": "battery", "x": 700, "y": 25, "w": 20, "h": 12},
                     {"type": "text_field", "dataId": UI_TEXT["temp_ssid"], "x": 100, "y": 58, "w": 600, "h": 12, "fontId": 9},
                     {"type": "line", "x": 90, "y": 68, "w": 620, "h": 1, "fg": 0},
-                    {"type": "time_7seg", "x": 176, "y": 172, "w": 448, "h": 204, "p0": 10, "p1": 2},
+                    {"type": "time_7seg", "x": 166, "y": 139, "w": 468, "h": 202, "p0": 10, "p1": 2},
                     {"type": "line", "x": 90, "y": 412, "w": 620, "h": 1, "fg": 0},
                     {"type": "text_field", "dataId": UI_TEXT["lunar_year"], "x": 100, "y": 442, "w": 220, "h": 16, "flags": UI_TEXT_FLAG_WITH_ZODIAC},
                     {"type": "text_field", "dataId": UI_TEXT["week_number"], "x": 100, "y": 462, "w": 160, "h": 16, "flags": UI_TEXT_FLAG_WEEK_LEADING_SPACE},
-                    {"type": "text_field", "dataId": UI_TEXT["jieqi"], "x": 100, "y": 442, "w": 600, "h": 40, "p0": 462},
+                    {"type": "text_field", "dataId": UI_TEXT["jieqi"], "x": 100, "y": 442, "w": 600, "h": 38, "p0": 462},
                     {"type": "time_sync_tip", "x": 0, "y": 0, "w": 800, "h": 480},
                 ],
             },
@@ -410,7 +694,7 @@ def pack_ui_bundle(layout):
             "updatePolicy": mode.get("updatePolicy", 0),
             "componentStart": start,
             "componentCount": len(mode["components"]),
-            "partial": mode.get("partial", [0, 0, 0, 0]),
+            "partial": synthesize_mode_partial(mode),
             "flags": mode.get("flags", 0),
         })
 
@@ -418,10 +702,14 @@ def pack_ui_bundle(layout):
     component_offset = mode_offset + len(mode_records) * UI_MODE_SIZE
     string_offset = component_offset + len(components) * UI_COMPONENT_SIZE
     string_table = b"\x00"
+    schema = layout.get("schema", {})
+    schema_major = schema.get("major", UI_SCHEMA_MAJOR)
+    schema_minor = schema.get("minor", UI_SCHEMA_MINOR)
+    color_depth = layout.get("screen", {}).get("colorDepth", UI_COLOR_DEPTH_BWR)
 
     out = bytearray()
     out += struct.pack(
-        "<IHHHBBHHHHII",
+        "<IHHHBBHHHHBBBBI",
         UI_MAGIC,
         UI_VERSION,
         layout["screen"]["width"],
@@ -432,6 +720,9 @@ def pack_ui_bundle(layout):
         component_offset,
         string_offset,
         len(string_table),
+        schema_major,
+        schema_minor,
+        color_depth,
         0,
         0,
     )
@@ -506,6 +797,10 @@ def align4(value):
     return (value + 3) & ~3
 
 
+def align_sector(value):
+    return (value + SECTOR_SIZE - 1) & ~(SECTOR_SIZE - 1)
+
+
 def build_manifest(entries):
     manifest = bytearray()
     manifest += struct.pack("<IHH", MAGIC, VERSION, len(entries))
@@ -520,13 +815,123 @@ def build_manifest(entries):
     return bytes(manifest), manifest_crc
 
 
+def get_u8g2_font_supported_chars(font_bytes):
+    start_pos_unicode = int.from_bytes(font_bytes[21:23], byteorder='big')
+    supported = set()
+    idx = 23
+    while idx + 1 < len(font_bytes):
+        glyph_size = font_bytes[idx + 1]
+        if glyph_size == 0:
+            break
+        encoding = font_bytes[idx]
+        supported.add(chr(encoding))
+        idx += glyph_size
+    lookup_table_start = 23 + start_pos_unicode
+    if lookup_table_start < len(font_bytes):
+        first_subblock_rel_offset = int.from_bytes(font_bytes[lookup_table_start:lookup_table_start+2], byteorder='big')
+        num_entries = first_subblock_rel_offset // 4
+        current_subblock_offset = lookup_table_start
+        for i in range(num_entries):
+            entry_offset = lookup_table_start + i * 4
+            rel_offset = int.from_bytes(font_bytes[entry_offset:entry_offset+2], byteorder='big')
+            current_subblock_offset += rel_offset
+            idx = current_subblock_offset
+            while idx + 2 < len(font_bytes):
+                e_val = int.from_bytes(font_bytes[idx:idx+2], byteorder='big')
+                if e_val == 0:
+                    break
+                glyph_size = font_bytes[idx + 2]
+                if glyph_size == 0:
+                    break
+                supported.add(chr(e_val))
+                idx += glyph_size
+    return supported
+
+
+def validate_font_characters(resources, ui_layout):
+    fonts = {}
+    for res_type, res_id, payload, name in resources:
+        if res_type == RES_TYPE_FONT:
+            fonts[name] = get_u8g2_font_supported_chars(payload)
+
+    # Base sets of characters that must be supported
+    required_chinese = set()
+    for _, _, name in SOLAR_FESTIVALS:
+        required_chinese.update(name)
+    for _, _, name in LUNAR_FESTIVALS:
+        required_chinese.update(name)
+
+    SOLAR_TERMS = [
+        "小寒", "大寒", "立春", "雨水", "惊蛰", "春分", "清明", "谷雨",
+        "立夏", "小满", "芒种", "夏至", "小暑", "大暑", "立秋", "处暑",
+        "白露", "秋分", "寒露", "霜降", "立冬", "小雪", "大雪", "冬至"
+    ]
+    for term in SOLAR_TERMS:
+        required_chinese.update(term)
+
+    # 1. wqy9 required characters (used for all small UI text elements)
+    wqy9_required = set(required_chinese)
+    # Fixed Chinese calendar strings/stems/branches/zodiacs (excluding '卅' as it is never used)
+    wqy9_required.update("闰月年周星期日一二三四五六初十甲乙丙丁戊己庚辛壬癸子丑寅卯辰巳午未申酉戌亥鼠牛虎兔龙蛇马羊猴鸡狗猪℃[]")
+    wqy9_ascii = set("0123456789-:. ")
+
+    # 2. wqy12 required characters (used for large grid days, sync screen etc.)
+    wqy12_required = set(required_chinese)
+    wqy12_required.update("闰月年周星期日一二三四五六初十甲乙丙丁戊己庚辛壬癸子丑寅卯辰巳午未申酉戌亥鼠牛虎兔龙蛇马羊猴鸡狗猪℃离还有天")
+    wqy12_ascii = set("0123456789")
+
+    # Traverse ui_layout for any future static text values
+    def find_static_texts(obj):
+        texts = []
+        if isinstance(obj, dict):
+            for k, v in obj.items():
+                if k == "text" and isinstance(v, str):
+                    texts.append(v)
+                else:
+                    texts.extend(find_static_texts(v))
+        elif isinstance(obj, list):
+            for item in obj:
+                texts.extend(find_static_texts(item))
+        return texts
+
+    for text in find_static_texts(ui_layout):
+        wqy9_required.update(text)
+        wqy12_required.update(text)
+
+    # Font: wqy9
+    if "u8g2_font_wqy9_t_lunar" in fonts:
+        supported = fonts["u8g2_font_wqy9_t_lunar"]
+        missing_cn = sorted(list(wqy9_required - supported))
+        if missing_cn:
+            raise ValueError(f"Font validation failed: 'u8g2_font_wqy9_t_lunar' is missing required characters: {''.join(missing_cn)}")
+        missing_ascii = sorted(list(wqy9_ascii - supported))
+        if missing_ascii:
+            raise ValueError(f"Font validation failed: 'u8g2_font_wqy9_t_lunar' is missing required ASCII characters: {''.join(missing_ascii)}")
+
+    # Font: wqy12
+    if "u8g2_font_wqy12_t_lunar" in fonts:
+        supported = fonts["u8g2_font_wqy12_t_lunar"]
+        missing_cn = sorted(list(wqy12_required - supported))
+        if missing_cn:
+            raise ValueError(f"Font validation failed: 'u8g2_font_wqy12_t_lunar' is missing required characters: {''.join(missing_cn)}")
+        missing_ascii = sorted(list(wqy12_ascii - supported))
+        if missing_ascii:
+            raise ValueError(f"Font validation failed: 'u8g2_font_wqy12_t_lunar' is missing required ASCII characters: {''.join(missing_ascii)}")
+
+    print("Font character validation passed! All required characters are supported by Chinese fonts.")
+
+
 def main():
     ui_layout = default_ui_layout()
-    resources = parse_fonts() + parse_lunar_resources() + parse_holiday_resources() + [
+    resources = parse_fonts() + parse_lunar_resources() + parse_holiday_resources() + parse_lunar_db_resources() + [
         (RES_TYPE_UI, UI_IDS["ui_bundle"], pack_ui_bundle(ui_layout), "ui_bundle")
     ]
     if INCLUDE_EXTERNAL_LUT_RESOURCES:
         resources += parse_lut_resources()
+
+    # Validate that the fonts contain all required Chinese and ASCII characters
+    validate_font_characters(resources, ui_layout)
+
     if len(resources) > MAX_ENTRIES:
         raise ValueError(f"Too many resources: {len(resources)} > {MAX_ENTRIES}")
 
@@ -534,7 +939,7 @@ def main():
     entries = []
     address = DATA_START
     for res_type, res_id, payload, name in resources:
-        address = DATA_START + align4(len(data))
+        address = DATA_START + align_sector(len(data))
         padding = address - (DATA_START + len(data))
         if padding:
             data += b"\xFF" * padding
@@ -576,6 +981,39 @@ def main():
 }})();
 """
     (html_js / "resource_bundle.js").write_text(bundle, encoding="utf-8")
+
+    # Write independent partition files and manifest to tools/dist
+    dist_dir = ROOT / "tools" / "dist"
+    dist_dir.mkdir(parents=True, exist_ok=True)
+
+    # Save the manifest binary
+    (dist_dir / "manifest.bin").write_bytes(manifest)
+
+    # Save each independent resource payload
+    for res_type, res_id, payload, name in resources:
+        (dist_dir / f"{name}.bin").write_bytes(payload)
+
+    # Save a JSON manifest file for incremental DFU tooling
+    json_manifest = {
+        "magic": "EPDR",
+        "version": VERSION,
+        "manifestCrc32": f"0x{manifest_crc:08X}",
+        "entries": [
+            {
+                "type": e["type"],
+                "id": e["id"],
+                "name": e["name"],
+                "offset": e["offset"],
+                "length": e["length"],
+                "crc32": f"0x{e['crc32']:08X}"
+            }
+            for e in entries
+        ]
+    }
+    (dist_dir / "manifest.json").write_text(
+        json.dumps(json_manifest, indent=2, ensure_ascii=False),
+        encoding="utf-8"
+    )
 
     image = bytearray([0xFF] * (SCRATCH - DATA_START))
     image[0:len(data)] = data

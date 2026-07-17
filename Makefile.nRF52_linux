@@ -1,0 +1,357 @@
+# =============================================================================
+# 工具链配置
+#   tools/gcc       → symlink 到打包的 arm-none-eabi-gcc 9.3.1
+#   tools/nrf-tools → symlink 到打包的 nrf-command-line-tools（mergehex/nrfjprog）
+# =============================================================================
+TOOLS_DIR        := $(CURDIR)/tools
+GNU_INSTALL_ROOT := $(TOOLS_DIR)/gcc/bin/
+GNU_VERSION      := 9.3.1
+GNU_PREFIX       := arm-none-eabi
+NRF_TOOLS_BIN    := $(TOOLS_DIR)/nrf-tools/bin
+
+export PATH := $(GNU_INSTALL_ROOT):$(NRF_TOOLS_BIN):$(HOME)/.local/bin:$(PATH)
+
+# =============================================================================
+# 项目配置（对应 Keil/EPD-nRF52.uvprojx → Target: nRF52811_xxAA）
+# =============================================================================
+PROJECT_NAME     := EPD-nRF52
+TARGETS          := nrf52811_xxaa
+OUTPUT_DIRECTORY := _build
+
+PROJ_DIR := $(CURDIR)
+SDK_ROOT := $(PROJ_DIR)/SDK/17.1.0_ddde560
+
+# =============================================================================
+# 调试选项：启用 RTT View 或 BLE 日志重定向
+#   USE_RTT ?= 1 : 编译并使用原生的 SEGGER RTT View 输出日志 (此时会超 56KB 空间，仅用于调试)
+#   USE_RTT ?= 0 : 默认值，不包含 RTT 模块 (在 56KB 内)
+#   USE_BLE_LOG ?= 1 : 开启轻量级 BLE 日志重定向输出 (默认不开启以优化 Flash/RAM)
+# =============================================================================
+USE_RTT ?= 0
+USE_SYSVIEW ?= 0
+DEBUG_LAYOUT ?= 0
+USE_BLE_LOG ?= 0
+
+# 调试布局默认强制开启 RTT
+ifeq ($(DEBUG_LAYOUT),1)
+USE_RTT := 1
+endif
+
+ifeq ($(USE_SYSVIEW),1)
+USE_RTT := 1
+endif
+
+ifeq ($(DEBUG_LAYOUT),1)
+$(OUTPUT_DIRECTORY)/nrf52811_xxaa.out: \
+  LINKER_SCRIPT  := $(SDK_ROOT)/gcc_nrf52_debug.ld
+else
+$(OUTPUT_DIRECTORY)/nrf52811_xxaa.out: \
+  LINKER_SCRIPT  := $(SDK_ROOT)/gcc_nrf52.ld
+endif
+
+# =============================================================================
+# 源文件（与 Keil 工程一致，Keil 专属文件替换为 GCC 等价文件）
+# =============================================================================
+SRC_FILES += \
+  $(SDK_ROOT)/components/ble/common/ble_advdata.c \
+  $(SDK_ROOT)/components/ble/common/ble_conn_params.c \
+  $(SDK_ROOT)/components/ble/common/ble_srv_common.c \
+  $(SDK_ROOT)/components/ble/ble_advertising/ble_advertising.c \
+  $(SDK_ROOT)/components/ble/nrf_ble_gatt/nrf_ble_gatt.c \
+  $(SDK_ROOT)/components/ble/ble_services/ble_dfu/ble_dfu.c \
+  $(SDK_ROOT)/components/ble/ble_services/ble_dfu/ble_dfu_unbonded.c \
+  $(SDK_ROOT)/components/libraries/atomic_fifo/nrf_atfifo.c \
+  $(SDK_ROOT)/components/libraries/atomic_flags/nrf_atflags.c \
+  $(SDK_ROOT)/components/libraries/atomic/nrf_atomic.c \
+  $(SDK_ROOT)/components/libraries/balloc/nrf_balloc.c \
+  $(SDK_ROOT)/components/libraries/bootloader/dfu/nrf_dfu_svci.c \
+  $(SDK_ROOT)/components/libraries/experimental_section_vars/nrf_section_iter.c \
+  $(SDK_ROOT)/components/libraries/fds/fds.c \
+  $(SDK_ROOT)/components/libraries/fstorage/nrf_fstorage.c \
+  $(SDK_ROOT)/components/libraries/fstorage/nrf_fstorage_sd.c \
+  $(SDK_ROOT)/components/libraries/memobj/nrf_memobj.c \
+  $(SDK_ROOT)/components/libraries/pwr_mgmt/nrf_pwr_mgmt.c \
+  $(SDK_ROOT)/components/libraries/ringbuf/nrf_ringbuf.c \
+  $(SDK_ROOT)/components/libraries/scheduler/app_scheduler.c \
+  $(SDK_ROOT)/components/libraries/strerror/nrf_strerror.c \
+  $(SDK_ROOT)/components/libraries/sortlist/nrf_sortlist.c \
+  $(SDK_ROOT)/components/libraries/timer/app_timer2.c \
+  $(SDK_ROOT)/components/libraries/timer/drv_rtc.c \
+  $(SDK_ROOT)/components/libraries/util/app_error.c \
+  $(SDK_ROOT)/components/libraries/util/app_error_handler_gcc.c \
+  $(SDK_ROOT)/components/libraries/util/app_error_weak.c \
+  $(SDK_ROOT)/components/libraries/util/app_util_platform.c \
+  $(SDK_ROOT)/components/libraries/util/nrf_assert.c \
+  $(SDK_ROOT)/components/softdevice/common/nrf_sdh.c \
+  $(SDK_ROOT)/components/softdevice/common/nrf_sdh_ble.c \
+  $(SDK_ROOT)/components/softdevice/common/nrf_sdh_soc.c \
+  $(SDK_ROOT)/modules/nrfx/soc/nrfx_atomic.c \
+  $(SDK_ROOT)/modules/nrfx/drivers/src/nrfx_clock.c \
+  $(SDK_ROOT)/modules/nrfx/drivers/src/nrfx_gpiote.c \
+  $(SDK_ROOT)/modules/nrfx/drivers/src/prs/nrfx_prs.c \
+  $(SDK_ROOT)/modules/nrfx/drivers/src/nrfx_spi.c \
+  $(SDK_ROOT)/modules/nrfx/drivers/src/nrfx_spim.c \
+  $(SDK_ROOT)/modules/nrfx/drivers/src/nrfx_wdt.c \
+  $(SDK_ROOT)/integration/nrfx/legacy/nrf_drv_clock.c \
+  $(SDK_ROOT)/integration/nrfx/legacy/nrf_drv_spi.c \
+  $(SDK_ROOT)/modules/nrfx/mdk/gcc_startup_nrf52811.S \
+  $(SDK_ROOT)/modules/nrfx/mdk/system_nrf52.c \
+  $(PROJ_DIR)/main.c \
+  $(PROJ_DIR)/gcc_sbrk.c \
+  $(PROJ_DIR)/EPD/EPD_config.c \
+  $(PROJ_DIR)/EPD/EPD_driver.c \
+  $(PROJ_DIR)/EPD/EPD_service.c \
+  $(PROJ_DIR)/EPD/epd_ext_resources.c \
+  $(PROJ_DIR)/EPD/res_hal.c \
+  $(PROJ_DIR)/EPD/fm25q04b.c \
+  $(PROJ_DIR)/EPD/UC8179.c \
+  $(PROJ_DIR)/EPD/epd_clock_diff.c \
+  $(PROJ_DIR)/GUI/GUI.c \
+  $(PROJ_DIR)/GUI/Lunar.c \
+  $(PROJ_DIR)/GUI/fonts.c \
+  $(PROJ_DIR)/GUI/Adafruit_GFX.c \
+  $(PROJ_DIR)/GUI/u8g2_font.c \
+  $(PROJ_DIR)/GUI/gui_porting_hal.c \
+  $(PROJ_DIR)/GUI/ui_runtime.c
+
+# =============================================================================
+# 根据 USE_RTT 条件性加入 SEGGER RTT 及 LOG 库源文件
+# =============================================================================
+ifeq ($(USE_RTT),1)
+SRC_FILES += \
+  $(SDK_ROOT)/components/libraries/log/src/nrf_log_backend_rtt.c \
+  $(SDK_ROOT)/components/libraries/log/src/nrf_log_backend_serial.c \
+  $(SDK_ROOT)/components/libraries/log/src/nrf_log_default_backends.c \
+  $(SDK_ROOT)/components/libraries/log/src/nrf_log_frontend.c \
+  $(SDK_ROOT)/components/libraries/log/src/nrf_log_str_formatter.c \
+  $(SDK_ROOT)/external/fprintf/nrf_fprintf.c \
+  $(SDK_ROOT)/external/fprintf/nrf_fprintf_format.c
+
+ifeq ($(USE_SYSVIEW),1)
+SRC_FILES += \
+  $(PROJ_DIR)/SystemView/SEGGER_RTT.c \
+  $(PROJ_DIR)/SystemView/SEGGER_RTT_ASM_ARMv7M.S \
+  $(PROJ_DIR)/SystemView/SEGGER_RTT_Syscalls_GCC.c \
+  $(PROJ_DIR)/SystemView/SEGGER_RTT_printf.c \
+  $(PROJ_DIR)/SystemView/SEGGER_SYSVIEW.c \
+  $(PROJ_DIR)/SystemView/SEGGER_SYSVIEW_Config_NoOS.c
+else
+SRC_FILES += \
+  $(SDK_ROOT)/external/segger_rtt/SEGGER_RTT.c \
+  $(SDK_ROOT)/external/segger_rtt/SEGGER_RTT_Syscalls_GCC.c \
+  $(SDK_ROOT)/external/segger_rtt/SEGGER_RTT_printf.c
+endif
+endif
+
+# =============================================================================
+# 头文件路径（与 Keil 工程一致）
+# =============================================================================
+INC_FOLDERS += \
+  $(SDK_ROOT)/components/toolchain/cmsis/include \
+  $(SDK_ROOT)/components/softdevice/common \
+  $(SDK_ROOT)/components/softdevice/s112/headers \
+  $(SDK_ROOT)/components/softdevice/s112/headers/nrf52 \
+  $(SDK_ROOT)/components/libraries/atomic \
+  $(SDK_ROOT)/components/libraries/atomic_fifo \
+  $(SDK_ROOT)/components/libraries/atomic_flags \
+  $(SDK_ROOT)/components/libraries/balloc \
+  $(SDK_ROOT)/components/libraries/bootloader \
+  $(SDK_ROOT)/components/libraries/bootloader/ble_dfu \
+  $(SDK_ROOT)/components/libraries/bootloader/dfu \
+  $(SDK_ROOT)/components/libraries/delay \
+  $(SDK_ROOT)/components/libraries/fstorage \
+  $(SDK_ROOT)/components/libraries/fds \
+  $(SDK_ROOT)/components/libraries/experimental_section_vars \
+  $(SDK_ROOT)/components/libraries/log \
+  $(SDK_ROOT)/components/libraries/log/src \
+  $(SDK_ROOT)/components/libraries/memobj \
+  $(SDK_ROOT)/components/libraries/mutex \
+  $(SDK_ROOT)/components/libraries/pwr_mgmt \
+  $(SDK_ROOT)/components/libraries/ringbuf \
+  $(SDK_ROOT)/components/libraries/sortlist \
+  $(SDK_ROOT)/components/libraries/scheduler \
+  $(SDK_ROOT)/components/libraries/strerror \
+  $(SDK_ROOT)/components/libraries/svc \
+  $(SDK_ROOT)/components/libraries/timer \
+  $(SDK_ROOT)/components/libraries/util \
+  $(SDK_ROOT)/components/ble/common \
+  $(SDK_ROOT)/components/ble/ble_advertising \
+  $(SDK_ROOT)/components/ble/nrf_ble_gatt \
+  $(SDK_ROOT)/components/ble/ble_services/ble_dfu \
+  $(SDK_ROOT)/external/fprintf \
+  $(SDK_ROOT)/external/segger_rtt \
+  $(SDK_ROOT)/integration/nrfx \
+  $(SDK_ROOT)/integration/nrfx/legacy \
+  $(SDK_ROOT)/modules/nrfx \
+  $(SDK_ROOT)/modules/nrfx/mdk \
+  $(SDK_ROOT)/modules/nrfx/drivers/include \
+  $(SDK_ROOT)/modules/nrfx/hal \
+  $(SDK_ROOT) \
+  $(PROJ_DIR)/EPD \
+  $(PROJ_DIR)/GUI \
+  $(PROJ_DIR)/SystemView \
+  $(PROJ_DIR)
+
+LIB_FILES += \
+
+# =============================================================================
+# 编译选项
+# 注意: __HEAP_SIZE/__STACK_SIZE 与 Keil 工程保持一致(HEAP=8192, STACK=2048)。
+#   GUI 帧缓冲按 ph=(__HEAP_SIZE-512)/(width/8) 几乎吃满整个堆(见 GUI.c)。
+#   GCC(-lnosys) 默认的 _sbrk 不检查栈、堆会越界长进栈区 -> 内存踩踏 -> 不停重启；
+#   已由 gcc_sbrk.c 的带边界 _sbrk 把堆限制在链接器保留区 [__HeapBase,__HeapLimit)
+#   内(超出返回 ENOMEM)，行为对齐 Keil/armcc 的"堆/栈各自固定区"，因此可安全用 8192。
+# =============================================================================
+OPT = -Os -g3 -flto
+
+CFLAGS += $(OPT)
+ifeq ($(USE_SYSVIEW),1)
+CFLAGS += -DUSE_SYSVIEW
+endif
+CFLAGS += -DAPP_TIMER_V2
+CFLAGS += -DAPP_TIMER_V2_RTC1_ENABLED
+CFLAGS += -DCONFIG_GPIO_AS_PINRESET
+CFLAGS += -DDEVELOP_IN_NRF52840
+CFLAGS += -DFLOAT_ABI_SOFT
+CFLAGS += -DNRF52811_XXAA
+CFLAGS += -DNRFX_COREDEP_DELAY_US_LOOP_CYCLES=3
+CFLAGS += -DNRF_DFU_SVCI_ENABLED
+CFLAGS += -DNRF_DFU_TRANSPORT_BLE=1
+CFLAGS += -DNRF_SD_BLE_API_VERSION=7
+CFLAGS += -DS112
+CFLAGS += -DSOFTDEVICE_PRESENT
+
+# 根据 USE_BLE_LOG 与 USE_RTT 确定日志配置
+ifeq ($(USE_BLE_LOG),1)
+CFLAGS += -DBLE_LOG_REDIRECT_ALL_NRF_LOG=1
+else
+CFLAGS += -DBLE_LOG_REDIRECT_ALL_NRF_LOG=0
+endif
+
+ifeq ($(USE_RTT),1)
+ifeq ($(USE_SYSVIEW),1)
+ifeq ($(DEBUG_LAYOUT),1)
+CFLAGS += -DNRF_LOG_ENABLED=1
+else
+CFLAGS += -DNRF_LOG_ENABLED=0
+endif
+else
+CFLAGS += -DNRF_LOG_ENABLED=1
+endif
+else
+CFLAGS += -DNRF_LOG_ENABLED=0 -DNRF_STRERROR_ENABLED=0
+endif
+CFLAGS += -mcpu=cortex-m4
+CFLAGS += -mthumb -mabi=aapcs
+CFLAGS += -Wall -Werror
+CFLAGS += -mfloat-abi=soft
+CFLAGS += -ffunction-sections -fdata-sections -fno-strict-aliasing
+CFLAGS += -fno-builtin -fshort-enums
+
+CXXFLAGS += $(OPT)
+
+ASMFLAGS += -g3
+ASMFLAGS += -mcpu=cortex-m4
+ASMFLAGS += -mthumb -mabi=aapcs
+ASMFLAGS += -mfloat-abi=soft
+ASMFLAGS += -DAPP_TIMER_V2
+ASMFLAGS += -DAPP_TIMER_V2_RTC1_ENABLED
+ASMFLAGS += -DCONFIG_GPIO_AS_PINRESET
+ASMFLAGS += -DDEVELOP_IN_NRF52840
+ASMFLAGS += -DFLOAT_ABI_SOFT
+ASMFLAGS += -DNRF52811_XXAA
+ASMFLAGS += -DNRFX_COREDEP_DELAY_US_LOOP_CYCLES=3
+ASMFLAGS += -DNRF_DFU_SVCI_ENABLED
+ASMFLAGS += -DNRF_DFU_TRANSPORT_BLE=1
+ASMFLAGS += -DNRF_SD_BLE_API_VERSION=7
+ASMFLAGS += -DS112
+ASMFLAGS += -DSOFTDEVICE_PRESENT
+
+LDFLAGS += $(OPT)
+LDFLAGS += -mthumb -mabi=aapcs -L$(SDK_ROOT)/modules/nrfx/mdk -T$(LINKER_SCRIPT)
+LDFLAGS += -mcpu=cortex-m4
+LDFLAGS += -Wl,--gc-sections
+LDFLAGS += --specs=nano.specs
+LDFLAGS += -Wl,-u,SWI2_IRQHandler
+LDFLAGS += -Wl,-u,RTC1_IRQHandler
+LDFLAGS += -Wl,-u,GPIOTE_IRQHandler
+LDFLAGS += -Wl,-u,WDT_IRQHandler
+LDFLAGS += -Wl,-u,SPIM0_SPIS0_SPI0_IRQHandler
+LDFLAGS += -Wl,-u,TWIM0_TWIS0_TWI0_SPIM1_SPIS1_SPI1_IRQHandler
+
+# 与 Keil 工程一致：HEAP=0（帧缓冲由静态 s_gfx_buffer 承担），STACK=2048
+nrf52811_xxaa: CFLAGS += -D__HEAP_SIZE=0
+nrf52811_xxaa: CFLAGS += -D__STACK_SIZE=2048
+nrf52811_xxaa: ASMFLAGS += -D__HEAP_SIZE=0
+nrf52811_xxaa: ASMFLAGS += -D__STACK_SIZE=2048
+
+$(OUTPUT_DIRECTORY)/nrf52811_xxaa/ble_dfu.c.o: CFLAGS += -fno-lto
+$(OUTPUT_DIRECTORY)/nrf52811_xxaa/ble_dfu_unbonded.c.o: CFLAGS += -fno-lto
+$(OUTPUT_DIRECTORY)/nrf52811_xxaa/nrf_dfu_svci.c.o: CFLAGS += -fno-lto
+$(OUTPUT_DIRECTORY)/nrf52811_xxaa/drv_rtc.c.o: CFLAGS += -fno-lto
+$(OUTPUT_DIRECTORY)/nrf52811_xxaa/nrf_sdh.c.o: CFLAGS += -fno-lto
+$(OUTPUT_DIRECTORY)/nrf52811_xxaa/nrfx_gpiote.c.o: CFLAGS += -fno-lto
+$(OUTPUT_DIRECTORY)/nrf52811_xxaa/nrfx_wdt.c.o: CFLAGS += -fno-lto
+$(OUTPUT_DIRECTORY)/nrf52811_xxaa/nrfx_spi.c.o: CFLAGS += -fno-lto
+$(OUTPUT_DIRECTORY)/nrf52811_xxaa/nrfx_spim.c.o: CFLAGS += -fno-lto
+
+
+LIB_FILES += -lc -lnosys -lm
+
+TEMPLATE_PATH := $(SDK_ROOT)/components/toolchain/gcc
+
+include $(TEMPLATE_PATH)/Makefile.common
+
+$(foreach target, $(TARGETS), $(call define_target, $(target)))
+
+# =============================================================================
+# 便捷目标
+# =============================================================================
+.PHONY: default build clean rebuild ota flash flash_full flash_softdevice erase size info
+
+default: build
+
+build: nrf52811_xxaa
+	@echo "=== Build completed ==="
+	@$(MAKE) -f Makefile.nRF52_linux --no-print-directory size
+
+# 编译后生成 OTA 包 + 合并完整 hex
+ota: build
+	@echo "=== Generating OTA package ==="
+	@chmod +x $(TOOLS_DIR)/make-ota-nrf52.sh
+	$(TOOLS_DIR)/make-ota-nrf52.sh $(OUTPUT_DIRECTORY)/nrf52811_xxaa
+
+# 覆盖 Makefile.common 中的 clean，扩展清理范围
+clean:
+	@echo "=== Cleaning ==="
+	$(RM) $(OUTPUT_DIRECTORY)
+
+rebuild: clean build
+
+size: $(OUTPUT_DIRECTORY)/nrf52811_xxaa.out
+	@$(GNU_INSTALL_ROOT)arm-none-eabi-size $(OUTPUT_DIRECTORY)/nrf52811_xxaa.out
+
+# 烧录应用（需要已烧录 SoftDevice）
+flash: build
+	nrfjprog -f nrf52 --program $(OUTPUT_DIRECTORY)/nrf52811_xxaa.hex --sectorerase
+	nrfjprog -f nrf52 --reset
+
+# 烧录完整固件（SD + BL + App + Settings）
+flash_full: ota
+	nrfjprog -f nrf52 --program $(OUTPUT_DIRECTORY)/nrf52811_xxaa-full.hex --chiperase
+	nrfjprog -f nrf52 --reset
+
+flash_softdevice:
+	nrfjprog -f nrf52 --program $(SDK_ROOT)/components/softdevice/s112/hex/s112_nrf52_7.3.0_softdevice.hex --sectorerase
+	nrfjprog -f nrf52 --reset
+
+erase:
+	nrfjprog -f nrf52 --eraseall
+
+info:
+	@echo "Project:   $(PROJECT_NAME)"
+	@echo "Target:    $(TARGETS)"
+	@echo "GCC:       $(GNU_INSTALL_ROOT)"
+	@echo "nRF tools: $(NRF_TOOLS_BIN)"
+	@echo "SDK:       $(SDK_ROOT)"
+	@echo "Output:    $(OUTPUT_DIRECTORY)"

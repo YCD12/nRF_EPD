@@ -5,7 +5,10 @@ GROUP(-lgcc -lc -lnosys)
 
 MEMORY
 {
-  FLASH (rx) : ORIGIN = 0x19000, LENGTH = 0x17000
+  /* App 代码区上限 = 0x27000（其上 0x27000-0x29000 为 FDS 应用数据区，0x29000 起为 Bootloader）。
+     原值 0x17000 会一直延伸到 0x30000，覆盖 FDS 与 Bootloader，导致超大固件静默越界。
+     0xE000 = 0x27000 - 0x19000，超出会在链接期报错而非踩坏 Bootloader。 */
+  FLASH (rx) : ORIGIN = 0x19000, LENGTH = 0xE000
   RAM (rwx) :  ORIGIN = 0x200022d8, LENGTH = 0x3d28
 }
 

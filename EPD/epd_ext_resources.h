@@ -11,16 +11,18 @@
 /*
  * FM25Q04B resource layout:
  *   0x01000-0x7CFFF  resource data
- *   0x7E000-0x7EFFF  active manifest
- *   0x7F000-0x7FFFF  reserved
+ *   0x7E000-0x7EFFF  primary manifest (= staging; web updater writes here)
+ *   0x7F000-0x7FFFF  backup manifest  (firmware-managed; client cannot access)
  *
  * The web updater writes all resource data first, verifies it, writes the
- * manifest sector last, then COMMIT validates and activates it in RAM.
+ * manifest sector last, then COMMIT validates, activates it in RAM, and copies
+ * it to the backup slot. On init, if the primary is invalid the backup is tried.
  */
 #define EPD_EXT_RES_MAIN_MANIFEST_ADDR     0x7E000UL
 #define EPD_EXT_RES_DATA_START_ADDR        0x01000UL
 #define EPD_EXT_RES_DATA_END_ADDR          0x7CFFFUL
 #define EPD_EXT_RES_STAGING_MANIFEST_ADDR  0x7E000UL
+#define EPD_EXT_RES_BACKUP_MANIFEST_ADDR   0x7F000UL
 #define EPD_EXT_RES_RESERVED_START_ADDR    0x7F000UL
 
 #define EPD_EXT_RES_MAGIC                  0x45505253UL
@@ -32,6 +34,14 @@
 #define EPD_EXT_RES_TYPE_HOLIDAY           3U
 #define EPD_EXT_RES_TYPE_UI                4U
 #define EPD_EXT_RES_TYPE_LUT               5U
+#define EPD_EXT_RES_TYPE_LUNAR_DB          6U
+
+/* Lunar Calendar Database (LCDB): a single resource holding pre-computed daily
+ * records (lunar date, jiazi, solar term, festival, holiday adjustment) for a
+ * range of years. Generated on the packaging side; MCU is a pure query engine.
+ * See AiCoding/lunar_calendar_database_design_and_migration.md. */
+#define EPD_EXT_LUNAR_DB_ENTRY             1U
+#define EPD_EXT_LUNAR_DB_MAGIC             0x4C434442UL  /* "LCDB" */
 
 /* UC8179 partial-refresh LUTs.
  * One resource per temperature tier (id = 0..10), each entry contains 6 tables
@@ -65,6 +75,15 @@
 #define EPD_EXT_HOLIDAY_ADJUSTMENTS        3U
 
 #define EPD_EXT_UI_BUNDLE                  1U
+
+/* UI_BUNDLE schema handshake (P3). Values align with epd_color_t in EPD_driver.h. */
+#define EPD_EXT_UI_BUNDLE_MAGIC            0x314C4955UL
+#define EPD_EXT_UI_BUNDLE_VERSION          1U
+#define EPD_EXT_UI_SCHEMA_MAJOR            1U
+#define EPD_EXT_UI_SCHEMA_MINOR            0U
+#define EPD_EXT_UI_COLOR_DEPTH_BW          1U
+#define EPD_EXT_UI_COLOR_DEPTH_BWR         2U
+#define EPD_EXT_UI_COLOR_DEPTH_BWRY        3U
 
 typedef struct {
     uint16_t type;

@@ -1,8 +1,13 @@
-﻿#ifndef __LUNAR_H
+#ifndef __LUNAR_H
 #define __LUNAR_H
 #include <stdint.h>
 #include <string.h>
 #include <stddef.h>
+#include <stdbool.h>
+
+#ifndef EPD_SUPPORT_LUNAR
+#define EPD_SUPPORT_LUNAR 1
+#endif
 
 /*
  * 时间基准定义 - Time Reference Definitions
@@ -34,8 +39,66 @@ struct Lunar_Date {
     uint8_t IsLeap;     /* Leap month flag - 闰月标志 (1:闰月, 0:平月) */
     uint8_t Date;       /* Lunar day - 农历日期 (1-30) */
     uint8_t Month;      /* Lunar month - 农历月份 (1-12) */
-    uint16_t Year;      /* Lunar year - 农历年份 (如: 2025) */
+    uint16_t Year;      /* Lunar year - 农历年份 (如: 2025)。数据库模式下临时充当六十甲子索引 (0-59) */
 };
+
+/**
+ * @brief 单日农历记录 - Lunar Calendar Daily Record (12 bytes)
+ * @note 与外置 Flash 中 LCDB (Type 6) 的每日记录二进制布局一一对应，
+ *       由 tools/build_ext_resources.py 预生成。详见
+ *       AiCoding/lunar_calendar_database_design_and_migration.md 第 3.4 节。
+ */
+typedef struct {
+    uint8_t lunar_month;      /* 农历月份 (1-12)，最高位 Bit7=1 表示闰月 */
+    uint8_t lunar_day;        /* 农历日期 (1-30) */
+    uint8_t jiazi_year;       /* 六十甲子年索引 (0-59) */
+    uint8_t solar_term;       /* 24节气索引 (0:无, 1-24 对应 LUNAR_GetJieQiName 索引+1) */
+    uint8_t holiday_type;     /* 调休状态 (0:普通, 1:休, 2:班) */
+    uint8_t reserved;         /* 对齐字节 */
+    uint16_t festival_offset; /* 节日名在当年字符串池的偏移，0xFFFF 表示无 */
+    uint16_t special_label;   /* 自定义标签偏移，0xFFFF 表示无 */
+} daily_record_t;
+
+/**
+ * @brief 初始化农历数据库查询引擎 - Initialize LCDB query engine
+ * @return 0:成功; 负值:失败 (魔数/资源缺失等)
+ * @note 幂等，首次查询时会自动调用。
+ */
+int lunar_db_init(void);
+
+/**
+ * @brief 重置农历数据库查询引擎缓存 - Reset LCDB query engine caches
+ * @note 外置资源热更新(RES_COMMIT)后调用，使新数据库无需重启即可生效。
+ */
+void lunar_db_reset(void);
+
+/**
+ * @brief 查询指定公历日期的每日农历记录 - Query daily record for a solar date
+ * @param year 公历年份 (超出数据库范围时平稳降级为起始年份)
+ * @param month 公历月份 (1-12)
+ * @param day 公历日期 (1-31)
+ * @param out_record 输出参数，存储查询到的记录
+ * @return 0:成功; 负值:失败
+ */
+int lunar_db_get_record(uint16_t year, uint8_t month, uint8_t day, daily_record_t* out_record);
+
+/**
+ * @brief 读取当年字符串池中指定偏移的节日/标签文本 - Read a string from the year string pool
+ * @param year 公历年份
+ * @param offset 字符串在当年字符串池中的偏移 (来自 festival_offset / special_label)
+ * @param buffer 输出缓冲区
+ * @param buffer_len 缓冲区长度
+ * @return 成功返回 buffer，失败返回空字符串
+ */
+const char* lunar_db_get_string(uint16_t year, uint16_t offset, char* buffer, size_t buffer_len);
+
+/**
+ * @brief 判断公历年份是否在 LCDB 覆盖范围内 - Whether a year has real LCDB data
+ * @param year 公历年份
+ * @return true:该年为精确数据; false:数据库缺失或该年超范围(被降级替代)
+ * @note 用于"诚实降级"：为 false 时 UI 应提示数据待更新，而非静默显示替代数据。
+ */
+bool lunar_db_year_supported(uint16_t year);
 
 const char* LUNAR_GetMonthName(uint8_t index, char* buffer, size_t buffer_len);
 const char* LUNAR_GetLeapName(uint8_t index, char* buffer, size_t buffer_len);
