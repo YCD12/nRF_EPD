@@ -118,7 +118,7 @@ static void GFX_u8g2_draw_hv_line(u8g2_font_t* u8g2, int16_t x, int16_t y, int16
              then the buffer is cleared for the next page.
 */
 /**************************************************************************/
-uint8_t s_gfx_buffer[4800];
+uint8_t s_gfx_buffer[GFX_PAGE_BUFFER_SIZE];
 
 uint8_t *GFX_get_buffer(void)      { return s_gfx_buffer; }
 size_t   GFX_get_buffer_size(void) { return sizeof(s_gfx_buffer); }

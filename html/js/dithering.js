@@ -686,8 +686,12 @@ function processImageData(imageData, mode) {
         const g = data[index + 1];
         const b = data[index + 2];
         const grayscale = Math.round(0.299 * r + 0.587 * g + 0.114 * b);
-
-        const blackWhiteBit = grayscale >= blackWhiteThreshold ? 1 : 0;
+        // UC8179 uses active-low black/red planes. Classify red first and
+        // force its black bit to white so the two planes are always mutually
+        // exclusive. This matches the legacy renderer's existing red-first
+        // precedence and prevents dark-red pixels from being black+red.
+        const isRed = r > redThreshold && r > g && r > b;
+        const blackWhiteBit = (isRed || grayscale >= blackWhiteThreshold) ? 1 : 0;
         const blackWhiteByteIndex = y * byteWidth + Math.floor(x / 8);
         const blackWhiteBitIndex = 7 - (x % 8);
         if (blackWhiteBit) {
@@ -696,7 +700,7 @@ function processImageData(imageData, mode) {
           blackWhiteData[blackWhiteByteIndex] &= ~(0x01 << blackWhiteBitIndex);
         }
 
-        const redWhiteBit = (r > redThreshold && r > g && r > b) ? 0 : 1;
+        const redWhiteBit = isRed ? 0 : 1;
         const redWhiteByteIndex = y * byteWidth + Math.floor(x / 8);
         const redWhiteBitIndex = 7 - (x % 8);
         if (redWhiteBit) {

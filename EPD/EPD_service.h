@@ -47,7 +47,7 @@ void ble_epd_evt_handler(ble_evt_t const* p_ble_evt, void* p_context);
     static ble_epd_t _name; \
     NRF_SDH_BLE_OBSERVER(_name##_obs, BLE_EPD_BLE_OBSERVER_PRIO, ble_epd_evt_handler, &_name)
 
-#define APP_VERSION 0x22  // 应用程序版本号
+#define APP_VERSION 0x26  // 应用程序版本号（EPT1 row-fill、constant fill 和空闲栅栏）
 
 // EPD服务的128位基础UUID (自定义服务)
 #define BLE_UUID_EPD_SVC_BASE \
@@ -84,6 +84,14 @@ enum EPD_CMDS {
     EPD_CMD_WRITE_BLOCK = 0x31,      /**< write image block with CRC16 checksum. 带CRC16校验的分块写入 */
     EPD_CMD_QUERY_STATUS = 0x32,     /**< query transfer status for resume. 查询传输状态用于断点续传 */
     EPD_CMD_RESET_TRANSFER = 0x33,   /**< reset transfer state. 重置传输状态 */
+    EPD_CMD_BEGIN_PACKED_PLANE = 0x34, /**< EPT1 begin a full compressed plane. */
+    EPD_CMD_PACKED_DATA = 0x35,        /**< EPT1 negotiated complete PackBits rows. */
+    EPD_CMD_END_PACKED_PLANE = 0x36,   /**< EPT1 validate and commit a plane. */
+    EPD_CMD_CANCEL_PACKED = 0x37,      /**< cancel an active EPT1 transaction. */
+    EPD_CMD_QUERY_PACKED_STATUS = 0x38,/**< query EPT1 state after notification loss. */
+    EPD_CMD_GET_CAPS = 0x39,           /**< query EPT1 capability and limits. */
+    EPD_CMD_FILL_SOLID_IMAGE = 0x3A,   /**< EPT1 one-packet constant black/red plane fill. */
+    EPD_CMD_WAIT_FOR_IDLE = 0x3B,      /**< reply after preceding display work is complete. */
 
     // 外置Flash资源管理命令 (0x40-0x4F)
     EPD_CMD_RES_ERASE = 0x40,        /**< erase external resource flash range. 擦除外置资源区 */
@@ -108,6 +116,12 @@ enum EPD_CMDS {
 #define EPD_RSP_RESOURCE_STATUS 0xA2  /**< External resource status response. 外置资源状态响应 */
 #define EPD_RSP_RESOURCE_OP     0xA3  /**< External resource operation response. 外置资源操作响应 */
 #define EPD_RSP_RESOURCE_READ   0xA4  /**< External resource read response. 外置资源读取响应 */
+#define EPD_RSP_PACKED_DONE     0xA5  /**< EPT1 plane completed. */
+#define EPD_RSP_PACKED_ERROR    0xA6  /**< EPT1 error. */
+#define EPD_RSP_PACKED_STATUS   0xA7  /**< EPT1 status. */
+#define EPD_RSP_PACKED_BEGIN    0xA8  /**< EPT1 begin acknowledgement / RX window. */
+#define EPD_RSP_CAPS            0xA9  /**< EPT1 capability response. */
+#define EPD_RSP_DISPLAY_IDLE    0xAA  /**< Display-command fence completed. */
 
 /**
  * 传输配置常量
@@ -116,6 +130,20 @@ enum EPD_CMDS {
 #define EPD_MAX_BLOCKS          512   /**< Maximum number of blocks (96KB / 192B). 最大块数 */
 #define EPD_BLOCK_BITMAP_SIZE   64    /**< Block bitmap size in bytes (512 bits). 块位图大小(字节) */
 #define EPD_MAX_RETRIES         3     /**< Maximum retry count for failed blocks. 失败块的最大重传次数 */
+
+#define EPD_PACKED_VERSION          1U
+#define EPD_PACKED_BLACK_PLANE      0x0FU
+#define EPD_PACKED_RED_PLANE        0x00U
+#define EPD_PACKED_WIDTH_BYTES_MAX  100U
+#define EPD_PACKED_ROWS_PER_PACKET  16U
+#define EPD_PACKED_ROW_BYTES        100U
+#define EPD_PACKED_SPI_BYTES        200U
+#define EPD_PACKED_MIN_VALUE_LEN    110U
+#define EPD_PACKED_RX_WINDOW        16U
+#define EPD_PACKED_CAP_SOLID_FILL    0x01U
+#define EPD_PACKED_CAP_ROW_FILL      0x02U
+#define EPD_PACKED_CAP_IDLE_FENCE    0x04U
+#define EPD_PACKED_SOLID_IMAGE_PLANE 0xFFU
 
 /**
  * 命令队列配置
@@ -182,6 +210,48 @@ typedef struct {
     bool     transfer_active;                      /**< Flag indicating active transfer. 标志是否有活跃传输 */
 } image_transfer_ctx_t;
 
+typedef struct {
+    bool session;
+    bool active;
+    bool failed;
+    bool black_complete;
+    bool red_complete;
+    bool ram_started;
+    bool solid_fill;
+    uint8_t active_plane;
+    uint8_t failure_reason;
+    uint8_t width_bytes;
+    uint8_t solid_black_value;
+    uint8_t solid_red_value;
+    uint16_t height;
+    uint16_t rows_received;
+    uint16_t spi_len;
+    uint32_t transaction_id;
+    uint32_t black_transaction_id;
+    uint32_t red_transaction_id;
+    uint32_t expected_offset;
+    uint32_t packed_len;
+    uint32_t raw_len;
+    uint32_t raw_emitted;
+    uint32_t raw_crc_expected;
+    uint32_t packed_crc_expected;
+    uint32_t raw_crc;
+    uint32_t packed_crc;
+    uint32_t solid_bytes_remaining;
+    uint32_t deadline;
+#if NRF_LOG_ENABLED && NRF_LOG_DEFAULT_LEVEL >= 3
+    uint32_t plane_start_ticks;
+    uint32_t decode_crc_ticks;
+    uint32_t spi_ticks;
+    uint32_t max_packet_ticks;
+    uint32_t packet_count;
+    uint32_t row_fill_records;
+    uint32_t row_fill_rows;
+#endif
+    uint8_t row_buf[EPD_PACKED_ROW_BYTES];
+    uint8_t spi_buf[EPD_PACKED_SPI_BYTES];
+} epd_packed_transfer_ctx_t;
+
 /**@brief EPD Service structure.
  *        EPD服务结构
  *
@@ -247,6 +317,7 @@ typedef struct {
     // 图像传输上下文(用于CRC校验和断点续传)
     image_transfer_ctx_t transfer_ctx;  /**< Image transfer context for CRC validation and resume. */
                                         /**< 用于CRC校验和断点续传的图像传输上下文 */
+    epd_packed_transfer_ctx_t packed_transfer; /**< EPT1 full-image transfer state. */
 } ble_epd_t;
 
 /**@brief GUI update event structure.

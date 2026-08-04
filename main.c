@@ -46,6 +46,10 @@
 #include "nrf_pwr_mgmt.h"
 #include "nrf_log_default_backends.h"
 
+#if NRF_LOG_ENABLED
+#include "SEGGER_RTT.h"
+#endif
+
 #ifdef USE_SYSVIEW
 #include "SEGGER_SYSVIEW.h"
 #endif
@@ -75,8 +79,8 @@
 
 #define MIN_CONN_INTERVAL                MSEC_TO_UNITS(7.5, UNIT_1_25_MS)               /**< Minimum connection interval (7.5 ms) */
                                                                                         /**< 最小连接间隔（7.5毫秒） */
-#define MAX_CONN_INTERVAL                MSEC_TO_UNITS(30, UNIT_1_25_MS)                /**< Maximum connection interval (30 ms). */
-                                                                                        /**< 最大连接间隔（30毫秒） */
+#define MAX_CONN_INTERVAL                MSEC_TO_UNITS(15, UNIT_1_25_MS)                /**< Maximum connection interval (15 ms). */
+                                                                                        /**< 最大连接间隔（15毫秒），降低整图传输的逐包调度等待 */
 #define SLAVE_LATENCY                    6                                              /**< Slave latency. */
                                                                                         /**< 从机延迟。 */
 #define CONN_SUP_TIMEOUT                 MSEC_TO_UNITS(4000, UNIT_10_MS)                /**< Connection supervisory timeout (~4000 ms). */
@@ -523,6 +527,15 @@ static void on_ble_evt(ble_evt_t* p_ble_evt) {
             // BLE连接建立事件
             NRF_LOG_INFO("CONNECTED\n");
             m_conn_handle = p_ble_evt->evt.gap_evt.conn_handle;  // 保存连接句柄
+            {
+                const ble_gap_conn_params_t* params =
+                    &p_ble_evt->evt.gap_evt.params.connected.conn_params;
+                NRF_LOG_INFO("[BLE] connected interval=%u.%02ums latency=%u timeout=%ums",
+                             params->max_conn_interval * 5U / 4U,
+                             (params->max_conn_interval & 0x03U) * 25U,
+                             params->slave_latency,
+                             params->conn_sup_timeout * 10U);
+            }
             break;
 
         case BLE_GAP_EVT_DISCONNECTED: {
@@ -532,6 +545,15 @@ static void on_ble_evt(ble_evt_t* p_ble_evt) {
             m_conn_handle = BLE_CONN_HANDLE_INVALID;  // 清除连接句柄
             break;
         }
+        case BLE_GAP_EVT_CONN_PARAM_UPDATE: {
+            const ble_gap_conn_params_t* params =
+                &p_ble_evt->evt.gap_evt.params.conn_param_update.conn_params;
+            NRF_LOG_INFO("[BLE] conn interval=%u.%02ums latency=%u timeout=%ums",
+                         params->max_conn_interval * 5U / 4U,
+                         (params->max_conn_interval & 0x03U) * 25U,
+                         params->slave_latency,
+                         params->conn_sup_timeout * 10U);
+        } break;
         case BLE_GAP_EVT_PHY_UPDATE_REQUEST: {
             // PHY更新请求事件（用于支持2M PHY等）
             NRF_LOG_DEBUG("PHY update request.");
@@ -540,6 +562,11 @@ static void on_ble_evt(ble_evt_t* p_ble_evt) {
                 .tx_phys = BLE_GAP_PHY_AUTO,  // 自动选择发送PHY
             };
             APP_ERROR_CHECK(sd_ble_gap_phy_update(p_ble_evt->evt.gap_evt.conn_handle, &phys));
+        } break;
+        case BLE_GAP_EVT_PHY_UPDATE: {
+            const ble_gap_evt_phy_update_t* phy = &p_ble_evt->evt.gap_evt.params.phy_update;
+            NRF_LOG_INFO("[BLE] PHY status=0x%02x tx=%u rx=%u",
+                         phy->status, phy->tx_phy, phy->rx_phy);
         } break;
 
         case BLE_GAP_EVT_SEC_PARAMS_REQUEST:
@@ -824,6 +851,12 @@ static void advertising_init(void) {
 static void log_init(void) {
     APP_ERROR_CHECK(NRF_LOG_INIT(timestamp));  // 使用timestamp函数作为日志时间源
     NRF_LOG_DEFAULT_BACKENDS_INIT();  // 初始化默认日志后端（RTT等）
+#if NRF_LOG_ENABLED
+    /* This bypasses the Nordic formatter and proves that the RTT up-buffer is
+     * live immediately after a debug build boots. It is compiled out of the
+     * normal firmware, where NRF_LOG_ENABLED is 0. */
+    SEGGER_RTT_WriteString(0, "[RTT] logger backend initialized\r\n");
+#endif
 }
 
 /**@brief Function for initializing power management.

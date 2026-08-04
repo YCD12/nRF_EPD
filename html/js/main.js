@@ -45,6 +45,14 @@ const EpdCmd = {
   WRITE_BLOCK: 0x31,
   QUERY_STATUS: 0x32,
   RESET_TRANSFER: 0x33,
+  BEGIN_PACKED_PLANE: 0x34,
+  PACKED_DATA: 0x35,
+  END_PACKED_PLANE: 0x36,
+  CANCEL_PACKED: 0x37,
+  QUERY_PACKED_STATUS: 0x38,
+  GET_CAPS: 0x39,
+  FILL_SOLID_IMAGE: 0x3A,
+  WAIT_FOR_IDLE: 0x3B,
 
   RES_ERASE: 0x40,
   RES_WRITE: 0x41,
@@ -178,7 +186,7 @@ function updateDeviceVersionDisplay(versionNum = null, fallbackText = '未连接
 
 let bleWriteQueue = Promise.resolve();
 
-async function write(cmd, data, withResponse = true) {
+async function write(cmd, data, withResponse = true, logPacket = true) {
   if (!epdCharacteristic) {
     addLog("服务不可用，请检查蓝牙连接");
     return false;
@@ -190,7 +198,7 @@ async function write(cmd, data, withResponse = true) {
     payload.push(...data)
   }
   const task = async () => {
-    addLog(bytes2hex(payload), '⇑');
+    if (logPacket) addLog(bytes2hex(payload), '⇑');
     try {
       if (withResponse)
         await epdCharacteristic.writeValueWithResponse(Uint8Array.from(payload));
@@ -356,6 +364,11 @@ async function sendTimeCommand(mode, modeName) {
 }
 
 async function syncTimeOnConnect() {
+  if (appVersion >= 0x21) {
+    const ok = await write(EpdCmd.SYNC_TIME_SILENT, buildTimeData(), true);
+    addLog(ok ? '已静默同步当前时间（未触发屏幕刷新）' : '静默时间同步失败');
+    return ok;
+  }
   const mode = window.deviceDisplayMode !== undefined ? window.deviceDisplayMode : null;
   const compensation = getEstimatedRefreshSeconds();
   addLog(`校时预补偿: +${compensation}s (估算刷新耗时)`);
@@ -536,17 +549,125 @@ async function sendimg() {
 
   updateButtonStatus(true);
 
+  /* Firmware 0x26+ advertises a normal queued fence. It can only notify
+   * after an in-progress physical refresh and commands before the fence have
+   * completed, preventing a legacy fallback from accumulating in BLE queues. */
+  if (typeof EptTransfer !== 'undefined' && EptTransfer.caps && EptTransfer.caps.idleFence) {
+    try {
+      const idle = await EptTransfer.waitForDisplayIdle();
+      if (idle.waitedMs >= 200) {
+        addLog(`设备正在刷新，已等待屏幕空闲 ${(idle.waitedMs / 1000).toFixed(1)}s`);
+      }
+    } catch (e) {
+      addLog(`未确认屏幕空闲：${e.message}；为避免传输积压，已取消本次上传`);
+      updateButtonStatus();
+      hideStatusBar();
+      return;
+    }
+  }
+
   // Use CRC transfer for firmware version >= 0x20
   const useCRC = (appVersion >= 0x20) && (typeof BleTransfer !== 'undefined');
   const transferFn = useCRC ? writeImageCRC : writeImage;
 
   if (useCRC) {
-    addLog("使用CRC校验传输模式");
+    addLog("已启用传输校验（EPT1 CRC32 / 旧协议 CRC16）");
   }
 
-  if (ditherMode === 'fourColor') {
+  let eptTransferred = false;
+  let eptTransferAborted = false;
+  if (ditherMode === 'threeColor' &&
+      epdDriverSelect.value !== '08' && epdDriverSelect.value !== '09' &&
+      typeof EptTransfer !== 'undefined' && EptTransfer.caps &&
+      EptTransfer.caps.version === 1 && EptTransfer.caps.color === 2) {
+    const halfLength = Math.floor(processedData.length / 2);
+    const blackWhiteData = processedData.slice(0, halfLength);
+    const redWhiteData = processedData.slice(halfLength);
+    try {
+      eptTransferred = await EptTransfer.sendImage(blackWhiteData, redWhiteData, (plane, done, total) => {
+        setStatus(plane === 'solid'
+          ? `EPT1 常量填充: ${done}/${total}`
+          : `EPT1 ${plane === 'black' ? '黑白' : '红色'}行: ${done}/${total}`);
+      });
+      const eptStats = EptTransfer.lastStats;
+      if (eptTransferred && eptStats) {
+        if (eptStats.overlapPixels > 0) {
+          addLog(`EPT1 已按红色优先修正 ${eptStats.overlapPixels} 个冲突像素`);
+        }
+        if (eptStats.busyWaitMs > 0) {
+          addLog(`EPT1 等待屏幕空闲 ${(eptStats.busyWaitMs / 1000).toFixed(1)}s`);
+        }
+        if (eptStats.solidImage) {
+          addLog(`使用 EPT1 单包常量填充：black=0x${eptStats.solidBlackValue.toString(16).padStart(2, '0')}，` +
+            `red=0x${eptStats.solidRedValue.toString(16).padStart(2, '0')}；旧协议约 ` +
+            `${eptStats.legacyWireBytes}B/${eptStats.legacyPackets}包 → BLE ${eptStats.wireBytes}B/${eptStats.packets}包，` +
+            `MCU 写满双 plane ${(eptStats.elapsedMs / 1000).toFixed(3)}s`);
+        } else {
+          addLog(`使用 EPT1 PackBits：旧协议约 ${eptStats.legacyWireBytes}B/${eptStats.legacyPackets}包 → ` +
+            `${eptStats.wireBytes}B/${eptStats.packets}包 (${(eptStats.ratio * 100).toFixed(1)}%)，` +
+            `每包≤${eptStats.rowsPerPacket}行，` +
+            `上传+解压写屏 ${(eptStats.elapsedMs / 1000).toFixed(3)}s`);
+          if (eptStats.rowFillRows > 0) {
+            addLog(`EPT1 跨行常量填充：${eptStats.rowFillRows} 行 / ${eptStats.rowFillRecords} 条记录`);
+          }
+        }
+        const averageWriteMs = eptStats.actualDataPackets > 0
+          ? eptStats.writeAwaitMs / eptStats.actualDataPackets
+          : 0;
+        const averageWithoutResponseMs = eptStats.withoutResponseWrites > 0
+          ? eptStats.withoutResponseWaitMs / eptStats.withoutResponseWrites
+          : 0;
+        const averageWithResponseMs = eptStats.withResponseWrites > 0
+          ? eptStats.withResponseWaitMs / eptStats.withResponseWrites
+          : 0;
+        addLog(`${eptStats.solidImage ? 'EPT1 单包写统计' : 'EPT1 快写统计'}：无响应 ${eptStats.withoutResponseWrites} 包，有响应 ` +
+          `${eptStats.withResponseWrites} 包，浏览器写等待累计 ${(eptStats.writeAwaitMs / 1000).toFixed(3)}s，` +
+          `平均 ${averageWriteMs.toFixed(1)}ms/包（无响应 ${averageWithoutResponseMs.toFixed(1)}ms，` +
+          `有响应 ${averageWithResponseMs.toFixed(1)}ms），最大 ${eptStats.maxWriteAwaitMs.toFixed(1)}ms`);
+      } else if (!eptTransferred && eptStats && eptStats.fallbackReason) {
+        addLog(`EPT1 未采用：${eptStats.fallbackReason}；候选 ` +
+          `${eptStats.wireBytes}B/${eptStats.packets}包 ` +
+          `(${(eptStats.ratio * 100).toFixed(1)}%)，使用旧协议`);
+      }
+    } catch (e) {
+      console.error('EPT1 transfer failed:', e);
+      const reason = EptTransfer.lastError ? EptTransfer.lastError.reason : 0;
+      if (reason === 8 || reason === 10) {
+        eptTransferAborted = true;
+        addLog(`EPT1 传输已取消: ${e.message}；为保护屏幕，不回退旧协议`);
+      } else {
+        const performanceReason = EptTransfer.lastStats && EptTransfer.lastStats.performanceAbortReason;
+        if (performanceReason) {
+          addLog(`EPT1 实测速度不足：${performanceReason}；已提前中止并回退旧协议`);
+        } else {
+          addLog(`EPT1 传输失败: ${e.message}，将回退旧协议`);
+        }
+        try { await write(EpdCmd.CANCEL_PACKED, EptTransfer.u32le(EptTransfer.activeId || (EptTransfer.lastError ? EptTransfer.lastError.id : 0)), true, false); } catch (_) {}
+      }
+      eptTransferred = false;
+    }
+  }
+
+  if (eptTransferAborted) {
+    updateButtonStatus();
+    hideStatusBar();
+    return;
+  }
+
+  const legacyPerfStats = !eptTransferred && typeof EptTransfer !== 'undefined' &&
+    EptTransfer.lastStats && EptTransfer.lastStats.legacyWireBytes > 0
+    ? {
+        wireBytes: EptTransfer.lastStats.legacyWireBytes,
+        packets: EptTransfer.lastStats.legacyPackets
+      }
+    : null;
+  const legacyStartedAt = legacyPerfStats
+    ? ((typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now())
+    : 0;
+
+  if (!eptTransferred && ditherMode === 'fourColor') {
     await transferFn(processedData, 'color');
-  } else if (ditherMode === 'threeColor') {
+  } else if (!eptTransferred && ditherMode === 'threeColor') {
     const halfLength = Math.floor(processedData.length / 2);
     const blackWhiteData = processedData.slice(0, halfLength);
     const redWhiteData = processedData.slice(halfLength);
@@ -556,18 +677,29 @@ async function sendimg() {
       await transferFn(blackWhiteData, 'bw');
       await transferFn(redWhiteData, 'red');
     }
-  } else if (ditherMode === 'blackWhiteColor') {
+  } else if (!eptTransferred && ditherMode === 'blackWhiteColor') {
     if (epdDriverSelect.value === '08' || epdDriverSelect.value === '09') {
       const emptyData = new Uint8Array(processedData.length).fill(0xFF);
       await transferFn(convertUC8159(processedData, emptyData), 'bw');
     } else {
       await transferFn(processedData, 'bw');
     }
-  } else {
+  } else if (!eptTransferred) {
     addLog("当前固件不支持此颜色模式。");
     updateButtonStatus();
     hideStatusBar();
     return;
+  }
+
+  if (legacyPerfStats) {
+    const legacyFinishedAt = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
+    const legacyElapsedMs = Math.max(0, legacyFinishedAt - legacyStartedAt);
+    EptTransfer.recordLegacyResult(legacyPerfStats.wireBytes, legacyElapsedMs, legacyPerfStats.packets);
+    if (legacyElapsedMs >= 300) {
+      addLog(`旧协议实测：${legacyPerfStats.wireBytes}B/${legacyPerfStats.packets}包，` +
+        `${(legacyElapsedMs / 1000).toFixed(3)}s，` +
+        `${(legacyPerfStats.wireBytes / legacyElapsedMs).toFixed(1)}KB/s`);
+    }
   }
 
   const refreshOk = await write(EpdCmd.REFRESH);
@@ -1005,6 +1137,11 @@ function handleNotify(value, idx) {
     return;
   }
 
+  if (data.length >= 1 && data[0] >= 0xA5 && data[0] <= 0xAA) {
+    if (typeof EptTransfer !== 'undefined') EptTransfer.handleNotification(value);
+    return;
+  }
+
   if (data.length >= 1 && (data[0] === 0xA2 || data[0] === 0xA3 || data[0] === 0xA4)) {
     if (typeof ResourceManager !== 'undefined') {
       ResourceManager.handleNotification(value);
@@ -1258,6 +1395,15 @@ async function connect() {
     if (typeof BleTransfer !== 'undefined') {
       BleTransfer.init();
     }
+    if (typeof EptTransfer !== 'undefined') {
+      EptTransfer.init();
+      const caps = await EptTransfer.queryCaps();
+      if (caps && caps.version === 1) {
+        addLog(`EPT1 可用：最小 ATT value=${caps.minValueLen}，单包最多=${caps.rowsPerPacket}行，窗口=${caps.rxWindow}` +
+          `${caps.rowFill ? '，支持跨行常量填充' : ''}` +
+          `${caps.idleFence ? '，支持刷新空闲栅栏' : ''}`);
+      }
+    }
 
     // PRD §US-1.1 AC3: Resource check runs FIRST (before time sync).
     // This prevents SET_TIME from triggering a refresh that would cause the
@@ -1268,7 +1414,9 @@ async function connect() {
       checkResult = await ResourceManager.checkOnConnect(appVersion);
     }
 
-    // Time sync runs AFTER resource check to avoid busy conflicts.
+    // Time sync runs AFTER resource check to avoid busy conflicts. Firmware
+    // 0x21+ uses silent sync here, so connecting does not start a long EPD
+    // refresh immediately before an image upload.
     // However, if external resources need an update, we MUST NOT auto-sync time now.
     // Time sync is suspended until the resource update process successfully finishes.
     if (initOk) {

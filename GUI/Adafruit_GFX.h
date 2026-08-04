@@ -7,6 +7,14 @@
 
 #include "u8g2_font.h"
 
+/* Shared page buffer for the streamed EPD renderer.
+ *
+ * 2,560 B supports a 25-row mono page (or 12-row three-colour page) on the
+ * 800-pixel panel and the two 68x140 clock-digit bitmaps used by the
+ * clock/calendar differential-refresh path (2 * 1,260 B).
+ */
+#define GFX_PAGE_BUFFER_SIZE 2560U
+
 // 颜色定义 - RGB565 格式 (16位：5位红色，6位绿色，5位蓝色)
 // Color definitions - RGB565 format (16-bit: 5-bit red, 6-bit green, 5-bit blue)
 #define GFX_BLACK 0x0000   // 黑色 | Black
