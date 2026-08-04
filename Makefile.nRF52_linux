@@ -246,7 +246,10 @@ CFLAGS += -mthumb -mabi=aapcs
 CFLAGS += -Wall -Werror
 CFLAGS += -mfloat-abi=soft
 CFLAGS += -ffunction-sections -fdata-sections -fno-strict-aliasing
-CFLAGS += -fno-builtin -fshort-enums
+# Let GCC fold common C library calls into smaller built-ins.  The project does
+# not replace libc string/memory routines, so disabling built-ins only wastes
+# Flash on this size-constrained target.
+CFLAGS += -fshort-enums
 
 CXXFLAGS += $(OPT)
 
@@ -307,13 +310,14 @@ $(foreach target, $(TARGETS), $(call define_target, $(target)))
 # =============================================================================
 # 便捷目标
 # =============================================================================
-.PHONY: default build clean rebuild ota flash flash_full flash_softdevice erase size info
+.PHONY: default build clean rebuild ota flash flash_full flash_softdevice erase size memory info
 
 default: build
 
 build: nrf52811_xxaa
 	@echo "=== Build completed ==="
 	@$(MAKE) -f Makefile.nRF52_linux --no-print-directory size
+	@$(MAKE) -f Makefile.nRF52_linux --no-print-directory memory
 
 # 编译后生成 OTA 包 + 合并完整 hex
 ota: build
@@ -330,6 +334,30 @@ rebuild: clean build
 
 size: $(OUTPUT_DIRECTORY)/nrf52811_xxaa.out
 	@$(GNU_INSTALL_ROOT)arm-none-eabi-size $(OUTPUT_DIRECTORY)/nrf52811_xxaa.out
+
+# The default `size` output does not show the 2 KiB linker-reserved stack.
+# Print the real partition headroom so a successful link is not mistaken for
+# having enough RAM at runtime.
+memory: $(OUTPUT_DIRECTORY)/nrf52811_xxaa.out
+	@$(GNU_INSTALL_ROOT)arm-none-eabi-size -A $(OUTPUT_DIRECTORY)/nrf52811_xxaa.out | \
+	awk 'BEGIN { flash = 57344; ram = 15656; stack = 2048; } \
+	/^\.text[[:space:]]/ { text = $$2; } \
+	/^\.data[[:space:]]/ { data = $$2; } \
+	/^\.fs_data[[:space:]]/ { fs_data = $$2; } \
+	/^\.bss[[:space:]]/ { bss = $$2; } \
+	/^\.sdh_soc_observers[[:space:]]/ { flash_meta += $$2; } \
+	/^\.sdh_ble_observers[[:space:]]/ { flash_meta += $$2; } \
+	/^\.sdh_req_observers[[:space:]]/ { flash_meta += $$2; } \
+	/^\.sdh_state_observers[[:space:]]/ { flash_meta += $$2; } \
+	/^\.sdh_stack_observers[[:space:]]/ { flash_meta += $$2; } \
+	/^\.ARM.exidx[[:space:]]/ { flash_meta += $$2; } \
+	END { \
+	  flash_used = text + data + fs_data + flash_meta; static_ram = data + fs_data + bss; ram_reserved = static_ram + stack; \
+	  printf "=== Memory budget (nRF52811 application layout) ===\n"; \
+	  printf "  Flash: %u / %u bytes (free %u)\n", flash_used, flash, flash - flash_used; \
+	  printf "  RAM static: %u bytes (.data + .fs_data + .bss)\n", static_ram; \
+	  printf "  RAM reserved: %u / %u bytes (includes %u-byte stack; free %u)\n", ram_reserved, ram, stack, ram - ram_reserved; \
+	}'
 
 # 烧录应用（需要已烧录 SoftDevice）
 flash: build
