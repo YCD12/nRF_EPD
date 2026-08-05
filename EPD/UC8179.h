@@ -2,11 +2,18 @@
 #define UC8179_H
 
 #include <stdbool.h>
+#include <stdint.h>
 
-/* Chip-specific feature flags — called directly by EPD_service where
- * the vtable does not yet have a corresponding slot. */
-void UC8179_Set_Partial_Strong_BW_Allowed(bool allowed);
+#include "EPD_driver.h"
+
 bool UC8179_HadBusyTimeout(void);
 void UC8179_ClearBusyTimeout(void);
+
+void UC8179_Init_Partial(epd_model_t *epd);
+bool UC8179_Partial_Diff_Push(epd_model_t *epd, uint16_t x, uint16_t y,
+                              uint16_t w, uint16_t h,
+                              const uint8_t *old_bm, const uint8_t *new_bm);
+bool UC8179_Refresh_Partial(epd_model_t *epd, uint16_t x, uint16_t y,
+                            uint16_t w, uint16_t h);
 
 #endif /* UC8179_H */
