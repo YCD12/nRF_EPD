@@ -33,10 +33,11 @@ enum {
     UC81xx_PMES = 0x05,   // Power ON Measure - 电源开启测量
     UC81xx_BTST = 0x06,   // Booster Soft Start - 升压软启动
     UC81xx_DSLP = 0x07,   // Deep sleep - 深度睡眠
-    UC81xx_DTM1 = 0x10,   // Display Start Transmission 1 - 显示开始传输1(黑白数据)
+    UC81xx_DTM1 = 0x10,   // KW: OLD data; KWR: black/white data
     UC81xx_DSP = 0x11,    // Data Stop - 数据停止
     UC81xx_DRF = 0x12,    // Display Refresh - 显示刷新
-    UC81xx_DTM2 = 0x13,   // Display Start transmission 2 - 显示开始传输2(红色数据)
+    UC81xx_DTM2 = 0x13,   // KW: NEW data; KWR: red data
+    UC81xx_DUSPI = 0x15,  // Dual SPI mode - 双SPI模式
     UC81xx_LUTC = 0x20,   // VCOM LUT (LUTC) - VCOM查找表
     UC81xx_LUTWW = 0x21,  // W2W LUT (LUTWW) - 白到白查找表
     UC81xx_LUTBW = 0x22,  // B2W LUT (LUTBW / LUTR) - 黑到白查找表
@@ -108,14 +109,13 @@ typedef struct epd_driver {
     void (*refresh)(epd_model_t* epd);     /**< Sends the image buffer in RAM to e-Paper and displays - 将显存数据刷新到屏幕上显示 */
     void (*sleep)(epd_model_t* epd);       /**< Enter sleep mode - 进入睡眠模式以降低功耗 */
     int8_t (*read_temp)(epd_model_t* epd); /**< Read temperature from driver chip - 从驱动芯片读取温度值 */
-    // Partial refresh functions (optional, for UC8179)
-    // 部分刷新功能函数(可选,用于UC8179芯片)
-    void (*init_partial)(epd_model_t *epd);         /**< Initialize for partial refresh mode - 初始化部分刷新模式 */
-    void (*clear_partial)(epd_model_t *epd, bool refresh);  /**< Clear screen using partial refresh - 使用部分刷新方式清屏 */
-    void (*write_image_partial)(epd_model_t *epd, uint8_t *black, uint8_t *color, uint16_t x, uint16_t y, uint16_t w, uint16_t h); /**< write image for partial refresh - 写入图像数据用于部分刷新 */
-    void (*refresh_partial)(epd_model_t *epd, uint16_t x, uint16_t y, uint16_t w, uint16_t h);  /**< Partial refresh a specific area - 局部刷新指定区域 */
-    void (*diff_push)(epd_model_t *epd, uint16_t x, uint16_t y, uint16_t w, uint16_t h,
-                      const uint8_t *old_bm, const uint8_t *new_bm);  /**< Push old/new diff bitmaps for per-digit partial RAM write - 写入差分老/新帧到EPD RAM */
+    /* Optional true OLD/NEW partial-refresh path. */
+    void (*init_partial)(epd_model_t *epd);
+    bool (*refresh_partial)(epd_model_t *epd, uint16_t x, uint16_t y,
+                            uint16_t w, uint16_t h);
+    bool (*diff_push)(epd_model_t *epd, uint16_t x, uint16_t y,
+                      uint16_t w, uint16_t h,
+                      const uint8_t *old_bm, const uint8_t *new_bm);
 } epd_driver_t;
 
 // GPIO电平定义 - GPIO level definitions

@@ -1,26 +1,36 @@
 #include "epd_clock_diff.h"
-#include "GUI.h"
+
 #include "Lunar.h"
 #include "ui_runtime.h"
 
-// Access the shared GFX page buffer through the public accessor.
-// Avoids a cross-layer extern on an internal symbol.
+#define CLOCK_DIFF_MARGIN_Y 8U
+#define CLOCK_DIFF_DIGITS   2U
 
 typedef struct {
-    uint8_t h1;
-    uint8_t h2;
-    uint8_t m1;
-    uint8_t m2;
+    display_mode_t mode;
+    uint8_t hour;
+    uint8_t minute;
     bool valid;
 } clock_state_t;
 
-static clock_state_t s_clock_prev = {0, 0, 0, 0, false};
+static clock_state_t s_clock_prev;
 
-void epd_clock_diff_seed(uint8_t hh, uint8_t mm) {
-    s_clock_prev.h1 = hh / 10;
-    s_clock_prev.h2 = hh % 10;
-    s_clock_prev.m1 = mm / 10;
-    s_clock_prev.m2 = mm % 10;
+static bool clock_mode_supported(display_mode_t mode) {
+    return mode == MODE_CLOCK || mode == MODE_CLOCK_CALENDAR;
+}
+
+void epd_clock_diff_seed(display_mode_t mode, uint32_t timestamp) {
+    tm_t now = {0};
+
+    if (!clock_mode_supported(mode)) {
+        s_clock_prev.valid = false;
+        return;
+    }
+
+    transformTime(timestamp, &now);
+    s_clock_prev.mode = mode;
+    s_clock_prev.hour = now.tm_hour;
+    s_clock_prev.minute = now.tm_min;
     s_clock_prev.valid = true;
 }
 
@@ -28,148 +38,141 @@ void epd_clock_diff_invalidate(void) {
     s_clock_prev.valid = false;
 }
 
-static void draw_digit_bitmap(Adafruit_GFX *gfx, uint8_t *bm, uint16_t w, uint16_t h, uint8_t val, uint16_t offset_x, uint16_t cS, uint16_t margin_y) {
-    GFX_begin(gfx, w, h, h);
-    gfx->buffer = bm;
-    GFX_firstPage(gfx);
-    GFX_fillScreen(gfx, GFX_WHITE);
-    Draw7Number(gfx, val, offset_x, margin_y, (char)cS, GFX_BLACK, GFX_WHITE, 1);
+static void draw_time_tile(uint8_t *bitmap,
+                           uint16_t bitmap_w,
+                           uint16_t total_h,
+                           uint16_t tile_h,
+                           uint16_t page,
+                           uint16_t offset_x,
+                           uint16_t scale,
+                           uint8_t hour,
+                           uint8_t minute) {
+    Adafruit_GFX gfx;
+    uint16_t digit_block_w = CLOCK_DIFF_DIGITS * (11U * scale + 2U) - 2U * scale;
+    uint16_t colon_x = offset_x + digit_block_w + 2U * scale;
+    uint16_t minute_x = colon_x + 4U * scale;
+
+    GFX_begin(&gfx, bitmap_w, total_h, tile_h);
+    gfx.buffer = bitmap;
+    gfx.current_page = page;
+    GFX_fillScreen(&gfx, GFX_WHITE);
+
+    Draw7Number(&gfx, hour, offset_x, CLOCK_DIFF_MARGIN_Y,
+                (char)scale, GFX_BLACK, GFX_WHITE, CLOCK_DIFF_DIGITS);
+    GFX_fillRect(&gfx, colon_x,
+                 CLOCK_DIFF_MARGIN_Y + (9U * scale) / 2U + 1U,
+                 2U * scale, 2U * scale, GFX_BLACK);
+    GFX_fillRect(&gfx, colon_x,
+                 CLOCK_DIFF_MARGIN_Y + (27U * scale) / 2U + 3U,
+                 2U * scale, 2U * scale, GFX_BLACK);
+    Draw7Number(&gfx, minute, minute_x, CLOCK_DIFF_MARGIN_Y,
+                (char)scale, GFX_BLACK, GFX_WHITE, CLOCK_DIFF_DIGITS);
 }
 
-/**
- * @brief 绘制时钟冒号到局部缓冲区
- * @param gfx 临时图形句柄
- * @param bm 目标图像缓冲区指针
- * @param w 缓冲区宽度 (4 * cS 像素)
- * @param h 缓冲区高度
- * @param cS 缩放因子
- * @param margin_y 垂直边距
- */
-static void draw_colon_bitmap(Adafruit_GFX *gfx, uint8_t *bm, uint16_t w, uint16_t h, uint16_t cS, uint16_t margin_y) {
-    GFX_begin(gfx, w, h, h);
-    gfx->buffer = bm;
-    GFX_firstPage(gfx);
-    GFX_fillScreen(gfx, GFX_WHITE);
-    GFX_fillRect(gfx, 0, margin_y + (9 * cS) / 2 + 1, 2 * cS, 2 * cS, GFX_BLACK);
-    GFX_fillRect(gfx, 0, margin_y + (27 * cS) / 2 + 3, 2 * cS, 2 * cS, GFX_BLACK);
-}
-
-bool epd_clock_diff_try_partial(epd_model_t *epd, uint32_t timestamp, display_mode_t mode) {
-    // Only perform clock-specific partial refresh in MODE_CLOCK_CALENDAR
-    // Require diff_push in vtable — non-partial drivers won't have it.
-    if (mode != MODE_CLOCK_CALENDAR || !s_clock_prev.valid ||
-        epd->drv->diff_push == NULL) {
-        return false;
-    }
-
-    tm_t tm_now = {0};
-    transformTime(timestamp, &tm_now);
-
-    uint8_t new_vals[4];
-    new_vals[0] = tm_now.tm_hour / 10;
-    new_vals[1] = tm_now.tm_hour % 10;
-    new_vals[2] = tm_now.tm_min / 10;
-    new_vals[3] = tm_now.tm_min % 10;
-
-    uint8_t old_vals[4] = {s_clock_prev.h1, s_clock_prev.h2, s_clock_prev.m1, s_clock_prev.m2};
-
-    // Query scale and position parameters dynamically from ui_runtime cache.
-    // If the cache is unavailable, abort and let the caller fall back to full refresh.
-    int16_t comp_x, comp_y;
-    uint16_t cS;
-
+bool epd_clock_diff_try_partial(epd_model_t *epd, uint32_t timestamp,
+                                display_mode_t mode) {
     ui_mode_record_t cached_mode;
-    const ui_component_record_t* cached_components = NULL;
-    uint8_t cached_component_count = 0;
-    ret_code_t ui_ret = ui_runtime_load_render_cache(MODE_CLOCK_CALENDAR, epd->width, epd->height,
-                                                     &cached_mode, &cached_components,
-                                                     &cached_component_count);
-    if (ui_ret != NRF_SUCCESS || cached_components == NULL) {
+    const ui_component_record_t *components = NULL;
+    const ui_component_record_t *time_component = NULL;
+    uint8_t component_count = 0;
+    tm_t now = {0};
+
+    if (epd == NULL || epd->drv == NULL ||
+        !clock_mode_supported(mode) ||
+        !s_clock_prev.valid || s_clock_prev.mode != mode ||
+        epd->drv->diff_push == NULL || epd->drv->refresh_partial == NULL) {
         return false;
     }
 
-    bool found_time_comp = false;
-    for (uint8_t i = 0; i < cached_component_count; i++) {
-        if (cached_components[i].type == UI_COMP_TIME_7SEG) {
-            comp_x = cached_components[i].x;
-            comp_y = cached_components[i].y;
-            cS = (uint16_t)cached_components[i].p0;
-            found_time_comp = true;
-            break;
+    transformTime(timestamp, &now);
+    if (now.tm_hour == s_clock_prev.hour &&
+        now.tm_min == s_clock_prev.minute) {
+        return true;
+    }
+
+    if (ui_runtime_load_render_cache((uint8_t)mode, epd->width, epd->height,
+                                     &cached_mode, &components,
+                                     &component_count) != NRF_SUCCESS ||
+        components == NULL) {
+        return false;
+    }
+
+    for (uint8_t i = 0; i < component_count; i++) {
+        if (components[i].type != UI_COMP_TIME_7SEG ||
+            (components[i].flags & UI_FLAG_PARTIAL_ONLY) != 0U) {
+            continue;
         }
+        if (time_component != NULL) return false;
+        time_component = &components[i];
     }
-    if (!found_time_comp) {
+    if (time_component == NULL ||
+        time_component->p0 < UI_TIME_SCALE_MIN ||
+        time_component->p0 > UI_TIME_SCALE_MAX ||
+        time_component->p1 != CLOCK_DIFF_DIGITS) {
         return false;
     }
 
-    uint16_t margin_y = 8;
-    uint16_t digit_h = 20 * cS + 4 + 2 * margin_y;
-    uint16_t digit_w = 11 * cS + 2;
-    uint16_t align_w = ((digit_w + 7) / 8) * 8;
+    uint16_t scale = (uint16_t)time_component->p0;
+    uint16_t content_w = 46U * scale + 8U;
+    uint16_t content_h = 20U * scale + 4U;
+    int32_t region_x = time_component->x;
+    int32_t region_y = (int32_t)time_component->y - CLOCK_DIFF_MARGIN_Y;
+    if (region_x < 0 || region_y < 0) return false;
 
-    int16_t min_x = epd->width;
-    int16_t max_x = 0;
+    uint16_t aligned_x = (uint16_t)region_x & (uint16_t)~7U;
+    uint16_t offset_x = (uint16_t)region_x - aligned_x;
+    uint32_t needed_w = (uint32_t)offset_x + content_w;
+    uint16_t region_w = (uint16_t)((needed_w + 7U) & ~7U);
+    uint16_t region_h = content_h + 2U * CLOCK_DIFF_MARGIN_Y;
 
-    int16_t x_offsets[4];
-    x_offsets[0] = 0;
-    x_offsets[1] = digit_w;
-    x_offsets[2] = 2 * digit_w + 4 * cS;
-    x_offsets[3] = 2 * digit_w + 4 * cS + digit_w;
-
-    // Partition the shared GFX page buffer into old / new digit bitmaps.
-    // Two bitmaps (old + new) must both fit; if not, abort and fall back to full refresh.
-    uint8_t *buf = GFX_get_buffer();
-    uint32_t single_digit_size = (align_w / 8) * digit_h;
-    if (single_digit_size * 2 > GFX_get_buffer_size()) {
+    if (region_w < 16U || region_h < 2U ||
+        (uint32_t)aligned_x + region_w > epd->width ||
+        (uint32_t)region_y + region_h > epd->height) {
         return false;
     }
-    uint8_t *old_bm = buf;
-    uint8_t *new_bm = buf + single_digit_size;
 
-    bool min_tens_changed = (new_vals[2] != old_vals[2]);  // 分钟十位是否改变 | Whether minute tens digit has changed
-    bool hour_changed = (new_vals[0] != old_vals[0] || new_vals[1] != old_vals[1]);  // 小时是否改变 | Whether hour digits have changed
-    bool changed = false;
+    uint16_t width_bytes = region_w / 8U;
+    size_t buffer_size = GFX_get_buffer_size();
+    uint16_t tile_h = (uint16_t)(buffer_size / (2U * width_bytes));
+    if (tile_h > region_h) tile_h = region_h;
+    while (tile_h > 2U && (region_h % tile_h) == 1U) tile_h--;
+    if (tile_h < 2U || (region_h % tile_h) == 1U) return false;
 
-    for (int i = 0; i < 4; i++) {
-        if (new_vals[i] == old_vals[i]) continue;
+    size_t plane_size = (size_t)width_bytes * tile_h;
+    if (plane_size * 2U > buffer_size) return false;
 
-        int16_t rx = comp_x + x_offsets[i];
-        int16_t aligned_x = (rx / 8) * 8;
-        uint16_t offset_x = rx - aligned_x;
+    uint8_t *old_bitmap = GFX_get_buffer();
+    uint8_t *new_bitmap = old_bitmap + plane_size;
+    uint16_t tile_y = 0U;
+    uint16_t page = 0U;
 
-        Adafruit_GFX temp_gfx;
+    while (tile_y < region_h) {
+        uint16_t rows = region_h - tile_y;
+        if (rows > tile_h) rows = tile_h;
 
-        draw_digit_bitmap(&temp_gfx, old_bm, align_w, digit_h, old_vals[i], offset_x, cS, margin_y);
-        draw_digit_bitmap(&temp_gfx, new_bm, align_w, digit_h, new_vals[i], offset_x, cS, margin_y);
+        draw_time_tile(old_bitmap, region_w, region_h, tile_h, page,
+                       offset_x, scale,
+                       s_clock_prev.hour, s_clock_prev.minute);
+        draw_time_tile(new_bitmap, region_w, region_h, tile_h, page,
+                       offset_x, scale, now.tm_hour, now.tm_min);
 
-        epd->drv->diff_push(epd, aligned_x, comp_y - margin_y, align_w, digit_h, old_bm, new_bm);
-
-        if (aligned_x < min_x) min_x = aligned_x;
-        if (aligned_x + align_w > max_x) max_x = aligned_x + align_w;
-        changed = true;
-    }
-
-    if (changed) {
-        if (max_x > min_x && epd->drv->refresh_partial) {
-            // 如果分钟十位改变，或者小时改变，主动将窗口左边界扩展至覆盖冒号位置
-            if (min_tens_changed || hour_changed) {
-                int16_t colon_x = comp_x + 2 * digit_w;
-                uint16_t colon_w = 4 * cS;
-                Adafruit_GFX temp_gfx;
-                draw_colon_bitmap(&temp_gfx, old_bm, colon_w, digit_h, cS, margin_y);
-                draw_colon_bitmap(&temp_gfx, new_bm, colon_w, digit_h, cS, margin_y);
-                epd->drv->diff_push(epd, colon_x, comp_y - margin_y, colon_w, digit_h, old_bm, new_bm);
-
-                if (min_x > colon_x) {
-                    min_x = colon_x;
-                }
-            }
-            epd->drv->refresh_partial(epd, min_x, comp_y - margin_y, max_x - min_x, digit_h);
+        if (!epd->drv->diff_push(epd, aligned_x,
+                                  (uint16_t)region_y + tile_y,
+                                  region_w, rows,
+                                  old_bitmap, new_bitmap)) {
+            return false;
         }
-        s_clock_prev.h1 = new_vals[0];
-        s_clock_prev.h2 = new_vals[1];
-        s_clock_prev.m1 = new_vals[2];
-        s_clock_prev.m2 = new_vals[3];
+
+        tile_y += rows;
+        page++;
     }
+
+    if (!epd->drv->refresh_partial(epd, aligned_x, (uint16_t)region_y,
+                                    region_w, region_h)) {
+        return false;
+    }
+
+    s_clock_prev.hour = now.tm_hour;
+    s_clock_prev.minute = now.tm_min;
     return true;
 }

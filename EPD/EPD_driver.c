@@ -611,41 +611,11 @@ bool EPD_IsLowBattery(void) {
     return m_cached_voltage < LOW_BATTERY_THRESHOLD_MV;
 }
 
-// EPD models (Partial refresh version MUST be first for clock mode)
-// EPD型号数组(部分刷新版本必须放在第一位,用于时钟模式)
-/**
- * 重要说明 - IMPORTANT NOTES:
- *
- * 数组顺序的重要性 - Array Order Importance:
- * ========================================
- * 1. epd_uc8179_750_Partial_bwr 必须放在第一位(索引0)
- *    epd_uc8179_750_Partial_bwr MUST be first (index 0)
- *
- * 2. 时钟模式默认使用数组的第一个型号(epd_models[0])
- *    Clock mode uses the first model in array by default (epd_models[0])
- *
- * 3. 时钟模式需要部分刷新功能,因此必须使用支持部分刷新的版本
- *    Clock mode requires partial refresh, so must use the partial refresh version
- *
- * 4. 如果改变数组顺序,时钟模式将无法正常工作
- *    If array order is changed, clock mode will not work properly
- *
- * 型号说明 - Model Description:
- * ========================================
- * - epd_uc8179_750_Partial_bwr: 支持部分刷新的版本(用于时钟模式)
- *   epd_uc8179_750_Partial_bwr: Partial refresh version (for clock mode)
- *
- * - epd_uc8179_750_bwr: 仅支持全刷新的版本(用于图像显示)
- *   epd_uc8179_750_bwr: Full refresh only version (for image display)
- */
-extern epd_model_t epd_uc8179_750_bwr;          // 全刷新版本 - Full refresh version
-extern epd_model_t epd_uc8179_750_Partial_bwr;  // 部分刷新版本 - Partial refresh version
+/* One UC8179 model exposes both the full-refresh and true OLD/NEW paths. */
+extern epd_model_t epd_uc8179_750_Partial_bwr;
 
 static epd_model_t* epd_models[] = {
-    &epd_uc8179_750_Partial_bwr,  // Partial refresh version (for clock mode) - must be first!
-                                   // 部分刷新版本(用于时钟模式) - 必须放在第一位!
-    &epd_uc8179_750_bwr,           // Full refresh only version
-                                   // 仅全刷新版本
+    &epd_uc8179_750_Partial_bwr,
 };
 
 /**

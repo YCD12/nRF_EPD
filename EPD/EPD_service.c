@@ -38,7 +38,7 @@
  *    局刷使用条件:
  *    - 显示模式为MODE_CLOCK或MODE_CLOCK_CALENDAR
  *    - 驱动芯片为UC8179(支持局刷)
- *    - 驱动提供了refresh_partial函数
+ *    - 驱动提供init_partial、diff_push和refresh_partial
  *
  *    全刷触发条件:
  *    - 首次刷新 (p_epd->last_full_clear == 0)
@@ -859,6 +859,8 @@ static void epd_resmiss_seq_black_cb(void* user_data, uint8_t* black, uint8_t* c
  *          全程不用 PTIN/PTL 局部窗口寻址，从根上规避 write_image 在本场景的不稳定。
  */
 static void epd_draw_resource_missing_screen(epd_model_t* epd, gui_data_t* data) {
+    epd_clock_diff_invalidate();
+
     if (epd == NULL || epd->drv == NULL || data == NULL) {
         return;
     }
@@ -880,6 +882,55 @@ static void epd_draw_resource_missing_screen(epd_model_t* epd, gui_data_t* data)
         epd->drv->refresh(epd);
     }
     app_feed_wdt();
+}
+
+static bool epd_perform_full_refresh(ble_epd_t *p_epd, epd_model_t *epd,
+                                     gui_data_t *data) {
+    if (p_epd == NULL || epd == NULL || epd->drv == NULL || data == NULL ||
+        epd->drv->init == NULL || epd->drv->write_image == NULL ||
+        epd->drv->refresh == NULL) {
+        if (p_epd != NULL) p_epd->force_full_refresh = true;
+        epd_clock_diff_invalidate();
+        return false;
+    }
+
+    UC8179_ClearBusyTimeout();
+    epd->drv->init(epd);
+    if (UC8179_HadBusyTimeout()) {
+        NRF_LOG_ERROR("[EPD]: BUSY timeout during full refresh init\n");
+        p_epd->force_full_refresh = true;
+        epd_clock_diff_invalidate();
+        return false;
+    }
+
+    app_feed_wdt();
+    DrawGUI(data, (buffer_callback)epd->drv->write_image, epd);
+    app_feed_wdt();
+    epd->drv->refresh(epd);
+    app_feed_wdt();
+
+    if (UC8179_HadBusyTimeout()) {
+        NRF_LOG_ERROR("[EPD]: BUSY timeout during full refresh\n");
+        p_epd->force_full_refresh = true;
+        epd_clock_diff_invalidate();
+        return false;
+    }
+
+    EPD_LED_OFF();
+    p_epd->last_full_clear = data->timestamp;
+    p_epd->force_full_refresh = false;
+
+    if (data->voltage_mv > LOW_BATTERY_THRESHOLD_MV &&
+        (data->mode == MODE_CLOCK || data->mode == MODE_CLOCK_CALENDAR)) {
+        epd_clock_diff_seed(data->mode, data->timestamp);
+        if (data->mode == MODE_CLOCK_CALENDAR) {
+            GUI_MarkTimeRefreshTimestamp(data->timestamp);
+        }
+    } else {
+        epd_clock_diff_invalidate();
+    }
+
+    return true;
 }
 
 /**@brief GUI更新函数(由app_scheduler调度)
@@ -958,256 +1009,73 @@ static void epd_gui_update(void* p_event_data, uint16_t event_size) {
     if (res.skip)       goto finish_refresh;
     if (res.draw_hint)  { epd_draw_resource_missing_screen(epd, &data); goto finish_refresh; }
 
-    // DrawGUI(&data, (buffer_callback)epd->drv->write_image, epd);
-    // epd->drv->refresh(epd);
-
-    // ========================================================================
-    // 刷新策略: 全刷/局刷智能切换
-    // Refresh Strategy: Smart Full/Partial Refresh Switching
-    // ========================================================================
-    //
-    // 局刷使用条件:
-    // 1. 显示模式为MODE_CLOCK或MODE_CLOCK_CALENDAR
-    // 2. 驱动芯片为UC8179(SSD1683也支持但代码中只检查UC8179)
-    // 3. 驱动提供了refresh_partial函数
-    //
-    // 局刷优势:
-    // - 刷新速度快(约1秒 vs 全刷的10-15秒)
-    // - 功耗低
-    // - 闪烁少
-    //
-    // 局刷劣势:
-    // - 长期使用会积累残影
-    // - 需要定期全刷来清除残影
-    //
-    // ========================================================================
-    // Use partial refresh for supported ICs in clock mode or clock+calendar mode (UC8179, SSD1683)
-    // 在时钟模式或时钟+日历模式下,对支持的芯片使用局部刷新
+    /*
+     * True differential refresh requires the complete UC8179 OLD/NEW vtable.
+     * Low-battery and all other display modes use the single full-refresh path.
+     */
     use_partial = ((mode == MODE_CLOCK || mode == MODE_CLOCK_CALENDAR) &&
                    epd->drv->ic == EPD_DRIVER_IC_UC8179 &&
+                   epd->drv->init_partial != NULL &&
+                   epd->drv->diff_push != NULL &&
                    epd->drv->refresh_partial != NULL &&
                    !low_battery);
 
     if (use_partial) {
-        NRF_LOG_INFO("[EPD]: === Using PARTIAL refresh for clock mode ===\n");
-
-        // ====================================================================
-        // 全刷触发条件判断
-        // Full Refresh Trigger Conditions
-        // ====================================================================
-        //
-        // 1. 首次刷新 (p_epd->last_full_clear == 0)
-        //    - 确保初始显示正确
-        //
-        // 2. 强制全刷标志 (p_epd->force_full_refresh)
-        //    - 模式切换时设置,清除残影
-        //
-        // 3. 达到全刷间隔且非夜间静默时段
-        //    - 定期全刷保证显示质量
-        //    - 夜间静默时跳过
-        //
-        // 全刷间隔配置:
-        // - full_refresh_minutes = 0 或 0xFF: 默认每小时(3600秒)
-        // - 其他值: full_refresh_minutes * 60秒
-        //
-        // ====================================================================
-        // First time or at configured interval: use full refresh to ensure display is correct
-        // 首次或按配置间隔: 使用全刷确保显示正确
-        // Get refresh interval in seconds (0 means hourly = 60 minutes)
-        // 获取刷新间隔(秒),0表示每小时=60分钟
-        uint32_t refresh_interval = (p_epd->config.full_refresh_minutes == 0 || p_epd->config.full_refresh_minutes == 0xFF)
-                                    ? 3600  // Default: hourly. 默认: 每小时
-                                    : (uint32_t)p_epd->config.full_refresh_minutes * 60;
-        // Force full refresh if mode was just switched, first time, or at interval boundary.
-        // 如果模式刚切换、首次或到达间隔边界,则强制全刷
-        bool at_refresh_boundary = (event->timestamp % refresh_interval == 0);
-
-        // ====================================================================
-        // 夜间静默逻辑 (Quiet Hours Logic)
-        // ====================================================================
-        // 时间范围: 01:00 - 05:59
-        // 目的: 减少夜间闪烁和功耗,让用户睡眠时不被打扰
-        // 效果: 跳过整点全刷,仅使用局刷
-        // 注意: 首次全刷和强制全刷不受夜间静默影响(仍然执行)
-        // ====================================================================
-        // Quiet hours: 01:00~05:59 使用纯局刷,不做整点全刷以省电和减少闪烁。
-        // 只在周期性整点全刷时跳过,首次全刷和强制全刷仍然允许。
-        // Quiet hours: 01:00-05:59 use pure partial refresh, skip hourly full refresh
-        // to save power and reduce flicker. Only skip periodic full refresh,
-        // first-time and forced full refresh are still allowed.
+        uint32_t refresh_interval =
+            (p_epd->config.full_refresh_minutes == 0 ||
+             p_epd->config.full_refresh_minutes == 0xFF)
+                ? 3600U
+                : (uint32_t)p_epd->config.full_refresh_minutes * 60U;
+        bool at_refresh_boundary = (event->timestamp % refresh_interval) == 0U;
         bool skip_full_in_quiet_hours = false;
+
         if (at_refresh_boundary) {
             tm_t tm_now = {0};
             transformTime(event->timestamp, &tm_now);
-            if (tm_now.tm_hour >= 1 && tm_now.tm_hour <= 5) {  // 01:00-05:59
-                skip_full_in_quiet_hours = true;
-                NRF_LOG_DEBUG("[EPD]: Quiet hours (01:00-05:59), skipping periodic full refresh\n");
-            }
+            skip_full_in_quiet_hours =
+                tm_now.tm_hour >= 1 && tm_now.tm_hour <= 5;
         }
 
-        // 综合判断是否需要全刷
-        // Comprehensive decision on whether full refresh is needed
-        bool need_full_refresh = p_epd->force_full_refresh ||
-                                 (p_epd->last_full_clear == 0) ||
-                                 (at_refresh_boundary && !skip_full_in_quiet_hours);
+        bool need_full_refresh =
+            p_epd->force_full_refresh ||
+            p_epd->last_full_clear == 0U ||
+            (at_refresh_boundary && !skip_full_in_quiet_hours);
 
         if (need_full_refresh) {
-            // ================================================================
-            // 执行全刷流程
-            // Execute Full Refresh Flow
-            // ================================================================
-            NRF_LOG_INFO("[EPD]: *** Performing FULL refresh (mode switch or periodic) ***\n");
+            NRF_LOG_INFO("[EPD]: Performing clock maintenance full refresh\n");
             ble_log("[EPD]:full ts=%u %s", event->timestamp,
-                    p_epd->force_full_refresh ? "force" : (p_epd->last_full_clear == 0 ? "first" : "period"));
-
-            // Standard full refresh flow to ensure display is correct
-            // 标准全刷流程,确保显示正确
-            app_feed_wdt();  // Feed watchdog before drawing GUI. 绘制GUI前喂狗
-            DrawGUI(&data, (buffer_callback)epd->drv->write_image, epd);
-            app_feed_wdt();  // Feed watchdog after drawing GUI. 绘制GUI后喂狗
-            UC8179_ClearBusyTimeout();  // 清除前置辅助操作（如读取温度）产生的超时状态
-            epd->drv->refresh(epd);
-            app_feed_wdt();  // Feed watchdog after refresh. 刷新后喂狗
-            if (UC8179_HadBusyTimeout()) {
-                NRF_LOG_ERROR("[EPD]: BUSY timeout during full refresh (clock path), aborting\n");
-                goto finish_refresh;
-            }
-
-            EPD_LED_OFF();
-            p_epd->last_full_clear = event->timestamp;  // 记录全刷时间 / Record full refresh time
-            if (data.mode == MODE_CLOCK_CALENDAR) {
-                GUI_MarkTimeRefreshTimestamp(data.timestamp);
-            }
-            p_epd->force_full_refresh = false;  // Clear the force flag after full refresh. 清除强制全刷标志
-            NRF_LOG_INFO("[EPD]: Full refresh completed\n");
-            ble_log("[EPD]:full ok");
-
-            // Seed the differential clock refresh state
-            {
-                tm_t tm_seed = {0};
-                transformTime(event->timestamp, &tm_seed);
-                epd_clock_diff_seed(tm_seed.tm_hour, tm_seed.tm_min);
-            }
+                    p_epd->force_full_refresh ? "force" :
+                    (p_epd->last_full_clear == 0U ? "first" : "period"));
         } else {
-            // ================================================================
-            // 执行局刷流程
-            // Execute Partial Refresh Flow
-            // ================================================================
-            NRF_LOG_INFO("[EPD]: Using partial refresh (%d min since last full, interval=%d min)\n",
-                        (int)(event->timestamp - p_epd->last_full_clear) / 60,
-                        (int)(refresh_interval / 60));
+            NRF_LOG_INFO("[EPD]: True OLD/NEW clock partial refresh\n");
+            UC8179_ClearBusyTimeout();
+            epd->drv->init_partial(epd);
+            app_feed_wdt();
 
-            // Initialize for partial mode (includes reset)
-            // 初始化局刷模式(包含复位)
-            if (epd->drv->init_partial) {
-                UC8179_ClearBusyTimeout();
-                epd->drv->init_partial(epd);
-            } else {
-                NRF_LOG_ERROR("[EPD]: init_partial not available!\n");
-                goto fallback_full_refresh;  // 回退到全刷 / Fallback to full refresh
-            }
-            app_feed_wdt();  // Feed watchdog after init_partial. 局刷初始化后喂狗
             if (UC8179_HadBusyTimeout()) {
-                NRF_LOG_ERROR("[EPD]: BUSY timeout during partial init, falling back to full refresh\n");
-                goto fallback_full_refresh;
-            }
-
-            // Try true differential clock partial refresh first
-            if (epd_clock_diff_try_partial(epd, data.timestamp, data.mode)) {
-                NRF_LOG_INFO("[EPD]: Differential clock partial refresh successful\n");
+                NRF_LOG_ERROR("[EPD]: Partial init failed; using full refresh\n");
+            } else if (epd_clock_diff_try_partial(epd, data.timestamp, data.mode) &&
+                       !UC8179_HadBusyTimeout()) {
+                NRF_LOG_INFO("[EPD]: Differential clock partial refresh complete\n");
+                ble_log("[EPD]:part ok");
                 goto finish_refresh;
-            }
-
-            if (data.mode == MODE_CLOCK_CALENDAR) {
-                NRF_LOG_INFO("[EPD]: Differential refresh failed/unseeded, falling back to full refresh\n");
-                goto fallback_full_refresh;
-            }
-
-            // Fallback for MODE_CLOCK (full screen partial refresh)
-            uint16_t partial_x = 0, partial_y = 0, partial_w = epd->width, partial_h = epd->height;
-            UC8179_Set_Partial_Strong_BW_Allowed(true);
-
-            // Clear the partial refresh area to white first
-            if (epd->drv->clear_partial) {
-                epd->drv->clear_partial(epd, false);  // Don't refresh, just clear RAM. 不刷新,只清RAM
             } else {
-                NRF_LOG_ERROR("[EPD]: clear_partial not available!\n");
-                goto fallback_full_refresh;
+                NRF_LOG_WARNING(
+                    "[EPD]: Differential refresh unavailable; using full refresh\n");
             }
-            app_feed_wdt();  // Feed watchdog after clear_partial. 清除局刷区域后喂狗
-
-            // Write black data using partial image write
-            // 使用局部图像写入写入黑色数据
-            NRF_LOG_INFO("[EPD]: Drawing GUI for partial refresh (%d,%d,%d,%d)\n", partial_x, partial_y, partial_w, partial_h);
-            ble_log("[EPD]:part %d,%d,%d,%d", partial_x, partial_y, partial_w, partial_h);
-            DrawGUI(&data, (buffer_callback)epd->drv->write_image_partial, epd);
-            app_feed_wdt();  // Feed watchdog after drawing GUI. 绘制GUI后喂狗
-
-            // Load external LUT and perform partial refresh
-            // 加载外部LUT并执行局刷
-            NRF_LOG_INFO("[EPD]: Performing partial refresh (%d,%d,%d,%d)\n", partial_x, partial_y, partial_w, partial_h);
-            if (epd->drv->refresh_partial) {
-                epd->drv->refresh_partial(epd, partial_x, partial_y, partial_w, partial_h);
-            } else {
-                NRF_LOG_ERROR("[EPD]: refresh_partial not available!\n");
-            }
-            app_feed_wdt();  // Feed watchdog after refresh_partial. 局刷后喂狗
-            if (UC8179_HadBusyTimeout()) {
-                NRF_LOG_ERROR("[EPD]: BUSY timeout during partial refresh (clock mode), aborting\n");
-                goto finish_refresh;
-            }
-
-            // Seed the state since we just did a full window redraw
-            {
-                tm_t tm_seed = {0};
-                transformTime(data.timestamp, &tm_seed);
-                epd_clock_diff_seed(tm_seed.tm_hour, tm_seed.tm_min);
-            }
-        }
-
-        NRF_LOG_INFO("[EPD]: === Partial refresh sequence complete ===\n");
-        ble_log("[EPD]:part ok");
-    } else {
-fallback_full_refresh:
-        // ====================================================================
-        // 其他模式使用全刷
-        // Use normal full refresh for other modes or displays
-        // ====================================================================
-        // 适用于:
-        // - MODE_PICTURE: 图片模式
-        // - MODE_CALENDAR: 日历模式
-        // - 不支持局刷的驱动芯片
-        // ====================================================================
-        NRF_LOG_INFO("[EPD]: === Using FULL refresh ===\n");
-        ble_log("[EPD]:full");
-
-        if (epd->drv->init) {
-            epd->drv->init(epd);
-        }
-
-        app_feed_wdt();  // Feed watchdog before drawing GUI. 绘制GUI前喂狗
-        DrawGUI(&data, (buffer_callback)epd->drv->write_image, epd);
-        app_feed_wdt();  // Feed watchdog after drawing GUI. 绘制GUI后喂狗
-        epd->drv->refresh(epd);
-        app_feed_wdt();  // Feed watchdog after refresh. 刷新后喂狗
-        if (UC8179_HadBusyTimeout()) {
-            NRF_LOG_ERROR("[EPD]: BUSY timeout during full refresh (fallback path), aborting\n");
-            goto finish_refresh;
-        }
-
-        EPD_LED_OFF();
-        p_epd->last_full_clear = event->timestamp;
-        p_epd->force_full_refresh = false;
-        NRF_LOG_INFO("[EPD]: === Full refresh complete ===\n");
-        ble_log("[EPD]:full ok");
-
-        // Seed the state after fallback full refresh
-        {
-            tm_t tm_seed = {0};
-            transformTime(event->timestamp, &tm_seed);
-            epd_clock_diff_seed(tm_seed.tm_hour, tm_seed.tm_min);
+            epd_clock_diff_invalidate();
         }
     }
+
+    NRF_LOG_INFO("[EPD]: Using full refresh\n");
+    ble_log("[EPD]:full");
+
+    if (!epd_perform_full_refresh(p_epd, epd, &data)) {
+        NRF_LOG_ERROR("[EPD]: Full refresh failed\n");
+        goto finish_refresh;
+    }
+
+    ble_log("[EPD]:full ok");
 
 finish_refresh:
     app_feed_wdt();
@@ -2882,9 +2750,9 @@ void ble_epd_on_timer(ble_epd_t* p_epd, uint32_t timestamp, bool force_update) {
     // ========================================================================
     // 跨天判定链 (Cross-day detection)
     // ========================================================================
-    // 设备时间戳按本地时区递增，day = timestamp / 86400。日期发生跨天时，对"显示日期"
-    // 的模式(日历 / 时钟+日历)强制一次全刷：
-    //   - 正确性：时钟+日历模式平时只对时间做差分局刷，日期/农历不会随分钟刷新更新；
+    // 设备时间戳按本地时区递增，day = timestamp / 86400。日期发生跨天时，对默认
+    // 日历/时钟模板统一强制一次全刷：
+    //   - 正确性：时钟模式平时只对时间做差分局刷，日期/农历不会随分钟刷新更新；
     //     跨天全刷确保午夜后日期、星期、农历、节气、节日立即刷新，不必等下一次整点全刷。
     //   - I/O：跨天后 lunar_db 单日缓存(按年月日)自动失效，新一天的记录重读一次即缓存，
     //     配合单日缓存实现"今日记录严格 1 读/天"。
@@ -2907,9 +2775,10 @@ void ble_epd_on_timer(ble_epd_t* p_epd, uint32_t timestamp, bool force_update) {
                                                 p_epd->epd->width, p_epd->epd->height);
     }
 
-    // 跨天仅对含日期的模式有意义(纯时钟无日期、图片模式显示用户图像，均不参与)。
+    // 默认时钟模板也包含日期/农历；跨天时统一全刷，不能只更新 HH:MM。
     bool day_change_refresh = day_rolled_over &&
                               (p_epd->config.display_mode == MODE_CALENDAR ||
+                               p_epd->config.display_mode == MODE_CLOCK ||
                                p_epd->config.display_mode == MODE_CLOCK_CALENDAR);
 
     if (force_update ||
