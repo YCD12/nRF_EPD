@@ -3,6 +3,7 @@
 #include <string.h>
 
 #include "gui_porting_hal.h"
+#include "calendar_annotations.h"
 #include "Lunar.h"
 #include "fonts.h"
 #include "nrf_log.h"
@@ -26,6 +27,10 @@
 typedef struct {
     char label[10];
     uint8_t is_festival;
+    uint8_t has_annotation;
+    uint8_t has_annotation_label;
+    uint8_t annotation_font_size;
+    uint8_t annotation_color;
     uint8_t has_holiday_mark;
     uint8_t holiday_work;
 } month_day_render_cache_t;
@@ -134,8 +139,77 @@ static bool GetFestival(uint16_t year, uint8_t mon, uint8_t day, uint8_t week, s
 }
 
 static void month_cache_copy_label(month_day_render_cache_t* cache, const char* label) {
-    strncpy(cache->label, label, sizeof(cache->label) - 1U);
-    cache->label[sizeof(cache->label) - 1U] = '\0';
+    size_t length = 0U;
+    while (length < sizeof(cache->label) - 1U && label[length] != '\0') {
+        length++;
+    }
+    memcpy(cache->label, label, length);
+    cache->label[length] = '\0';
+}
+
+static const char* annotation_utf8_next(const char* text, uint16_t* codepoint) {
+    const uint8_t* input = (const uint8_t*)text;
+
+    if (input[0] == 0U) {
+        *codepoint = 0U;
+        return text;
+    }
+    if (input[0] < 0x80U) {
+        *codepoint = input[0];
+        return text + 1;
+    }
+    if ((input[0] & 0xE0U) == 0xC0U && (input[1] & 0xC0U) == 0x80U) {
+        *codepoint = (uint16_t)(((uint16_t)(input[0] & 0x1FU) << 6) |
+                                (uint16_t)(input[1] & 0x3FU));
+        return text + 2;
+    }
+    if ((input[0] & 0xF0U) == 0xE0U &&
+        (input[1] & 0xC0U) == 0x80U && (input[2] & 0xC0U) == 0x80U) {
+        *codepoint = (uint16_t)(((uint16_t)(input[0] & 0x0FU) << 12) |
+                                ((uint16_t)(input[1] & 0x3FU) << 6) |
+                                (uint16_t)(input[2] & 0x3FU));
+        return text + 3;
+    }
+
+    /* Calendar annotations intentionally support BMP code points only. */
+    *codepoint = 0xFFFDU;
+    return text + 1;
+}
+
+static int16_t annotation_label_width(Adafruit_GFX* gfx, const char* label, uint8_t pixel_size) {
+    int16_t width = 0;
+
+    while (*label != '\0') {
+        uint16_t codepoint;
+        calendar_annotation_glyph_t glyph;
+        label = annotation_utf8_next(label, &codepoint);
+        if (GFX_hasGlyph(gfx, codepoint)) {
+            width += GFX_getGlyphAdvance(gfx, codepoint);
+        } else if (calendar_annotations_get_glyph(codepoint, pixel_size, &glyph)) {
+            width += glyph.advance;
+        } else {
+            width += GFX_getGlyphAdvance(gfx, codepoint);
+        }
+    }
+    return width;
+}
+
+static void draw_annotation_label(Adafruit_GFX* gfx, int16_t x, int16_t baseline,
+                                  const char* label, uint8_t pixel_size, uint16_t color) {
+    while (*label != '\0') {
+        uint16_t codepoint;
+        calendar_annotation_glyph_t glyph;
+        label = annotation_utf8_next(label, &codepoint);
+        if (GFX_hasGlyph(gfx, codepoint)) {
+            x += GFX_drawGlyph(gfx, x, baseline, codepoint);
+        } else if (calendar_annotations_get_glyph(codepoint, pixel_size, &glyph)) {
+            GFX_drawBitmap(gfx, x + glyph.x_offset, baseline + glyph.y_offset,
+                           glyph.bitmap, glyph.width, glyph.height, color, false);
+            x += glyph.advance;
+        } else {
+            x += GFX_drawGlyph(gfx, x, baseline, codepoint);
+        }
+    }
 }
 
 static const month_render_cache_t* PrepareMonthRenderCache(uint16_t year, uint8_t month) {
@@ -179,6 +253,23 @@ static const month_render_cache_t* PrepareMonthRenderCache(uint16_t year, uint8_
             month_cache_copy_label(cache, label);
         } else {
             month_cache_copy_label(cache, LUNAR_GetDateName(day_lunar.Date, label, sizeof(label)));
+        }
+
+        {
+            calendar_annotation_t annotation;
+            if (calendar_annotations_get(year, month, day, &annotation)) {
+                cache->has_annotation = 1U;
+                /* A non-empty user label intentionally has the highest
+                 * display priority: it replaces festival, solar-term and
+                 * lunar text for that date. */
+                if (annotation.label[0] != '\0') {
+                    month_cache_copy_label(cache, annotation.label);
+                    cache->is_festival = 0U;
+                    cache->has_annotation_label = 1U;
+                    cache->annotation_font_size = annotation.font_size;
+                    cache->annotation_color = annotation.color;
+                }
+            }
         }
 
         /* 调休标志直接取自 LCDB 预计算记录：1=休(放假)，2=班(补班)。 */
@@ -602,14 +693,54 @@ static void DrawMonthDaysArea(Adafruit_GFX* gfx, int16_t x, int16_t y, int16_t a
 
         // 准备节日/农历信息 | Prepare festival/lunar information
         const char* festival = (day_cache != NULL && day_cache->label[0] != '\0') ? day_cache->label : "--";
-        GFX_setFont(gfx, large ? u8g2_font_wqy12_t_lunar : u8g2_font_wqy9_t_lunar);
-        GFX_setFontMode(gfx, 1);  // transparent | 透明模式
-        if (day_cache != NULL && day_cache->is_festival != 0U) {
-            if (day != tm->tm_mday) GFX_setTextColor(gfx, GFX_RED, GFX_WHITE);  // 节日用红色 | Festivals in red
+        uint8_t label_pixel_size = large ? CALENDAR_ANNOTATION_FONT_LARGE :
+                                           CALENDAR_ANNOTATION_FONT_SMALL;
+        if (day_cache != NULL && day_cache->has_annotation_label != 0U &&
+            (day_cache->annotation_font_size == CALENDAR_ANNOTATION_FONT_SMALL ||
+             day_cache->annotation_font_size == CALENDAR_ANNOTATION_FONT_LARGE)) {
+            label_pixel_size = day_cache->annotation_font_size;
         }
+        GFX_setFont(gfx, label_pixel_size == CALENDAR_ANNOTATION_FONT_LARGE ?
+                         u8g2_font_wqy12_t_lunar : u8g2_font_wqy9_t_lunar);
+        GFX_setFontMode(gfx, 1);  // transparent | 透明模式
+        uint16_t label_color;
+        if (day_cache != NULL && day_cache->has_annotation_label != 0U) {
+            /* User annotations use their stored color even for today.  In
+             * particular, the zero/default value is black rather than the
+             * automatic white used by the built-in lunar label on a red day. */
+            if (day_cache->annotation_color == CALENDAR_ANNOTATION_COLOR_WHITE) {
+                label_color = GFX_WHITE;
+            } else if (day_cache->annotation_color == CALENDAR_ANNOTATION_COLOR_RED) {
+                label_color = GFX_RED;
+            } else {
+                label_color = GFX_BLACK;
+            }
+        } else {
+            label_color = (day == tm->tm_mday) ? GFX_WHITE :
+                          ((weekend || (day_cache != NULL && day_cache->is_festival != 0U)) ?
+                           GFX_RED : GFX_BLACK);
+        }
+        GFX_setTextColor(gfx, label_color, day == tm->tm_mday ? GFX_RED : GFX_WHITE);
         // 绘制节日/农历文字 | Draw festival/lunar text
-        GFX_setCursor(gfx, bx + (2 * cr - GFX_getUTF8Width(gfx, festival)) / 2, gfx->ty + GFX_getFontHeight(gfx) + 3);
-        GFX_printf(gfx, "%s", festival);
+        int16_t label_baseline = gfx->ty + GFX_getFontHeight(gfx) + 3;
+        if (day_cache != NULL && day_cache->has_annotation_label != 0U) {
+            int16_t label_width = annotation_label_width(gfx, festival, label_pixel_size);
+            draw_annotation_label(gfx, bx + (2 * cr - label_width) / 2,
+                                  label_baseline, festival, label_pixel_size, label_color);
+        } else {
+            GFX_setCursor(gfx, bx + (2 * cr - GFX_getUTF8Width(gfx, festival)) / 2, label_baseline);
+            GFX_printf(gfx, "%s", festival);
+        }
+
+        /* The dot is deliberately independent from the optional label, so a
+         * user annotation is still visible on a holiday or on a font-missing
+         * label. */
+        if (day_cache != NULL && day_cache->has_annotation != 0U) {
+            int16_t marker_x = cell_x + bw - (large ? 8 : 6);
+            int16_t marker_y = cell_y + (large ? 7 : 5);
+            uint8_t marker_radius = large ? 3U : 2U;
+            GFX_fillCircle(gfx, marker_x, marker_y, marker_radius, GFX_RED);
+        }
 
         // 绘制放假/调休标记 | Draw holiday/workday marker
         if (day_cache != NULL && day_cache->has_holiday_mark != 0U) {

@@ -7,6 +7,7 @@ CFLAGS = -std=c11 -Wall -Wextra -O2 \
 SRCS = tools/test/host_stubs.c \
        tools/res_hal_host.c \
        tools/test/test_gui_golden.c \
+       GUI/calendar_annotations.c \
        GUI/GUI.c \
        GUI/Lunar.c \
        GUI/Adafruit_GFX.c \
@@ -16,20 +17,25 @@ SRCS = tools/test/host_stubs.c \
        GUI/ui_runtime.c
 
 TARGET = /tmp/test_gui_golden
+ANNOTATION_TARGET = /tmp/test_calendar_annotations
 RES_BIN = tools/epd_resources.bin
 
 .PHONY: all test update-golden clean
 
-all: $(TARGET)
+all: $(TARGET) $(ANNOTATION_TARGET)
 
 $(TARGET): $(SRCS)
 	$(CC) $(CFLAGS) -o $@ $(SRCS)
 
-test: $(TARGET)
+$(ANNOTATION_TARGET): tools/test/test_calendar_annotations.c GUI/calendar_annotations.c
+	$(CC) $(CFLAGS) -o $@ tools/test/test_calendar_annotations.c GUI/calendar_annotations.c
+
+test: all
 	$(TARGET) $(RES_BIN)
+	$(ANNOTATION_TARGET)
 
 update-golden: $(TARGET)
 	$(TARGET) $(RES_BIN) --update-golden
 
 clean:
-	rm -f $(TARGET)
+	rm -f $(TARGET) $(ANNOTATION_TARGET)

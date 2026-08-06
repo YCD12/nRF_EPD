@@ -23,6 +23,10 @@ let clearLogOnNextSuccessfulConnect = false;
 let lastWeekStartSent = null;
 let internalDisconnectInProgress = false;
 let internalDisconnectSuppressUntil = 0;
+/* The on-screen log is intentionally concise and capped.  Keep a separate
+ * session-only trace for the export button so hidden read/status packets are
+ * still available for support diagnostics. */
+let diagnosticTrace = [];
 window.latestBatteryVoltageMv = null;
 const DFU_PAGE_HANDOFF_KEY = 'epd_dfu_page_handoff';
 
@@ -186,6 +190,10 @@ function updateDeviceVersionDisplay(versionNum = null, fallbackText = '未连接
 
 let bleWriteQueue = Promise.resolve();
 
+function isQuietResourcePacket(cmd) {
+  return cmd >= EpdCmd.RES_ERASE && cmd <= EpdCmd.RES_READ;
+}
+
 async function write(cmd, data, withResponse = true, logPacket = true) {
   if (!epdCharacteristic) {
     addLog("服务不可用，请检查蓝牙连接");
@@ -198,7 +206,11 @@ async function write(cmd, data, withResponse = true, logPacket = true) {
     payload.push(...data)
   }
   const task = async () => {
-    if (logPacket) addLog(bytes2hex(payload), '⇑');
+    recordDiagnosticPacket('TX', payload, withResponse ? 'write-with-response' : 'write-without-response');
+    /* Resource protocol packets (0x40..0x44) can contain long binary data or
+     * repeat during polling.  Keep them in the diagnostic export but show
+     * only high-level progress/error messages in the normal log window. */
+    if (logPacket && !isQuietResourcePacket(cmd)) addLog(bytes2hex(payload), '⇑');
     try {
       if (withResponse)
         await epdCharacteristic.writeValueWithResponse(Uint8Array.from(payload));
@@ -1128,6 +1140,7 @@ function isEpdConfig(data) {
 
 function handleNotify(value, idx) {
   const data = new Uint8Array(value.buffer, value.byteOffset, value.byteLength);
+  recordDiagnosticPacket('RX', data, `notification#${idx}`);
 
   // Route CRC transfer responses to BleTransfer module
   if (data.length >= 1 && (data[0] === 0xA0 || data[0] === 0xA1)) {
@@ -1455,7 +1468,7 @@ async function connect() {
       if (reconnectKeepFromIndex != null) {
         clearLogBeforeIndex(reconnectKeepFromIndex);
       } else {
-        clearLog();
+        clearVisibleLog();
       }
       clearLogOnNextSuccessfulConnect = false;
       addLog('已重新连接，历史日志已清空。');
@@ -1534,6 +1547,7 @@ function setConsoleLogEnabled(enabled) {
 }
 
 function addLog(logTXT, action = '') {
+  recordDiagnosticUiLog(logTXT, action);
   const log = document.getElementById("log");
   // 只有用户当前停留在底部附近时才自动滚动，避免查看历史日志被强制拉回底部。
   const autoFollow = (log.scrollHeight - (log.scrollTop + log.clientHeight)) < 24;
@@ -1579,8 +1593,36 @@ function addLog(logTXT, action = '') {
   }
 }
 
+function diagnosticTimestamp() {
+  return new Date().toISOString();
+}
+
+function recordDiagnosticUiLog(message, action = '') {
+  diagnosticTrace.push({
+    timestamp: diagnosticTimestamp(),
+    type: 'UI',
+    action: action || '',
+    message: String(message)
+  });
+}
+
+function recordDiagnosticPacket(direction, data, detail = '') {
+  diagnosticTrace.push({
+    timestamp: diagnosticTimestamp(),
+    type: direction,
+    detail,
+    hex: bytes2hex(data)
+  });
+}
+
+function clearVisibleLog() {
+  const log = document.getElementById("log");
+  if (log) log.innerHTML = '';
+}
+
 function clearLog() {
-  document.getElementById("log").innerHTML = '';
+  clearVisibleLog();
+  diagnosticTrace = [];
 }
 
 function clearLogBeforeIndex(index) {
@@ -1900,41 +1942,48 @@ function recordConnectionMetrics(metrics) {
   }
 }
 
+function buildDiagnosticsText() {
+  const metrics = localStorage.getItem('epd_connection_metrics') || '[]';
+  const parsedMetrics = JSON.parse(metrics);
+
+  let text = "==================================================\n";
+  text += "           EPD CONTROL PANEL DIAGNOSTIC LOG       \n";
+  text += `Export Time: ${new Date().toISOString()}\n`;
+  text += `User Agent: ${navigator.userAgent}\n`;
+  text += "==================================================\n\n";
+
+  text += "--- Connection Metrics (Last 50 Sessions) ---\n";
+  if (parsedMetrics.length === 0) {
+    text += "(No connection metrics recorded yet)\n";
+  } else {
+    parsedMetrics.forEach((m, idx) => {
+      text += `[Session ${idx + 1}] Time: ${m.timestamp}\n`;
+      text += `  Handshake Duration: ${m.handshakeMs !== null ? m.handshakeMs + ' ms' : 'N/A'}\n`;
+      text += `  Write Errors: ${m.writeErrors}\n`;
+      text += `  Resource Update Duration: ${m.updateMs !== null ? m.updateMs + ' ms' : 'N/A'}\n`;
+    });
+  }
+  text += "\n";
+
+  text += "--- Full Web UI Log and BLE Packet Trace (Current Page Session) ---\n";
+  text += "Window-only filtering is not applied here: every BLE TX/RX packet is included.\n";
+  if (diagnosticTrace.length === 0) {
+    text += "(No page-session logs recorded yet)\n";
+  } else {
+    diagnosticTrace.forEach(entry => {
+      if (entry.type === 'UI') {
+        text += `[${entry.timestamp}] UI${entry.action ? ` ${entry.action}` : ''} ${entry.message}\n`;
+      } else {
+        text += `[${entry.timestamp}] ${entry.type} ${entry.detail || 'BLE'} ${entry.hex}\n`;
+      }
+    });
+  }
+  return text;
+}
+
 function exportDiagnostics() {
   try {
-    const metrics = localStorage.getItem('epd_connection_metrics') || '[]';
-    const parsedMetrics = JSON.parse(metrics);
-    
-    let text = "==================================================\n";
-    text += "           EPD CONTROL PANEL DIAGNOSTIC LOG       \n";
-    text += `Export Time: ${new Date().toISOString()}\n`;
-    text += `User Agent: ${navigator.userAgent}\n`;
-    text += "==================================================\n\n";
-    
-    text += "--- Connection Metrics (Last 50 Sessions) ---\n";
-    if (parsedMetrics.length === 0) {
-      text += "(No connection metrics recorded yet)\n";
-    } else {
-      parsedMetrics.forEach((m, idx) => {
-        text += `[Session ${idx + 1}] Time: ${m.timestamp}\n`;
-        text += `  Handshake Duration: ${m.handshakeMs !== null ? m.handshakeMs + ' ms' : 'N/A'}\n`;
-        text += `  Write Errors: ${m.writeErrors}\n`;
-        text += `  Resource Update Duration: ${m.updateMs !== null ? m.updateMs + ' ms' : 'N/A'}\n`;
-      });
-    }
-    text += "\n";
-    
-    text += "--- Console UI Logs ---\n";
-    const logDiv = document.getElementById("log");
-    if (logDiv) {
-      const lines = logDiv.querySelectorAll('.log-line');
-      lines.forEach(l => {
-        text += l.innerText + "\n";
-      });
-    } else {
-      text += "(Log container not found)\n";
-    }
-    
+    const text = buildDiagnosticsText();
     const blob = new Blob([text], { type: 'text/plain;charset=utf-8' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
