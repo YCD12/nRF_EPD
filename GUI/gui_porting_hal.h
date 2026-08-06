@@ -25,9 +25,11 @@ void gui_porting_feed_wdt(void);
 #define EPD_EXT_RES_TYPE_HOLIDAY           3U
 #define EPD_EXT_RES_TYPE_UI                4U
 #define EPD_EXT_RES_TYPE_LUNAR_DB          6U
+#define EPD_EXT_RES_TYPE_CALENDAR_ANNOTATIONS 7U
 
 #define EPD_EXT_LUNAR_DB_ENTRY             1U
 #define EPD_EXT_LUNAR_DB_MAGIC             0x4C434442UL  /* "LCDB" */
+#define EPD_EXT_CALENDAR_ANNOTATIONS_ENTRY 1U
 
 #define EPD_EXT_FONT_WQY9_LUNAR            1U
 #define EPD_EXT_FONT_WQY12_LUNAR           2U

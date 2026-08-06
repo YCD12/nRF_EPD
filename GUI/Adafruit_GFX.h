@@ -185,6 +185,10 @@ int8_t GFX_getFontDescent(Adafruit_GFX* gfx);
 int8_t GFX_getFontHeight(Adafruit_GFX* gfx);
 // 绘制单个字形 | Draw a single glyph
 int16_t GFX_drawGlyph(Adafruit_GFX* gfx, int16_t x, int16_t y, uint16_t e);
+// 查询当前字体是否包含字形 | Check whether current font contains a glyph
+bool GFX_hasGlyph(Adafruit_GFX* gfx, uint16_t e);
+// 获取字形水平步进（缺字时返回占位框步进）| Get glyph advance
+int16_t GFX_getGlyphAdvance(Adafruit_GFX* gfx, uint16_t e);
 // 绘制ASCII字符串 | Draw an ASCII string
 int16_t GFX_drawStr(Adafruit_GFX* gfx, int16_t x, int16_t y, const char* s);
 // 绘制UTF-8编码字符串（支持中文等多字节字符）| Draw UTF-8 encoded string (supports Chinese and other multi-byte characters)

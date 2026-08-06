@@ -107,6 +107,7 @@ SRC_FILES += \
   $(PROJ_DIR)/EPD/UC8179.c \
   $(PROJ_DIR)/EPD/epd_clock_diff.c \
   $(PROJ_DIR)/GUI/GUI.c \
+  $(PROJ_DIR)/GUI/calendar_annotations.c \
   $(PROJ_DIR)/GUI/Lunar.c \
   $(PROJ_DIR)/GUI/fonts.c \
   $(PROJ_DIR)/GUI/Adafruit_GFX.c \

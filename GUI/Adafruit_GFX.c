@@ -1205,6 +1205,14 @@ int16_t GFX_drawGlyph(Adafruit_GFX* gfx, int16_t x, int16_t y, uint16_t e) {
     return u8g2_DrawGlyph(&gfx->u8g2, x, y, e);
 }
 
+bool GFX_hasGlyph(Adafruit_GFX* gfx, uint16_t e) {
+    return u8g2_IsGlyph(&gfx->u8g2, e) != 0U;
+}
+
+int16_t GFX_getGlyphAdvance(Adafruit_GFX* gfx, uint16_t e) {
+    return u8g2_GetGlyphWidth(&gfx->u8g2, e);
+}
+
 /**************************************************************************/
 /**
  * @brief   绘制ASCII字符串

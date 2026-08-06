@@ -26,11 +26,18 @@ const ResourceManager = {
     'lunar_festivals': '农历节日数据',
     'holiday_adjustments': '节假日放假/调休安排',
     'lunar_db': '农历大数据库',
-    'ui_bundle': '界面布局模板包'
+    'ui_bundle': '界面布局模板包',
+    'calendar_annotations': '日历日期标注'
   },
 
   getFriendlyName(name) {
     return this.RESOURCE_NAME_MAP_CN[name] || name;
+  },
+
+  /* These records are created on the device by UI features rather than by the
+   * bundled resource package.  System resource updates must never remove them. */
+  isDeviceOwnedResource(entry) {
+    return entry && entry.type === 7 && entry.id === 1;
   },
 
   CMD_RES_ERASE: 0x40,
@@ -65,14 +72,17 @@ const ResourceManager = {
   lastWriteTimes: {},
   BUSY_RETRY_INTERVAL_MS: 1000,
   BUSY_RETRY_MAX: 40,
+  READ_TRACE_MAX: 12,
   busyOperation: null,
   crcTable: null,
+  readTrace: [],
   get isBusy() {
     return !!this.busyOperation || this.isUpdating || this.isChecking || this.isClearing;
   },
 
   init() {
     this.lastWriteTimes = {};
+    this.readTrace = [];
     this.setUiStatus('等待检查');
     this.updateUi();
   },
@@ -89,6 +99,7 @@ const ResourceManager = {
     this.opResolvers.clear();
     this.readResolvers.clear();
     this.lastWriteTimes = {};
+    this.readTrace = [];
     this.setUiStatus('未连接');
     this.updateUi();
   },
@@ -171,6 +182,7 @@ const ResourceManager = {
     }
 
     try {
+      if (typeof addLog === 'function') addLog('正在自动校验外置资源…');
       return await this.checkResources();
     } catch (e) {
       console.error(e);
@@ -240,23 +252,21 @@ const ResourceManager = {
       }
 
       this.setUiStatus('读取manifest');
+      if (typeof addLog === 'function') addLog('正在读取资源目录（manifest）…');
       const deviceManifestBytes = await this.readRaw(bundle.manifestAddress, bundle.manifest.length);
       const deviceManifest = this.parseManifest(deviceManifestBytes);
       if (!deviceManifest.valid) {
+        this.logReadTrace('资源目录校验失败');
         this.latestCheck = { needsUpdate: true, reason: deviceManifest.reason || '设备manifest无效' };
         this.updateUi();
         return this.latestCheck;
       }
       this.deviceEntries = deviceManifest.entries;
 
-      if (deviceManifest.crc32 !== bundle.manifestCrc32) {
-        this.latestCheck = { needsUpdate: true, reason: 'manifest CRC不一致' };
-        this.updateUi();
-        return this.latestCheck;
-      }
-
-      const entryMismatch = this.compareEntries(deviceManifest.entries, bundle.entries);
+      const systemEntries = deviceManifest.entries.filter(entry => !this.isDeviceOwnedResource(entry));
+      const entryMismatch = this.compareEntries(systemEntries, bundle.entries);
       if (entryMismatch) {
+        this.logReadTrace('资源目录与网页资源包不一致');
         this.latestCheck = { needsUpdate: true, reason: entryMismatch };
         this.updateUi();
         return this.latestCheck;
@@ -265,6 +275,7 @@ const ResourceManager = {
       this.setUiStatus('抽样校验');
       const sampleMismatch = await this.verifySamples(bundle.entries, bundle);
       if (sampleMismatch) {
+        this.logReadTrace('资源抽样校验失败');
         this.latestCheck = { needsUpdate: true, reason: sampleMismatch };
         this.updateUi();
         return this.latestCheck;
@@ -326,21 +337,31 @@ const ResourceManager = {
         manifestBytesToWrite = this.serializeManifest(entries, bundle);
       } else {
         this.setUiStatus('读取设备manifest');
+        let deviceManifest = null;
         try {
           const status = this.latestStatus || await this.queryStatusWithRetry();
           if (status.manifestValid) {
             const deviceManifestBytes = await this.readRaw(bundle.manifestAddress, bundle.manifest.length);
-            const deviceManifest = this.parseManifest(deviceManifestBytes);
-            if (deviceManifest.valid) {
-              const deviceMap = new Map(deviceManifest.entries.map(e => [`${e.type}:${e.id}`, e]));
-              changedEntries = bundle.entries.filter(entry => {
-                const dev = deviceMap.get(`${entry.type}:${entry.id}`);
-                return !dev || dev.crc32 !== entry.crc32;
-              });
-            }
+            deviceManifest = this.parseManifest(deviceManifestBytes);
           }
         } catch (e) {
           changedEntries = bundle.entries;
+        }
+        if (deviceManifest && deviceManifest.valid) {
+          const deviceOwnedEntries = deviceManifest.entries.filter(entry => this.isDeviceOwnedResource(entry));
+          const deviceMap = new Map(deviceManifest.entries
+            .filter(entry => !this.isDeviceOwnedResource(entry))
+            .map(e => [`${e.type}:${e.id}`, e]));
+          changedEntries = bundle.entries.filter(entry => {
+            const dev = deviceMap.get(`${entry.type}:${entry.id}`);
+            return !dev || dev.crc32 !== entry.crc32;
+          });
+          if (bundle.entries.length + deviceOwnedEntries.length > 24) {
+            throw new Error('设备资源列表容量已满，无法保留用户日期标注');
+          }
+          if (deviceOwnedEntries.length > 0) {
+            manifestBytesToWrite = this.serializeManifest([...bundle.entries, ...deviceOwnedEntries], bundle);
+          }
         }
       }
 
@@ -348,6 +369,7 @@ const ResourceManager = {
       const now = Date.now();
       const THROTTLE_LIMIT_MS = 3 * 60 * 1000;
       for (const entry of changedEntries) {
+        if (this.isDeviceOwnedResource(entry)) continue;
         const key = `${entry.type}:${entry.id}`;
         const lastWrite = this.lastWriteTimes[key];
         if (lastWrite && (now - lastWrite) < THROTTLE_LIMIT_MS) {
@@ -506,7 +528,7 @@ const ResourceManager = {
         const end = e.offset + e.length;
         if (end > maxEnd) maxEnd = end;
       }
-      const offset = (maxEnd + 3) & ~3;
+      const offset = (maxEnd + 4095) & ~4095;
       if (offset + requiredLength > FLASH_LIMIT) {
         throw new Error(`文件大小超出限制！Flash 剩余空间不足（最大可用: ${this.formatBytes(FLASH_LIMIT - offset)}，当前大小: ${this.formatBytes(requiredLength)}）。您可以尝试先点击页面上方的“更新资源”进行全量整理，消除 Relocation 产生的空间碎片。`);
       }
@@ -531,7 +553,7 @@ const ResourceManager = {
         const end = e.offset + e.length;
         if (end > maxEnd) maxEnd = end;
       }
-      const offset = (maxEnd + 3) & ~3;
+      const offset = (maxEnd + 4095) & ~4095;
       if (offset + requiredLength > FLASH_LIMIT) {
         throw new Error(`文件大小超出限制！Flash 剩余空间不足以容纳重定位后的该模块（最大可用: ${this.formatBytes(FLASH_LIMIT - offset)}，当前大小: ${this.formatBytes(requiredLength)}）。您可以尝试先点击页面上方的“更新资源”进行全量整理，消除 Relocation 产生的空间碎片。`);
       }
@@ -643,7 +665,10 @@ const ResourceManager = {
         finish();
       };
 
-      const ok = await write(this.CMD_RES_STATUS);
+      /* Status polls can repeat while the EPD is refreshing.  The retry path
+       * logs one readable progress message, so do not flood the log with raw
+       * 0x43 packets. */
+      const ok = await write(this.CMD_RES_STATUS, null, true, false);
       writeDone = true;
       if (!ok) {
         clearTimeout(timer);
@@ -760,16 +785,28 @@ const ResourceManager = {
       if (response.status === this.NRF_ERROR_BUSY) {
         /* PRD §US-1.1: Retry read on busy, with a bounded retry count. */
         if (++busyRetries > this.BUSY_RETRY_MAX) {
-          throw new Error('Flash读取持续繁忙，等待超时，请稍后重试');
+          const message = 'Flash读取持续繁忙，等待超时，请稍后重试';
+          this.logReadTrace(message);
+          throw new Error(message);
         }
         await new Promise(r => setTimeout(r, this.BUSY_RETRY_INTERVAL_MS));
         continue;
       }
       busyRetries = 0;
-      if (response.status !== 0) throw new Error(`Flash读取失败: ${response.status}`);
-      if (!response.crcOk) throw new Error('Flash读取响应CRC错误');
+      if (response.status !== 0) {
+        const message = `Flash读取失败: ${response.status}`;
+        this.logReadTrace(message);
+        throw new Error(message);
+      }
+      if (!response.crcOk) {
+        const message = 'Flash读取响应CRC错误';
+        this.logReadTrace(message);
+        throw new Error(message);
+      }
       if (response.address !== address + pos || response.payload.length !== readLen) {
-        throw new Error('Flash读取响应地址或长度不匹配');
+        const message = 'Flash读取响应地址或长度不匹配';
+        this.logReadTrace(message);
+        throw new Error(message);
       }
       out.set(response.payload, pos);
       pos += readLen;
@@ -848,6 +885,7 @@ const ResourceManager = {
       const timer = setTimeout(() => {
         this.readResolvers.delete(seq);
         settled = true;
+        this.logReadTrace('Flash读取超时');
         reject(new Error('Flash读取超时'));
       }, timeout);
 
@@ -857,18 +895,37 @@ const ResourceManager = {
         finish();
       });
 
-      const ok = await write(this.CMD_RES_READ, payload, true);
+      /* Raw Flash reads are often split into many packets (manifest and date
+       * annotations in particular).  They are normal, read-only traffic, so
+       * keep the user log focused on the resulting status/error instead. */
+      this.recordReadTrace(payload);
+      const ok = await write(this.CMD_RES_READ, payload, true, false);
       writeDone = true;
       if (!ok) {
         clearTimeout(timer);
         this.readResolvers.delete(seq);
         settled = true;
+        this.logReadTrace('Flash读取命令发送失败');
         reject(new Error('Flash读取命令发送失败'));
         return;
       }
       if (response) clearTimeout(timer);
       finish();
     });
+  },
+
+  recordReadTrace(payload) {
+    const packet = new Uint8Array(1 + payload.length);
+    packet[0] = this.CMD_RES_READ;
+    packet.set(payload, 1);
+    this.readTrace.push(Array.from(packet).map(byte => byte.toString(16).padStart(2, '0')).join(''));
+    if (this.readTrace.length > this.READ_TRACE_MAX) this.readTrace.shift();
+  },
+
+  logReadTrace(reason) {
+    if (typeof addLog !== 'function' || this.readTrace.length === 0) return;
+    addLog(`${reason}；以下为最近 ${this.readTrace.length} 条资源读取请求记录：`);
+    for (const packet of this.readTrace) addLog(packet, '⇑');
   },
 
   async verifySamples(entries, bundle) {

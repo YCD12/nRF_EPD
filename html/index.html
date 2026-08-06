@@ -146,6 +146,37 @@
 				</div>
 			</div>
 			<div class="ui-editor">
+				<h3>日期标注 <span id="calendarAnnotationCount" class="device-badge">0/128</span></h3>
+				<div class="flex-container">
+					<div class="flex-group">
+						<label for="calendarAnnotationDate">日期:</label>
+						<input id="calendarAnnotationDate" type="date" min="2000-01-01" max="2099-12-31">
+						<label for="calendarAnnotationLabel">短标签:</label>
+						<input id="calendarAnnotationLabel" type="text" maxlength="9" placeholder="可留空，仅红点" aria-describedby="calendarAnnotationLabelHint">
+						<label for="calendarAnnotationFontSize">字号:</label>
+						<select id="calendarAnnotationFontSize">
+							<option value="0" selected>跟随农历</option>
+							<option value="9">小号（农历9号）</option>
+							<option value="12">大号（农历12号）</option>
+						</select>
+						<label for="calendarAnnotationColor">文字颜色:</label>
+						<select id="calendarAnnotationColor">
+							<option value="0" selected>黑色</option>
+							<option value="1">白色</option>
+							<option value="2">红色</option>
+						</select>
+						<span id="calendarAnnotationLabelHint" class="device-badge" aria-live="polite">0/9 UTF-8 字节</span>
+						<button type="button" class="secondary" onclick="CalendarAnnotations.addOrUpdate()">添加/更新</button>
+						<button type="button" class="secondary" onclick="CalendarAnnotations.load()">读取设备标注</button>
+						<button type="button" class="primary" onclick="CalendarAnnotations.save()">保存到设备</button>
+					</div>
+				</div>
+				<div class="dfu-hint">非空短标签会优先显示，并保留红点。默认字号与当前日历的农历文字一致，也可为单条标注指定小号或大号；文字默认黑色（包括当天），可选白色或红色。最多 9 个 UTF-8 字节（例如中文最多 3 个）；留空则仅显示红点。设备字库缺少的中文会按所选字号生成并同步黑白点阵；emoji、组合字符暂不支持。</div>
+				<div class="table-responsive">
+					<table class="resource-modules-table"><thead><tr><th>日期</th><th>短标签</th><th>字号</th><th>颜色</th><th>操作</th></tr></thead><tbody id="calendarAnnotationsList"></tbody></table>
+				</div>
+			</div>
+			<div class="ui-editor">
 				<h3>UI 模板编辑</h3>
 				<div class="flex-container">
 					<div class="flex-group">
@@ -458,9 +489,10 @@
 	<script type="text/javascript" src="js/ble_transfer.js?v=20260402b"></script>
 	<script type="text/javascript" src="js/ept_transfer.js?v=20260731f"></script>
 	<script type="text/javascript" src="js/resource_bundle.js?v=20260524h"></script>
-	<script type="text/javascript" src="js/resource_manager.js?v=20260524h"></script>
+	<script type="text/javascript" src="js/resource_manager.js?v=20260806c"></script>
+	<script type="text/javascript" src="js/calendar_annotations.js?v=20260806c"></script>
 	<script type="text/javascript" src="js/ui_editor.js?v=20260524a"></script>
-	<script type="text/javascript" src="js/main.js?v=20260731e"></script>
+	<script type="text/javascript" src="js/main.js?v=20260806c"></script>
 </body>
 
 </html>

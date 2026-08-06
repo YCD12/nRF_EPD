@@ -2031,8 +2031,8 @@ static void cmd_res_commit(ble_epd_t *p_epd, uint8_t *p_data, uint16_t length) {
     }
     bool commit_success = (ret == NRF_SUCCESS);
     if (commit_success) {
-        /* 新资源已激活：GUI_ReloadUICache 会同步重置农历库缓存并重建
-         * UI/月历渲染缓存，使更新后的数据库无需重启设备即可生效。 */
+        /* 新资源已激活：GUI_ReloadUICache 会同步重置农历、用户日期标注和
+         * UI/月历渲染缓存，使更新后的资源无需重启设备即可生效。 */
         if (p_epd->epd != NULL) {
             ret_code_t ui_ret = GUI_ReloadUICache(p_epd->epd->width, p_epd->epd->height, (uint8_t)p_epd->epd->color);
             if (ui_ret != NRF_SUCCESS) {

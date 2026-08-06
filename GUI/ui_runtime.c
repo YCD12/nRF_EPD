@@ -3,6 +3,7 @@
 #include <string.h>
 #include "gui_porting_hal.h"
 #include "Lunar.h"
+#include "calendar_annotations.h"
 
 #define UI_BUNDLE_MAGIC EPD_EXT_UI_BUNDLE_MAGIC
 #define UI_BUNDLE_VERSION EPD_EXT_UI_BUNDLE_VERSION
@@ -240,6 +241,7 @@ ret_code_t GUI_ReloadUICache(uint16_t width, uint16_t height, uint8_t epd_color_
     ret_code_t ret = ui_read_header(&header, width, height, epd_color_depth);
 
     lunar_db_reset();
+    calendar_annotations_reset();
     m_ui_cache_valid = false;
     m_ui_render_cache_valid = false;
     ui_render_invalidate_month_cache();

@@ -1,0 +1,53 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Diagnostic trace web tests</title>
+<body data-result="RUNNING">
+  <div id="log"></div><div id="toast"></div>
+  <pre id="testOutput"></pre>
+  <script src="../../html/js/main.js"></script>
+  <script>
+    /* Do not run the full control-panel bootstrap in this focused test. */
+    document.body.onload = null;
+
+    function assert(condition, message) {
+      if (!condition) throw new Error(message);
+    }
+
+    window.addEventListener('load', async function () {
+      const output = document.getElementById('testOutput');
+      try {
+        diagnosticTrace = [];
+        epdCharacteristic = {
+          writeValueWithResponse: async function () {},
+          writeValueWithoutResponse: async function () {}
+        };
+        addLog('精简阶段日志');
+        await write(EpdCmd.RES_READ, new Uint8Array([1, 0, 0, 0, 0, 1]), true, false);
+        await write(EpdCmd.RES_WRITE, new Uint8Array([0xAA, 0xBB]), true, true);
+        const response = new Uint8Array([0xA4, 1, 0, 0, 0, 0, 0, 0, 0, 0]);
+        handleNotify(new DataView(response.buffer), 7);
+
+        assert(!document.getElementById('log').innerText.includes('44010000000001'),
+          'hidden resource-read packet leaked into the visible log');
+        assert(!document.getElementById('log').innerText.includes('41aabb'),
+          'resource-write packet leaked into the visible log');
+        const text = buildDiagnosticsText();
+        assert(text.includes('精简阶段日志'), 'web UI log missing from diagnostics export');
+        assert(text.includes('TX write-with-response 44010000000001'),
+          'hidden TX packet missing from diagnostics export');
+        assert(text.includes('TX write-with-response 41aabb'),
+          'hidden resource-write packet missing from diagnostics export');
+        assert(text.includes('RX notification#7 a4010000000000000000'),
+          'RX notification missing from diagnostics export');
+        clearLog();
+        assert(diagnosticTrace.length === 0, 'manual log clear did not clear the diagnostic session');
+
+        document.body.dataset.result = 'PASS';
+        output.textContent = 'diagnostic trace web: OK';
+      } catch (error) {
+        document.body.dataset.result = 'FAIL';
+        output.textContent = error.stack || error.message || String(error);
+      }
+    });
+  </script>
+</body>
