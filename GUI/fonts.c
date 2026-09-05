@@ -1,11 +1,5 @@
 #include "fonts.h"
 
-#ifndef EPD_INCLUDE_INTERNAL_FONT_PAYLOADS
-/* Font payloads are provisioned to FM25Q04B as external resources. Define
- * EPD_INCLUDE_INTERNAL_FONT_PAYLOADS only for host-side package generation or
- * emergency builds that intentionally embed fonts in internal flash. */
-#else
-
 /*
   Fontname: -wenquanyi-wenquanyi bitmap song-bold-r-normal--12-120-75-75-P-119-ISO10646-1
   字体名称: 文泉驿点阵宋体-粗体-正常--12-120-75-75-P-119-ISO10646-1
@@ -15,7 +9,7 @@
   BBX Build Mode: 0
 */
 // 文泉驿9号字体（农历专用），包含中文字符和符号
-const uint8_t u8g2_font_wqy9_t_lunar[4315] U8G2_FONT_SECTION("u8g2_font_wqy9_t_lunar") = 
+const uint8_t u8g2_font_wqy9_t_lunar[4315] U8G2_FONT_SECTION("u8g2_font_wqy9_t_lunar") =
   "\344\0\3\3\4\4\3\4\5\14\14\0\376\10\376\12\377\1h\2\332\4# \5\0\314\13!\10\222\306"
   "\213CQ\0\42\10\65\375\13\11\213\0#\22\227D\34%\211\344\242$\21I$\27%\211\4\0$\17"
   "\246\274+\31\345\60\33\316\16\23\232\10\0%\22\211D\235\211HB\222\14\313\305\211\210\42\222L\0&"
@@ -161,7 +155,7 @@ const uint8_t u8g2_font_wqy9_t_lunar[4315] U8G2_FONT_SECTION("u8g2_font_wqy9_t_l
   BBX Build Mode: 0
 */
 // 文泉驿12号字体（农历专用），包含中文字符和符号
-const uint8_t u8g2_font_wqy12_t_lunar[4830] U8G2_FONT_SECTION("u8g2_font_wqy12_t_lunar") = 
+const uint8_t u8g2_font_wqy12_t_lunar[4830] U8G2_FONT_SECTION("u8g2_font_wqy12_t_lunar") =
   "\216\0\4\3\5\5\3\4\6\20\20\0\376\13\375\14\374\0\0\0\0\0\253\60\16g\25S\231\221P\303"
   "o$\324\214\0\61\13f\25S\221\31!\322O\14\62\15g\25\323\250\220\241\221R\244W\7\63\21h"
   "\21\323(\221\221\23\223\222\241SF#R\2\64\25h\21\323\222\32\242\221\20Q!#!#q\20%"
@@ -323,7 +317,7 @@ const uint8_t u8g2_font_wqy12_t_lunar[4830] U8G2_FONT_SECTION("u8g2_font_wqy12_t
   BBX Build Mode: 0
 */
 // Helvetica 14号粗体数字字体（仅包含数字和基本符号）
-const uint8_t u8g2_font_helvB14_tn[287] U8G2_FONT_SECTION("u8g2_font_helvB14_tn") = 
+const uint8_t u8g2_font_helvB14_tn[287] U8G2_FONT_SECTION("u8g2_font_helvB14_tn") =
   "\22\0\3\3\4\4\2\5\5\11\21\0\375\16\374\16\374\0\0\0\0\1\2 \5\0\306\12*\17g\343"
   "\274\230$\42\251\315$\242X\4\0+\14\210\307=\261\332\341 \23\253\1,\11c\267\212\203\204\22\2"
   "-\7\65R\213\207\0.\7\63\303\212\203\0/\17\345\302:M#\231\322H&\32\311\324\0\60\17\331"
@@ -343,7 +337,7 @@ const uint8_t u8g2_font_helvB14_tn[287] U8G2_FONT_SECTION("u8g2_font_helvB14_tn"
   BBX Build Mode: 0
 */
 // Helvetica 18号粗体数字字体（仅包含数字和基本符号）
-const uint8_t u8g2_font_helvB18_tn[389] U8G2_FONT_SECTION("u8g2_font_helvB18_tn") = 
+const uint8_t u8g2_font_helvB18_tn[389] U8G2_FONT_SECTION("u8g2_font_helvB18_tn") =
   "\22\0\4\3\4\5\3\5\5\15\26\0\375\23\373\23\373\0\0\0\0\1h \5\0\30-*\17x\312"
   "\365\210\311HH\34\214\320\210h\1+\16\314\32\177\211\352\352\340\301\224\250\256\0,\12c\334.\34H"
   "HP\0-\6\67h\61|.\7\63\14/\34\10/\22\67\13qi$\245HJ#)ER\212\244"
@@ -357,4 +351,3 @@ const uint8_t u8g2_font_helvB18_tn[389] U8G2_FONT_SECTION("u8g2_font_helvB18_tn"
   "\14\215\14\315\214LY\35\304\14M\214y\66\61\64r\60d\3\71\37,\11\373\30\35\310\220P\20M"
   "\214yvDARq@S\61\71i\65ARr U\4:\12\343\14/\34\310C\36\10\0\0\0"
   "\4\377\377\0";
-#endif

@@ -429,26 +429,10 @@
               <FileType>5</FileType>
               <FilePath>..\EPD\fm25q04b.h</FilePath>
             </File>
-            <File>
-              <FileName>epd_ext_resources.c</FileName>
-              <FileType>1</FileType>
-              <FilePath>..\EPD\epd_ext_resources.c</FilePath>
-            </File>
-            <File>
-              <FileName>epd_ext_resources.h</FileName>
-              <FileType>5</FileType>
-              <FilePath>..\EPD\epd_ext_resources.h</FilePath>
-            </File>
-            <File>
-              <FileName>epd_clock_diff.c</FileName>
-              <FileType>1</FileType>
-              <FilePath>..\EPD\epd_clock_diff.c</FilePath>
-            </File>
-            <File>
-              <FileName>res_hal.c</FileName>
-              <FileType>1</FileType>
-              <FilePath>..\EPD\res_hal.c</FilePath>
-            </File>
+
+
+
+
           </Files>
         </Group>
         <Group>
@@ -459,11 +443,7 @@
               <FileType>1</FileType>
               <FilePath>..\GUI\GUI.c</FilePath>
             </File>
-            <File>
-              <FileName>calendar_annotations.c</FileName>
-              <FileType>1</FileType>
-              <FilePath>..\GUI\calendar_annotations.c</FilePath>
-            </File>
+
             <File>
               <FileName>Lunar.c</FileName>
               <FileType>1</FileType>
@@ -484,16 +464,8 @@
               <FileType>1</FileType>
               <FilePath>..\GUI\Adafruit_GFX.c</FilePath>
             </File>
-            <File>
-              <FileName>gui_porting_hal.c</FileName>
-              <FileType>1</FileType>
-              <FilePath>..\GUI\gui_porting_hal.c</FilePath>
-            </File>
-            <File>
-              <FileName>ui_runtime.c</FileName>
-              <FileType>1</FileType>
-              <FilePath>..\GUI\ui_runtime.c</FilePath>
-            </File>
+
+
           </Files>
         </Group>
         <Group>
@@ -1241,26 +1213,10 @@
               <FileType>5</FileType>
               <FilePath>..\EPD\fm25q04b.h</FilePath>
             </File>
-            <File>
-              <FileName>epd_ext_resources.c</FileName>
-              <FileType>1</FileType>
-              <FilePath>..\EPD\epd_ext_resources.c</FilePath>
-            </File>
-            <File>
-              <FileName>epd_ext_resources.h</FileName>
-              <FileType>5</FileType>
-              <FilePath>..\EPD\epd_ext_resources.h</FilePath>
-            </File>
-            <File>
-              <FileName>epd_clock_diff.c</FileName>
-              <FileType>1</FileType>
-              <FilePath>..\EPD\epd_clock_diff.c</FilePath>
-            </File>
-            <File>
-              <FileName>res_hal.c</FileName>
-              <FileType>1</FileType>
-              <FilePath>..\EPD\res_hal.c</FilePath>
-            </File>
+
+
+
+
           </Files>
         </Group>
         <Group>
@@ -1271,11 +1227,7 @@
               <FileType>1</FileType>
               <FilePath>..\GUI\GUI.c</FilePath>
             </File>
-            <File>
-              <FileName>calendar_annotations.c</FileName>
-              <FileType>1</FileType>
-              <FilePath>..\GUI\calendar_annotations.c</FilePath>
-            </File>
+
             <File>
               <FileName>Lunar.c</FileName>
               <FileType>1</FileType>
@@ -1296,16 +1248,8 @@
               <FileType>1</FileType>
               <FilePath>..\GUI\Adafruit_GFX.c</FilePath>
             </File>
-            <File>
-              <FileName>gui_porting_hal.c</FileName>
-              <FileType>1</FileType>
-              <FilePath>..\GUI\gui_porting_hal.c</FilePath>
-            </File>
-            <File>
-              <FileName>ui_runtime.c</FileName>
-              <FileType>1</FileType>
-              <FilePath>..\GUI\ui_runtime.c</FilePath>
-            </File>
+
+
           </Files>
         </Group>
         <Group>

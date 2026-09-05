@@ -88,6 +88,8 @@ typedef struct {
 void GFX_begin(Adafruit_GFX* gfx, int16_t w, int16_t h, int16_t buffer_height);
 // 初始化三色图形上下文（黑/白/红或黄）| Initialize 3-color graphics context (black/white/red or yellow)
 void GFX_begin_3c(Adafruit_GFX* gfx, int16_t w, int16_t h, int16_t buffer_height);
+// 初始化四色图形上下文 | Initialize 4-color graphics context
+void GFX_begin_4c(Adafruit_GFX* gfx, int16_t w, int16_t h, int16_t buffer_height);
 // 设置屏幕旋转角度 | Set screen rotation
 void GFX_setRotation(Adafruit_GFX* gfx, GFX_Rotate r);
 // 设置局部刷新窗口 | Set partial refresh window

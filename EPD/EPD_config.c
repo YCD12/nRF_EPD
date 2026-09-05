@@ -84,13 +84,9 @@ void epd_config_read(epd_config_t* cfg) {
         return;
     }
 
-    // Get record length based on SoftDevice version
-    // 根据SoftDevice版本获取记录长度
-#ifdef S112
+    // S112 stores the record length directly in the FDS header.
+    // S112 的 FDS 记录长度直接存放在记录头中。
     uint32_t record_len = flash_record.p_header->length_words * sizeof(uint32_t);
-#else
-    uint32_t record_len = flash_record.p_header->tl.length_words * sizeof(uint32_t);
-#endif
 
     // Copy data from flash to configuration structure
     // 从Flash复制数据到配置结构体
@@ -114,22 +110,10 @@ void epd_config_write(epd_config_t* cfg) {
     record.file_id = CONFIG_FILE_ID;
     record.key = CONFIG_REC_KEY;
 
-    // Configure record data based on SoftDevice version
-    // 根据SoftDevice版本配置记录数据
-#ifdef S112
-    // S112 SoftDevice uses direct data pointer
-    // S112 SoftDevice使用直接数据指针
-    record.data.p_data = (void*)cfg;
+    // S112 uses a direct data pointer for FDS records.
+    // S112 的 FDS 记录使用直接数据指针。
+    record.data.p_data = cfg;
     record.data.length_words = BYTES_TO_WORDS(sizeof(epd_config_t));
-#else
-    // Other SoftDevices use chunk-based approach
-    // 其他SoftDevice使用分块方式
-    fds_record_chunk_t record_chunk;
-    record_chunk.p_data = cfg;
-    record_chunk.length_words = BYTES_TO_WORDS(sizeof(epd_config_t));
-    record.data.p_chunks = &record_chunk;
-    record.data.num_chunks = 1;
-#endif
 
     // Check if record already exists in flash
     // 检查记录是否已存在于Flash中

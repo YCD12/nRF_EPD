@@ -1,4 +1,4 @@
-// GUI emulator for Windows — 800×480 BWR，与真机同源 GUI + res_hal_host
+// GUI emulator for Windows — 800×480 BWR，与真机同源 GUI
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -9,7 +9,6 @@
 
 #include "GUI.h"
 #include "Lunar.h"
-#include "res_hal_host.h"
 
 #define EPD_WIDTH 800
 #define EPD_HEIGHT 480
@@ -27,28 +26,6 @@ uint8_t g_week_start = 0;
 time_t g_display_time;
 struct tm g_tm_time;
 wchar_t g_status_text[128] = L"";
-static char g_res_bin_path[MAX_PATH] = "tools\\epd_resources.bin";
-
-static void emulator_reload_ui(void) {
-    uint8_t color = g_bwr_mode ? 2U : 1U;
-    ret_code_t ret = GUI_ReloadUICache(EPD_WIDTH, EPD_HEIGHT, color);
-    if (ret == NRF_SUCCESS) {
-        g_status_text[0] = L'\0';
-    } else {
-        swprintf(g_status_text, 128, L"UI bundle error: 0x%08lX", (unsigned long)ret);
-    }
-}
-
-static int emulator_init_resources(void) {
-    if (res_hal_host_init(g_res_bin_path) != 0) {
-        swprintf(g_status_text, 128, L"res_hal init failed: %hs", g_res_bin_path);
-        return -1;
-    }
-    lunar_db_reset();
-    emulator_reload_ui();
-    return 0;
-}
-
 // Implementation of the buffer_callback function
 void DrawBitmap(void* user_data, uint8_t* black, uint8_t* color, uint16_t x, uint16_t y, uint16_t w, uint16_t h) {
     HDC hdc = g_paintHDC;
@@ -274,7 +251,6 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam) 
 
         case WM_DESTROY:
             KillTimer(hwnd, 1);
-            res_hal_host_shutdown();
             PostQuitMessage(0);
             return 0;
 
@@ -287,15 +263,6 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
     (void)hPrevInstance;
 
     g_hInstance = hInstance;
-
-    if (lpCmdLine != NULL && lpCmdLine[0] != '\0') {
-        strncpy(g_res_bin_path, lpCmdLine, sizeof(g_res_bin_path) - 1);
-        g_res_bin_path[sizeof(g_res_bin_path) - 1] = '\0';
-    }
-
-    if (emulator_init_resources() != 0) {
-        MessageBoxW(NULL, g_status_text, L"资源加载失败", MB_ICONWARNING | MB_OK);
-    }
 
     WNDCLASSW wc = {0};
     wc.style = CS_HREDRAW | CS_VREDRAW;

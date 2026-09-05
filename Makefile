@@ -2,9 +2,8 @@ CC = gcc
 CFLAGS = -Wall -IGUI -Itools/test/host/shim -Itools -Itools/test -IEPD -D__HEAP_SIZE=32768
 LDFLAGS = -lgdi32 -mwindows
 
-SRCS = GUI/Adafruit_GFX.c GUI/u8g2_font.c GUI/fonts.c GUI/GUI.c GUI/calendar_annotations.c GUI/Lunar.c \
-       GUI/gui_porting_hal.c GUI/ui_runtime.c \
-       tools/res_hal_host.c tools/test/host_stubs.c emulator.c
+SRCS = GUI/Adafruit_GFX.c GUI/u8g2_font.c GUI/fonts.c GUI/GUI.c GUI/Lunar.c \
+       tools/test/host_stubs.c emulator.c
 OBJS = $(SRCS:.c=.o)
 TARGET = emulator.exe
 

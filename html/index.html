@@ -20,7 +20,6 @@
 					<button id="reconnectbutton" type="button" class="secondary" onclick="reConnect()">重连</button>
 					<button id="deviceFilterToggle" type="button" class="secondary" onclick="toggleDeviceFilter()">不过滤设备</button>
 					<button type="button" class="secondary" onclick="clearLog()">清空日志</button>
-					<button id="exportDiagnosticsButton" type="button" class="secondary" onclick="exportDiagnostics()">导出调试日志</button>
 				</div>
 				<div class="flex-group right debug">
 					<label for="epddriver">驱动</label>
@@ -52,8 +51,7 @@
 			</div>
 			<div class="log-container" id="log"></div>
 			<div class="device-info">
-				<b>设备电量/电压：</b><span id="batteryVoltage" class="device-badge">未连接</span><span id="batteryWarning" class="device-warning" style="display:none;"></span>
-				<b style="margin-left: 1.5rem;">设备当前版本号：</b><span id="deviceVersion" class="device-badge">未连接</span>
+				<b>设备电压：</b><span id="batteryVoltage" class="device-badge">未连接</span><span id="batteryWarning" class="device-warning" style="display:none;"></span>
 			</div>
 		</section>
 		<section class="section">
@@ -73,11 +71,9 @@
 				</div>
 				<div class="flex-group">
 					<button id="calendarmodebutton" type="button" class="primary" onclick="syncTime(1)">日历模式</button>
-					<button id="clockcalendarmodebutton" type="button" class="primary" onclick="syncTime(2)">时钟日历</button>
-					<button id="clockmodebutton" type="button" class="primary" onclick="syncTime(3)">纯时钟模式</button>
+					<button id="clockmodebutton" type="button" class="primary" onclick="syncTime(2)">时钟模式</button>
 					<button id="legacyclockbutton" type="button" class="primary" onclick="syncTimeLegacy()"
 						style="display:none;">老款时钟</button>
-					<button id="synctimeonlybutton" type="button" class="secondary" onclick="syncTimeOnly()">时间同步</button>
 					<button id="clearscreenbutton" type="button" class="secondary" onclick="clearScreen()">清除屏幕</button>
 				</div>
 				<div class="flex-group right debug">
@@ -95,107 +91,6 @@
 			</div>
 			<div class="dfu-hint">
 				DFU 升级已拆分到独立页面。进入升级页前，如果主界面当前已连接设备，页面会先主动断开该连接，再跳转到专用 DFU 页面执行升级流程。跳转后会重新选择应用设备或 DfuTarg，避免主功能连接状态和升级流程互相干扰。
-			</div>
-		</section>
-		<section class="section">
-			<h2>外置 Flash 资源</h2>
-			<div class="resource-grid">
-				<div><b>Flash：</b><span id="resourceFlashStatus" class="device-badge">未连接</span></div>
-				<div><b>JEDEC：</b><span id="resourceJedec" class="device-badge">--</span></div>
-				<div><b>总空间：</b><span id="resourceTotalSpace" class="device-badge">--</span></div>
-				<div><b>剩余：</b><span id="resourceFreeSpace" class="device-badge">--</span></div>
-				<div><b>设备资源：</b><span id="resourceDeviceCrc" class="device-badge">--</span></div>
-				<div><b>网页资源：</b><span id="resourceBundleCrc" class="device-badge">--</span></div>
-			</div>
-			<div class="resource-status">
-				<b>校验：</b><span id="resourceCheckResult">等待检查</span>
-				<span id="resourceProgress" class="resource-progress"></span>
-			</div>
-			<div id="resourceUpdateNotice" class="resource-notice" style="display: none;">
-				<div class="notice-icon">⚠️</div>
-				<div class="notice-content">
-					<div class="notice-title">检测到外置 Flash 资源需要更新</div>
-					<div class="notice-desc">设备上的某些资源模块已缺失或版本与网页端不符。您可以选择更新全部资源，或在下方子模块列表中选择独立更新特定模块。</div>
-				</div>
-				<button type="button" class="primary notice-btn" onclick="updateExternalResources()">更新全部资源</button>
-			</div>
-			<div class="flex-container" style="margin-top: 15px;">
-				<div class="flex-group">
-					<button id="checkResourceButton" type="button" class="secondary" onclick="checkExternalResources()">检查资源</button>
-					<button id="updateResourceButton" type="button" class="primary" onclick="updateExternalResources()" disabled>更新资源</button>
-					<button id="clearResourceButton" type="button" class="danger" onclick="clearExternalFlash()" disabled>强制清空全部</button>
-				</div>
-			</div>
-			<div id="resourceModulesContainer" style="margin-top: 15px; display: none;">
-				<h3 style="margin-top: 10px; margin-bottom: 8px;">子模块列表</h3>
-				<div class="table-responsive">
-					<table class="resource-modules-table">
-						<thead>
-							<tr>
-								<th>模块名称</th>
-								<th>大小</th>
-								<th>当前版本</th>
-								<th>网页版本</th>
-								<th>状态</th>
-								<th>操作</th>
-							</tr>
-						</thead>
-						<tbody id="resourceModulesList">
-						</tbody>
-					</table>
-				</div>
-			</div>
-			<div class="ui-editor">
-				<h3>日期标注 <span id="calendarAnnotationCount" class="device-badge">0/128</span></h3>
-				<div class="flex-container">
-					<div class="flex-group">
-						<label for="calendarAnnotationDate">日期:</label>
-						<input id="calendarAnnotationDate" type="date" min="2000-01-01" max="2099-12-31">
-						<label for="calendarAnnotationLabel">短标签:</label>
-						<input id="calendarAnnotationLabel" type="text" maxlength="9" placeholder="可留空，仅红点" aria-describedby="calendarAnnotationLabelHint">
-						<label for="calendarAnnotationFontSize">字号:</label>
-						<select id="calendarAnnotationFontSize">
-							<option value="0" selected>跟随农历</option>
-							<option value="9">小号（农历9号）</option>
-							<option value="12">大号（农历12号）</option>
-						</select>
-						<label for="calendarAnnotationColor">文字颜色:</label>
-						<select id="calendarAnnotationColor">
-							<option value="0" selected>黑色</option>
-							<option value="1">白色</option>
-							<option value="2">红色</option>
-						</select>
-						<span id="calendarAnnotationLabelHint" class="device-badge" aria-live="polite">0/9 UTF-8 字节</span>
-						<button type="button" class="secondary" onclick="CalendarAnnotations.addOrUpdate()">添加/更新</button>
-						<button type="button" class="secondary" onclick="CalendarAnnotations.load()">读取设备标注</button>
-						<button type="button" class="primary" onclick="CalendarAnnotations.save()">保存到设备</button>
-					</div>
-				</div>
-				<div class="dfu-hint">非空短标签会优先显示，并保留红点。默认字号与当前日历的农历文字一致，也可为单条标注指定小号或大号；文字默认黑色（包括当天），可选白色或红色。最多 9 个 UTF-8 字节（例如中文最多 3 个）；留空则仅显示红点。设备字库缺少的中文会按所选字号生成并同步黑白点阵；emoji、组合字符暂不支持。</div>
-				<div class="table-responsive">
-					<table class="resource-modules-table"><thead><tr><th>日期</th><th>短标签</th><th>字号</th><th>颜色</th><th>操作</th></tr></thead><tbody id="calendarAnnotationsList"></tbody></table>
-				</div>
-			</div>
-			<div class="ui-editor">
-				<h3>UI 模板编辑</h3>
-				<div class="flex-container">
-					<div class="flex-group">
-						<label for="uiModeSelect">模式:</label>
-						<select id="uiModeSelect" onchange="UIEditor.selectMode(this.value)"></select>
-						<label for="uiComponentSelect">组件:</label>
-						<select id="uiComponentSelect" onchange="UIEditor.selectComponent(parseInt(this.value, 10))"></select>
-						<button id="uiApplyButton" type="button" class="secondary" onclick="UIEditor.applyToBundle()">保存到资源包</button>
-					</div>
-				</div>
-				<div class="flex-container">
-					<canvas id="uiEditorCanvas" width="800" height="480" style="width:400px;height:240px;border:1px solid #d9e1ef;background:#fff"></canvas>
-					<div class="flex-group ui-fields">
-						<label>X:<input id="uiX" type="number" onchange="UIEditor.updateSelectedFromInputs()"></label>
-						<label>Y:<input id="uiY" type="number" onchange="UIEditor.updateSelectedFromInputs()"></label>
-						<label>W:<input id="uiW" type="number" onchange="UIEditor.updateSelectedFromInputs()"></label>
-						<label>H:<input id="uiH" type="number" onchange="UIEditor.updateSelectedFromInputs()"></label>
-					</div>
-				</div>
 			</div>
 		</section>
 		<section class="section">
@@ -483,16 +378,11 @@
 		</div>
 	</div>
 	<div id="toast" class="toast-message" style="display:none;"></div>
-	<script type="text/javascript" src="js/dithering.js?v=20260730c"></script>
+	<script type="text/javascript" src="js/dithering.js?v=20260402b"></script>
 	<script type="text/javascript" src="js/paint.js?v=20260402b"></script>
 	<script type="text/javascript" src="js/crop.js?v=20260402b"></script>
 	<script type="text/javascript" src="js/ble_transfer.js?v=20260402b"></script>
-	<script type="text/javascript" src="js/ept_transfer.js?v=20260731f"></script>
-	<script type="text/javascript" src="js/resource_bundle.js?v=20260524h"></script>
-	<script type="text/javascript" src="js/resource_manager.js?v=20260806c"></script>
-	<script type="text/javascript" src="js/calendar_annotations.js?v=20260806c"></script>
-	<script type="text/javascript" src="js/ui_editor.js?v=20260524a"></script>
-	<script type="text/javascript" src="js/main.js?v=20260806c"></script>
+	<script type="text/javascript" src="js/main.js?v=20260402c"></script>
 </body>
 
 </html>

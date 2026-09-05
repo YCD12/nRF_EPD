@@ -1,15 +1,7 @@
 #ifndef __GUI_H
 #define __GUI_H
 
-#include <stdbool.h>
-#include <stdint.h>
-
 #include "Adafruit_GFX.h"
-#include "sdk_errors.h"
-
-#define GUI_UPDATE_MANUAL 0U
-#define GUI_UPDATE_DAILY  1U
-#define GUI_UPDATE_MINUTE 2U
 
 // 显示模式枚举类型
 // Display mode enumeration type
@@ -45,17 +37,27 @@ typedef struct {
 // @param callback_data: 回调函数的用户数据 | User data for callback function
 void DrawGUI(gui_data_t* data, buffer_callback callback, void* callback_data);
 
+// Draw only the time portion for partial refresh in MODE_CLOCK_CALENDAR
+// This draws to a small area containing only the 7-segment time display
+// 仅绘制时间部分用于MODE_CLOCK_CALENDAR模式的局部刷新
+// 该函数只绘制包含7段数码管样式时间显示的小区域，大幅减少刷新面积，延长屏幕寿命
+void DrawGUI_ClockOnly(gui_data_t* data, buffer_callback callback, void* callback_data);
 
+// Get the time refresh area parameters for EPD_service
+// timestamp is the current UNIX time used to decide whether we can
+// shrink the window to only the minute-ones digit (e.g. 00->01, 01->02, ...).
+// 获取时间刷新区域参数供EPD服务使用
+// timestamp: 当前UNIX时间戳，用于判断是否可以将刷新窗口缩小为仅刷新分钟个位数字
+// 智能优化：当仅分钟个位变化时(如00->01, 01->02, ..., 08->09)，只刷新最右侧的一个数字，
+// 最大程度减少局部刷新面积，降低功耗和屏幕磨损
+void GetTimeRefreshArea(uint32_t timestamp, uint16_t* x, uint16_t* y, uint16_t* w, uint16_t* h);
 
+// Get the base origin (top-left) of the time refresh area on the full screen
+// 获取时间刷新区域在整个屏幕上的基准起点(左上角坐标)
+void GetTimeRefreshOrigin(uint16_t* x, uint16_t* y);
 
-bool GUI_ModeExists(uint8_t mode, uint16_t width, uint16_t height);
-/* Invalidate the month render cache — call when resource Flash is reloaded
- * (declared here so ui_runtime.c can call it without a forward declaration). */
-void ui_render_invalidate_month_cache(void);
-uint8_t GUI_GetModeUpdatePolicy(uint8_t mode, uint16_t width, uint16_t height);
-ret_code_t GUI_ReloadUICache(uint16_t width, uint16_t height, uint8_t epd_color_depth);
-ret_code_t GUI_GetUIBundleLastError(void);
+// Width in bytes of the DrawGUI_ClockOnly canvas (TIME_REFRESH_WIDTH / 8).
+// After GFX_setWindow the page buffer stride is the window width, not this value.
+uint16_t GetTimeRefreshBufferStride(void);
 
-void DrawResourceMissingScreen(gui_data_t* data, buffer_callback callback, void* callback_data);
-void Draw7Number(Adafruit_GFX *gfx, int n, unsigned int xLoc, unsigned int yLoc, char cS, unsigned int fC, unsigned int bC, int nD);
 #endif
