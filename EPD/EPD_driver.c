@@ -72,33 +72,6 @@ void pinMode(uint32_t pin, uint32_t mode) {
 // GPIO相关函数
 static uint16_t m_driver_refs = 0;  // 驱动引用计数(用于支持多次初始化/反初始化) - Driver reference count
 
-/*
- * The external FM25Q04B Flash is wired on SPI1 at P0.12..P0.15 (CS/MISO/SCK/MOSI).
- * Any EPD pin assignment landing in that range would short the two SPI buses
- * together once both peripherals are initialised. Reject such configs early.
- */
-#define EPD_EXT_FLASH_BUS_PIN_MIN  12U
-#define EPD_EXT_FLASH_BUS_PIN_MAX  15U
-#define EPD_PIN_UNUSED             0xFFU
-
-static bool epd_pin_conflicts_with_ext_flash(uint8_t pin) {
-    if (pin == EPD_PIN_UNUSED) return false;
-    return pin >= EPD_EXT_FLASH_BUS_PIN_MIN && pin <= EPD_EXT_FLASH_BUS_PIN_MAX;
-}
-
-bool EPD_GPIO_Config_Conflicts_With_Ext_Flash(const epd_config_t* cfg) {
-    if (cfg == NULL) return false;
-    return epd_pin_conflicts_with_ext_flash(cfg->mosi_pin) ||
-           epd_pin_conflicts_with_ext_flash(cfg->sclk_pin) ||
-           epd_pin_conflicts_with_ext_flash(cfg->cs_pin) ||
-           epd_pin_conflicts_with_ext_flash(cfg->dc_pin) ||
-           epd_pin_conflicts_with_ext_flash(cfg->rst_pin) ||
-           epd_pin_conflicts_with_ext_flash(cfg->busy_pin) ||
-           epd_pin_conflicts_with_ext_flash(cfg->bs_pin) ||
-           epd_pin_conflicts_with_ext_flash(cfg->en_pin) ||
-           epd_pin_conflicts_with_ext_flash(cfg->led_pin);
-}
-
 /**
  * 加载EPD的GPIO配置
  * Load EPD GPIO configuration
@@ -110,19 +83,6 @@ bool EPD_GPIO_Config_Conflicts_With_Ext_Flash(const epd_config_t* cfg) {
  */
 void EPD_GPIO_Load(epd_config_t* cfg) {
     if (cfg == NULL) return;
-
-    if (epd_pin_conflicts_with_ext_flash(cfg->mosi_pin) ||
-        epd_pin_conflicts_with_ext_flash(cfg->sclk_pin) ||
-        epd_pin_conflicts_with_ext_flash(cfg->cs_pin) ||
-        epd_pin_conflicts_with_ext_flash(cfg->dc_pin) ||
-        epd_pin_conflicts_with_ext_flash(cfg->rst_pin) ||
-        epd_pin_conflicts_with_ext_flash(cfg->busy_pin) ||
-        epd_pin_conflicts_with_ext_flash(cfg->bs_pin) ||
-        epd_pin_conflicts_with_ext_flash(cfg->en_pin) ||
-        epd_pin_conflicts_with_ext_flash(cfg->led_pin)) {
-        NRF_LOG_ERROR("[EPD]: pin config rejected: P0.12-P0.15 reserved for external Flash");
-        return;
-    }
 
     EPD_MOSI_PIN = cfg->mosi_pin;
     EPD_SCLK_PIN = cfg->sclk_pin;
@@ -650,23 +610,20 @@ static epd_model_t* epd_models[] = {
  * - 时钟模式是最常用的模式,需要部分刷新功能
  *   Clock mode is the most common mode and requires partial refresh capability
  */
-epd_model_t* epd_init(epd_model_id_t id) {
+epd_model_t* epd_get_model(epd_model_id_t id) {
     epd_model_t* epd = NULL;
-    // 遍历所有支持的型号,查找匹配的ID
-    // Iterate through all supported models to find matching ID
     for (uint8_t i = 0; i < ARRAY_SIZE(epd_models); i++) {
         if (epd_models[i]->id == id) {
             epd = epd_models[i];
-            break;  // Found matching model, no need to continue
-                    // 找到匹配型号,无需继续查找
+            break;
         }
     }
-    // 如果未找到匹配型号,使用默认型号(数组第一个,即部分刷新版本)
-    // If no match found, use default model (first in array, partial refresh version)
     if (epd == NULL) epd = epd_models[0];
+    return epd;
+}
 
-    // 调用该型号的初始化函数
-    // Call the model's initialization function
+epd_model_t* epd_init(epd_model_id_t id) {
+    epd_model_t* epd = epd_get_model(id);
     epd->drv->init(epd);
     return epd;
 }

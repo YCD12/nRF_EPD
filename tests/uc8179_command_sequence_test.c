@@ -120,11 +120,11 @@ static void test_partial_command_contract(void)
 {
     static const uint8_t expected_power[] = {0x07, 0x17, 0x3F, 0x3F, 0x03};
     static const uint8_t expected_psr[] = {0x3F};
-    static const uint8_t expected_cdi[] = {0xA1, 0x07};
+    static const uint8_t expected_cdi[] = {0xA9, 0x07};
     static const uint8_t expected_tres[] = {0x03, 0x20, 0x01, 0xE0};
     static const uint8_t expected_duspi[] = {0x00};
     static const uint8_t expected_tcon[] = {0x22};
-    static const uint8_t expected_vdcs[] = {0x30};
+    static const uint8_t expected_vdcs[] = {0x22};
     static const uint8_t expected_window[] = {
         0x00, 0x00, 0x00, 0x0F,
         0x00, 0x00, 0x00, 0x01,
@@ -163,11 +163,23 @@ static void test_partial_command_contract(void)
     assert(power < tres && tres < duspi && duspi < tcon);
     assert(tcon < psr && psr < vdcs && vdcs < cdi);
 
+    static const uint8_t lut_hold[6] = {0x00, 0x01, 0x2A, 0x02, 0x00, 0x01};
+    static const uint8_t lut_kw[6] = {0x20, 0x01, 0x2A, 0x02, 0x00, 0x01};
+    static const uint8_t lut_wk[6] = {0x10, 0x01, 0x2A, 0x02, 0x00, 0x01};
+    static const uint8_t *const expected_luts[6] = {
+        lut_hold, lut_hold, lut_kw, lut_wk, lut_hold, lut_hold,
+    };
+
     size_t previous_lut = cdi;
-    for (uint8_t command = UC81xx_LUTC; command <= 0x25U; ++command) {
+    for (uint8_t i = 0U; i < 6U; ++i) {
+        uint8_t command = (uint8_t)(UC81xx_LUTC + i);
         size_t lut = find_command(command, previous_lut + 1U);
         assert(lut < event_count);
         assert(events[lut].length == 42U);
+        assert(memcmp(events[lut].data, expected_luts[i], 6U) == 0);
+        for (size_t byte = 6U; byte < 42U; ++byte) {
+            assert(events[lut].data[byte] == 0U);
+        }
         previous_lut = lut;
     }
 

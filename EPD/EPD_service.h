@@ -93,13 +93,6 @@ enum EPD_CMDS {
     EPD_CMD_FILL_SOLID_IMAGE = 0x3A,   /**< EPT1 one-packet constant black/red plane fill. */
     EPD_CMD_WAIT_FOR_IDLE = 0x3B,      /**< reply after preceding display work is complete. */
 
-    // 外置Flash资源管理命令 (0x40-0x4F)
-    EPD_CMD_RES_ERASE = 0x40,        /**< erase external resource flash range. 擦除外置资源区 */
-    EPD_CMD_RES_WRITE = 0x41,        /**< write external resource flash chunk. 写入外置资源分片 */
-    EPD_CMD_RES_COMMIT = 0x42,       /**< commit staging manifest. 提交staging manifest */
-    EPD_CMD_RES_STATUS = 0x43,       /**< query external resource status. 查询外置资源状态 */
-    EPD_CMD_RES_READ = 0x44,         /**< read external resource raw flash. 读取外置资源Flash */
-
     // 系统配置和控制命令 (0x90-0x9F) - 这些是紧急命令,会绕过队列立即执行
     EPD_CMD_SET_CONFIG = 0x90, /**< set full EPD config. 设置完整EPD配置 */
     EPD_CMD_SYS_RESET = 0x91,  /**< MCU reset. MCU复位 (紧急命令) */
@@ -113,9 +106,6 @@ enum EPD_CMDS {
  */
 #define EPD_RSP_BLOCK_ACK       0xA0  /**< Block ACK/NACK response. 块确认/否认响应 */
 #define EPD_RSP_STATUS          0xA1  /**< Transfer status response. 传输状态响应 */
-#define EPD_RSP_RESOURCE_STATUS 0xA2  /**< External resource status response. 外置资源状态响应 */
-#define EPD_RSP_RESOURCE_OP     0xA3  /**< External resource operation response. 外置资源操作响应 */
-#define EPD_RSP_RESOURCE_READ   0xA4  /**< External resource read response. 外置资源读取响应 */
 #define EPD_RSP_PACKED_DONE     0xA5  /**< EPT1 plane completed. */
 #define EPD_RSP_PACKED_ERROR    0xA6  /**< EPT1 error. */
 #define EPD_RSP_PACKED_STATUS   0xA7  /**< EPT1 status. */
@@ -260,8 +250,8 @@ typedef struct {
  */
 typedef struct {
     // BLE服务相关句柄
-    uint16_t service_handle; /**< Handle of EPD Service (as provided by the S110 SoftDevice). */
-                             /**< EPD服务句柄(由S110 SoftDevice提供) */
+    uint16_t service_handle; /**< Handle of EPD Service (as provided by the S112 SoftDevice). */
+                             /**< EPD服务句柄(由S112 SoftDevice提供) */
     ble_gatts_char_handles_t
         char_handles; /**< Handles related to the EPD characteristic (as provided by the SoftDevice). */
                       /**< EPD特性相关句柄(由SoftDevice提供) */
@@ -294,13 +284,6 @@ typedef struct {
                                    *   防止BLE断开时中断刷新过程 */
     bool low_battery_screen_active; /**< Low-battery warning screen is currently shown. */
                                     /**< 当前是否处于低电量警告页面，激活后暂停自动刷新。 */
-
-    // 资源更新会话控制
-    bool res_session_active;        /**< A resource update session (erase/write) is in progress. */
-                                    /**< 外部资源更新会话(擦除/写入)进行中。
-                                     *   激活期间暂停周期刷新，避免刷新与SPI写冲突导致上传失败 */
-    uint32_t res_session_deadline;  /**< Timestamp (s) after which an idle resource session auto-expires. */
-                                    /**< 资源会话空闲超时时间戳(秒)，超时后自动恢复周期刷新 */
 
     // 刷新消抖与校时保护
     uint32_t last_refresh_start;    /**< Timestamp (s) when the last physical refresh began. */
@@ -366,14 +349,14 @@ uint32_t ble_epd_init(ble_epd_t* p_epd);
  *        处理EPD服务BLE事件的函数
  *
  * @details The EPD Service expects the application to call this function each time an
- * event is received from the S110 SoftDevice. This function processes the event if it
+ * event is received from the S112 SoftDevice. This function processes the event if it
  * is relevant and calls the EPD Service event handler of the
  * application if necessary.
- * EPD服务期望应用程序在每次从S110 SoftDevice接收到事件时调用此函数。
+ * EPD服务期望应用程序在每次从S112 SoftDevice接收到事件时调用此函数。
  * 如果事件相关,此函数会处理该事件,必要时调用应用程序的EPD服务事件处理程序。
  *
  * @param[in] p_epd       EPD Service structure. EPD服务结构
- * @param[in] p_ble_evt   Event received from the S110 SoftDevice. 从S110 SoftDevice接收的事件
+ * @param[in] p_ble_evt   Event received from the S112 SoftDevice. 从S112 SoftDevice接收的事件
  */
 void ble_epd_on_ble_evt(ble_epd_t* p_epd, ble_evt_t* p_ble_evt);
 

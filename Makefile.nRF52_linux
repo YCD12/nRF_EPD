@@ -101,19 +101,13 @@ SRC_FILES += \
   $(PROJ_DIR)/EPD/EPD_config.c \
   $(PROJ_DIR)/EPD/EPD_driver.c \
   $(PROJ_DIR)/EPD/EPD_service.c \
-  $(PROJ_DIR)/EPD/epd_ext_resources.c \
-  $(PROJ_DIR)/EPD/res_hal.c \
   $(PROJ_DIR)/EPD/fm25q04b.c \
   $(PROJ_DIR)/EPD/UC8179.c \
-  $(PROJ_DIR)/EPD/epd_clock_diff.c \
   $(PROJ_DIR)/GUI/GUI.c \
-  $(PROJ_DIR)/GUI/calendar_annotations.c \
   $(PROJ_DIR)/GUI/Lunar.c \
   $(PROJ_DIR)/GUI/fonts.c \
   $(PROJ_DIR)/GUI/Adafruit_GFX.c \
-  $(PROJ_DIR)/GUI/u8g2_font.c \
-  $(PROJ_DIR)/GUI/gui_porting_hal.c \
-  $(PROJ_DIR)/GUI/ui_runtime.c
+  $(PROJ_DIR)/GUI/u8g2_font.c
 
 # =============================================================================
 # 根据 USE_RTT 条件性加入 SEGGER RTT 及 LOG 库源文件

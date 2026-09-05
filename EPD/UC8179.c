@@ -15,9 +15,11 @@ extern void app_feed_wdt(void);
 #define UC8179_PSR_KW_REG     0x3FU
 #define UC8179_CDI_KWR        0x13U
 #define UC8179_CDI_KW_FULL    0x93U
-#define UC8179_CDI_KW_DIFF    0xA1U
+/* BDZ=1 keeps the border Hi-Z. N2OCP=1 matches the panel-proven A9 value.
+ * DDX is still 00 (0xA1/0xA9 differ only in N2OCP); do not set DDX=01. */
+#define UC8179_CDI_KW_DIFF    0xA9U
 #define UC8179_CDI_INTERVAL   0x07U
-#define UC8179_PARTIAL_VCOM   0x30U
+#define UC8179_PARTIAL_VCOM   0x22U
 
 static bool m_uc8179_busy_timeout;
 
@@ -70,41 +72,21 @@ static void UC8179_SetPartialRamArea(uint16_t x, uint16_t y, uint16_t w, uint16_
 static void UC8179_Write_Image_Rows(const uint8_t* src, uint16_t wb, uint16_t h, uint8_t fill);
 
 /*
- * Register waveform used by the feature-branch GDEY075Z08 implementation.
- * A 42-byte table is seven 6-byte waveform states, not "6 bytes + padding".
- * The four 2-bit fields in each state's first byte select voltage levels.
+ * Panel-proven partial LUT from the previous working firmware.
+ * One 6-byte state plus zeros: T1=1, T2=0x2A, T3=0x02, repeat=1.
+ * WK uses 0x10 (not the GDEY 0x40 polarity). Border uses HOLD.
  */
 static const uint8_t UC8179_LUT_HOLD[UC8179_LUT_SIZE] = {
-    0x00, 0x03, 0x05, 0x00, 0x00, 0x02,
-    0x00, 0x05, 0x05, 0x00, 0x00, 0x01,
-    0x00, 0x05, 0x05, 0x00, 0x00, 0x01,
-    0x00, 0x05, 0x05, 0x00, 0x00, 0x03,
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x01, 0x2A, 0x02, 0x00, 0x01,
 };
 
 static const uint8_t UC8179_LUT_KW[UC8179_LUT_SIZE] = {
-    0x20, 0x03, 0x05, 0x00, 0x00, 0x02,
-    0x20, 0x05, 0x05, 0x00, 0x00, 0x01,
-    0x00, 0x05, 0x05, 0x00, 0x00, 0x01,
-    0x20, 0x05, 0x05, 0x00, 0x00, 0x03,
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x20, 0x01, 0x2A, 0x02, 0x00, 0x01,
 };
 
 static const uint8_t UC8179_LUT_WK[UC8179_LUT_SIZE] = {
-    0x40, 0x03, 0x05, 0x00, 0x00, 0x02,
-    0x40, 0x05, 0x05, 0x00, 0x00, 0x01,
-    0x00, 0x05, 0x05, 0x00, 0x00, 0x01,
-    0x40, 0x05, 0x05, 0x00, 0x00, 0x03,
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x10, 0x01, 0x2A, 0x02, 0x00, 0x01,
 };
-
-static const uint8_t UC8179_LUT_BORDER[UC8179_LUT_SIZE] = {0};
 
 static void UC8179_Load_Partial_LUT(void) {
     static const uint8_t registers[6] = {0x20, 0x21, 0x22, 0x23, 0x24, 0x25};
@@ -114,7 +96,7 @@ static void UC8179_Load_Partial_LUT(void) {
         UC8179_LUT_KW,
         UC8179_LUT_WK,
         UC8179_LUT_HOLD,
-        UC8179_LUT_BORDER,
+        UC8179_LUT_HOLD,
     };
 
     for (uint8_t i = 0; i < 6U; i++) {
@@ -133,6 +115,28 @@ static bool UC8179_PartialAreaValid(const epd_model_t *epd, uint16_t x, uint16_t
            (uint32_t)y + h <= epd->height;
 }
 
+static void UC8179_Write_Packed_Rows(const uint8_t *src, uint16_t src_stride,
+                                     uint16_t w, uint16_t h) {
+    uint16_t wb = w / 8U;
+
+    for (uint16_t row = 0; row < h; row++) {
+        const uint8_t *row_src = src + (uint32_t)row * src_stride;
+        uint16_t remaining = wb;
+        uint16_t offset = 0U;
+
+        while (remaining > 0U) {
+            uint8_t chunk = remaining > UC8179_ROW_CHUNK_SIZE
+                                ? UC8179_ROW_CHUNK_SIZE
+                                : (uint8_t)remaining;
+            EPD_WriteData((uint8_t *)&row_src[offset], chunk);
+            offset += chunk;
+            remaining -= chunk;
+        }
+
+        if ((row % UC8179_WDT_FEED_ROWS) == 0U) app_feed_wdt();
+    }
+}
+
 bool UC8179_Partial_Diff_Push(epd_model_t *epd, uint16_t x, uint16_t y,
                               uint16_t w, uint16_t h,
                               const uint8_t *old_bm, const uint8_t *new_bm) {
@@ -144,14 +148,10 @@ bool UC8179_Partial_Diff_Push(epd_model_t *epd, uint16_t x, uint16_t y,
     uint16_t wb = w / 8U;
     EPD_WriteCmd(UC81xx_PTIN);
     UC8179_SetPartialRamArea(x, y, w, h);
-
-    /* UC8179c KW mode: DTM1 is OLD and DTM2 is NEW. */
     EPD_WriteCmd(UC81xx_DTM1);
-    UC8179_Write_Image_Rows(old_bm, wb, h, 0xFF);
-
+    UC8179_Write_Packed_Rows(old_bm, wb, w, h);
     EPD_WriteCmd(UC81xx_DTM2);
-    UC8179_Write_Image_Rows(new_bm, wb, h, 0xFF);
-
+    UC8179_Write_Packed_Rows(new_bm, wb, w, h);
     EPD_WriteCmd(UC81xx_PTOUT);
     return true;
 }
@@ -247,7 +247,9 @@ void UC8179_Init_Partial(epd_model_t *epd)
 {
     if (epd == NULL) return;
 
-    NRF_LOG_INFO("[EPD]: UC8179 partial init\n");
+    NRF_LOG_INFO("[EPD]: UC8179 partial configure\n");
+    /* Wake from POF/DSLP without going through full-refresh OTP mode.
+     * OLD/NEW are supplied by software, so resetting SRAM is acceptable. */
     EPD_Reset(HIGH, 10);
     if (!UC8179_WaitBusy(1000)) return;
 
@@ -255,7 +257,6 @@ void UC8179_Init_Partial(epd_model_t *epd)
     /* REG=1, KW/R=1: register LUT with DTM1=OLD and DTM2=NEW. */
     EPD_Write(UC81xx_PSR, UC8179_PSR_KW_REG);
     EPD_Write(UC81xx_VDCS, UC8179_PARTIAL_VCOM);
-    /* DDX=01 enables explicit OLD/NEW; N2OCP is intentionally disabled. */
     EPD_Write(UC81xx_CDI, UC8179_CDI_KW_DIFF, UC8179_CDI_INTERVAL);
     UC8179_Load_Partial_LUT();
 
@@ -478,7 +479,7 @@ static epd_driver_t epd_drv_uc8179_partial = {
     // 局刷功能支持
     .init_partial = UC8179_Init_Partial,            // 局刷初始化
     .refresh_partial = UC8179_Refresh_Partial,      // 局刷刷新
-    .diff_push = UC8179_Partial_Diff_Push,          // 差分帧写入 (pixel-level partial)
+    .diff_push = UC8179_Partial_Diff_Push,          // 同一窗口写入 OLD+NEW
 };
 
 /*

@@ -113,6 +113,7 @@ typedef struct epd_driver {
     void (*init_partial)(epd_model_t *epd);
     bool (*refresh_partial)(epd_model_t *epd, uint16_t x, uint16_t y,
                             uint16_t w, uint16_t h);
+    /* Write packed OLD and NEW bitmaps in one PTIN/PTL window. */
     bool (*diff_push)(epd_model_t *epd, uint16_t x, uint16_t y,
                       uint16_t w, uint16_t h,
                       const uint8_t *old_bm, const uint8_t *new_bm);
@@ -140,7 +141,6 @@ void pinMode(uint32_t pin, uint32_t mode);  // 设置引脚模式
 // GPIO初始化相关函数
 void EPD_GPIO_Load(epd_config_t* cfg);  // 加载GPIO配置(从配置结构体)
 void EPD_GPIO_Init(void);               // 初始化GPIO引脚
-bool EPD_GPIO_Config_Conflicts_With_Ext_Flash(const epd_config_t* cfg);  // 检查引脚是否与外置Flash(P0.12-15)冲突
 void EPD_GPIO_Uninit(void);             // 反初始化GPIO引脚(恢复默认状态)
 
 // SPI
@@ -211,6 +211,7 @@ bool EPD_IsLowBattery(void);  // Uses cached voltage, no ADC operation - 使用�
  * 重要说明: 此函数会根据ID查找对应的EPD型号并初始化
  * Important: This function finds and initializes the EPD model based on the ID
  */
+epd_model_t* epd_get_model(epd_model_id_t id);
 epd_model_t* epd_init(epd_model_id_t id);
 
 #endif

@@ -1,6 +1,6 @@
 /* Host-test stub for the nRF SDK sdk_errors.h.
- * Only the symbols used by Lunar.c / epd_ext_resources.h are provided so the
- * firmware sources can be compiled and unit-tested natively on a PC. */
+ * Only the symbols used by Lunar.c are provided so the firmware sources can
+ * be compiled and unit-tested natively on a PC. */
 #ifndef SDK_ERRORS_H_HOST_STUB
 #define SDK_ERRORS_H_HOST_STUB
 
