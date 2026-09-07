@@ -9,6 +9,7 @@
 
 #include "GUI.h"
 #include "Lunar.h"
+#include "epd_refresh_policy.h"
 
 #define EPD_WIDTH 800
 #define EPD_HEIGHT 480
@@ -26,6 +27,35 @@ uint8_t g_week_start = 0;
 time_t g_display_time;
 struct tm g_tm_time;
 wchar_t g_status_text[128] = L"";
+
+static void emulator_reload_ui(void)
+{
+}
+
+static display_mode_t emulator_next_mode(display_mode_t mode)
+{
+    switch (mode) {
+    case MODE_CALENDAR:
+        return MODE_CLOCK_CALENDAR;
+    case MODE_CLOCK_CALENDAR:
+        return MODE_CLOCK;
+    default:
+        return MODE_CALENDAR;
+    }
+}
+
+static const wchar_t *emulator_mode_text(display_mode_t mode)
+{
+    switch (mode) {
+    case MODE_CLOCK:
+        return L"全屏时钟";
+    case MODE_CLOCK_CALENDAR:
+        return L"时钟+日历";
+    default:
+        return L"日历模式";
+    }
+}
+
 // Implementation of the buffer_callback function
 void DrawBitmap(void* user_data, uint8_t* black, uint8_t* color, uint16_t x, uint16_t y, uint16_t w, uint16_t h) {
     HDC hdc = g_paintHDC;
@@ -114,7 +144,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam) 
             return 0;
 
         case WM_TIMER:
-            if (g_display_mode == MODE_CLOCK) {
+            if (epd_is_clock_mode(g_display_mode)) {
                 g_display_time = time(NULL);
                 if (g_display_time % 60 == 0) {
                     InvalidateRect(hwnd, NULL, FALSE);
@@ -152,7 +182,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam) 
             SelectObject(hdc, oldBrush);
             DeleteObject(borderPen);
 
-            const wchar_t* modeText = (g_display_mode == MODE_CLOCK) ? L"时钟模式" : L"日历模式";
+            const wchar_t* modeText = emulator_mode_text(g_display_mode);
             int modeTextY = drawY - 20;
             SetTextColor(hdc, RGB(50, 50, 50));
             SetBkMode(hdc, TRANSPARENT);
@@ -167,7 +197,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam) 
 
             TextOutW(hdc, modeCenteredX, modeTextY, modeText, (int)wcslen(modeText));
 
-            const wchar_t helpText[] = L"空格-模式 | R-颜色 | W-星期起点 | 方向键-调日期 | 资源: tools\\epd_resources.bin";
+            const wchar_t helpText[] = L"空格-模式 | R-颜色 | W-星期起点 | 方向键-调日期";
             int helpTextY = drawY + EPD_HEIGHT * scale + 5;
             SetTextColor(hdc, RGB(80, 80, 80));
 
@@ -213,7 +243,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam) 
 
         case WM_KEYDOWN:
             if (wParam == VK_SPACE) {
-                g_display_mode = (g_display_mode == MODE_CLOCK) ? MODE_CALENDAR : MODE_CLOCK;
+                g_display_mode = emulator_next_mode(g_display_mode);
                 InvalidateRect(hwnd, NULL, TRUE);
             } else if (wParam == 'R') {
                 g_bwr_mode = !g_bwr_mode;

@@ -420,14 +420,14 @@
               <FilePath>..\EPD\UC8179.c</FilePath>
             </File>
             <File>
-              <FileName>fm25q04b.c</FileName>
+              <FileName>epd_refresh_policy.c</FileName>
               <FileType>1</FileType>
-              <FilePath>..\EPD\fm25q04b.c</FilePath>
+              <FilePath>..\EPD\epd_refresh_policy.c</FilePath>
             </File>
             <File>
-              <FileName>fm25q04b.h</FileName>
-              <FileType>5</FileType>
-              <FilePath>..\EPD\fm25q04b.h</FilePath>
+              <FileName>epd_clock_refresh.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\EPD\epd_clock_refresh.c</FilePath>
             </File>
 
 
@@ -1204,14 +1204,14 @@
               <FilePath>..\EPD\UC8179.c</FilePath>
             </File>
             <File>
-              <FileName>fm25q04b.c</FileName>
+              <FileName>epd_refresh_policy.c</FileName>
               <FileType>1</FileType>
-              <FilePath>..\EPD\fm25q04b.c</FilePath>
+              <FilePath>..\EPD\epd_refresh_policy.c</FilePath>
             </File>
             <File>
-              <FileName>fm25q04b.h</FileName>
-              <FileType>5</FileType>
-              <FilePath>..\EPD\fm25q04b.h</FilePath>
+              <FileName>epd_clock_refresh.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\EPD\epd_clock_refresh.c</FilePath>
             </File>
 
 

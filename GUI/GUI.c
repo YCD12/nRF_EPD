@@ -1,7 +1,12 @@
 #include "GUI.h"
 
+#include <stddef.h>
+
 #include "EPD_driver.h"
 #include "Lunar.h"
+#include "calendar_grid.h"
+#include "clock_layout.h"
+#include "clock_text.h"
 #include "fonts.h"
 
 // 计算数组元素个数的宏定义
@@ -42,6 +47,12 @@ static void format_lunar_month(char* out, const char* prefix, const char* month)
     while (*prefix != '\0' && pos < 9U) out[pos++] = *prefix++;
     while (*month != '\0' && pos < 9U) out[pos++] = *month++;
     out[pos] = '\0';
+}
+
+static void format_clock_lunar_md(char *out, size_t out_sz, const struct Lunar_Date *lunar)
+{
+    clock_format_lunar_md(out, out_sz, Lunar_MonthLeapString[lunar->IsLeap],
+                          Lunar_MonthString[lunar->Month], Lunar_DateString[lunar->Date]);
 }
 
 // 公历节日数据表
@@ -443,8 +454,11 @@ static void DrawDateHeader(Adafruit_GFX* gfx, int16_t x, int16_t y, tm_t* tm, st
     GFX_setFont(gfx, u8g2_font_wqy9_t_lunar);
     GFX_setCursor(gfx, tx, ty);
     if (Lunar->IsLeap) GFX_printf(gfx, " ");  // 闰月前加空格对齐 | Add space for leap month alignment
-    GFX_printf(gfx, "%s%s%s", Lunar_MonthLeapString[Lunar->IsLeap], Lunar_MonthString[Lunar->Month],
-               Lunar_DateString[Lunar->Date]);
+    {
+        char lunar_md[16];
+        format_clock_lunar_md(lunar_md, sizeof(lunar_md), Lunar);
+        GFX_printf(gfx, "%s", lunar_md);
+    }
     GFX_setTextColor(gfx, GFX_RED, GFX_WHITE);
     GFX_printf(gfx, " [%d周]", GetWeekOfYear(tm->tm_year, tm->tm_mon, tm->tm_mday, tm->tm_wday));
 
@@ -457,7 +471,7 @@ static void DrawDateHeader(Adafruit_GFX* gfx, int16_t x, int16_t y, tm_t* tm, st
 
     // 绘制右侧信息：电池和WiFi名称 | Draw right side info: battery and WiFi name
     GFX_setTextColor(gfx, GFX_BLACK, GFX_WHITE);
-    DrawBattery(gfx, data->width - 10 - 2, data->height > 300 ? 16 : 6, 20, data->voltage_mv);
+    DrawBattery(gfx, data->width - 10 - 2, data->height > GUI_LARGE_SCREEN_H ? 16 : 6, 20, data->voltage_mv);
     GFX_setCursor(gfx, data->width - GFX_getUTF8Width(gfx, data->ssid) - 10, y);
     GFX_printf(gfx, "%s", data->ssid);
 }
@@ -466,151 +480,104 @@ static void DrawDateHeader(Adafruit_GFX* gfx, int16_t x, int16_t y, tm_t* tm, st
  * @brief 绘制星期头部栏
  *        Draw week header bar
  *
- * @param gfx  图形上下文 | Graphics context
- * @param x    起始X坐标 | Start X coordinate
- * @param y    起始Y坐标 | Start Y coordinate
- * @param data GUI数据(包含一周起始日设置) | GUI data (contains week start setting)
+ * @param gfx        图形上下文
+ * @param x          起始X坐标
+ * @param y          起始Y坐标
+ * @param span_width 星期栏总宽度（全屏为 width-20，分屏为右侧 width-10）
+ * @param data       GUI数据(包含一周起始日设置)
  *
  * 显示7个星期标签，周末(周六/周日)用红色背景显示
  * Displays 7 weekday labels, weekends (Sat/Sun) shown with red background
  */
-static void DrawWeekHeader(Adafruit_GFX* gfx, int16_t x, int16_t y, gui_data_t* data) {
-    GFX_setFont(gfx, data->height > 300 ? u8g2_font_wqy12_t_lunar : u8g2_font_wqy9_t_lunar);
-    uint8_t w = (data->width - 2 * x) / 7;  // 每列宽度 | Width per column
-    uint8_t h = data->height > 300 ? 32 : 24;  // 行高 | Row height
-    uint8_t r = (data->width - 2 * x) % 7;     // 剩余像素分配给最后一列 | Remaining pixels for last column
-    uint8_t fh = (h - GFX_getFontHeight(gfx)) / 2 + GFX_getFontAscent(gfx) + 1;  // 垂直居中 | Vertical center
+static void DrawWeekHeader(Adafruit_GFX* gfx, int16_t x, int16_t y, int16_t span_width, gui_data_t* data) {
+    bool large = data->height > GUI_LARGE_SCREEN_H;
+    calendar_week_header_metrics_t hdr = calendar_week_header_metrics(span_width, large);
+
+    GFX_setFont(gfx, large ? u8g2_font_wqy12_t_lunar : u8g2_font_wqy9_t_lunar);
+    uint8_t fh = (hdr.row_h - GFX_getFontHeight(gfx)) / 2 + GFX_getFontAscent(gfx) + 1;
     int16_t cw = GFX_getUTF8Width(gfx, Lunar_DayString[0]);
     for (int i = 0; i < 7; i++) {
-        // 根据一周起始日设置调整显示顺序 | Adjust display order based on week start setting
         uint8_t day = (data->week_start + i) % 7;
-        uint16_t bg = (day == 0 || day == 6) ? GFX_RED : GFX_BLACK;  // 周末用红色 | Weekends in red
-        GFX_fillRect(gfx, x + i * w, y, i == 6 ? (w + r) : w, h, bg);
+        uint16_t bg = (day == 0 || day == 6) ? GFX_RED : GFX_BLACK;
+        GFX_fillRect(gfx, x + i * hdr.col_w, y, i == 6 ? (hdr.col_w + hdr.remainder) : hdr.col_w, hdr.row_h, bg);
         GFX_setTextColor(gfx, GFX_WHITE, bg);
-        GFX_setCursor(gfx, x + (w - cw) / 2 + i * w, y + fh);
+        GFX_setCursor(gfx, x + (hdr.col_w - cw) / 2 + i * hdr.col_w, y + fh);
         GFX_printf(gfx, "%s", Lunar_DayString[day]);
     }
 }
 
 /**
- * @brief 绘制月份日历的所有日期单元格
- *        Draw all date cells for the monthly calendar
- *
- * @param gfx   图形上下文 | Graphics context
- * @param x     起始X坐标 | Start X coordinate
- * @param y     起始Y坐标 | Start Y coordinate
- * @param tm    公历时间结构体 | Gregorian time structure
- * @param Lunar 农历日期结构体(会被函数修改) | Lunar date structure (will be modified)
- * @param data  GUI数据 | GUI data
- *
- * 功能说明(Features)：
- * - 计算月历行数和单元格尺寸 | Calculate calendar rows and cell sizes
- * - 绘制网格分隔线(大屏幕) | Draw grid lines (large screen)
- * - 为每一天绘制：日期数字、农历/节日、休假标记
- * - For each day draws: date number, lunar date/festival, holiday marker
- * - 当天用红色圆圈高亮显示 | Current day highlighted with red circle
- * - 周末日期用红色显示 | Weekends shown in red
+ * @brief 在给定矩形内绘制月历格（全屏与分屏共用）
  */
-static void DrawMonthDays(Adafruit_GFX* gfx, int16_t x, int16_t y, tm_t* tm, struct Lunar_Date* Lunar,
-                          gui_data_t* data) {
-    // 获取本月1号是星期几 | Get which day of week is the 1st day of month
-    uint8_t firstDayWeek = get_first_day_week(tm->tm_year + YEAR0, tm->tm_mon + 1);
-    // 根据用户设置的一周起始日调整首日位置 | Adjust first day position based on user's week start setting
-    int8_t adjustedFirstDay = (firstDayWeek - data->week_start + 7) % 7;
-    // 获取本月天数 | Get number of days in this month
-    uint8_t monthMaxDays = thisMonthMaxDays(tm->tm_year + YEAR0, tm->tm_mon + 1);
-    // 计算需要的行数 | Calculate required rows
-    // 公式：1 + (总天数 - 第一周剩余天数 + 6) / 7
-    uint8_t monthDayRows = 1 + (monthMaxDays - (7 - adjustedFirstDay) + 6) / 7;
+static void DrawMonthGrid(Adafruit_GFX* gfx, tm_t* tm, gui_data_t* data, calendar_grid_rect_t rect) {
+    calendar_grid_input_t in = {
+        .first_day_week = get_first_day_week(tm->tm_year + YEAR0, tm->tm_mon + 1),
+        .week_start = data->week_start,
+        .month_max_days = thisMonthMaxDays(tm->tm_year + YEAR0, tm->tm_mon + 1),
+        .screen_height = data->height,
+    };
+    calendar_grid_metrics_t m = calendar_grid_compute(&rect, &in);
+    struct Lunar_Date dayLunar;
 
-    // 计算每个单元格的宽度和高度 | Calculate cell width and height
-    int16_t bw = (data->width - x - 10) / 7;
-    int16_t bh = (data->height - y - 10) / monthDayRows;
-    bool large = data->height > 300;
-
-    // 大屏幕绘制网格分隔线(虚线) | Draw grid lines (dotted) for large screens
-    if (large) {
-        // 水平线 | Horizontal lines
-        for (uint8_t i = 1; i < monthDayRows; i++)
-            GFX_drawDottedLine(gfx, x, y + i * bh, x + 7 * bw - 1, y + i * bh, GFX_BLACK, 1, 5);
-        // 垂直线 | Vertical lines
+    if (m.large) {
+        for (uint8_t i = 1; i < m.month_day_rows; i++)
+            GFX_drawDottedLine(gfx, rect.x, rect.y + i * m.cell_h, rect.x + 7 * m.cell_w - 1,
+                               rect.y + i * m.cell_h, GFX_BLACK, 1, 5);
         for (uint8_t i = 1; i < 7; i++)
-            GFX_drawDottedLine(gfx, x + i * bw, y, x + i * bw, y + monthDayRows * bh - 1, GFX_BLACK, 1, 5);
+            GFX_drawDottedLine(gfx, rect.x + i * m.cell_w, rect.y, rect.x + i * m.cell_w,
+                               rect.y + m.month_day_rows * m.cell_h - 1, GFX_BLACK, 1, 5);
     }
 
-    // 遍历绘制每一天 | Iterate through each day of the month
-    for (uint8_t i = 0; i < monthMaxDays; i++) {
+    for (uint8_t i = 0; i < m.month_max_days; i++) {
         uint16_t year = tm->tm_year + YEAR0;
         uint8_t month = tm->tm_mon + 1;
         uint8_t day = i + 1;
+        calendar_cell_pos_t cell = calendar_grid_cell(&rect, &m, i);
 
-        // actualWeek: 实际星期几(0=周日) | Actual day of week (0=Sunday)
-        int16_t actualWeek = (firstDayWeek + i) % 7;
-        // displayWeek: 根据用户设置调整后的显示列 | Display column after user setting adjustment
-        int16_t displayWeek = (adjustedFirstDay + i) % 7;
-        bool weekend = (actualWeek == 0) || (actualWeek == 6);
+        LUNAR_SolarToLunar(&dayLunar, year, month, day);
 
-        // 计算该天的农历日期 | Calculate lunar date for this day
-        LUNAR_SolarToLunar(Lunar, year, month, day);
-
-        // 计算日期圆圈的半径和位置 | Calculate circle radius and position for date
-        int16_t cr = large ? 13 : 10;  // 圆圈半径 | Circle radius
-        int16_t bx = x + (bw - 2 * cr) / 2 + displayWeek * bw;  // 单元格内居中X | Cell-centered X
-        int16_t by = y + (bh - 2 * cr) / 2 + (i + adjustedFirstDay) / 7 * bh + 3;  // Y坐标 | Y coordinate
-
-        // 当天用红色圆圈高亮 | Highlight current day with red circle
         if (day == tm->tm_mday) {
-            GFX_fillCircle(gfx, bx + cr, by + cr - 3, 2 * cr, GFX_RED);
+            GFX_fillCircle(gfx, cell.bx + cell.cr, cell.by + cell.cr - 3, 2 * cell.cr, GFX_RED);
             GFX_setTextColor(gfx, GFX_WHITE, GFX_RED);
         } else {
-            // 周末用红色文字 | Weekends in red text
-            GFX_setTextColor(gfx, weekend ? GFX_RED : GFX_BLACK, GFX_WHITE);
+            GFX_setTextColor(gfx, cell.weekend ? GFX_RED : GFX_BLACK, GFX_WHITE);
         }
 
-        // 绘制日期数字 | Draw date number
-        GFX_setFont(gfx, large ? u8g2_font_helvB18_tn : u8g2_font_helvB14_tn);
-        GFX_setCursor(gfx, bx + (2 * cr - GFX_getUTF8Widthf(gfx, "%d", day)) / 2, by - (cr - GFX_getFontHeight(gfx)));
+        GFX_setFont(gfx, m.large ? u8g2_font_helvB18_tn : u8g2_font_helvB14_tn);
+        GFX_setCursor(gfx, cell.bx + (2 * cell.cr - GFX_getUTF8Widthf(gfx, "%d", day)) / 2,
+                      cell.by - (cell.cr - GFX_getFontHeight(gfx)));
         GFX_printf(gfx, "%d", day);
 
-        // 准备节日/农历信息 | Prepare festival/lunar information
         char festival_buf[10] = {0};
         const char* festival;
-        GFX_setFont(gfx, large ? u8g2_font_wqy12_t_lunar : u8g2_font_wqy9_t_lunar);
-        GFX_setFontMode(gfx, 1);  // transparent | 透明模式
-        if (GetFestival(year, month, day, actualWeek, Lunar, festival_buf)) {
-            // 有节日：显示节日名称 | Has festival: show festival name
+        GFX_setFont(gfx, m.large ? u8g2_font_wqy12_t_lunar : u8g2_font_wqy9_t_lunar);
+        GFX_setFontMode(gfx, 1);
+        if (GetFestival(year, month, day, (uint8_t)cell.actual_week, &dayLunar, festival_buf)) {
             festival = festival_buf;
-            if (day != tm->tm_mday) GFX_setTextColor(gfx, GFX_RED, GFX_WHITE);  // 节日用红色 | Festivals in red
+            if (day != tm->tm_mday) GFX_setTextColor(gfx, GFX_RED, GFX_WHITE);
+        } else if (dayLunar.Date == 1) {
+            format_lunar_month(festival_buf, Lunar_MonthLeapString[dayLunar.IsLeap],
+                               Lunar_MonthString[dayLunar.Month]);
+            festival = festival_buf;
         } else {
-            if (Lunar->Date == 1) {
-                // 农历初一：显示月份 | Lunar 1st day: show month name
-                format_lunar_month(festival_buf, Lunar_MonthLeapString[Lunar->IsLeap],
-                                   Lunar_MonthString[Lunar->Month]);
-                festival = festival_buf;
-            } else {
-                // 普通日子：直接使用指针，避免复制 | Normal day: use direct pointer, avoid copying
-                festival = Lunar_DateString[Lunar->Date];  // Direct pointer, no copy
-            }
+            festival = Lunar_DateString[dayLunar.Date];
         }
-        // 绘制节日/农历文字 | Draw festival/lunar text
-        GFX_setCursor(gfx, bx + (2 * cr - GFX_getUTF8Width(gfx, festival)) / 2, gfx->ty + GFX_getFontHeight(gfx) + 3);
+        GFX_setCursor(gfx, cell.bx + (2 * cell.cr - GFX_getUTF8Width(gfx, festival)) / 2,
+                      gfx->ty + GFX_getFontHeight(gfx) + 3);
         GFX_printf(gfx, "%s", festival);
 
-        // 绘制放假/调休标记 | Draw holiday/workday marker
         bool work = false;
         if (year == HOLIDAY_YEAR && GetHoliday(month, day, &work)) {
-            // 如果是当天，在红色圆圈内绘制白底红圈标记 | If current day, draw white-filled red circle marker
             if (day == tm->tm_mday) {
-                uint16_t rx = bx + (large ? 36 : 27);
-                uint16_t ry = by - 2;
-                uint8_t cr = large ? 10 : 8;
-                GFX_fillCircle(gfx, rx, ry, cr, GFX_WHITE);
-                GFX_drawCircle(gfx, rx, ry, cr, GFX_RED);
+                uint16_t rx = cell.bx + (m.large ? 36 : 27);
+                uint16_t ry = cell.by - 2;
+                uint8_t mark_r = m.large ? 10 : 8;
+                GFX_fillCircle(gfx, rx, ry, mark_r, GFX_WHITE);
+                GFX_drawCircle(gfx, rx, ry, mark_r, GFX_RED);
             }
             GFX_setFont(gfx, u8g2_font_wqy9_t_lunar);
-            // 调休上班用黑色，休假用红色 | Workday in black, holiday in red
             GFX_setTextColor(gfx, work ? GFX_BLACK : GFX_RED, GFX_WHITE);
-            GFX_setCursor(gfx, bx + (large ? 31 : 22), by + 3);
+            GFX_setCursor(gfx, cell.bx + (m.large ? 31 : 22), cell.by + 3);
             GFX_printf(gfx, "%s", work ? "班" : "休");
         }
     }
@@ -629,10 +596,17 @@ static void DrawMonthDays(Adafruit_GFX* gfx, int16_t x, int16_t y, tm_t* tm, str
  * Combines three sub-functions to draw complete monthly calendar
  */
 static void DrawCalendar(Adafruit_GFX* gfx, tm_t* tm, struct Lunar_Date* Lunar, gui_data_t* data) {
-    bool large = data->height > 300;
-    DrawDateHeader(gfx, 10, large ? 38 : 28, tm, Lunar, data);  // 绘制头部 | Draw header
-    DrawWeekHeader(gfx, 10, large ? 44 : 32, data);             // 绘制星期栏 | Draw week header
-    DrawMonthDays(gfx, 10, large ? 84 : 64, tm, Lunar, data);   // 绘制日历主体 | Draw calendar body
+    bool large = data->height > GUI_LARGE_SCREEN_H;
+    calendar_grid_rect_t days = {
+        .x = 10,
+        .y = large ? 84 : 64,
+        .width = (int16_t)(data->width - 20),
+        .bottom = (int16_t)(data->height - 10),
+    };
+
+    DrawDateHeader(gfx, 10, large ? 38 : 28, tm, Lunar, data);
+    DrawWeekHeader(gfx, 10, large ? 44 : 32, days.width, data);
+    DrawMonthGrid(gfx, tm, data, days);
 }
 
 // clang-format off
@@ -686,50 +660,39 @@ static void Draw7Number(Adafruit_GFX *gfx, int n, unsigned int xLoc, unsigned in
 static void DrawTime(Adafruit_GFX* gfx, tm_t* tm, int16_t x, int16_t y, uint16_t cS, uint16_t nD) {
     // 绘制小时 | Draw hours
     Draw7Number(gfx, tm->tm_hour, x, y, cS, GFX_BLACK, GFX_WHITE, nD);
-    x += (nD * (11 * cS + 2) - 2 * cS) + 2 * cS;
+    x += clock_digit_block_width(cS, nD) + 2 * cS;
     // 绘制冒号(两个方块) | Draw colon (two squares)
-    GFX_fillRect(gfx, x, y + 4.5 * cS + 1, 2 * cS, 2 * cS, GFX_BLACK);
-    GFX_fillRect(gfx, x, y + 13.5 * cS + 3, 2 * cS, 2 * cS, GFX_BLACK);
+    GFX_fillRect(gfx, x, clock_colon_top_y((uint16_t)y, cS), 2 * cS, 2 * cS, GFX_BLACK);
+    GFX_fillRect(gfx, x, clock_colon_bot_y((uint16_t)y, cS), 2 * cS, 2 * cS, GFX_BLACK);
     x += 4 * cS;
     // 绘制分钟 | Draw minutes
     Draw7Number(gfx, tm->tm_min, x, y, cS, GFX_BLACK, GFX_WHITE, nD);
 }
 
-// Split screen layout constants for 800x480 screen
-// 800x480屏幕的分屏布局常量
-// Left side: 392 pixels (must be multiple of 8 for byte alignment)
-// 左侧：392像素(必须是8的倍数以便字节对齐)
-// Right side: 408 pixels
-// 右侧：408像素
-#define SPLIT_LEFT_WIDTH 392
-#define SPLIT_RIGHT_START 392
-
-  // Time-only partial refresh area (for MODE_CLOCK_CALENDAR)
-  // Width is 384 (not 392) to leave space for the separator line at x=390
-  // This prevents the partial refresh from affecting the separator line
-  // Y position and height adjusted for layout with 60px top/bottom margins
-  // Content area: y=60 to y=420 (360px height)
-  // Time starts at y=182 (calculated: 128 + (360-128-124)/2), height=124, ends at y=306
-  // 时钟局部刷新区域(用于MODE_CLOCK_CALENDAR模式)
-  // 宽度是384(不是392)，为x=390处的分隔线留出空间
-  // 这样可以防止局部刷新影响分隔线
-  // Y位置和高度根据60px上下边距的布局进行调整
-  // 内容区域：y=60到y=420 (高度360px)
-  // 时间从y=182开始(计算：128 + (360-128-124)/2)，高度=124，结束于y=306
-  #define TIME_REFRESH_X      0    // Start from left edge | 从左边缘开始
-  #define TIME_REFRESH_Y      169  // Adjusted so time top aligns at y=182 | 调整使时间顶部对齐到y=182
-  #define TIME_REFRESH_WIDTH  384  // Leave 8px margin for separator line (at x=390) | 为分隔线留8px边距
-  #define TIME_REFRESH_HEIGHT 150  // Time display height (124 + 26px margin) | 时间显示高度(124+26px边距)
-
 // State for dynamic time refresh window (used by partial refresh)
 // These track the last chosen sub-window inside the TIME_REFRESH area.
 // 动态时间刷新窗口的状态(用于局部刷新)
 // 这些变量追踪TIME_REFRESH区域内最后选择的子窗口
-static uint32_t s_last_time_refresh_ts = 0;               // 上次刷新的时间戳 | Last refresh timestamp
 static uint16_t s_time_window_x = 0;                      // local X inside TIME_REFRESH area | TIME_REFRESH区域内的本地X坐标
 static uint16_t s_time_window_y = 0;                      // local Y inside TIME_REFRESH area | TIME_REFRESH区域内的本地Y坐标
 static uint16_t s_time_window_w = TIME_REFRESH_WIDTH;    // width of current refresh window | 当前刷新窗口的宽度
 static uint16_t s_time_window_h = TIME_REFRESH_HEIGHT;   // height of current refresh window | 当前刷新窗口的高度
+
+static clock_refresh_geom_t gui_clock_geom(const gui_data_t *data)
+{
+    return clock_refresh_geom_sized(data != NULL && data->mode == MODE_CLOCK,
+                                   data != NULL ? data->width : 0U,
+                                   data != NULL ? data->height : 0U);
+}
+
+static void DrawTimeFromGeom(Adafruit_GFX *gfx, tm_t *tm, const clock_refresh_geom_t *geom)
+{
+    uint16_t x = 0;
+    uint16_t y = 0;
+
+    clock_hhmm_screen_xy(geom, &x, &y);
+    DrawTime(gfx, tm, (int16_t)x, (int16_t)y, geom->cS, geom->nD);
+}
 
 // Draw calendar on the right side of the split screen (starting at x=SPLIT_RIGHT_START)
 // 在分屏的右侧绘制日历(从x=SPLIT_RIGHT_START开始)
@@ -749,9 +712,10 @@ static uint16_t s_time_window_h = TIME_REFRESH_HEIGHT;   // height of current re
  * - 标准月历布局：星期头+日期网格 | Standard calendar layout: week header + date grid
  */
 static void DrawCalendar_Right(Adafruit_GFX* gfx, tm_t* tm, struct Lunar_Date* Lunar, gui_data_t* data) {
+    (void)Lunar;
     int16_t offset_x = SPLIT_RIGHT_START;  // 右侧起始X坐标 | Right side start X
     int16_t right_width = data->width - SPLIT_RIGHT_START;  // 右侧宽度 | Right side width
-    bool large = data->height > 300;
+    bool large = data->height > GUI_LARGE_SCREEN_H;
 
     // Draw vertical separator line (shortened to match reserved bottom area)
     // Line from y=70 to y=420 (60px margin at top and bottom)
@@ -784,108 +748,17 @@ static void DrawCalendar_Right(Adafruit_GFX* gfx, tm_t* tm, struct Lunar_Date* L
     GFX_setCursor(gfx, offset_x + 8, header_y);
     GFX_printf(gfx, "%s", data->ssid);
 
-    // Week header for right side - positioned below the header
-    // 右侧的星期头 - 位于头部下方
-    int16_t week_y = large ? 96 : 86;  // +60 for top margin | 顶部边距+60
     int16_t week_x = offset_x + 5;
-    GFX_setFont(gfx, large ? u8g2_font_wqy12_t_lunar : u8g2_font_wqy9_t_lunar);
-    uint8_t w = (right_width - 10) / 7;  // 每列宽度 | Width per column
-    uint8_t h = large ? 32 : 24;         // 星期头高度 | Week header height
-    uint8_t r = (right_width - 10) % 7;  // 剩余像素 | Remaining pixels
-    uint8_t fh = (h - GFX_getFontHeight(gfx)) / 2 + GFX_getFontAscent(gfx) + 1;
-    int16_t cw = GFX_getUTF8Width(gfx, Lunar_DayString[0]);
-    for (int i = 0; i < 7; i++) {
-        uint8_t day = (data->week_start + i) % 7;
-        uint16_t bg = (day == 0 || day == 6) ? GFX_RED : GFX_BLACK;
-        GFX_fillRect(gfx, week_x + i * w, week_y, i == 6 ? (w + r) : w, h, bg);
-        GFX_setTextColor(gfx, GFX_WHITE, bg);
-        GFX_setCursor(gfx, week_x + (w - cw) / 2 + i * w, week_y + fh);
-        GFX_printf(gfx, "%s", Lunar_DayString[day]);
-    }
+    int16_t week_y = large ? 96 : 86;
+    calendar_grid_rect_t days = {
+        .x = offset_x + 5,
+        .y = large ? 136 : 116,
+        .width = (int16_t)(right_width - 10),
+        .bottom = large ? 420 : (int16_t)(data->height - 10),
+    };
 
-    // Month days for right side - positioned below week header
-    int16_t days_x = offset_x + 5;
-    int16_t days_y = large ? 136 : 116;  // +60 for top margin
-
-    uint8_t firstDayWeek = get_first_day_week(tm->tm_year + YEAR0, tm->tm_mon + 1);
-    int8_t adjustedFirstDay = (firstDayWeek - data->week_start + 7) % 7;
-    uint8_t monthMaxDays = thisMonthMaxDays(tm->tm_year + YEAR0, tm->tm_mon + 1);
-    uint8_t monthDayRows = 1 + (monthMaxDays - (7 - adjustedFirstDay) + 6) / 7;
-
-    // Match clock side layout - leave bottom area reserved (y=420-480)
-    // Content area: y=60 to y=420 (360px height with 60px top/bottom margins)
-    int16_t calendar_bottom = large ? 420 : data->height - 10;  // Leave 60px at bottom
-    int16_t bw = (right_width - 10) / 7;
-    int16_t bh = (calendar_bottom - days_y) / monthDayRows;
-
-    if (large) {
-        for (uint8_t i = 1; i < monthDayRows; i++)
-            GFX_drawDottedLine(gfx, days_x, days_y + i * bh, days_x + 7 * bw - 1, days_y + i * bh, GFX_BLACK, 1, 5);
-        for (uint8_t i = 1; i < 7; i++)
-            GFX_drawDottedLine(gfx, days_x + i * bw, days_y, days_x + i * bw, days_y + monthDayRows * bh - 1, GFX_BLACK, 1, 5);
-    }
-
-    struct Lunar_Date dayLunar;
-    for (uint8_t i = 0; i < monthMaxDays; i++) {
-        uint16_t year = tm->tm_year + YEAR0;
-        uint8_t month = tm->tm_mon + 1;
-        uint8_t day = i + 1;
-
-        int16_t actualWeek = (firstDayWeek + i) % 7;
-        int16_t displayWeek = (adjustedFirstDay + i) % 7;
-        bool weekend = (actualWeek == 0) || (actualWeek == 6);
-
-        LUNAR_SolarToLunar(&dayLunar, year, month, day);
-
-        int16_t cr = large ? 13 : 10;
-        int16_t bx = days_x + (bw - 2 * cr) / 2 + displayWeek * bw;
-        int16_t by = days_y + (bh - 2 * cr) / 2 + (i + adjustedFirstDay) / 7 * bh + 3;
-
-        if (day == tm->tm_mday) {
-            GFX_fillCircle(gfx, bx + cr, by + cr - 3, 2 * cr, GFX_RED);
-            GFX_setTextColor(gfx, GFX_WHITE, GFX_RED);
-        } else {
-            GFX_setTextColor(gfx, weekend ? GFX_RED : GFX_BLACK, GFX_WHITE);
-        }
-
-        GFX_setFont(gfx, large ? u8g2_font_helvB18_tn : u8g2_font_helvB14_tn);
-        GFX_setCursor(gfx, bx + (2 * cr - GFX_getUTF8Widthf(gfx, "%d", day)) / 2, by - (cr - GFX_getFontHeight(gfx)));
-        GFX_printf(gfx, "%d", day);
-
-        char festival_buf[10] = {0};
-        const char* festival;
-        GFX_setFont(gfx, large ? u8g2_font_wqy12_t_lunar : u8g2_font_wqy9_t_lunar);
-        GFX_setFontMode(gfx, 1);
-        if (GetFestival(year, month, day, actualWeek, &dayLunar, festival_buf)) {
-            festival = festival_buf;
-            if (day != tm->tm_mday) GFX_setTextColor(gfx, GFX_RED, GFX_WHITE);
-        } else {
-            if (dayLunar.Date == 1) {
-                format_lunar_month(festival_buf, Lunar_MonthLeapString[dayLunar.IsLeap],
-                                   Lunar_MonthString[dayLunar.Month]);
-                festival = festival_buf;
-            } else {
-                festival = Lunar_DateString[dayLunar.Date];  // Direct pointer, no copy
-            }
-        }
-        GFX_setCursor(gfx, bx + (2 * cr - GFX_getUTF8Width(gfx, festival)) / 2, gfx->ty + GFX_getFontHeight(gfx) + 3);
-        GFX_printf(gfx, "%s", festival);
-
-        bool work = false;
-        if (year == HOLIDAY_YEAR && GetHoliday(month, day, &work)) {
-            if (day == tm->tm_mday) {
-                uint16_t rx = bx + (large ? 36 : 27);
-                uint16_t ry = by - 2;
-                uint8_t cr2 = large ? 10 : 8;
-                GFX_fillCircle(gfx, rx, ry, cr2, GFX_WHITE);
-                GFX_drawCircle(gfx, rx, ry, cr2, GFX_RED);
-            }
-            GFX_setFont(gfx, u8g2_font_wqy9_t_lunar);
-            GFX_setTextColor(gfx, work ? GFX_BLACK : GFX_RED, GFX_WHITE);
-            GFX_setCursor(gfx, bx + (large ? 31 : 22), by + 3);
-            GFX_printf(gfx, "%s", work ? "班" : "休");
-        }
-    }
+    DrawWeekHeader(gfx, week_x, week_y, days.width, data);
+    DrawMonthGrid(gfx, tm, data, days);
 }
 
 // Draw clock on the left side of the split screen (for partial refresh)
@@ -954,8 +827,11 @@ static void DrawClock_Left(Adafruit_GFX* gfx, tm_t* tm, struct Lunar_Date* Lunar
     // === 第2行：左侧农历日期，右侧温度 ===
     GFX_setFont(gfx, u8g2_font_wqy12_t_lunar);
     GFX_setCursor(gfx, padding, 115);  // +60 for top margin | 顶部边距+60
-    GFX_printf(gfx, "%s%s%s", Lunar_MonthLeapString[Lunar->IsLeap],
-               Lunar_MonthString[Lunar->Month], Lunar_DateString[Lunar->Date]);
+    {
+        char lunar_md[16];
+        format_clock_lunar_md(lunar_md, sizeof(lunar_md), Lunar);
+        GFX_printf(gfx, "%s", lunar_md);
+    }
 
     // Temperature on right side with larger number font
     // 右侧温度，数字使用大字体
@@ -985,19 +861,8 @@ static void DrawClock_Left(Adafruit_GFX* gfx, tm_t* tm, struct Lunar_Date* Lunar
     // 顶部水平线(与日历星期头底部对齐)
     GFX_drawFastHLine(gfx, padding, top_line_y, width_limit - 2 * padding, GFX_BLACK);
 
-    // === Center: Time display ===
-    // === 中部：时间显示 ===
-    uint16_t cS = 6;  // Scale factor for 7-segment display | 7段数码管缩放因子
-    uint16_t nD = 2;  // Number of digits | 数字位数
-    uint16_t time_width = 2 * (nD * (11 * cS + 2) - 2 * cS) + 4 * cS;  // 272
-    uint16_t time_height = 20 * cS + 4;  // 124
-
-    // Center time between top line and bottom line
-    // 在顶部线和底部线之间居中时间
-    int16_t available_height = bottom_line_y - top_line_y;
-    int16_t time_x = (TIME_REFRESH_WIDTH - time_width) / 2;
-    int16_t time_y = top_line_y + (available_height - time_height) / 2;
-    DrawTime(gfx, tm, time_x, time_y, cS, nD);
+    clock_refresh_geom_t geom = gui_clock_geom(data);
+    DrawTimeFromGeom(gfx, tm, &geom);
 
     // Bottom horizontal line (moved up)
     // 底部水平线(上移)
@@ -1020,29 +885,20 @@ static void DrawClock_Left(Adafruit_GFX* gfx, tm_t* tm, struct Lunar_Date* Lunar
 
     // === Bottom section: Right side - Next solar term countdown ===
     // === 底部区域：右侧 - 下一个节气倒计时 ===
-    uint8_t days_to_jieqi = 0;
-    uint8_t next_jieqi = GetJieQiStr(tm->tm_year + YEAR0, tm->tm_mon + 1, tm->tm_mday, &days_to_jieqi);
+    {
+        char line1[16];
+        char line2[16];
+        uint8_t days_to_jieqi = 0;
+        uint8_t next_jieqi = GetJieQiStr(tm->tm_year + YEAR0, tm->tm_mon + 1, tm->tm_mday, &days_to_jieqi);
 
-    if (days_to_jieqi == 0) {
-        // Today is the solar term - show only solar term name
-        // 今天就是节气日 - 只显示节气名称
-        const char* jq_str = JieQiStr[next_jieqi % 24];
-        GFX_setCursor(gfx, width_limit - padding - GFX_getUTF8Width(gfx, jq_str), bottom_info_y1);
-        GFX_printf(gfx, "%s", jq_str);
-    } else {
-        // Right column: "离xx" on first line, "还有xx天" on second line
-        // 右列：第一行"离xx"，第二行"还有xx天"
-        const char* jq_name = JieQiStr[next_jieqi % 24];
-        int16_t jq_width = GFX_getUTF8Width(gfx, "离") + GFX_getUTF8Width(gfx, jq_name);
-        GFX_setCursor(gfx, width_limit - padding - jq_width, bottom_info_y1);
-        GFX_printf(gfx, "离%s", jq_name);
-
-        // Calculate width for "还有X天" - estimate digit width using "8" as reference
-        // 计算"还有X天"的宽度 - 使用"8"作为参考估算数字宽度(避免snprintf)
-        int16_t days_width = GFX_getUTF8Width(gfx, "还有") + GFX_getUTF8Width(gfx, "8") +
-                             (days_to_jieqi >= 10 ? GFX_getUTF8Width(gfx, "8") : 0) + GFX_getUTF8Width(gfx, "天");
-        GFX_setCursor(gfx, width_limit - padding - days_width, bottom_info_y2);
-        GFX_printf(gfx, "还有%d天", days_to_jieqi);
+        clock_format_jieqi_countdown(line1, sizeof(line1), line2, sizeof(line2),
+                                     JieQiStr[next_jieqi % 24], days_to_jieqi);
+        GFX_setCursor(gfx, width_limit - padding - GFX_getUTF8Width(gfx, line1), bottom_info_y1);
+        GFX_printf(gfx, "%s", line1);
+        if (line2[0] != '\0') {
+            GFX_setCursor(gfx, width_limit - padding - GFX_getUTF8Width(gfx, line2), bottom_info_y2);
+            GFX_printf(gfx, "%s", line2);
+        }
     }
 
 }
@@ -1101,7 +957,7 @@ static void DrawClock(Adafruit_GFX* gfx, tm_t* tm, struct Lunar_Date* Lunar, gui
     // 因为局部刷新只支持黑白两色
     uint16_t text_color = GFX_BLACK;  // Changed from GFX_RED to GFX_BLACK | 从GFX_RED改为GFX_BLACK
 
-    uint8_t padding = data->height > 300 ? 100 : 40;
+    uint8_t padding = data->height > GUI_LARGE_SCREEN_H ? 100 : 40;
     GFX_setCursor(gfx, padding, 36);
     GFX_printf_styled(gfx, text_color, GFX_WHITE, u8g2_font_helvB18_tn, "%d", tm->tm_year + YEAR0);
     GFX_printf_styled(gfx, GFX_BLACK, GFX_WHITE, u8g2_font_wqy12_t_lunar, "年");
@@ -1114,28 +970,25 @@ static void DrawClock(Adafruit_GFX* gfx, tm_t* tm, struct Lunar_Date* Lunar, gui
     GFX_setFont(gfx, u8g2_font_wqy9_t_lunar);
     GFX_printf(gfx, "星期%s", Lunar_DayString[tm->tm_wday]);
     GFX_setCursor(gfx, 138, 58);
-    GFX_printf(gfx, "%s%s%s", Lunar_MonthLeapString[Lunar->IsLeap], Lunar_MonthString[Lunar->Month],
-               Lunar_DateString[Lunar->Date]);
+    {
+        char lunar_md[16];
+        format_clock_lunar_md(lunar_md, sizeof(lunar_md), Lunar);
+        GFX_printf(gfx, "%s", lunar_md);
+    }
 
     DrawBattery(gfx, data->width - padding, 25, 20, data->voltage_mv);
 
     char ssid[5] = {0};
-    int16_t ssid_len = strlen(data->ssid);
     int16_t sw = GFX_getUTF8Width(gfx, "25℃[1234]");
-    memcpy(ssid, &data->ssid[ssid_len - 4], 4);
+    clock_ssid_tail4(ssid, sizeof(ssid), data->ssid);
     GFX_setCursor(gfx, data->width - padding - sw - 2, 58);
     GFX_setFont(gfx, u8g2_font_wqy9_t_lunar);
     GFX_printf(gfx, "%d℃[%s]", data->temperature, ssid);
 
     GFX_drawFastHLine(gfx, padding - 10, 68, data->width - 2 * (padding - 10), GFX_BLACK);
 
-    uint16_t cS = data->height / 45;
-    uint16_t nD = 2;
-    uint16_t time_width = 2 * (nD * (11 * cS + 2) - 2 * cS) + 4 * cS;
-    uint16_t time_height = 20 * cS + 4;
-    int16_t time_x = (data->width - time_width) / 2;
-    int16_t time_y = (68 + (data->height - 68)) / 2 - time_height / 2;
-    DrawTime(gfx, tm, time_x, time_y, cS, nD);
+    clock_refresh_geom_t geom = gui_clock_geom(data);
+    DrawTimeFromGeom(gfx, tm, &geom);
 
     GFX_drawFastHLine(gfx, padding - 10, data->height - 68, data->width - 2 * (padding - 10), GFX_BLACK);
 
@@ -1150,23 +1003,23 @@ static void DrawClock(Adafruit_GFX* gfx, tm_t* tm, struct Lunar_Date* Lunar, gui
     GFX_setCursor(gfx, padding, data->height - 68 + 30 + 20);
     GFX_printf(gfx, " %d周", GetWeekOfYear(tm->tm_year, tm->tm_mon, tm->tm_mday, tm->tm_wday));
 
-    uint8_t day = 0;
-    uint8_t JQday = GetJieQiStr(tm->tm_year + YEAR0, tm->tm_mon + 1, tm->tm_mday, &day);
-    if (day == 0) {
-        GFX_setCursor(gfx, data->width - GFX_getUTF8Width(gfx, "小暑") - padding, data->height - 68 + 30);
+    {
+        char line1[16];
+        char line2[16];
+        uint8_t day = 0;
+        uint8_t JQday = GetJieQiStr(tm->tm_year + YEAR0, tm->tm_mon + 1, tm->tm_mday, &day);
+
+        clock_format_jieqi_countdown(line1, sizeof(line1), line2, sizeof(line2),
+                                     JieQiStr[JQday % 24], day);
         GFX_setTextColor(gfx, text_color, GFX_WHITE);
-        GFX_printf(gfx, "%s", JieQiStr[JQday % 24]);
-    } else {
-        GFX_setCursor(gfx, data->width - GFX_getUTF8Width(gfx, "离小暑") - padding, data->height - 68 + 30);
-        GFX_printf(gfx, "离");
-        GFX_setTextColor(gfx, text_color, GFX_WHITE);
-        GFX_printf(gfx, "%s", JieQiStr[JQday % 24]);
-        GFX_setTextColor(gfx, GFX_BLACK, GFX_WHITE);
-        // Calculate width without snprintf: "还有" + digits + "天"
-        int16_t day_width = GFX_getUTF8Width(gfx, "还有") + GFX_getUTF8Width(gfx, "天");
-        day_width += GFX_getUTF8Width(gfx, "0") * ((day >= 10) ? 2 : 1);
-        GFX_setCursor(gfx, data->width - day_width - padding, data->height - 68 + 30 + 20);
-        GFX_printf(gfx, "还有%d天", day);
+        GFX_setCursor(gfx, data->width - GFX_getUTF8Width(gfx, line1) - padding, data->height - 68 + 30);
+        GFX_printf(gfx, "%s", line1);
+        if (line2[0] != '\0') {
+            GFX_setTextColor(gfx, GFX_BLACK, GFX_WHITE);
+            GFX_setCursor(gfx, data->width - GFX_getUTF8Width(gfx, line2) - padding,
+                          data->height - 68 + 30 + 20);
+            GFX_printf(gfx, "%s", line2);
+        }
     }
 }
 
@@ -1249,13 +1102,9 @@ void DrawGUI(gui_data_t* data, buffer_callback callback, void* callback_data) {
     GFX_end(&gfx);
 }
 
-// Draw only the time portion for partial refresh in MODE_CLOCK_CALENDAR
-// This draws to a small area containing only the 7-segment time display
-// 仅绘制时间部分用于MODE_CLOCK_CALENDAR模式的局部刷新
-// 该函数只绘制包含7段数码管样式时间显示的小区域
 /**
- * @brief 绘制时钟时间用于局部刷新(MODE_CLOCK_CALENDAR模式)
- *        Draw clock time for partial refresh (MODE_CLOCK_CALENDAR mode)
+ * @brief 绘制时钟时间用于局部刷新(MODE_CLOCK / MODE_CLOCK_CALENDAR)
+ *        Draw clock time for partial refresh (both clock modes)
  *
  * @param data          GUI数据指针 | Pointer to GUI data
  * @param callback      缓冲区回调函数 | Buffer callback function
@@ -1267,203 +1116,52 @@ void DrawGUI(gui_data_t* data, buffer_callback callback, void* callback_data) {
  * - 仅使用黑白模式(局部刷新不支持彩色) | Only use B/W mode (partial refresh doesn't support color)
  * - 大幅减少刷新面积，延长屏幕寿命 | Greatly reduce refresh area, extend screen life
  */
-  void DrawGUI_ClockOnly(gui_data_t* data, buffer_callback callback, void* callback_data) {
-      tm_t tm = {0};
-      transformTime(data->timestamp, &tm);
+void DrawGUI_ClockOnly(gui_data_t* data, buffer_callback callback, void* callback_data) {
+    tm_t tm = {0};
+    clock_refresh_geom_t geom = gui_clock_geom(data);
 
-      Adafruit_GFX gfx;
-      /* Page height 0 lets GFX_begin use the static page buffer. */
-      GFX_begin(&gfx, TIME_REFRESH_WIDTH, TIME_REFRESH_HEIGHT, 0);
-      // Limit drawing to the last computed time window so only the
-      // changed digit (or full time area) is written to EPD RAM.
-      // 限制绘制到上次计算的时间窗口，这样只有变化的数字(或完整时间区域)被写入EPD RAM
-      GFX_setWindow(&gfx, s_time_window_x, s_time_window_y, s_time_window_w, s_time_window_h);
+    transformTime(data->timestamp, &tm);
+
+    Adafruit_GFX gfx;
+    /* Page height 0 lets GFX_begin use the static page buffer. */
+    GFX_begin(&gfx, geom.canvas_w, geom.canvas_h, 0);
+    GFX_setWindow(&gfx, s_time_window_x, s_time_window_y, s_time_window_w, s_time_window_h);
 
     GFX_firstPage(&gfx);
     do {
         GFX_fillScreen(&gfx, GFX_WHITE);
+        DrawTime(&gfx, &tm,
+                 (int16_t)clock_hhmm_local_x(geom.canvas_w, geom.cS, geom.nD),
+                 (int16_t)clock_hhmm_local_y(geom.canvas_h, geom.cS),
+                 geom.cS, geom.nD);
+    } while (GFX_nextPage(&gfx, callback, callback_data));
 
-        // Draw only the time display, centered in the refresh area
-        // The refresh area starts at TIME_REFRESH_X, TIME_REFRESH_Y on screen
-        // But GFX coordinates start at 0,0 for this buffer
-        // 只绘制时间显示，在刷新区域内居中
-        // 刷新区域在屏幕上从TIME_REFRESH_X, TIME_REFRESH_Y开始
-        // 但GFX坐标从此缓冲区的0,0开始
-        uint16_t cS = 6;  // Scale factor for 7-segment display | 7段数码管缩放因子
-        uint16_t nD = 2;  // Number of digits | 数字位数
-        uint16_t time_width = 2 * (nD * (11 * cS + 2) - 2 * cS) + 4 * cS;  // 272
-        uint16_t time_height = 20 * cS + 4;  // 124
-
-      // Center the time in the refresh buffer
-      // 在刷新缓冲区内居中时间
-      int16_t time_x = (TIME_REFRESH_WIDTH - time_width) / 2;
-      int16_t time_y = (TIME_REFRESH_HEIGHT - time_height) / 2;
-
-          DrawTime(&gfx, &tm, time_x, time_y, cS, nD);
-
-      } while (GFX_nextPage(&gfx, callback, callback_data));
-
-      GFX_end(&gfx);
-  }
-
-  // Get the time refresh area parameters for EPD_service
-  // 获取时间刷新区域参数供EPD服务使用
-  /**
-   * @brief 计算并返回时间显示的局部刷新区域
-   *        Calculate and return partial refresh area for time display
-   *
-   * @param timestamp 当前UNIX时间戳 | Current UNIX timestamp
-   * @param x         输出：刷新区域X坐标 | Output: refresh area X coordinate
-   * @param y         输出：刷新区域Y坐标 | Output: refresh area Y coordinate
-   * @param w         输出：刷新区域宽度 | Output: refresh area width
-   * @param h         输出：刷新区域高度 | Output: refresh area height
-   *
-   * 智能优化策略(Smart optimization strategy)：
-   * 1. 默认刷新整个HH:MM时间显示区域
-   * 2. 如果仅分钟个位数字变化(如12:08->12:09)，只刷新最右侧的一个数字
-   * 3. 这样可以将刷新面积减少到原来的约1/4，大幅降低功耗和屏幕磨损
-   *
-   * 刷新区域动态调整(Dynamic refresh area adjustment)：
-   * - 完整时间区域：约272x124像素
-   * - 仅个位数字：约68x124像素
-   * - 决策条件：小时十位、小时个位、分钟十位都未变化
-   */
-  void GetTimeRefreshArea(uint32_t timestamp, uint16_t* x, uint16_t* y, uint16_t* w, uint16_t* h) {
-      // Base time area (centered HH:MM inside TIME_REFRESH_*)
-      // 基础时间区域(TIME_REFRESH_*内居中的HH:MM)
-      const uint16_t base_x = TIME_REFRESH_X;
-      const uint16_t base_y = TIME_REFRESH_Y;
-      const uint16_t base_w = TIME_REFRESH_WIDTH;
-      const uint16_t base_h = TIME_REFRESH_HEIGHT;
-
-      // 7-segment layout parameters (must match DrawTime/Draw7Number)
-      // 7段数码管布局参数(必须与DrawTime/Draw7Number匹配)
-      const uint16_t cS = 6;      // scale factor | 缩放因子
-      const uint16_t nD = 2;      // digits per number (HH / MM) | 每个数字的位数
-      const uint16_t digit_block_width = nD * (11 * cS + 2) - 2 * cS;  // width of "HH" or "MM" | "HH"或"MM"的宽度
-      const uint16_t time_width = 2 * digit_block_width + 4 * cS;      // nominal HH:MM width (used for centering) | HH:MM总宽度
-
-      // Default window: full HH:MM area (smaller than TIME_REFRESH_* to avoid touching calendar)
-      // 默认窗口：完整的HH:MM区域(小于TIME_REFRESH_*以避免触及日历)
-      uint16_t window_x_local = (base_w - time_width) / 2;
-      uint16_t window_w = time_width;
-
-    // Vertically, restrict to just the digits area (time_height), centered,
-    // but add a small margin above/below to clean residual pixels.
-    // 垂直方向，限制在数字区域(time_height)，居中，
-    // 但在上下添加小边距以清除残留像素
-    uint16_t time_height = 20 * cS + 4;  // must match DrawGUI_ClockOnly | 必须与DrawGUI_ClockOnly匹配
-    int16_t window_y_local = (base_h - time_height) / 2;
-    int16_t window_h = time_height;
-    const int16_t margin_y = 2;
-    // Expand upwards if there is room | 如果有空间则向上扩展
-    if (window_y_local > margin_y) {
-        window_y_local -= margin_y;
-        window_h += margin_y;
-    }
-    // Expand downwards if there is room | 如果有空间则向下扩展
-    if (window_y_local + window_h + margin_y <= (int16_t)base_h) {
-        window_h += margin_y;
-    }
-
-      // Decide whether we can shrink to only the minute ones digit.
-      // We do this only when:
-      //  - we have a valid previous timestamp,
-      //  - time moves forward by a reasonable amount,
-      //  - and only the minute ones digit changes (e.g. 00->01, 01->02, ... 08->09).
-      // 判断是否可以缩小到只刷新分钟个位数字
-      // 仅在以下条件都满足时才缩小：
-      //  - 有有效的上次时间戳
-      //  - 时间正常向前推进(不是大跳跃)
-      //  - 仅分钟个位数字变化(如00->01, 01->02, ..., 08->09)
-      if (s_last_time_refresh_ts != 0 && timestamp > s_last_time_refresh_ts &&
-          (timestamp - s_last_time_refresh_ts) <= 600) {  // ignore large jumps | 忽略大跳跃(>10分钟)
-          // 计算上次和当前的小时和分钟 | Calculate previous and current hours and minutes
-          uint32_t prev_minutes = (s_last_time_refresh_ts / 60) % (24 * 60);
-          uint32_t curr_minutes = (timestamp / 60) % (24 * 60);
-
-          uint8_t prev_hour = prev_minutes / 60;
-          uint8_t prev_min = prev_minutes % 60;
-          uint8_t curr_hour = curr_minutes / 60;
-          uint8_t curr_min = curr_minutes % 60;
-
-          // 分解为十位和个位 | Break down into tens and ones
-          uint8_t prev_ht = prev_hour / 10;  // 小时十位 | Hour tens
-          uint8_t prev_hu = prev_hour % 10;  // 小时个位 | Hour ones
-          uint8_t prev_mt = prev_min / 10;   // 分钟十位 | Minute tens
-          uint8_t prev_mu = prev_min % 10;   // 分钟个位 | Minute ones
-
-          uint8_t curr_ht = curr_hour / 10;
-          uint8_t curr_hu = curr_hour % 10;
-          uint8_t curr_mt = curr_min / 10;
-          uint8_t curr_mu = curr_min % 10;
-
-          // 仅分钟个位变化 | Only minute ones digit changed
-          bool only_minute_ones_changed =
-              (prev_ht == curr_ht) && (prev_hu == curr_hu) &&
-              (prev_mt == curr_mt) && (prev_mu != curr_mu);
-
-          if (only_minute_ones_changed) {
-              // Compute local X for the minute block and then its ones digit.
-              // DrawTime layout:
-              //   - "HH" at time_x
-              //   - colon after HH + 2*cS
-              //   - "MM" starts at time_x + digit_block_width + 6*cS
-              // 计算分钟块的本地X坐标，然后是个位数字的位置
-              // DrawTime布局：
-              //   - "HH"位于time_x
-              //   - HH后的冒号占2*cS
-              //   - "MM"从time_x + digit_block_width + 6*cS开始
-              uint16_t minute_block_start = window_x_local + digit_block_width + 6 * cS;
-              uint16_t digit_single_width = 11 * cS + 2;  // 单个数字的宽度 | Width of single digit
-              // Minute ones digit occupies the right part of the MM block.
-              // 分钟个位数字占据MM块的右侧部分
-              uint16_t minute_ones_left = minute_block_start + (digit_block_width - digit_single_width);
-
-              // 缩小刷新窗口为仅分钟个位数字 | Shrink refresh window to minute ones digit only
-              window_x_local = minute_ones_left;
-              window_w = digit_single_width;
-          }
-      }
-
-      // Persist the chosen window for DrawGUI_ClockOnly (GFX_setWindow)
-      // 保存选定的窗口供DrawGUI_ClockOnly使用(GFX_setWindow)
-      // UC8179 requires byte-aligned partial windows. Keep the logical time
-      // content unchanged while expanding the hardware window as needed.
-      uint16_t aligned_window_x = window_x_local & (uint16_t)~7U;
-      uint16_t window_end = (uint16_t)((window_x_local + window_w + 7U) & (uint16_t)~7U);
-      if (window_end > base_w) window_end = base_w;
-      window_x_local = aligned_window_x;
-      window_w = window_end - aligned_window_x;
-
-      s_last_time_refresh_ts = timestamp;
-      s_time_window_x = window_x_local;
-    s_time_window_y = (uint16_t)window_y_local;
-    s_time_window_w = window_w;
-    s_time_window_h = (uint16_t)window_h;
-
-      // Return global refresh region for EPD_service
-      // 返回全局刷新区域坐标供EPD服务使用
-    *x = base_x + window_x_local;
-    *y = base_y + (uint16_t)window_y_local;
-    *w = window_w;
-    *h = (uint16_t)window_h;
-  }
-
-// Get the base origin (top-left) of the time refresh area on the full screen
-// 获取时间刷新区域在全屏上的基准原点(左上角)
-/**
- * @brief 返回时间刷新区域的基准起点坐标
- *        Return the base origin coordinates of time refresh area
- *
- * @param x 输出X坐标 | Output X coordinate
- * @param y 输出Y坐标 | Output Y coordinate
- */
-void GetTimeRefreshOrigin(uint16_t* x, uint16_t* y) {
-    if (x) *x = TIME_REFRESH_X;
-    if (y) *y = TIME_REFRESH_Y;
+    GFX_end(&gfx);
 }
 
-uint16_t GetTimeRefreshBufferStride(void) {
-    return (uint16_t)(TIME_REFRESH_WIDTH / 8U);
+void GetTimeRefreshAreaFromLocal(const gui_data_t *data,
+                                 uint16_t lx, uint16_t ly, uint16_t lw, uint16_t lh,
+                                 uint16_t *x, uint16_t *y, uint16_t *w, uint16_t *h) {
+    clock_refresh_geom_t geom = gui_clock_geom(data);
+
+    s_time_window_x = lx;
+    s_time_window_y = ly;
+    s_time_window_w = lw;
+    s_time_window_h = lh;
+
+    if (x) *x = (uint16_t)(geom.origin_x + lx);
+    if (y) *y = (uint16_t)(geom.origin_y + ly);
+    if (w) *w = lw;
+    if (h) *h = lh;
+}
+
+/* Screen-space HH:MM window; also records the local GFX_setWindow for DrawGUI_ClockOnly. */
+void GetTimeRefreshArea(const gui_data_t *data, uint32_t prev_ts,
+                        uint16_t* x, uint16_t* y, uint16_t* w, uint16_t* h) {
+    clock_refresh_geom_t geom = gui_clock_geom(data);
+    uint32_t timestamp = (data != NULL) ? data->timestamp : 0U;
+    clock_refresh_window_t win =
+        clock_refresh_local_window(&geom, prev_ts, timestamp);
+
+    GetTimeRefreshAreaFromLocal(data, win.x, win.y, win.w, win.h, x, y, w, h);
 }

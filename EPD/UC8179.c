@@ -230,7 +230,10 @@ void UC8179_Refresh(epd_model_t* epd) {
 
     EPD_WriteCmd(UC81xx_DRF);
     delay(100);
-    UC8179_WaitBusy(30000);
+    if (!UC8179_WaitBusy(30000) && EPD_BusyAbortRequested()) {
+        UC8179_PowerOff();
+        return;
+    }
     UC8179_PowerOff();
     NRF_LOG_DEBUG("[EPD]: refresh end\n");
 }
@@ -371,6 +374,7 @@ static void UC8179_Write_Image_Rows(const uint8_t* src, uint16_t wb,
  */
 void UC8179_Write_Image(epd_model_t* epd, uint8_t* black, uint8_t* color, uint16_t x, uint16_t y, uint16_t w,
                         uint16_t h) {
+    if (EPD_BusyAbortRequested()) return;
     if (epd == NULL || w == 0U || h == 0U || (x & 7U) != 0U) return;
 
     uint16_t wb = (w + 7) / 8;  // width bytes, bitmaps are padded // 宽度字节数,位图已填充

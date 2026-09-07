@@ -1,0 +1,117 @@
+#ifndef EPD_CMD_POLICY_H
+#define EPD_CMD_POLICY_H
+
+#include <stdbool.h>
+#include <stdint.h>
+
+/* Command IDs match enum EPD_CMDS in EPD_service.h. Kept numeric here so
+ * host tests do not pull the BLE stack. */
+
+static inline bool epd_cmd_is_urgent(uint8_t cmd)
+{
+    return cmd == 0x01U || /* INIT: must finish before WRITE_BLOCK */
+           cmd == 0x31U || /* WRITE_BLOCK */
+           cmd == 0x32U || /* QUERY_STATUS */
+           cmd == 0x33U || /* RESET_TRANSFER */
+           cmd == 0x91U || /* SYS_RESET */
+           cmd == 0x92U || /* SYS_SLEEP */
+           cmd == 0x99U;   /* CFG_ERASE */
+}
+
+/* Config-only. Must not occupy the 2-slot display queue: first mode click
+ * sends WEEK_START + SILENT + SET_MODE, and SET_MODE would otherwise drop. */
+static inline bool epd_cmd_is_immediate(uint8_t cmd)
+{
+    return cmd == 0x21U; /* SET_WEEK_START */
+}
+
+static inline unsigned epd_cmd_mode_switch_queued_count(bool week_changed)
+{
+    (void)week_changed;
+    return 2U; /* SYNC_TIME_SILENT + SET_MODE */
+}
+
+static inline bool epd_cmd_needs_display(uint8_t cmd)
+{
+    return cmd == 0x02U || /* CLEAR */
+           cmd == 0x03U || /* SEND_COMMAND */
+           cmd == 0x04U || /* SEND_DATA */
+           cmd == 0x05U || /* REFRESH */
+           cmd == 0x30U || /* WRITE_IMAGE */
+           cmd == 0x31U;   /* WRITE_BLOCK */
+}
+
+typedef enum {
+    EPD_BLOCK_WRITE = 0,
+    EPD_BLOCK_DUP,
+    EPD_BLOCK_REJECT
+} epd_block_accept_t;
+
+#define EPD_BLOCK_STATUS_OK 0x00U
+#define EPD_BLOCK_STATUS_CRC 0x01U
+#define EPD_BLOCK_STATUS_INVALID 0x02U
+#define EPD_BLOCK_STATUS_RESTART 0x03U
+#define EPD_BLOCK_MAX_COUNT 512U
+
+static inline bool epd_block_total_valid(uint16_t total_blocks)
+{
+    return total_blocks > 0U && total_blocks <= EPD_BLOCK_MAX_COUNT;
+}
+
+/* payload=0 is invalid; 800x480/8=48000 needs payload >= 94 to stay in 512 blocks. */
+static inline bool epd_block_plane_fits(uint32_t plane_bytes, uint16_t payload)
+{
+    uint32_t blocks;
+
+    if (payload == 0U) {
+        return false;
+    }
+    blocks = (plane_bytes + (uint32_t)payload - 1U) / (uint32_t)payload;
+    return blocks > 0U && blocks <= EPD_BLOCK_MAX_COUNT;
+}
+
+/* WRITE_BLOCK is a sequential RAM stream. Gaps must restart from 0. */
+static inline epd_block_accept_t epd_block_accept(uint16_t block_id,
+                                                  uint16_t received_blocks,
+                                                  bool transfer_active)
+{
+    if (!transfer_active || block_id == 0U) {
+        return (block_id == 0U) ? EPD_BLOCK_WRITE : EPD_BLOCK_REJECT;
+    }
+    if (block_id == received_blocks) {
+        return EPD_BLOCK_WRITE;
+    }
+    if (block_id < received_blocks) {
+        return EPD_BLOCK_DUP;
+    }
+    return EPD_BLOCK_REJECT;
+}
+
+typedef struct {
+    bool apply_time;
+    bool apply_mode;
+    uint8_t mode;
+} epd_set_time_action_t;
+
+static inline bool epd_display_mode_valid(uint8_t mode)
+{
+    return mode <= 3U; /* MODE_CLOCK */
+}
+
+static inline epd_set_time_action_t epd_set_time_action(bool rate_limited,
+                                                        bool has_mode,
+                                                        uint8_t mode)
+{
+    epd_set_time_action_t a = {false, false, 0};
+
+    if (!rate_limited) {
+        a.apply_time = true;
+    }
+    if (has_mode && epd_display_mode_valid(mode)) {
+        a.apply_mode = true;
+        a.mode = mode;
+    }
+    return a;
+}
+
+#endif

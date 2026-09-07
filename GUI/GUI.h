@@ -10,8 +10,8 @@ typedef enum {
     MODE_CALENDAR = 1,      // 日历模式(全屏日历) | Calendar mode (full screen calendar)
     MODE_CLOCK_CALENDAR = 2,  // Split screen: clock (left) + calendar (right), clock uses partial refresh
                               // 分屏模式：时钟(左侧) + 日历(右侧)，时钟使用局部刷新以节省电量
-    MODE_CLOCK = 3,           // Full screen clock only
-                              // 时钟模式(全屏时钟) | Clock mode (full screen clock)
+    MODE_CLOCK = 3,           // Full screen clock; same partial-refresh flow as split, larger digits
+                              // 全屏时钟：局刷流程与分屏相同，数字更大
 } display_mode_t;
 
 // GUI数据结构体，包含所有界面显示所需的参数
@@ -37,27 +37,18 @@ typedef struct {
 // @param callback_data: 回调函数的用户数据 | User data for callback function
 void DrawGUI(gui_data_t* data, buffer_callback callback, void* callback_data);
 
-// Draw only the time portion for partial refresh in MODE_CLOCK_CALENDAR
-// This draws to a small area containing only the 7-segment time display
-// 仅绘制时间部分用于MODE_CLOCK_CALENDAR模式的局部刷新
-// 该函数只绘制包含7段数码管样式时间显示的小区域，大幅减少刷新面积，延长屏幕寿命
+// Draw only the HH:MM digits for clock-mode partial refresh.
+// Canvas size follows clock_refresh_geom(): split TIME_REFRESH_* or full-screen digit box.
 void DrawGUI_ClockOnly(gui_data_t* data, buffer_callback callback, void* callback_data);
 
-// Get the time refresh area parameters for EPD_service
-// timestamp is the current UNIX time used to decide whether we can
-// shrink the window to only the minute-ones digit (e.g. 00->01, 01->02, ...).
-// 获取时间刷新区域参数供EPD服务使用
-// timestamp: 当前UNIX时间戳，用于判断是否可以将刷新窗口缩小为仅刷新分钟个位数字
-// 智能优化：当仅分钟个位变化时(如00->01, 01->02, ..., 08->09)，只刷新最右侧的一个数字，
-// 最大程度减少局部刷新面积，降低功耗和屏幕磨损
-void GetTimeRefreshArea(uint32_t timestamp, uint16_t* x, uint16_t* y, uint16_t* w, uint16_t* h);
+// Screen-space HH:MM (or minute-ones) window. data->mode/width/height select the canvas.
+// prev_ts must be the last successful clock refresh (full or partial), not a GUI-local copy.
+void GetTimeRefreshArea(const gui_data_t *data, uint32_t prev_ts,
+                        uint16_t* x, uint16_t* y, uint16_t* w, uint16_t* h);
 
-// Get the base origin (top-left) of the time refresh area on the full screen
-// 获取时间刷新区域在整个屏幕上的基准起点(左上角坐标)
-void GetTimeRefreshOrigin(uint16_t* x, uint16_t* y);
-
-// Width in bytes of the DrawGUI_ClockOnly canvas (TIME_REFRESH_WIDTH / 8).
-// After GFX_setWindow the page buffer stride is the window width, not this value.
-uint16_t GetTimeRefreshBufferStride(void);
+/* Apply a canvas-local clock window and return its screen rectangle. */
+void GetTimeRefreshAreaFromLocal(const gui_data_t *data,
+                                 uint16_t lx, uint16_t ly, uint16_t lw, uint16_t lh,
+                                 uint16_t *x, uint16_t *y, uint16_t *w, uint16_t *h);
 
 #endif

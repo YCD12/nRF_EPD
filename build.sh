@@ -1,6 +1,7 @@
 #!/bin/bash
-# 用法: ./build.sh [clean|build|ota|flash|flash_full|flash_softdevice|erase|rebuild|size|info]
+# 用法: ./build.sh [clean|build|test|ota|flash|flash_full|flash_softdevice|erase|rebuild|size|info]
 # 不带参数默认执行 ota（编译 + 生成 OTA 包 + 合并 full hex）
+# test：只跑主机侧策略/布局单测。build/ota/flash 会先跑同一组测试。
 
 # 确保脚本在遇到错误时立即停止
 set -e
@@ -11,9 +12,13 @@ cd "$SCRIPT_DIR"
 
 # 检查第一个参数是否是特定的 Makefile 便捷目标
 TARGET="ota"
-if [[ "$1" =~ ^(clean|build|erase|flash|flash_full|flash_softdevice|rebuild|ota|size|info)$ ]]; then
+if [[ "$1" =~ ^(clean|build|test|erase|flash|flash_full|flash_softdevice|rebuild|ota|size|info)$ ]]; then
     TARGET="$1"
     shift
+fi
+
+if [[ "$TARGET" == "test" ]]; then
+    TARGET="host_test"
 fi
 
 # 如果是编译或烧录相关的目标，先执行 clean 以防止不同编译配置（如 RTT/BLE 日志）的缓存干扰

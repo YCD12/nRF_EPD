@@ -27,6 +27,7 @@ const BleTransfer = {
     statusResolver: null,
     statusRequestId: 0,
     block0Sent: false,       // Track if block 0 has been sent for current layer
+    restartRequested: false, // MCU 0x03: sequential stream must restart from 0
 
     // Statistics for speed calculation
     transferStats: {
@@ -131,9 +132,15 @@ const BleTransfer = {
 
         if (data[0] === 0xA0) {
             // Block ACK/NACK: [0xA0, block_id_L, block_id_H, status]
+            // 0x00 OK, 0x01 CRC, 0x02 invalid, 0x03 restart from 0
             const blockId = data[1] | (data[2] << 8);
             const status = data[3];
-            this.log(3, `Block ${blockId} ACK: ${status === 0 ? 'OK' : 'FAIL'}`);
+            if (status === 0x03) {
+                this.restartRequested = true;
+                this.log(2, `Block ${blockId} requested restart from 0`);
+            } else {
+                this.log(3, `Block ${blockId} ACK: ${status === 0 ? 'OK' : 'FAIL ' + status}`);
+            }
         } else if (data[0] === 0xA1) {
             // Status response: [0xA1, total_L, total_H, received_L, received_H, session, active, bitmap...]
             this.pendingStatus = {
@@ -206,6 +213,7 @@ const BleTransfer = {
 
         this.sessionId = newSessionId !== undefined ? newSessionId : (Date.now() & 0xFF);
         this.block0Sent = false;
+        this.restartRequested = false;
 
         // Reset statistics
         this.transferStats = {
@@ -320,95 +328,75 @@ const BleTransfer = {
         }
         const chunkSize = Math.max(mtu - 8, 20); // Account for header/CRC overhead
         const totalBlocks = Math.ceil(data.length / chunkSize);
+        if (totalBlocks > 512) {
+            this.log(1, `Too many blocks: ${totalBlocks} (MTU=${mtu}, chunk=${chunkSize})`);
+            throw new Error(`MTU过小(${mtu})，需要${totalBlocks}块，超过512上限`);
+        }
 
         // Set current layer based on step
         this.currentLayer = (step === 'bw') ? 0x0F : 0x00;
 
-        // Reset transfer state (also resets statistics)
+        this.restartRequested = false;
         await this.resetTransfer(Date.now() & 0xFF);
 
         this.log(2, `Starting transfer: ${totalBlocks} blocks, ${data.length} bytes, layer=${step}`);
 
         for (let retryRound = 0; retryRound < this.MAX_RETRIES; retryRound++) {
-            let missingBlocks;
-
-            // Optimization: Skip status query on first round (bitmap is empty after reset)
-            if (retryRound === 0) {
-                // First round: send all blocks
-                missingBlocks = Array.from({ length: totalBlocks }, (_, i) => i);
-            } else {
-                // Retry rounds: query status to find missing blocks
-                let status;
-                try {
-                    status = await this.queryStatus();
-                } catch (e) {
-                    this.log(1, 'Status query failed:', e);
-                    if (!this.isConnected()) {
-                        throw new Error('BLE disconnected during transfer');
-                    }
-                    status = { total: 0, received: 0, bitmap: new Uint8Array(0) };
-                }
-
-                missingBlocks = this.getMissingBlocks(status, totalBlocks);
-
-                if (missingBlocks.length === 0) {
-                    // Transfer complete
-                    const speed = this.getTransferSpeed();
-                    this.log(2, `Transfer complete: ${totalBlocks} blocks, ${speed.elapsed}s, ${this.getSpeedString()}`);
-                    return true;
-                }
+            if (retryRound > 0) {
+                this.log(2, 'Restarting sequential stream from block 0');
+                this.restartRequested = false;
+                await this.resetTransfer(this.sessionId);
             }
 
-            this.log(2, `Round ${retryRound + 1}: ${missingBlocks.length} blocks to send`);
+            this.log(2, `Round ${retryRound + 1}: sending ${totalBlocks} blocks from 0`);
 
-            // Send missing blocks in batches
-            for (let i = 0; i < missingBlocks.length; i++) {
-                // Check connection periodically
-                if (i % 10 === 0 && !this.isConnected()) {
+            for (let blockId = 0; blockId < totalBlocks; blockId++) {
+                if (this.restartRequested) {
+                    this.log(2, `MCU requested restart at block ${blockId}`);
+                    break;
+                }
+                if (blockId % 10 === 0 && !this.isConnected()) {
                     this.log(1, 'BLE disconnected during transfer');
                     throw new Error('BLE disconnected during transfer');
                 }
 
-                const blockId = missingBlocks[i];
                 const offset = blockId * chunkSize;
                 const payload = data.slice(offset, Math.min(offset + chunkSize, data.length));
-
-                // Skip empty payloads (can occur at exact data boundaries)
                 if (payload.length === 0) {
                     continue;
                 }
 
-                // Use response for last block in batch or overall
-                const isLastInBatch = ((i + 1) % this.BATCH_SIZE === 0);
-                const isLastBlock = (i === missingBlocks.length - 1);
+                const isLastInBatch = ((blockId + 1) % this.BATCH_SIZE === 0);
+                const isLastBlock = (blockId === totalBlocks - 1);
                 const useResponse = isLastInBatch || isLastBlock;
 
                 await this.sendBlockFast(blockId, totalBlocks, payload, useResponse);
 
                 if (onProgress) {
                     const speedInfo = this.getTransferSpeed();
-                    onProgress(i + 1, missingBlocks.length, speedInfo);
+                    onProgress(blockId + 1, totalBlocks, speedInfo);
                 }
             }
 
-            // Wait for MCU to process, then check status
             await new Promise(r => setTimeout(r, this.BATCH_DELAY_MS));
 
-            // Check if all blocks received after first round
-            if (retryRound === 0) {
-                let status;
-                try {
-                    status = await this.queryStatus();
-                    const stillMissing = this.getMissingBlocks(status, totalBlocks);
-                    if (stillMissing.length === 0) {
-                        const speed = this.getTransferSpeed();
-                        this.log(2, `Transfer complete: ${totalBlocks} blocks, ${speed.elapsed}s, ${this.getSpeedString()}`);
-                        return true;
-                    } else {
-                        this.log(2, `${stillMissing.length} blocks missing, will retry`);
-                    }
-                } catch (e) {
-                    this.log(1, 'Post-transfer status query failed:', e);
+            if (this.restartRequested) {
+                continue;
+            }
+
+            try {
+                const status = await this.queryStatus();
+                const stillMissing = this.getMissingBlocks(status, totalBlocks);
+                if (stillMissing.length === 0) {
+                    const speed = this.getTransferSpeed();
+                    this.log(2, `Transfer complete: ${totalBlocks} blocks, ${speed.elapsed}s, ${this.getSpeedString()}`);
+                    return true;
+                }
+                this.log(2, `${stillMissing.length} blocks missing, will restart from 0`);
+            } catch (e) {
+                this.log(1, 'Post-transfer status query failed:', e);
+                if (!this.isConnected()) {
+                    throw new Error('BLE disconnected during transfer');
                 }
             }
         }
@@ -435,6 +423,7 @@ const BleTransfer = {
         this.statusResolver = null;
         this.statusRequestId = 0;
         this.block0Sent = false;
+        this.restartRequested = false;
         this.transferStats = {
             startTime: 0,
             bytesSent: 0,

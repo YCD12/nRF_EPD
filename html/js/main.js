@@ -34,6 +34,7 @@ const EpdCmd = {
 
   SET_TIME: 0x20,
   SET_WEEK_START: 0x21,
+  SET_MODE: 0x22,
   SYNC_TIME_SILENT: 0x23,
 
   WRITE_IMG: 0x30, // v1.6
@@ -169,10 +170,8 @@ async function write(cmd, data, withResponse = true) {
 
 async function writeImage(data, step = 'bw') {
   const chunkSize = document.getElementById('mtusize').value - 2;
-  const interleavedCount = document.getElementById('interleavedcount').value;
   const count = Math.round(data.length / chunkSize);
   let chunkIdx = 0;
-  let noReplyCount = interleavedCount;
 
   for (let i = 0; i < data.length; i += chunkSize) {
     let currentTime = (new Date().getTime() - startTime) / 1000.0;
@@ -181,13 +180,7 @@ async function writeImage(data, step = 'bw') {
       (step == 'bw' ? 0x0F : 0x00) | (i == 0 ? 0x00 : 0xF0),
       ...data.slice(i, i + chunkSize),
     ];
-    if (noReplyCount > 0) {
-      await write(EpdCmd.WRITE_IMG, payload, false);
-      noReplyCount--;
-    } else {
-      await write(EpdCmd.WRITE_IMG, payload, true);
-      noReplyCount = interleavedCount;
-    }
+    await write(EpdCmd.WRITE_IMG, payload, true);
     chunkIdx++;
   }
 }
@@ -208,7 +201,9 @@ async function writeImageCRC(data, step = 'bw') {
   } catch (e) {
     console.error('CRC transfer failed:', e);
     addLog(`CRC传输失败: ${e.message}，回退到普通传输`);
-    // Fallback to legacy transfer
+    if (/512|MTU/i.test(e.message || '')) {
+      throw e;
+    }
     await writeImage(data, step);
     return true;
   }
@@ -224,7 +219,7 @@ async function setDriver() {
 // 辅助函数：获取星期第一天设置
 function getWeekStart() {
   const weekStartValue = document.getElementById('weekStart').value;
-  return weekStartValue !== null && weekStartValue !== '' ? parseInt(weekStartValue) : 1;
+  return weekStartValue !== null && weekStartValue !== '' ? parseInt(weekStartValue) : 0;
 }
 
 // 辅助函数：构建时间数据包
@@ -247,6 +242,15 @@ async function sendTimeCommand(mode, modeName) {
   const weekDays = ['周日', '周一', '周二', '周三', '周四', '周五', '周六'];
   let weekStartChanged = false;
 
+  if (appVersion < 0x21) {
+    if (await write(EpdCmd.SET_TIME, buildTimeData(mode))) {
+      addLog(`${modeName}已启用！`);
+      addLog("屏幕刷新完成前请不要操作。");
+      return true;
+    }
+    return false;
+  }
+
   // 仅在星期第一天变更时才发送，避免不必要的二次刷新。
   if (lastWeekStartSent !== weekStart) {
     const weekStartOk = await write(EpdCmd.SET_WEEK_START, new Uint8Array([weekStart]));
@@ -260,14 +264,38 @@ async function sendTimeCommand(mode, modeName) {
     addLog(`星期第一天未变化(${weekDays[weekStart]})，跳过设置命令`);
   }
 
-  // 发送时间数据
-  if (await write(EpdCmd.SET_TIME, buildTimeData(mode))) {
+  const timeOk = await write(EpdCmd.SYNC_TIME_SILENT, buildTimeData());
+  if (!timeOk) {
+    addLog("静默校时失败，仍尝试切换模式");
+  }
+  if (await write(EpdCmd.SET_MODE, new Uint8Array([mode]))) {
     addLog(`${modeName}已启用！`);
     addLog(weekStartChanged ? `星期第一天已设置为：${weekDays[weekStart]}` : `星期第一天保持为：${weekDays[weekStart]}`);
     addLog("屏幕刷新完成前请不要操作。");
     return true;
   }
   return false;
+}
+
+const EPD_MIN_DATA_LEN_FOR_FULL_PLANE = 110;
+
+function currentMtuValue() {
+  const mtu = parseInt(document.getElementById('mtusize').value, 10);
+  return Number.isFinite(mtu) ? mtu : 0;
+}
+
+async function waitForNegotiatedMtu(timeoutMs = 2000) {
+  if (currentMtuValue() >= EPD_MIN_DATA_LEN_FOR_FULL_PLANE) {
+    return true;
+  }
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    await new Promise(r => setTimeout(r, 100));
+    if (currentMtuValue() >= EPD_MIN_DATA_LEN_FOR_FULL_PLANE) {
+      return true;
+    }
+  }
+  return currentMtuValue() >= EPD_MIN_DATA_LEN_FOR_FULL_PLANE;
 }
 
 async function syncTimeOnConnect() {
@@ -281,22 +309,28 @@ async function syncTimeOnConnect() {
   return ok;
 }
 
+function displayModeName(mode) {
+  if (mode === 1) return '日历模式';
+  if (mode === 3) return '全屏时钟';
+  return '时钟+日历';
+}
+
 async function syncTime(mode) {
-  const modeName = mode === 1 ? '日历模式' : '时钟模式';
+  const modeName = displayModeName(mode);
   let confirmMsg = `确认切换到${modeName}？`;
-  if (mode === 2) {
-    confirmMsg += '\n\n⚠️ 警告：时钟模式会加速屏幕老化导致损坏！\n• 请勿长时间使用\n• 费电';
+  if (mode === 2 || mode === 3) {
+    confirmMsg += '\n\n⚠️ 警告：分钟刷新会加速屏幕老化导致损坏！\n• 请勿长时间使用\n• 费电';
   }
   if (!confirm(confirmMsg)) return;
 
   await sendTimeCommand(mode, modeName);
 }
 
-// 老款时钟模式 (仅适用于UC8179 7.5寸)
+// 全屏时钟 (MODE_CLOCK=3，仅适用于 UC8179 7.5 寸)
 async function syncTimeLegacy() {
-  if (!confirm('确认切换到老款时钟模式？\n\n⚠️ 警告：时钟模式会加速屏幕老化导致损坏！\n• 请勿长时间使用\n• 此模式仅适用于UC8179 7.5寸屏幕\n• 费电')) return;
+  if (!confirm('确认切换到全屏时钟？\n\n⚠️ 警告：分钟刷新会加速屏幕老化导致损坏！\n• 请勿长时间使用\n• 此模式仅适用于UC8179 7.5寸屏幕\n• 费电')) return;
 
-  await sendTimeCommand(3, '老款时钟模式');
+  await sendTimeCommand(3, '全屏时钟');
 }
 
 async function clearScreen() {
@@ -429,6 +463,17 @@ async function sendimg() {
 
   updateButtonStatus(true);
 
+  if (!await waitForNegotiatedMtu()) {
+    addLog("尚未收到MTU，发送一次INIT用于协商（不作为常规传图步骤）");
+    await write(EpdCmd.INIT, epdDriverSelect.value);
+    if (!await waitForNegotiatedMtu()) {
+      addLog("MTU仍为默认20，取消发送以免超过512块上限导致花屏");
+      updateButtonStatus();
+      hideStatusBar();
+      return;
+    }
+  }
+
   // Use CRC transfer for firmware version >= 0x20
   const useCRC = (appVersion >= 0x20) && (typeof BleTransfer !== 'undefined');
   const transferFn = useCRC ? writeImageCRC : writeImage;
@@ -437,6 +482,7 @@ async function sendimg() {
     addLog("使用CRC校验传输模式");
   }
 
+  try {
   if (ditherMode === 'fourColor') {
     await transferFn(processedData, 'color');
   } else if (ditherMode === 'threeColor') {
@@ -458,6 +504,12 @@ async function sendimg() {
     }
   } else {
     addLog("当前固件不支持此颜色模式。");
+    updateButtonStatus();
+    hideStatusBar();
+    return;
+  }
+  } catch (e) {
+    addLog(`传图失败: ${e.message || e}`);
     updateButtonStatus();
     hideStatusBar();
     return;
@@ -561,7 +613,7 @@ function disconnect() {
   }
   document.getElementById("connectbutton").innerHTML = '连接';
 
-  // 隐藏老款时钟按钮
+  // 隐藏全屏时钟按钮
   const legacyBtn = document.getElementById('legacyclockbutton');
   if (legacyBtn) legacyBtn.style.display = 'none';
 }
@@ -874,6 +926,14 @@ function handleNotify(value, idx) {
     epdpins.value = bytes2hex(data.slice(0, 7));
     if (data.length > 10) epdpins.value += bytes2hex(data.slice(10, 11));
     epddriver.value = bytes2hex(data.slice(7, 8));
+    if (data.length > 12) {
+      const weekStartEl = document.getElementById('weekStart');
+      const weekStart = data[12];
+      if (weekStart < 7) {
+        if (weekStartEl) weekStartEl.value = String(weekStart);
+        lastWeekStartSent = weekStart;
+      }
+    }
     updateDitcherOptions();
 
     // 解析并显示设备型号和尺寸
@@ -902,12 +962,12 @@ function handleNotify(value, idx) {
       addLog(`📐 屏幕尺寸: ${sizeInfo}`);
       addLog(`🎨 颜色模式: ${colorModeText}`);
 
-      // 检测是否为UC8179 7.5寸屏幕 (驱动码06或07)，显示老款时钟按钮
+      // 检测是否为UC8179 7.5寸屏幕 (驱动码06或07)，显示全屏时钟按钮
       const legacyClockBtn = document.getElementById('legacyclockbutton');
       if (legacyClockBtn) {
         if (driverCode === '06' || driverCode === '07') {
           legacyClockBtn.style.display = 'inline-block';
-          addLog('🕐 检测到UC8179，已启用老款时钟模式按钮');
+          addLog('🕐 检测到UC8179，已启用全屏时钟按钮');
         } else {
           legacyClockBtn.style.display = 'none';
         }
@@ -1096,9 +1156,11 @@ async function connect() {
       if (e.message) addLog("startNotifications: " + e.message);
     }
 
-    const initOk = await write(EpdCmd.INIT);
-    if (initOk) {
-      await syncTimeOnConnect();
+    await syncTimeOnConnect();
+    if (await waitForNegotiatedMtu()) {
+      addLog(`传图MTU已就绪: ${currentMtuValue()}`);
+    } else {
+      addLog('尚未收到设备MTU，发图前会再等待一次');
     }
 
     // Initialize CRC transfer module if available

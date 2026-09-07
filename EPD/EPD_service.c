@@ -20,9 +20,9 @@
  * 1. 命令队列机制 (Command Queue Mechanism)
  * ============================================================================
  *    - 使用环形缓冲区(circular buffer)管理命令队列
- *    - 支持最多8个命令同时排队 (EPD_CMD_QUEUE_SIZE)
+ *    - 支持最多2个普通命令同时排队 (EPD_CMD_QUEUE_SIZE)
  *    - 通过app_scheduler异步顺序执行命令
- *    - 紧急命令(复位、睡眠、擦除配置)绕过队列立即执行
+ *    - 紧急命令(INIT、WRITE_BLOCK、复位、睡眠、擦除配置)绕过队列立即执行
  *
  *    工作流程:
  *    (1) BLE写入特性 -> on_write() -> epd_service_on_write()
@@ -33,26 +33,9 @@
  *    (6) 队列为空时标记is_processing=false
  *
  * ============================================================================
- * 2. 刷新策略 (全刷/局刷智能切换)
+ * 2. 刷新策略 (epd_refresh_policy + epd_clock_refresh)
  * ============================================================================
- *    局刷使用条件:
- *    - 显示模式为MODE_CLOCK或MODE_CLOCK_CALENDAR
- *    - 驱动芯片为UC8179(支持局刷)
- *    - 驱动提供init_partial、diff_push和refresh_partial
- *
- *    全刷触发条件:
- *    - 首次刷新 (p_epd->last_full_clear == 0)
- *    - 强制全刷标志 (force_full_refresh)
- *    - 达到全刷间隔(默认每小时)且非夜间静默时段
- *
- *    局刷优势:
- *    - 刷新速度快(约1秒 vs 全刷的10-15秒)
- *    - 功耗低
- *    - 闪烁少
- *
- *    局刷劣势:
- *    - 长期使用会积累残影
- *    - 需要定期全刷来清除残影
+ *    何时刷、全/局刷由 policy 决定；局刷窗口由 clock_layout 几何合同决定。
  *
  * ============================================================================
  * 3. 夜间静默逻辑 (Quiet Hours)
@@ -84,7 +67,6 @@
 #include <string.h>
 
 #include "app_scheduler.h"
-#include "app_timer.h"
 #include "ble_srv_common.h"
 #include "main.h"
 #include "nrf_delay.h"
@@ -94,187 +76,11 @@
 #include "sdk_macros.h"
 #include "Lunar.h"
 #include "UC8179.h"
-#include "epd_clock_window.h"
+#include "epd_clock_refresh.h"
+#include "epd_cmd_policy.h"
+#include "epd_refresh_policy.h"
 
-/* Max HH:MM window from GetTimeRefreshArea: 272 x 128. */
-#define EPD_CLOCK_OLD_STRIDE_MAX 34U
-#define EPD_CLOCK_OLD_HEIGHT_MAX 128U
-
-static uint8_t s_clock_old_window[EPD_CLOCK_OLD_STRIDE_MAX * EPD_CLOCK_OLD_HEIGHT_MAX];
-static uint32_t s_clock_last_timestamp;
-static bool s_clock_last_valid;
-static bool s_clock_cache_ready;
-static uint16_t s_clock_cache_x;
-static uint16_t s_clock_cache_y;
-static uint16_t s_clock_cache_w;
-static uint16_t s_clock_cache_h;
-
-typedef struct {
-    uint8_t *dst;
-    uint16_t window_x;
-    uint16_t window_y;
-    uint16_t dst_stride;
-    uint16_t height;
-    bool failed;
-} epd_clock_capture_ctx_t;
-
-typedef struct {
-    epd_model_t *epd;
-    uint8_t *old_bitmap;
-    uint16_t old_stride;
-    uint16_t hardware_x;
-    uint16_t hardware_y;
-    uint16_t window_x;
-    uint16_t window_y;
-    bool failed;
-} epd_clock_diff_ctx_t;
-
-static void epd_clock_state_invalidate(void) {
-    s_clock_last_valid = false;
-    s_clock_cache_ready = false;
-}
-
-static void epd_clock_store_page(uint8_t *dst, uint16_t dst_stride,
-                                 const uint8_t *src, uint16_t src_stride,
-                                 uint16_t h) {
-    for (uint16_t row = 0; row < h; row++) {
-        memcpy(dst + (uint32_t)row * dst_stride,
-               src + (uint32_t)row * src_stride,
-               dst_stride);
-    }
-}
-
-static void epd_clock_capture_cb(void *user_data, uint8_t *black, uint8_t *color,
-                                 uint16_t x, uint16_t y, uint16_t w, uint16_t h) {
-    (void)color;
-    epd_clock_capture_ctx_t *ctx = (epd_clock_capture_ctx_t *)user_data;
-    epd_clock_page_push_t page;
-
-    if (ctx == NULL) return;
-    if (black == NULL ||
-        !epd_clock_map_gfx_page(ctx->window_x, ctx->window_y,
-                                0U, 0U, x, y, w, h, &page) ||
-        page.src_stride != ctx->dst_stride ||
-        (uint32_t)(y - ctx->window_y) + h > ctx->height ||
-        (uint32_t)(y - ctx->window_y + h) * ctx->dst_stride >
-            sizeof(s_clock_old_window)) {
-        ctx->failed = true;
-        return;
-    }
-
-    epd_clock_store_page(ctx->dst + (uint32_t)(y - ctx->window_y) * ctx->dst_stride,
-                         ctx->dst_stride, black, page.src_stride, h);
-}
-
-static void epd_clock_diff_cb(void *user_data, uint8_t *black, uint8_t *color,
-                              uint16_t x, uint16_t y, uint16_t w, uint16_t h) {
-    (void)color;
-    epd_clock_diff_ctx_t *ctx = (epd_clock_diff_ctx_t *)user_data;
-    epd_clock_page_push_t page;
-
-    if (ctx == NULL) return;
-    if (ctx->epd == NULL || ctx->epd->drv == NULL ||
-        ctx->epd->drv->diff_push == NULL || black == NULL ||
-        !epd_clock_map_gfx_page(ctx->window_x, ctx->window_y,
-                                ctx->hardware_x, ctx->hardware_y,
-                                x, y, w, h, &page)) {
-        ctx->failed = true;
-        return;
-    }
-
-    uint8_t *old_bm =
-        ctx->old_bitmap + (uint32_t)(y - ctx->window_y) * ctx->old_stride;
-    if (!ctx->epd->drv->diff_push(ctx->epd, page.hw_x, page.hw_y, w, h,
-                                  old_bm, black)) {
-        ctx->failed = true;
-        return;
-    }
-
-    /* This page is now on-panel NEW and becomes next minute's OLD. */
-    epd_clock_store_page(old_bm, ctx->old_stride, black, page.src_stride, h);
-}
-
-static bool epd_clock_partial_try(epd_model_t *epd, gui_data_t *data) {
-    if (epd == NULL || epd->drv == NULL || data == NULL ||
-        !s_clock_last_valid || epd->drv->diff_push == NULL ||
-        epd->drv->refresh_partial == NULL ||
-        (data->mode != MODE_CLOCK && data->mode != MODE_CLOCK_CALENDAR)) {
-        return false;
-    }
-
-    uint16_t x = 0U;
-    uint16_t y = 0U;
-    uint16_t w = 0U;
-    uint16_t h = 0U;
-    uint16_t origin_x = 0U;
-    uint16_t origin_y = 0U;
-    GetTimeRefreshArea(data->timestamp, &x, &y, &w, &h);
-    GetTimeRefreshOrigin(&origin_x, &origin_y);
-
-    if (w == 0U || h == 0U || x < origin_x || y < origin_y ||
-        (uint32_t)x + w > epd->width || (uint32_t)y + h > epd->height) {
-        return false;
-    }
-
-    uint16_t window_x = (uint16_t)(x - origin_x);
-    uint16_t window_y = (uint16_t)(y - origin_y);
-    uint16_t width_bytes = (uint16_t)(w / 8U);
-    if ((uint32_t)window_x + w > (uint32_t)GetTimeRefreshBufferStride() * 8U ||
-        width_bytes == 0U || width_bytes > EPD_CLOCK_OLD_STRIDE_MAX ||
-        h > EPD_CLOCK_OLD_HEIGHT_MAX ||
-        (uint32_t)width_bytes * h > sizeof(s_clock_old_window)) {
-        return false;
-    }
-
-    bool reuse_old =
-        s_clock_cache_ready &&
-        s_clock_cache_x == x && s_clock_cache_y == y &&
-        s_clock_cache_w == w && s_clock_cache_h == h;
-
-    if (!reuse_old) {
-        gui_data_t old_data = *data;
-        old_data.timestamp = s_clock_last_timestamp;
-
-        epd_clock_capture_ctx_t capture = {
-            .dst = s_clock_old_window,
-            .window_x = window_x,
-            .window_y = window_y,
-            .dst_stride = width_bytes,
-            .height = h,
-            .failed = false,
-        };
-        DrawGUI_ClockOnly(&old_data, epd_clock_capture_cb, &capture);
-        if (capture.failed) return false;
-    }
-
-    epd_clock_diff_ctx_t ctx = {
-        .epd = epd,
-        .old_bitmap = s_clock_old_window,
-        .old_stride = width_bytes,
-        .hardware_x = x,
-        .hardware_y = y,
-        .window_x = window_x,
-        .window_y = window_y,
-        .failed = false,
-    };
-    /* Pages overwrite the OLD cache with NEW; keep reuse off until DRF succeeds. */
-    s_clock_cache_ready = false;
-    DrawGUI_ClockOnly(data, epd_clock_diff_cb, &ctx);
-    if (ctx.failed) return false;
-
-    if (!epd->drv->refresh_partial(epd, x, y, w, h) || UC8179_HadBusyTimeout()) {
-        return false;
-    }
-
-    s_clock_last_timestamp = data->timestamp;
-    s_clock_last_valid = true;
-    s_clock_cache_ready = true;
-    s_clock_cache_x = x;
-    s_clock_cache_y = y;
-    s_clock_cache_w = w;
-    s_clock_cache_h = h;
-    return true;
-}
+static void epd_enter_picture_mode(ble_epd_t *p_epd);
 
 
 // ============================================================================
@@ -284,25 +90,8 @@ static bool epd_clock_partial_try(epd_model_t *epd, gui_data_t *data) {
 
 #define LOW_BATTERY_POLL_INTERVAL_S 10  // Low-battery mode voltage polling interval in seconds | 低电量模式电压轮询周期(秒)
 
-// 刷新消抖保护窗口(秒)。收到时间同步后，若上一次刷新距离当前周期 Tick 不足该时间，
-// 则跳过本次周期刷新，防止校时后连续双重刷新(PRD §1.3 / US 3.2)。
-#define EPD_REFRESH_DEBOUNCE_S 45U
-
 // SET_TIME 频率限制(秒)。同一时间窗口内仅允许一次 SET_TIME 触发屏幕更新(PRD §4.3)。
 #define EPD_SET_TIME_RATE_LIMIT_S 10U
-#define EPD_PACKED_TIMEOUT_S 10U
-
-#define EPD_PACKED_ERR_BAD_HEADER  1U
-#define EPD_PACKED_ERR_BAD_ID      2U
-#define EPD_PACKED_ERR_BAD_OFFSET  3U
-#define EPD_PACKED_ERR_BAD_RLE     4U
-#define EPD_PACKED_ERR_BAD_LENGTH  5U
-#define EPD_PACKED_ERR_BAD_CRC     6U
-#define EPD_PACKED_ERR_TIMEOUT     7U
-#define EPD_PACKED_ERR_BUSY        8U
-#define EPD_PACKED_ERR_MTU         9U
-#define EPD_PACKED_ERR_LOW_BATTERY 10U
-#define EPD_PACKED_ERR_SCHEDULER   11U
 
 /**@brief 计算CRC16-CCITT校验值
  *        Calculate CRC16-CCITT checksum
@@ -326,213 +115,6 @@ static uint16_t crc16_compute(const uint8_t* data, uint16_t len) {
         }
     }
     return crc;
-}
-
-static uint32_t packed_crc32_update(uint32_t crc, const uint8_t* data, uint32_t len) {
-    while (len-- > 0) {
-        crc ^= *data++;
-        for (uint8_t bit = 0; bit < 8; bit++) {
-            crc = (crc & 1U) ? ((crc >> 1) ^ 0xEDB88320UL) : (crc >> 1);
-        }
-    }
-    return crc;
-}
-
-static void packed_write_u32(uint8_t* out, uint32_t value) {
-    out[0] = (uint8_t)value;
-    out[1] = (uint8_t)(value >> 8);
-    out[2] = (uint8_t)(value >> 16);
-    out[3] = (uint8_t)(value >> 24);
-}
-
-static void packed_invalidate(ble_epd_t* p_epd) {
-    memset(&p_epd->packed_transfer, 0, sizeof(p_epd->packed_transfer));
-}
-
-static bool packed_can_refresh(const ble_epd_t* p_epd) {
-    const epd_packed_transfer_ctx_t* ctx = &p_epd->packed_transfer;
-    if (!ctx->session || ctx->active || ctx->failed) return false;
-    if (p_epd->epd == NULL) return false;
-    if (p_epd->epd->color == EPD_COLOR_BWR) return ctx->black_complete && ctx->red_complete;
-    return ctx->black_complete;
-}
-
-static void packed_send_error(ble_epd_t* p_epd, uint32_t id, uint8_t plane, uint8_t reason, uint32_t offset) {
-    uint8_t rsp[11] = {EPD_RSP_PACKED_ERROR};
-    packed_write_u32(&rsp[1], id);
-    rsp[5] = plane;
-    rsp[6] = reason;
-    packed_write_u32(&rsp[7], offset);
-    (void)ble_epd_string_send(p_epd, rsp, sizeof(rsp));
-}
-
-static void packed_send_done(ble_epd_t* p_epd, uint32_t id, uint8_t plane) {
-    uint8_t rsp[6] = {EPD_RSP_PACKED_DONE};
-    packed_write_u32(&rsp[1], id);
-    rsp[5] = plane;
-    (void)ble_epd_string_send(p_epd, rsp, sizeof(rsp));
-}
-
-static void packed_send_status(ble_epd_t* p_epd, uint32_t requested_id) {
-    epd_packed_transfer_ctx_t* ctx = &p_epd->packed_transfer;
-    uint8_t rsp[12] = {EPD_RSP_PACKED_STATUS};
-    uint8_t state = 0;
-    if (ctx->session) state |= 0x01;
-    if (ctx->active) state |= 0x02;
-    if (ctx->failed) state |= 0x04;
-    if (ctx->black_complete) state |= 0x08;
-    if (ctx->red_complete) state |= 0x10;
-    packed_write_u32(&rsp[1], requested_id);
-    rsp[5] = state;
-    rsp[6] = ctx->active_plane;
-    packed_write_u32(&rsp[7], ctx->expected_offset);
-    rsp[11] = EPD_PACKED_RX_WINDOW;
-    (void)ble_epd_string_send(p_epd, rsp, sizeof(rsp));
-}
-
-static void packed_abort(ble_epd_t* p_epd, uint8_t reason) {
-    epd_packed_transfer_ctx_t* ctx = &p_epd->packed_transfer;
-    if (!ctx->active) return;
-    ctx->active = false;
-    ctx->failed = true;
-    ctx->failure_reason = reason;
-    ctx->spi_len = 0;
-    packed_send_error(p_epd, ctx->transaction_id, ctx->active_plane, reason, ctx->expected_offset);
-}
-
-static bool packed_decode_row(const uint8_t* record, uint8_t record_len, uint8_t* out) {
-    uint8_t in = 0;
-    uint8_t emitted = 0;
-    while (in < record_len) {
-        uint8_t token = record[in++];
-        if (token == 0x80) return false;
-        if (token <= 0x7F) {
-            uint16_t count = (uint16_t)token + 1U;
-            if (count > (uint16_t)(record_len - in) || count > (uint16_t)(EPD_PACKED_ROW_BYTES - emitted)) return false;
-            memcpy(&out[emitted], &record[in], count);
-            in += (uint8_t)count;
-            emitted += (uint8_t)count;
-        } else {
-            uint16_t count = 257U - token;
-            if (in >= record_len || count > (uint16_t)(EPD_PACKED_ROW_BYTES - emitted)) return false;
-            memset(&out[emitted], record[in++], count);
-            emitted += (uint8_t)count;
-        }
-    }
-    return emitted == EPD_PACKED_ROW_BYTES;
-}
-
-static void packed_flush_spi(ble_epd_t* p_epd) {
-    epd_packed_transfer_ctx_t* ctx = &p_epd->packed_transfer;
-    if (ctx->spi_len == 0 || p_epd->epd == NULL || p_epd->epd->drv == NULL) return;
-    uint8_t cfg = ctx->ram_started ? (uint8_t)(0xF0U | ctx->active_plane) : ctx->active_plane;
-#if NRF_LOG_ENABLED && NRF_LOG_DEFAULT_LEVEL >= 3
-    uint32_t spi_start_ticks = app_timer_cnt_get();
-#endif
-    p_epd->epd->drv->write_ram(p_epd->epd, cfg, ctx->spi_buf, (uint8_t)ctx->spi_len);
-#if NRF_LOG_ENABLED && NRF_LOG_DEFAULT_LEVEL >= 3
-    ctx->spi_ticks += app_timer_cnt_diff_compute(app_timer_cnt_get(), spi_start_ticks);
-#endif
-    ctx->ram_started = true;
-    ctx->spi_len = 0;
-}
-
-/* A solid-image request is intentionally written in short scheduler callbacks.
- * One 200-byte SPI transfer takes about 0.4 ms at the configured 4 MHz clock;
- * writing the complete 96 KB from the BLE write callback would starve BLE events. */
-static void packed_solid_fill_step(void* p_event_data, uint16_t event_size);
-
-static bool packed_schedule_solid_fill(ble_epd_t* p_epd) {
-    epd_gui_update_event_t event = {
-        .p_epd = p_epd,
-        .timestamp = p_epd->packed_transfer.transaction_id,
-    };
-    uint32_t err_code = app_sched_event_put(&event, sizeof(event), packed_solid_fill_step);
-    if (err_code == NRF_SUCCESS) return true;
-    NRF_LOG_WARNING("[EPT1] solid fill scheduler full: %u", err_code);
-    packed_abort(p_epd, EPD_PACKED_ERR_SCHEDULER);
-    return false;
-}
-
-static void packed_solid_fill_step(void* p_event_data, uint16_t event_size) {
-    if (event_size != sizeof(epd_gui_update_event_t)) return;
-    const epd_gui_update_event_t* event = (const epd_gui_update_event_t*)p_event_data;
-    ble_epd_t* p_epd = event->p_epd;
-    if (p_epd == NULL) return;
-    epd_packed_transfer_ctx_t* ctx = &p_epd->packed_transfer;
-    if (!ctx->active || !ctx->solid_fill || ctx->transaction_id != event->timestamp) return;
-    if (p_epd->epd == NULL || p_epd->epd->drv == NULL) {
-        packed_abort(p_epd, EPD_PACKED_ERR_BAD_HEADER);
-        return;
-    }
-    if (ctx->solid_bytes_remaining == 0 || ctx->solid_bytes_remaining < EPD_PACKED_SPI_BYTES) {
-        packed_abort(p_epd, EPD_PACKED_ERR_BAD_LENGTH);
-        return;
-    }
-
-    uint8_t fill_value = ctx->active_plane == EPD_PACKED_BLACK_PLANE
-        ? ctx->solid_black_value : ctx->solid_red_value;
-    memset(ctx->spi_buf, fill_value, EPD_PACKED_SPI_BYTES);
-    uint8_t cfg = ctx->ram_started ? (uint8_t)(0xF0U | ctx->active_plane) : ctx->active_plane;
-#if NRF_LOG_ENABLED && NRF_LOG_DEFAULT_LEVEL >= 3
-    uint32_t chunk_start_ticks = app_timer_cnt_get();
-#endif
-    p_epd->epd->drv->write_ram(p_epd->epd, cfg, ctx->spi_buf, EPD_PACKED_SPI_BYTES);
-#if NRF_LOG_ENABLED && NRF_LOG_DEFAULT_LEVEL >= 3
-    {
-        uint32_t chunk_ticks = app_timer_cnt_diff_compute(app_timer_cnt_get(), chunk_start_ticks);
-        ctx->spi_ticks += chunk_ticks;
-        if (chunk_ticks > ctx->max_packet_ticks) ctx->max_packet_ticks = chunk_ticks;
-        ctx->packet_count++;
-    }
-#endif
-    ctx->ram_started = true;
-    ctx->solid_bytes_remaining -= EPD_PACKED_SPI_BYTES;
-    ctx->expected_offset += EPD_PACKED_SPI_BYTES;
-    ctx->deadline = timestamp() + EPD_PACKED_TIMEOUT_S;
-    app_feed_wdt();
-
-    if (ctx->solid_bytes_remaining != 0) {
-        (void)packed_schedule_solid_fill(p_epd);
-        return;
-    }
-    if (ctx->active_plane == EPD_PACKED_BLACK_PLANE) {
-        ctx->black_complete = true;
-        ctx->black_transaction_id = ctx->transaction_id;
-        ctx->active_plane = EPD_PACKED_RED_PLANE;
-        ctx->ram_started = false;
-        ctx->solid_bytes_remaining = ctx->raw_len;
-        ctx->expected_offset = 0;
-        (void)packed_schedule_solid_fill(p_epd);
-        return;
-    }
-
-    /* The command was voltage-gated before it started.  A complete solid fill
-     * takes well below one second, so checking every 200 B chunk only adds
-     * hundreds of ADC conversions/RTT lines.  Check once more before commit;
-     * on low battery the fully staged RAM image is deliberately not refreshable. */
-    if (EPD_ReadVoltageAndCache() <= LOW_BATTERY_THRESHOLD_MV) {
-        packed_abort(p_epd, EPD_PACKED_ERR_LOW_BATTERY);
-        return;
-    }
-    ctx->red_complete = true;
-    ctx->red_transaction_id = ctx->transaction_id;
-    ctx->active = false;
-    ctx->solid_fill = false;
-    ctx->active_plane = EPD_PACKED_SOLID_IMAGE_PLANE;
-#if NRF_LOG_ENABLED && NRF_LOG_DEFAULT_LEVEL >= 3
-    {
-        uint32_t rtc_freq = APP_TIMER_CLOCK_FREQ / (APP_TIMER_CONFIG_RTC_FREQUENCY + 1U);
-        uint32_t total_ticks = app_timer_cnt_diff_compute(app_timer_cnt_get(), ctx->plane_start_ticks);
-        uint32_t total_ms = (uint32_t)(((uint64_t)total_ticks * 1000U) / rtc_freq);
-        uint32_t spi_us = (uint32_t)(((uint64_t)ctx->spi_ticks * 1000000U) / rtc_freq);
-        uint32_t max_chunk_us = (uint32_t)(((uint64_t)ctx->max_packet_ticks * 1000000U) / rtc_freq);
-        NRF_LOG_INFO("[EPT1] solid black=0x%02x red=0x%02x ble=1 spi_chunks=%u link_total=%ums",
-                     ctx->solid_black_value, ctx->solid_red_value, ctx->packet_count, total_ms);
-        NRF_LOG_INFO("[EPT1] solid spi=%uus max_chunk=%uus", spi_us, max_chunk_us);
-    }
-#endif
-    packed_send_done(p_epd, ctx->transaction_id, EPD_PACKED_SOLID_IMAGE_PLANE);
 }
 
 /**@brief 发送块响应(ACK/NACK)到APP
@@ -582,11 +164,6 @@ static void send_transfer_status(ble_epd_t* p_epd) {
     NRF_LOG_INFO("[EPD]: Transfer status sent: total=%d, received=%d, session=%d, active=%d\n",
                  p_epd->transfer_ctx.total_blocks, p_epd->transfer_ctx.received_blocks,
                  p_epd->transfer_ctx.session_id, p_epd->transfer_ctx.transfer_active);
-}
-
-static uint32_t epd_parse_u32_le(const uint8_t* data) {
-    return ((uint32_t)data[0]) | ((uint32_t)data[1] << 8) |
-           ((uint32_t)data[2] << 16) | ((uint32_t)data[3] << 24);
 }
 
 // nRF52811默认引脚配置
@@ -712,46 +289,27 @@ static bool epd_cmd_queue_pop(epd_cmd_queue_t* queue, epd_cmd_queue_item_t* item
 /**@brief 检查命令是否紧急(需要立即执行)
  *        Check if command is urgent (needs immediate execution)
  *
- * @details 紧急命令绕过队列立即执行。
- *          这些命令是系统关键命令,不应延迟:
- *          - EPD_CMD_SYS_RESET (0x91): 系统复位
- *          - EPD_CMD_SYS_SLEEP (0x92): 进入睡眠模式
- *          - EPD_CMD_CFG_ERASE (0x99): 擦除配置并复位
- *
- *          Urgent commands bypass the queue and are executed immediately.
- *          These include system-critical commands that should not be delayed.
- *
- * @param[in] cmd  命令ID / Command ID
- *
- * @return true 如果命令紧急 / if command is urgent
- * @return false 否则 / otherwise
+ * @details 紧急命令绕过队列立即执行。INIT 必须与 WRITE_BLOCK 同级，
+ *          否则 GATT 写完成不代表屏已初始化。REFRESH 保持排队，避免堵 BLE。
  */
 static bool is_urgent_command(uint8_t cmd) {
-    // These commands need immediate execution, bypass queue
-    // 这些命令需要立即执行,绕过队列
-    return (cmd == EPD_CMD_SYS_RESET ||
-            cmd == EPD_CMD_SYS_SLEEP ||
-            cmd == EPD_CMD_CFG_ERASE ||
-            // CRC传输相关命令需要立即执行以确保ACK及时响应
-            // CRC transfer commands need immediate execution for timely ACK response
-            cmd == EPD_CMD_WRITE_BLOCK ||
-            cmd == EPD_CMD_QUERY_STATUS ||
-            cmd == EPD_CMD_RESET_TRANSFER ||
-            cmd == EPD_CMD_BEGIN_PACKED_PLANE ||
-            cmd == EPD_CMD_PACKED_DATA ||
-            cmd == EPD_CMD_END_PACKED_PLANE ||
-            cmd == EPD_CMD_CANCEL_PACKED ||
-            cmd == EPD_CMD_QUERY_PACKED_STATUS ||
-            cmd == EPD_CMD_GET_CAPS ||
-            cmd == EPD_CMD_FILL_SOLID_IMAGE);
+    return epd_cmd_is_urgent(cmd);
 }
 
-static bool is_packed_command(uint8_t cmd) {
-    return cmd >= EPD_CMD_BEGIN_PACKED_PLANE && cmd <= EPD_CMD_FILL_SOLID_IMAGE;
+/* Clock refresh sleeps the panel and may drop p_epd->epd. Re-open GPIO
+ * only if the connect-time ref is already gone, then run drv->init. */
+static bool epd_ensure_display(ble_epd_t *p_epd)
+{
+    if (p_epd->epd != NULL) {
+        return true;
+    }
+    EPD_GPIO_Ensure();
+    p_epd->epd = epd_init((epd_model_id_t)p_epd->config.model_id);
+    return p_epd->epd != NULL;
 }
 
 static bool is_bulk_data_command(uint8_t cmd) {
-    return cmd == EPD_CMD_WRITE_BLOCK || cmd == EPD_CMD_PACKED_DATA;
+    return cmd == EPD_CMD_WRITE_BLOCK;
 }
 
 // 异步命令处理的前向声明
@@ -818,17 +376,21 @@ static bool epd_perform_full_refresh(ble_epd_t *p_epd, epd_model_t *epd,
         epd->drv->init == NULL || epd->drv->write_image == NULL ||
         epd->drv->refresh == NULL) {
         if (p_epd != NULL) p_epd->force_full_refresh = true;
-        epd_clock_state_invalidate();
+        epd_clock_refresh_invalidate();
         return false;
     }
 
-    epd_clock_state_invalidate();
+    epd_clock_refresh_invalidate();
     UC8179_ClearBusyTimeout();
+    if (epd_clock_refresh_must_yield((display_mode_t)p_epd->config.display_mode,
+                                     p_epd->transfer_ctx.transfer_active)) {
+        return false;
+    }
     epd->drv->init(epd);
-    if (UC8179_HadBusyTimeout()) {
+    if (UC8179_HadBusyTimeout() || EPD_BusyAbortRequested()) {
         NRF_LOG_ERROR("[EPD]: BUSY timeout during full refresh init\n");
         p_epd->force_full_refresh = true;
-        epd_clock_state_invalidate();
+        epd_clock_refresh_invalidate();
         return false;
     }
 
@@ -837,15 +399,23 @@ static bool epd_perform_full_refresh(ble_epd_t *p_epd, epd_model_t *epd,
     }
 
     app_feed_wdt();
+    if (epd_clock_refresh_must_yield((display_mode_t)p_epd->config.display_mode,
+                                     p_epd->transfer_ctx.transfer_active)) {
+        return false;
+    }
     DrawGUI(data, (buffer_callback)epd->drv->write_image, epd);
     app_feed_wdt();
+    if (epd_clock_refresh_must_yield((display_mode_t)p_epd->config.display_mode,
+                                     p_epd->transfer_ctx.transfer_active)) {
+        return false;
+    }
     epd->drv->refresh(epd);
     app_feed_wdt();
 
-    if (UC8179_HadBusyTimeout()) {
+    if (UC8179_HadBusyTimeout() || EPD_BusyAbortRequested()) {
         NRF_LOG_ERROR("[EPD]: BUSY timeout during full refresh\n");
         p_epd->force_full_refresh = true;
-        epd_clock_state_invalidate();
+        epd_clock_refresh_invalidate();
         return false;
     }
 
@@ -854,9 +424,8 @@ static bool epd_perform_full_refresh(ble_epd_t *p_epd, epd_model_t *epd,
     p_epd->force_full_refresh = false;
 
     if (data->voltage_mv > LOW_BATTERY_THRESHOLD_MV &&
-        (data->mode == MODE_CLOCK || data->mode == MODE_CLOCK_CALENDAR)) {
-        s_clock_last_timestamp = data->timestamp;
-        s_clock_last_valid = true;
+        epd_is_clock_mode(data->mode)) {
+        epd_clock_refresh_mark_valid(data->timestamp);
     }
 
     return true;
@@ -897,21 +466,25 @@ static void epd_gui_update(void* p_event_data, uint16_t event_size) {
     gui_data_t data;
     display_mode_t mode = (display_mode_t)p_epd->config.display_mode;
 
+    if (epd_clock_refresh_must_yield(mode, p_epd->transfer_ctx.transfer_active)) {
+        return;
+    }
+
     // Set refreshing flag to prevent BLE disconnect from interrupting refresh
     // 设置刷新标志,防止BLE断开中断刷新过程
     // 当BLE断开时,on_disconnect会检查此标志,如果正在刷新则跳过sleep操作
     p_epd->is_refreshing = true;
     p_epd->last_refresh_start = event->timestamp;
-    p_epd->last_refresh_start_ticks = app_timer_cnt_get();
 
     app_feed_wdt();  // Feed watchdog at the beginning. 开始时喂狗
     EPD_GPIO_Init();  // 初始化GPIO / Initialize GPIO
+    EPD_ClearBusyAbort();
     UC8179_ClearBusyTimeout();  // Reset busy-timeout flag before each refresh cycle.
     epd_model_t* epd = p_epd->epd;
     if (epd == NULL) {
         epd = epd_get_model((epd_model_id_t)p_epd->config.model_id);
         p_epd->epd = epd;
-        if (mode != MODE_CLOCK && mode != MODE_CLOCK_CALENDAR) {
+        if (!epd_is_clock_mode(mode)) {
             p_epd->force_full_refresh = true;
         }
     }
@@ -945,59 +518,68 @@ static void epd_gui_update(void* p_event_data, uint16_t event_size) {
      * UC8179 hardware OLD/NEW refresh is limited to the clock area.
      * Low-battery and all other display modes use the single full-refresh path.
      */
-    use_partial = ((mode == MODE_CLOCK || mode == MODE_CLOCK_CALENDAR) &&
-                   epd->drv->ic == EPD_DRIVER_IC_UC8179 &&
-                   epd->drv->init_partial != NULL &&
-                   epd->drv->diff_push != NULL &&
-                   epd->drv->refresh_partial != NULL &&
-                   !low_battery);
+    {
+        tm_t tm_now = {0};
+        epd_refresh_kind_in_t kind_in;
+        epd_refresh_kind_t kind;
+
+        transformTime(event->timestamp, &tm_now);
+        kind_in = (epd_refresh_kind_in_t){
+            .mode = mode,
+            .timestamp = event->timestamp,
+            .force_full_refresh = p_epd->force_full_refresh,
+            .last_full_clear = p_epd->last_full_clear,
+            .clock_state_valid = epd_clock_refresh_is_valid(),
+            .full_refresh_minutes = p_epd->config.full_refresh_minutes,
+            .hardware_partial_ok =
+                (epd->drv->ic == EPD_DRIVER_IC_UC8179 &&
+                 epd->drv->init_partial != NULL &&
+                 epd->drv->diff_push != NULL &&
+                 epd->drv->refresh_partial != NULL &&
+                 !low_battery),
+            .hour = tm_now.tm_hour,
+        };
+        kind = epd_refresh_kind(&kind_in);
+        use_partial = (kind == EPD_REFRESH_KIND_PARTIAL);
+    }
 
     if (use_partial) {
-        uint32_t refresh_interval =
-            (p_epd->config.full_refresh_minutes == 0 ||
-             p_epd->config.full_refresh_minutes == 0xFF)
-                ? 3600U
-                : (uint32_t)p_epd->config.full_refresh_minutes * 60U;
-        bool at_refresh_boundary = (event->timestamp % refresh_interval) == 0U;
-        bool skip_full_in_quiet_hours = false;
-
-        if (at_refresh_boundary) {
-            tm_t tm_now = {0};
-            transformTime(event->timestamp, &tm_now);
-            skip_full_in_quiet_hours =
-                tm_now.tm_hour >= 1 && tm_now.tm_hour <= 5;
+        NRF_LOG_INFO("[EPD]: Hardware OLD/NEW clock partial refresh\n");
+        if (epd_clock_refresh_must_yield((display_mode_t)p_epd->config.display_mode,
+                                         p_epd->transfer_ctx.transfer_active)) {
+            goto finish_refresh;
         }
+        UC8179_ClearBusyTimeout();
+        epd->drv->init_partial(epd);
+        app_feed_wdt();
 
-        bool need_full_refresh =
-            p_epd->force_full_refresh ||
-            p_epd->last_full_clear == 0U ||
-            !s_clock_last_valid ||
-            (at_refresh_boundary && !skip_full_in_quiet_hours);
-
-        if (need_full_refresh) {
-            NRF_LOG_INFO("[EPD]: Performing clock maintenance full refresh\n");
-            ble_log("[EPD]:full ts=%u %s", event->timestamp,
-                    p_epd->force_full_refresh ? "force" :
-                    (p_epd->last_full_clear == 0U ? "first" : "period"));
+        if (epd_clock_refresh_must_yield((display_mode_t)p_epd->config.display_mode,
+                                         p_epd->transfer_ctx.transfer_active) ||
+            EPD_BusyAbortRequested()) {
+            goto finish_refresh;
+        }
+        if (UC8179_HadBusyTimeout()) {
+            NRF_LOG_ERROR("[EPD]: Partial configure failed; using full refresh\n");
+        } else if (epd_clock_refresh_try(epd, &data) &&
+                   !UC8179_HadBusyTimeout()) {
+            NRF_LOG_INFO("[EPD]: Hardware OLD/NEW clock partial refresh complete\n");
+            ble_log("[EPD]:part ok");
+            goto finish_refresh;
         } else {
-            NRF_LOG_INFO("[EPD]: Hardware OLD/NEW clock partial refresh\n");
-            UC8179_ClearBusyTimeout();
-            epd->drv->init_partial(epd);
-            app_feed_wdt();
-
-            if (UC8179_HadBusyTimeout()) {
-                NRF_LOG_ERROR("[EPD]: Partial configure failed; using full refresh\n");
-            } else if (epd_clock_partial_try(epd, &data) &&
-                       !UC8179_HadBusyTimeout()) {
-                NRF_LOG_INFO("[EPD]: Hardware OLD/NEW clock partial refresh complete\n");
-                ble_log("[EPD]:part ok");
-                goto finish_refresh;
-            } else {
-                NRF_LOG_WARNING(
-                    "[EPD]: Differential refresh unavailable; using full refresh\n");
-            }
-            epd_clock_state_invalidate();
+            NRF_LOG_WARNING(
+                "[EPD]: Differential refresh unavailable; using full refresh\n");
         }
+        if (epd_clock_refresh_must_yield((display_mode_t)p_epd->config.display_mode,
+                                         p_epd->transfer_ctx.transfer_active) ||
+            EPD_BusyAbortRequested()) {
+            goto finish_refresh;
+        }
+        epd_clock_refresh_invalidate();
+    } else if (epd_is_clock_mode(mode) && !low_battery) {
+        NRF_LOG_INFO("[EPD]: Performing clock maintenance full refresh\n");
+        ble_log("[EPD]:full ts=%u %s", event->timestamp,
+                p_epd->force_full_refresh ? "force" :
+                (p_epd->last_full_clear == 0U ? "first" : "period"));
     }
 
     NRF_LOG_INFO("[EPD]: Using full refresh\n");
@@ -1013,6 +595,12 @@ static void epd_gui_update(void* p_event_data, uint16_t event_size) {
 
 finish_refresh:
     app_feed_wdt();
+
+    if (epd_clock_refresh_must_yield((display_mode_t)p_epd->config.display_mode,
+                                     p_epd->transfer_ctx.transfer_active)) {
+        p_epd->is_refreshing = false;
+        return;
+    }
 
     // ========================================================================
     // 刷新后处理
@@ -1031,7 +619,7 @@ finish_refresh:
         NRF_LOG_ERROR("[EPD]: Critical battery warning displayed (%d mV), shutting down\n", refresh_voltage_mv);
     }
 
-    bool clock_mode = mode == MODE_CLOCK || mode == MODE_CLOCK_CALENDAR;
+    bool clock_mode = epd_is_clock_mode(mode);
     bool power_down_display = clock_mode || ble_disconnected || critical_battery;
     if (power_down_display && epd->drv->sleep) {
         NRF_LOG_INFO("[EPD]: Powering down display until next refresh\n");
@@ -1042,7 +630,7 @@ finish_refresh:
          * init_partial and still submit previous/current frames as OLD/NEW. */
         if (!clock_mode || critical_battery) {
             p_epd->force_full_refresh = true;
-            epd_clock_state_invalidate();
+            epd_clock_refresh_invalidate();
         }
     }
 
@@ -1055,20 +643,6 @@ finish_refresh:
     // Clear refreshing flag after refresh is complete
     // 刷新完成后清除刷新标志
     p_epd->is_refreshing = false;
-
-#if NRF_LOG_ENABLED && NRF_LOG_DEFAULT_LEVEL >= 3
-    /* PRD §US-3.1 AC2: Fine-grained latency diagnostics.
-     * Use app_timer RTC ticks (32768 Hz, ~0.03 ms resolution) to measure
-     * the physical refresh duration in milliseconds. */
-    {
-        uint32_t end_ticks = app_timer_cnt_get();
-        uint32_t diff_ticks = app_timer_cnt_diff_compute(end_ticks, p_epd->last_refresh_start_ticks);
-        uint32_t rtc_freq = APP_TIMER_CLOCK_FREQ / (APP_TIMER_CONFIG_RTC_FREQUENCY + 1);
-        uint32_t render_ms = (uint32_t)(((uint64_t)diff_ticks * 1000U) / rtc_freq);
-        NRF_LOG_INFO("[EPD] Render duration: %u ms, ts_start=%u ts_end=%u",
-                     render_ms, p_epd->last_refresh_start, timestamp());
-    }
-#endif
 
     app_feed_wdt();  // 最后喂狗 / Final watchdog feed
 }
@@ -1106,9 +680,7 @@ static void on_connect(ble_epd_t* p_epd, ble_evt_t* p_ble_evt) {
 static void on_disconnect(ble_epd_t* p_epd, ble_evt_t* p_ble_evt) {
     UNUSED_PARAMETER(p_ble_evt);
     p_epd->conn_handle = BLE_CONN_HANDLE_INVALID;
-    packed_invalidate(p_epd);
-    bool clock_mode = p_epd->config.display_mode == MODE_CLOCK ||
-                      p_epd->config.display_mode == MODE_CLOCK_CALENDAR;
+    bool clock_mode = epd_is_clock_mode((display_mode_t)p_epd->config.display_mode);
 
     // Blink LED once on BLE disconnect, even if the display is refreshing.
     // BLE断开时闪烁LED一次, 即使屏幕正在刷新。
@@ -1136,7 +708,7 @@ static void on_disconnect(ble_epd_t* p_epd, ble_evt_t* p_ble_evt) {
         }
     }
     if (!clock_mode) {
-        epd_clock_state_invalidate();
+        epd_clock_refresh_invalidate();
     }
 
     app_feed_wdt();  // Feed watchdog after disconnect operations. 断开操作后喂狗
@@ -1163,53 +735,14 @@ static void epd_update_display_mode(ble_epd_t* p_epd, display_mode_t mode) {
         // 模式变化时,下次GUI更新时强制全刷
         // 这防止了模式切换时的残影
         p_epd->force_full_refresh = true;
-        epd_clock_state_invalidate();
+        epd_clock_refresh_invalidate();
     }
 }
 
-/**@brief 更新显示模式并可选触发GUI更新
- *        Update display mode and optionally trigger GUI update
- *
- * @details 更新显示模式,并可选择自动触发GUI更新。
- *          当切换到时钟或时钟+日历模式时,可以立即触发全刷以清除残影。
- *
- * @param[in] p_epd        EPD服务结构指针 / Pointer to EPD Service structure
- * @param[in] mode         新的显示模式 / New display mode
- * @param[in] auto_refresh 如果为true,切换到时钟模式时自动触发GUI更新 /
- *                         if true, automatically trigger GUI update when switching to clock mode
- */
-static void epd_update_display_mode_with_refresh(ble_epd_t* p_epd, display_mode_t mode, bool auto_refresh) {
-    display_mode_t old_mode = (display_mode_t)p_epd->config.display_mode;
-
-    epd_update_display_mode(p_epd, mode);
-
-    // When switching TO clock or clock_calendar mode, optionally trigger a full refresh immediately
-    // to clear any residual image data from the previous mode
-    // 当切换到时钟或时钟+日历模式时,可选择立即触发全刷以清除之前模式的残影
-    if (auto_refresh && (mode == MODE_CLOCK || mode == MODE_CLOCK_CALENDAR) && old_mode != mode) {
-        NRF_LOG_INFO("[EPD]: Switching to %s mode, triggering full refresh to clear residual data\n",
-                    mode == MODE_CLOCK ? "CLOCK" : "CLOCK_CALENDAR");
-        ble_epd_on_timer(p_epd, timestamp(), true);
-    }
-}
-
-/**@brief 从时钟模式切换到图片模式
- *        Switch from clock/clock_calendar mode to picture mode and ensure display is ready
- *
- * @details 当从时钟模式切换到图片模式时,需要重新初始化显示屏。
- *          这是因为时钟模式使用局刷,而图片模式需要全刷。
- *          局刷状态会干扰直接写入RAM的操作。
- *
- *          When switching from clock mode to picture mode, the display needs to be reinitialized.
- *          This is because clock mode uses partial refresh, while picture mode needs full refresh.
- *          The partial mode state interferes with direct write_ram operations.
- *
- * @param[in] p_epd  EPD服务结构指针 / Pointer to EPD Service structure
- */
 static void epd_switch_from_clock_mode(ble_epd_t* p_epd) {
     if (p_epd->epd == NULL) return;  // EPD not initialized yet. EPD尚未初始化
 
-    if (p_epd->config.display_mode == MODE_CLOCK || p_epd->config.display_mode == MODE_CLOCK_CALENDAR) {
+    if (epd_is_clock_mode((display_mode_t)p_epd->config.display_mode)) {
         // Reinitialize the display to ensure it's in normal full-refresh mode
         // This prevents partial mode state from interfering with direct write operations
         // 重新初始化显示屏以确保处于正常全刷模式
@@ -1219,6 +752,12 @@ static void epd_switch_from_clock_mode(ble_epd_t* p_epd) {
             nrf_delay_ms(10);  // Give display time to reinitialize. 给显示屏时间重新初始化
         }
     }
+}
+
+static void epd_enter_picture_mode(ble_epd_t *p_epd)
+{
+    epd_switch_from_clock_mode(p_epd);
+    epd_update_display_mode(p_epd, MODE_PICTURE);
 }
 
 static size_t epd_append_char(char* out, size_t out_size, size_t pos, char value) {
@@ -1335,10 +874,10 @@ static void cmd_set_pins(ble_epd_t *p_epd, uint8_t *p_data, uint16_t length) {
 }
 
 static void cmd_init(ble_epd_t *p_epd, uint8_t *p_data, uint16_t length) {
-    packed_invalidate(p_epd);
+    EPD_GPIO_Ensure();
     p_epd->epd = epd_init((epd_model_id_t)(length > 1 ? p_data[1] : p_epd->config.model_id));
     p_epd->force_full_refresh = true;
-    epd_clock_state_invalidate();
+    epd_clock_refresh_invalidate();
     if (p_epd->epd->id != p_epd->config.model_id) {
         p_epd->config.model_id = p_epd->epd->id;
         epd_config_write(&p_epd->config);
@@ -1350,33 +889,31 @@ static void cmd_init(ble_epd_t *p_epd, uint8_t *p_data, uint16_t length) {
 }
 
 static void cmd_clear(ble_epd_t *p_epd, uint8_t *p_data, uint16_t length) {
-    packed_invalidate(p_epd);
-    if (p_epd->epd == NULL) return;
-    if (p_epd->config.display_mode == MODE_CLOCK || p_epd->config.display_mode == MODE_CLOCK_CALENDAR) {
+    if (!epd_ensure_display(p_epd)) return;
+    if (epd_is_clock_mode((display_mode_t)p_epd->config.display_mode)) {
         NRF_LOG_INFO("Switch mode: clear\n");
-        epd_switch_from_clock_mode(p_epd);
     }
-    epd_update_display_mode(p_epd, MODE_PICTURE);
+    epd_enter_picture_mode(p_epd);
     p_epd->epd->drv->clear(p_epd->epd, length > 1 ? p_data[1] : true);
     app_feed_wdt();
 }
 
 static void cmd_send_command(ble_epd_t *p_epd, uint8_t *p_data, uint16_t length) {
     if (length < 2) return;
-    if (p_epd->config.display_mode == MODE_CLOCK || p_epd->config.display_mode == MODE_CLOCK_CALENDAR) {
+    if (!epd_ensure_display(p_epd)) return;
+    if (epd_is_clock_mode((display_mode_t)p_epd->config.display_mode)) {
         NRF_LOG_INFO("Switch mode: cmd\n");
-        epd_switch_from_clock_mode(p_epd);
-        epd_update_display_mode(p_epd, MODE_PICTURE);
+        epd_enter_picture_mode(p_epd);
     }
     EPD_WriteCmd(p_data[1]);
     app_feed_wdt();
 }
 
 static void cmd_send_data(ble_epd_t *p_epd, uint8_t *p_data, uint16_t length) {
-    if (p_epd->config.display_mode == MODE_CLOCK || p_epd->config.display_mode == MODE_CLOCK_CALENDAR) {
+    if (!epd_ensure_display(p_epd)) return;
+    if (epd_is_clock_mode((display_mode_t)p_epd->config.display_mode)) {
         NRF_LOG_INFO("Switch mode: data\n");
-        epd_switch_from_clock_mode(p_epd);
-        epd_update_display_mode(p_epd, MODE_PICTURE);
+        epd_enter_picture_mode(p_epd);
     }
     EPD_WriteData(&p_data[1], length - 1);
     app_feed_wdt();
@@ -1384,64 +921,58 @@ static void cmd_send_data(ble_epd_t *p_epd, uint8_t *p_data, uint16_t length) {
 
 static void cmd_refresh(ble_epd_t *p_epd, uint8_t *p_data, uint16_t length) {
     (void)p_data; (void)length;
-    if (p_epd->epd == NULL) return;
-    if (p_epd->packed_transfer.session && !packed_can_refresh(p_epd)) {
-        packed_send_error(p_epd, p_epd->packed_transfer.transaction_id,
-                          p_epd->packed_transfer.active_plane, EPD_PACKED_ERR_BUSY,
-                          p_epd->packed_transfer.expected_offset);
-        return;
-    }
-    epd_update_display_mode(p_epd, MODE_PICTURE);
-    bool packed_refresh = p_epd->packed_transfer.session;
-    uint32_t transaction_id = p_epd->packed_transfer.transaction_id;
-    uint8_t plane = p_epd->packed_transfer.active_plane;
-    if (packed_refresh) UC8179_ClearBusyTimeout();
+    if (!epd_ensure_display(p_epd)) return;
+    EPD_ClearBusyAbort();
+    epd_enter_picture_mode(p_epd);
     p_epd->epd->drv->refresh(p_epd->epd);
-    if (packed_refresh && UC8179_HadBusyTimeout()) {
-        packed_send_error(p_epd, transaction_id, plane, EPD_PACKED_ERR_TIMEOUT, 0);
-        packed_invalidate(p_epd);
-    } else if (packed_refresh) {
-        packed_invalidate(p_epd);
-    }
+    p_epd->transfer_ctx.transfer_active = false;
     app_feed_wdt();
 }
 
 static void cmd_sleep(ble_epd_t *p_epd, uint8_t *p_data, uint16_t length) {
     (void)p_data; (void)length;
-    packed_invalidate(p_epd);
     if (p_epd->epd == NULL) return;
     p_epd->epd->drv->sleep(p_epd->epd);
     p_epd->epd = NULL;
     p_epd->force_full_refresh = true;
-    epd_clock_state_invalidate();
+    epd_clock_refresh_invalidate();
     app_feed_wdt();
 }
 
 static void cmd_set_time(ble_epd_t *p_epd, uint8_t *p_data, uint16_t length) {
+    epd_set_time_action_t action;
+    bool rate_limited;
+    bool mode_changed = false;
+    uint32_t now;
+
     if (length < 5) return;
 
-    /* PRD §4.3: SET_TIME rate limit — reject if less than 10 s since last
-     * accepted SET_TIME to prevent high-frequency refresh abuse. */
-    uint32_t now = timestamp();
-    if (p_epd->last_set_time_ts != 0 &&
-        (now - p_epd->last_set_time_ts) < EPD_SET_TIME_RATE_LIMIT_S) {
+    now = timestamp();
+    rate_limited = (p_epd->last_set_time_ts != 0 &&
+                    (now - p_epd->last_set_time_ts) < EPD_SET_TIME_RATE_LIMIT_S);
+    action = epd_set_time_action(rate_limited, length > 6, (length > 6) ? p_data[6] : 0);
+
+    if (rate_limited) {
         NRF_LOG_WARNING("[EPD]: SET_TIME rate-limited (last %u s ago)",
                         now - p_epd->last_set_time_ts);
-        app_feed_wdt();
-        return;
     }
 
-    NRF_LOG_DEBUG("time: %02x %02x %02x %02x\n", p_data[1], p_data[2], p_data[3], p_data[4]);
-    if (length > 5) {
-        NRF_LOG_DEBUG("timezone: %d\n", (int8_t)p_data[5]);
+    if (action.apply_mode) {
+        display_mode_t prev_mode = (display_mode_t)p_epd->config.display_mode;
+        epd_update_display_mode(p_epd, (display_mode_t)action.mode);
+        if (prev_mode != (display_mode_t)action.mode) {
+            mode_changed = true;
+        }
     }
-    uint32_t ts = epd_parse_time_payload(p_data, length);
-    set_timestamp(ts);
-    p_epd->last_set_time_ts = now;  // Record device-local time, not the (pre-compensated) payload ts.
-    if (length > 6) {
-        epd_update_display_mode_with_refresh(p_epd, (display_mode_t)p_data[6], false);
+
+    if (action.apply_time) {
+        uint32_t ts = epd_parse_time_payload(p_data, length);
+        set_timestamp(ts);
+        p_epd->last_set_time_ts = now;
+        ble_epd_on_timer(p_epd, ts, true);
+    } else if (mode_changed) {
+        ble_epd_on_timer(p_epd, timestamp(), true);
     }
-    ble_epd_on_timer(p_epd, ts, true);
     app_feed_wdt();
 }
 
@@ -1451,6 +982,7 @@ static void cmd_sync_time_silent(ble_epd_t *p_epd, uint8_t *p_data, uint16_t len
     set_timestamp(ts);
     NRF_LOG_INFO("[EPD]: Time synced silently\n");
     epd_send_time(p_epd);
+    epd_send_mtu(p_epd);
     app_feed_wdt();
 }
 
@@ -1465,11 +997,11 @@ static void cmd_set_week_start(ble_epd_t *p_epd, uint8_t *p_data, uint16_t lengt
 
 static void cmd_set_mode(ble_epd_t *p_epd, uint8_t *p_data, uint16_t length) {
     if (length < 2) return;
-    if (p_data[1] <= MODE_CLOCK) {
+    if (epd_display_mode_valid(p_data[1])) {
         display_mode_t new_mode = (display_mode_t)p_data[1];
         NRF_LOG_INFO("[EPD]: CMD_SET_MODE: switching to mode %d\n", new_mode);
-        if (p_epd->config.display_mode == MODE_CLOCK || p_epd->config.display_mode == MODE_CLOCK_CALENDAR) {
-            if (new_mode != MODE_CLOCK && new_mode != MODE_CLOCK_CALENDAR) {
+        if (epd_is_clock_mode((display_mode_t)p_epd->config.display_mode)) {
+            if (!epd_is_clock_mode(new_mode)) {
                 epd_switch_from_clock_mode(p_epd);
             }
         }
@@ -1481,20 +1013,29 @@ static void cmd_set_mode(ble_epd_t *p_epd, uint8_t *p_data, uint16_t length) {
 
 static void cmd_write_image(ble_epd_t *p_epd, uint8_t *p_data, uint16_t length) {
     if (length < 3) return;
-    if (p_epd->epd == NULL) return;
-    if (p_epd->config.display_mode == MODE_CLOCK || p_epd->config.display_mode == MODE_CLOCK_CALENDAR) {
+    if (epd_picture_write_blocked(p_epd->is_refreshing)) return;
+    if (!epd_ensure_display(p_epd)) return;
+    if (epd_is_clock_mode((display_mode_t)p_epd->config.display_mode)) {
         NRF_LOG_INFO("Switch mode: img\n");
-        epd_switch_from_clock_mode(p_epd);
     }
-    epd_update_display_mode(p_epd, MODE_PICTURE);
+    EPD_ClearBusyAbort();
+    epd_enter_picture_mode(p_epd);
     p_epd->epd->drv->write_ram(p_epd->epd, p_data[1], &p_data[2], length - 2);
     app_feed_wdt();
 }
 
 static void cmd_write_block(ble_epd_t *p_epd, uint8_t *p_data, uint16_t length) {
+    uint16_t block_id;
+
     if (length < 8) return;
-    if (p_epd->epd == NULL) return;
-    uint16_t block_id    = p_data[1] | (p_data[2] << 8);
+    if (epd_picture_write_blocked(p_epd->is_refreshing)) {
+        block_id = p_data[1] | (p_data[2] << 8);
+        send_block_response(p_epd, block_id, EPD_BLOCK_STATUS_RESTART);
+        app_feed_wdt();
+        return;
+    }
+    if (!epd_ensure_display(p_epd)) return;
+    block_id = p_data[1] | (p_data[2] << 8);
     uint16_t total_blocks = p_data[3] | (p_data[4] << 8);
     uint8_t  cfg         = p_data[5];
     uint16_t payload_len = length - 8;
@@ -1506,398 +1047,79 @@ static void cmd_write_block(ble_epd_t *p_epd, uint8_t *p_data, uint16_t length) 
         if (block_id >= EPD_MAX_BLOCKS || block_id >= total_blocks) {
             NRF_LOG_WARNING("[EPD]: Block %d invalid (max=%d, total=%d)\n",
                             block_id, EPD_MAX_BLOCKS, total_blocks);
-            send_block_response(p_epd, block_id, 0x02);
+            send_block_response(p_epd, block_id, EPD_BLOCK_STATUS_INVALID);
+            app_feed_wdt();
             return;
         }
-        if (total_blocks == 0 || total_blocks > EPD_MAX_BLOCKS) {
+        if (!epd_block_total_valid(total_blocks)) {
             NRF_LOG_WARNING("[EPD]: Invalid total_blocks=%d\n", total_blocks);
-            send_block_response(p_epd, block_id, 0x02);
+            send_block_response(p_epd, block_id, EPD_BLOCK_STATUS_INVALID);
+            app_feed_wdt();
             return;
         }
-        if (block_id == 0 || !p_epd->transfer_ctx.transfer_active) {
-            p_epd->transfer_ctx.total_blocks    = total_blocks;
-            p_epd->transfer_ctx.received_blocks = 0;
-            memset(p_epd->transfer_ctx.block_bitmap, 0, EPD_BLOCK_BITMAP_SIZE);
-            p_epd->transfer_ctx.transfer_active = true;
-            if (p_epd->config.display_mode == MODE_CLOCK ||
-                p_epd->config.display_mode == MODE_CLOCK_CALENDAR) {
-                NRF_LOG_INFO("Switch mode: block\n");
-                epd_switch_from_clock_mode(p_epd);
+        {
+            epd_block_accept_t accept = epd_block_accept(
+                block_id, p_epd->transfer_ctx.received_blocks,
+                p_epd->transfer_ctx.transfer_active);
+
+            if (accept == EPD_BLOCK_REJECT) {
+                uint8_t session = p_epd->transfer_ctx.session_id;
+                NRF_LOG_WARNING("[EPD]: Block %d gap (have %d), restart from 0\n",
+                                block_id, p_epd->transfer_ctx.received_blocks);
+                memset(&p_epd->transfer_ctx, 0, sizeof(p_epd->transfer_ctx));
+                p_epd->transfer_ctx.session_id = session;
+                p_epd->transfer_ctx.transfer_active = true;
+                send_block_response(p_epd, block_id, EPD_BLOCK_STATUS_RESTART);
+                app_feed_wdt();
+                return;
             }
-            epd_update_display_mode(p_epd, MODE_PICTURE);
-        } else if (p_epd->transfer_ctx.total_blocks != total_blocks) {
-            NRF_LOG_WARNING("[EPD]: total_blocks changed mid-transfer: %d -> %d, resetting\n",
-                            p_epd->transfer_ctx.total_blocks, total_blocks);
-            p_epd->transfer_ctx.total_blocks    = total_blocks;
-            p_epd->transfer_ctx.received_blocks = 0;
-            memset(p_epd->transfer_ctx.block_bitmap, 0, EPD_BLOCK_BITMAP_SIZE);
-        }
-        uint16_t byte_idx = block_id / 8;
-        uint8_t  bit_idx  = block_id % 8;
-        if (byte_idx < EPD_BLOCK_BITMAP_SIZE &&
-            !(p_epd->transfer_ctx.block_bitmap[byte_idx] & (1 << bit_idx))) {
+
+            if (block_id == 0 || !p_epd->transfer_ctx.transfer_active) {
+                p_epd->transfer_ctx.total_blocks    = total_blocks;
+                p_epd->transfer_ctx.received_blocks = 0;
+                memset(p_epd->transfer_ctx.block_bitmap, 0, EPD_BLOCK_BITMAP_SIZE);
+                p_epd->transfer_ctx.transfer_active = true;
+                if (epd_is_clock_mode((display_mode_t)p_epd->config.display_mode)) {
+                    NRF_LOG_INFO("Switch mode: block\n");
+                }
+                EPD_ClearBusyAbort();
+                epd_enter_picture_mode(p_epd);
+            } else if (p_epd->transfer_ctx.total_blocks != total_blocks) {
+                NRF_LOG_WARNING("[EPD]: total_blocks changed mid-transfer: %d -> %d, resetting\n",
+                                p_epd->transfer_ctx.total_blocks, total_blocks);
+                memset(&p_epd->transfer_ctx, 0, sizeof(p_epd->transfer_ctx));
+                send_block_response(p_epd, block_id, EPD_BLOCK_STATUS_RESTART);
+                app_feed_wdt();
+                return;
+            }
+
+            if (accept == EPD_BLOCK_DUP) {
+                send_block_response(p_epd, block_id, EPD_BLOCK_STATUS_OK);
+                app_feed_wdt();
+                return;
+            }
+
             p_epd->epd->drv->write_ram(p_epd->epd, cfg, payload, payload_len);
-            p_epd->transfer_ctx.block_bitmap[byte_idx] |= (1 << bit_idx);
+            {
+                uint16_t byte_idx = block_id / 8;
+                uint8_t  bit_idx  = block_id % 8;
+                if (byte_idx < EPD_BLOCK_BITMAP_SIZE) {
+                    p_epd->transfer_ctx.block_bitmap[byte_idx] |= (1 << bit_idx);
+                }
+            }
             p_epd->transfer_ctx.received_blocks++;
             if (block_id == 0 || block_id + 1U == total_blocks) {
                 NRF_LOG_INFO("[LEGACY] block=%u/%u cfg=0x%02x CRC OK",
                              block_id, total_blocks, cfg);
             }
-        } else {
-            NRF_LOG_WARNING("[LEGACY] duplicate block=%u/%u", block_id, total_blocks);
         }
-        send_block_response(p_epd, block_id, 0x00);
+        send_block_response(p_epd, block_id, EPD_BLOCK_STATUS_OK);
     } else {
         NRF_LOG_WARNING("[EPD]: Block %d CRC mismatch! recv=0x%04X, calc=0x%04X\n",
                         block_id, recv_crc, calc_crc);
-        send_block_response(p_epd, block_id, 0x01);
+        send_block_response(p_epd, block_id, EPD_BLOCK_STATUS_CRC);
     }
     app_feed_wdt();
-}
-
-static void cmd_begin_packed_plane(ble_epd_t* p_epd, uint8_t* data, uint16_t length) {
-    epd_packed_transfer_ctx_t* ctx = &p_epd->packed_transfer;
-    if (length != 28 || p_epd->epd == NULL || p_epd->epd->drv == NULL) {
-        packed_send_error(p_epd, 0, 0, EPD_PACKED_ERR_BAD_HEADER, 0);
-        return;
-    }
-    uint8_t version = data[1];
-    uint8_t plane = data[2];
-    uint8_t flags = data[3];
-    uint32_t id = epd_parse_u32_le(&data[4]);
-    uint16_t width_bytes = (uint16_t)data[8] | ((uint16_t)data[9] << 8);
-    uint16_t height = (uint16_t)data[10] | ((uint16_t)data[11] << 8);
-    uint32_t raw_len = epd_parse_u32_le(&data[12]);
-    uint32_t packed_len = epd_parse_u32_le(&data[16]);
-    uint32_t raw_crc = epd_parse_u32_le(&data[20]);
-    uint32_t packed_crc = epd_parse_u32_le(&data[24]);
-    uint32_t expected_raw = (uint32_t)((p_epd->epd->width + 7U) / 8U) * p_epd->epd->height;
-
-    if (p_epd->max_data_len < EPD_PACKED_MIN_VALUE_LEN) {
-        packed_send_error(p_epd, id, plane, EPD_PACKED_ERR_MTU, 0);
-        return;
-    }
-    if (p_epd->is_refreshing) {
-        packed_send_error(p_epd, id, plane, EPD_PACKED_ERR_BUSY, 0);
-        return;
-    }
-    if (EPD_ReadVoltageAndCache() <= LOW_BATTERY_THRESHOLD_MV) {
-        packed_send_error(p_epd, id, plane, EPD_PACKED_ERR_LOW_BATTERY, 0);
-        return;
-    }
-    if (version != EPD_PACKED_VERSION || flags != 0 || id == 0 ||
-        width_bytes != EPD_PACKED_ROW_BYTES || width_bytes > EPD_PACKED_WIDTH_BYTES_MAX ||
-        width_bytes != (uint16_t)((p_epd->epd->width + 7U) / 8U) ||
-        height != p_epd->epd->height || raw_len != expected_raw ||
-        packed_len == 0 || packed_len > raw_len + height) {
-        packed_send_error(p_epd, id, plane, EPD_PACKED_ERR_BAD_HEADER, 0);
-        return;
-    }
-    if ((p_epd->epd->color == EPD_COLOR_BWR && plane != EPD_PACKED_BLACK_PLANE && plane != EPD_PACKED_RED_PLANE) ||
-        (p_epd->epd->color != EPD_COLOR_BWR && plane != EPD_PACKED_BLACK_PLANE)) {
-        packed_send_error(p_epd, id, plane, EPD_PACKED_ERR_BAD_HEADER, 0);
-        return;
-    }
-    if (plane == EPD_PACKED_RED_PLANE && (!ctx->session || !ctx->black_complete || ctx->active)) {
-        packed_send_error(p_epd, id, plane, EPD_PACKED_ERR_BAD_HEADER, 0);
-        return;
-    }
-    if (plane == EPD_PACKED_BLACK_PLANE) {
-        packed_invalidate(p_epd);
-        ctx = &p_epd->packed_transfer;
-        ctx->session = true;
-    }
-    memset(ctx->row_buf, 0, sizeof(ctx->row_buf));
-    ctx->active = true;
-    ctx->failed = false;
-    ctx->failure_reason = 0;
-    ctx->ram_started = false;
-    ctx->active_plane = plane;
-    ctx->width_bytes = (uint8_t)width_bytes;
-    ctx->height = height;
-    ctx->rows_received = 0;
-    ctx->spi_len = 0;
-    ctx->transaction_id = id;
-    ctx->expected_offset = 0;
-    ctx->packed_len = packed_len;
-    ctx->raw_len = raw_len;
-    ctx->raw_emitted = 0;
-    ctx->raw_crc_expected = raw_crc;
-    ctx->packed_crc_expected = packed_crc;
-    ctx->raw_crc = 0xFFFFFFFFUL;
-    ctx->packed_crc = 0xFFFFFFFFUL;
-    ctx->deadline = timestamp() + EPD_PACKED_TIMEOUT_S;
-#if NRF_LOG_ENABLED && NRF_LOG_DEFAULT_LEVEL >= 3
-    ctx->plane_start_ticks = app_timer_cnt_get();
-    ctx->decode_crc_ticks = 0;
-    ctx->spi_ticks = 0;
-    ctx->max_packet_ticks = 0;
-    ctx->packet_count = 0;
-    ctx->row_fill_records = 0;
-    ctx->row_fill_rows = 0;
-#endif
-    if (p_epd->config.display_mode == MODE_CLOCK || p_epd->config.display_mode == MODE_CLOCK_CALENDAR) {
-        epd_switch_from_clock_mode(p_epd);
-    }
-    epd_update_display_mode(p_epd, MODE_PICTURE);
-    uint8_t rsp[7] = {EPD_RSP_PACKED_BEGIN};
-    packed_write_u32(&rsp[1], id);
-    rsp[5] = plane;
-    rsp[6] = EPD_PACKED_RX_WINDOW;
-    (void)ble_epd_string_send(p_epd, rsp, sizeof(rsp));
-}
-
-static void cmd_packed_data(ble_epd_t* p_epd, uint8_t* data, uint16_t length) {
-    epd_packed_transfer_ctx_t* ctx = &p_epd->packed_transfer;
-    if (length < 11) return;
-    uint32_t id = epd_parse_u32_le(&data[1]);
-    uint32_t offset = epd_parse_u32_le(&data[5]);
-    const uint8_t* bytes = &data[9];
-    uint16_t bytes_len = length - 9;
-    if (!ctx->active || id != ctx->transaction_id) {
-        packed_send_error(p_epd, id, 0, EPD_PACKED_ERR_BAD_ID, 0);
-        return;
-    }
-    if (offset != ctx->expected_offset || bytes_len > ctx->packed_len - ctx->expected_offset) {
-        packed_abort(p_epd, EPD_PACKED_ERR_BAD_OFFSET);
-        return;
-    }
-#if NRF_LOG_ENABLED && NRF_LOG_DEFAULT_LEVEL >= 3
-    uint32_t packet_start_ticks = app_timer_cnt_get();
-    uint32_t spi_ticks_before = ctx->spi_ticks;
-#endif
-    uint16_t pos = 0;
-    uint8_t rows = 0;
-    while (pos < bytes_len) {
-        if (rows >= EPD_PACKED_ROWS_PER_PACKET || ctx->rows_received >= ctx->height) {
-            packed_abort(p_epd, EPD_PACKED_ERR_BAD_LENGTH);
-            return;
-        }
-        uint16_t record_start = pos;
-        uint8_t mode = bytes[pos++];
-        /* Row-fill record: [0x00, repeat_rows, byte_value].  It keeps the
-         * ordinary EPT1 stream sequential, so no partial-window/random-RAM
-         * writes or frame buffer are needed.  Mode 0 was invalid in v1. */
-        if (mode == 0) {
-            if (bytes_len - pos < 2) {
-                packed_abort(p_epd, EPD_PACKED_ERR_BAD_LENGTH);
-                return;
-            }
-            uint8_t repeat_rows = bytes[pos++];
-            uint8_t fill_value = bytes[pos++];
-            if (repeat_rows == 0 || repeat_rows > EPD_PACKED_ROWS_PER_PACKET - rows ||
-                repeat_rows > ctx->height - ctx->rows_received) {
-                packed_abort(p_epd, EPD_PACKED_ERR_BAD_LENGTH);
-                return;
-            }
-            ctx->packed_crc = packed_crc32_update(ctx->packed_crc, &bytes[record_start], 3);
-#if NRF_LOG_ENABLED && NRF_LOG_DEFAULT_LEVEL >= 3
-            ctx->row_fill_records++;
-            ctx->row_fill_rows += repeat_rows;
-#endif
-            memset(ctx->row_buf, fill_value, EPD_PACKED_ROW_BYTES);
-            for (uint8_t repeat = 0; repeat < repeat_rows; repeat++) {
-                ctx->raw_crc = packed_crc32_update(ctx->raw_crc, ctx->row_buf, EPD_PACKED_ROW_BYTES);
-                memcpy(&ctx->spi_buf[ctx->spi_len], ctx->row_buf, EPD_PACKED_ROW_BYTES);
-                ctx->spi_len += EPD_PACKED_ROW_BYTES;
-                if (ctx->spi_len == EPD_PACKED_SPI_BYTES) packed_flush_spi(p_epd);
-                ctx->rows_received++;
-                ctx->raw_emitted += EPD_PACKED_ROW_BYTES;
-                rows++;
-            }
-            continue;
-        }
-        uint8_t record_len;
-        bool raw = (mode & 0x80U) == 0;
-        if (raw) {
-            if (mode != EPD_PACKED_ROW_BYTES || bytes_len - pos < EPD_PACKED_ROW_BYTES) {
-                packed_abort(p_epd, EPD_PACKED_ERR_BAD_LENGTH);
-                return;
-            }
-            memcpy(ctx->row_buf, &bytes[pos], EPD_PACKED_ROW_BYTES);
-            record_len = EPD_PACKED_ROW_BYTES;
-        } else {
-            record_len = mode & 0x7FU;
-            if (record_len == 0 || bytes_len - pos < record_len ||
-                !packed_decode_row(&bytes[pos], record_len, ctx->row_buf)) {
-                packed_abort(p_epd, EPD_PACKED_ERR_BAD_RLE);
-                return;
-            }
-        }
-        ctx->packed_crc = packed_crc32_update(ctx->packed_crc, &bytes[record_start], (uint32_t)record_len + 1U);
-        pos += record_len;
-        ctx->raw_crc = packed_crc32_update(ctx->raw_crc, ctx->row_buf, EPD_PACKED_ROW_BYTES);
-        memcpy(&ctx->spi_buf[ctx->spi_len], ctx->row_buf, EPD_PACKED_ROW_BYTES);
-        ctx->spi_len += EPD_PACKED_ROW_BYTES;
-        if (ctx->spi_len == EPD_PACKED_SPI_BYTES) packed_flush_spi(p_epd);
-        ctx->rows_received++;
-        ctx->raw_emitted += EPD_PACKED_ROW_BYTES;
-        rows++;
-    }
-    if (rows == 0 || pos != bytes_len) {
-        packed_abort(p_epd, EPD_PACKED_ERR_BAD_LENGTH);
-        return;
-    }
-    ctx->expected_offset += bytes_len;
-    ctx->deadline = timestamp() + EPD_PACKED_TIMEOUT_S;
-#if NRF_LOG_ENABLED && NRF_LOG_DEFAULT_LEVEL >= 3
-    {
-        uint32_t packet_ticks = app_timer_cnt_diff_compute(app_timer_cnt_get(), packet_start_ticks);
-        uint32_t packet_spi_ticks = ctx->spi_ticks - spi_ticks_before;
-        ctx->decode_crc_ticks += packet_ticks >= packet_spi_ticks ? packet_ticks - packet_spi_ticks : 0;
-        if (packet_ticks > ctx->max_packet_ticks) ctx->max_packet_ticks = packet_ticks;
-        ctx->packet_count++;
-    }
-#endif
-}
-
-static void cmd_end_packed_plane(ble_epd_t* p_epd, uint8_t* data, uint16_t length) {
-    if (length != 5) return;
-    epd_packed_transfer_ctx_t* ctx = &p_epd->packed_transfer;
-    uint32_t id = epd_parse_u32_le(&data[1]);
-    if (!ctx->active) {
-        if ((ctx->black_complete && id == ctx->black_transaction_id) ||
-            (ctx->red_complete && id == ctx->red_transaction_id)) {
-            packed_send_done(p_epd, id, id == ctx->black_transaction_id ? EPD_PACKED_BLACK_PLANE : EPD_PACKED_RED_PLANE);
-        } else if (ctx->failed && id == ctx->transaction_id) {
-            packed_send_error(p_epd, id, ctx->active_plane, ctx->failure_reason, ctx->expected_offset);
-        } else {
-            packed_send_error(p_epd, id, 0, EPD_PACKED_ERR_BAD_ID, 0);
-        }
-        return;
-    }
-    if (id != ctx->transaction_id) {
-        packed_send_error(p_epd, id, 0, EPD_PACKED_ERR_BAD_ID, 0);
-        return;
-    }
-    if (EPD_ReadVoltageAndCache() <= LOW_BATTERY_THRESHOLD_MV) {
-        packed_abort(p_epd, EPD_PACKED_ERR_LOW_BATTERY);
-        return;
-    }
-    if (ctx->expected_offset != ctx->packed_len || ctx->rows_received != ctx->height ||
-        ctx->raw_emitted != ctx->raw_len || ~ctx->raw_crc != ctx->raw_crc_expected ||
-        ~ctx->packed_crc != ctx->packed_crc_expected) {
-        packed_abort(p_epd, EPD_PACKED_ERR_BAD_CRC);
-        return;
-    }
-    packed_flush_spi(p_epd);
-    ctx->active = false;
-    ctx->failed = false;
-    if (ctx->active_plane == EPD_PACKED_BLACK_PLANE) {
-        ctx->black_complete = true;
-        ctx->black_transaction_id = id;
-    } else {
-        ctx->red_complete = true;
-        ctx->red_transaction_id = id;
-    }
-#if NRF_LOG_ENABLED && NRF_LOG_DEFAULT_LEVEL >= 3
-    {
-        uint32_t rtc_freq = APP_TIMER_CLOCK_FREQ / (APP_TIMER_CONFIG_RTC_FREQUENCY + 1U);
-        uint32_t plane_ticks = app_timer_cnt_diff_compute(app_timer_cnt_get(), ctx->plane_start_ticks);
-        uint32_t plane_ms = (uint32_t)(((uint64_t)plane_ticks * 1000U) / rtc_freq);
-        uint32_t decode_crc_us = (uint32_t)(((uint64_t)ctx->decode_crc_ticks * 1000000U) / rtc_freq);
-        uint32_t spi_us = (uint32_t)(((uint64_t)ctx->spi_ticks * 1000000U) / rtc_freq);
-        uint32_t max_packet_us = (uint32_t)(((uint64_t)ctx->max_packet_ticks * 1000000U) / rtc_freq);
-        NRF_LOG_INFO("[EPT1] plane=0x%02x packed=%u packets=%u row_fill_records=%u rows=%u link_total=%ums",
-                     ctx->active_plane, ctx->packed_len, ctx->packet_count,
-                     ctx->row_fill_records, ctx->row_fill_rows, plane_ms);
-        NRF_LOG_INFO("[EPT1] cpu decode_crc=%uus spi=%uus max_packet=%uus",
-                     decode_crc_us, spi_us, max_packet_us);
-    }
-#endif
-    packed_send_done(p_epd, id, ctx->active_plane);
-}
-
-static void cmd_cancel_packed(ble_epd_t* p_epd, uint8_t* data, uint16_t length) {
-    if (length != 5) return;
-    uint32_t id = epd_parse_u32_le(&data[1]);
-    if (p_epd->packed_transfer.active && id != p_epd->packed_transfer.transaction_id) {
-        packed_send_error(p_epd, id, 0, EPD_PACKED_ERR_BAD_ID, 0);
-        return;
-    }
-    packed_invalidate(p_epd);
-}
-
-static void cmd_query_packed_status(ble_epd_t* p_epd, uint8_t* data, uint16_t length) {
-    packed_send_status(p_epd, length == 5 ? epd_parse_u32_le(&data[1]) : 0);
-}
-
-/* [0x3A, version, flags, transaction_id_le[4], black_fill, red_fill]
- * The fill values describe complete 800x480 planes.  The command itself is
- * only nine bytes on the BLE link; the panel RAM is still populated in full. */
-static void cmd_fill_solid_image(ble_epd_t* p_epd, uint8_t* data, uint16_t length) {
-    uint32_t id = length >= 7 ? epd_parse_u32_le(&data[3]) : 0;
-    if (length != 9 || p_epd->epd == NULL || p_epd->epd->drv == NULL) {
-        packed_send_error(p_epd, id, EPD_PACKED_SOLID_IMAGE_PLANE, EPD_PACKED_ERR_BAD_HEADER, 0);
-        return;
-    }
-    epd_packed_transfer_ctx_t* ctx = &p_epd->packed_transfer;
-    uint32_t raw_len = (uint32_t)((p_epd->epd->width + 7U) / 8U) * p_epd->epd->height;
-    if (data[1] != EPD_PACKED_VERSION || data[2] != 0 || id == 0 ||
-        p_epd->epd->color != EPD_COLOR_BWR || raw_len == 0 ||
-        raw_len % EPD_PACKED_SPI_BYTES != 0) {
-        packed_send_error(p_epd, id, EPD_PACKED_SOLID_IMAGE_PLANE, EPD_PACKED_ERR_BAD_HEADER, 0);
-        return;
-    }
-    if (p_epd->is_refreshing || ctx->active) {
-        packed_send_error(p_epd, id, EPD_PACKED_SOLID_IMAGE_PLANE, EPD_PACKED_ERR_BUSY, 0);
-        return;
-    }
-    if (EPD_ReadVoltageAndCache() <= LOW_BATTERY_THRESHOLD_MV) {
-        packed_send_error(p_epd, id, EPD_PACKED_SOLID_IMAGE_PLANE, EPD_PACKED_ERR_LOW_BATTERY, 0);
-        return;
-    }
-
-    packed_invalidate(p_epd);
-    ctx = &p_epd->packed_transfer;
-    ctx->session = true;
-    ctx->active = true;
-    ctx->solid_fill = true;
-    ctx->active_plane = EPD_PACKED_BLACK_PLANE;
-    ctx->width_bytes = (uint8_t)((p_epd->epd->width + 7U) / 8U);
-    ctx->height = p_epd->epd->height;
-    ctx->transaction_id = id;
-    ctx->raw_len = raw_len;
-    ctx->solid_black_value = data[7];
-    ctx->solid_red_value = data[8];
-    ctx->solid_bytes_remaining = raw_len;
-    ctx->deadline = timestamp() + EPD_PACKED_TIMEOUT_S;
-#if NRF_LOG_ENABLED && NRF_LOG_DEFAULT_LEVEL >= 3
-    ctx->plane_start_ticks = app_timer_cnt_get();
-    ctx->decode_crc_ticks = 0;
-    ctx->spi_ticks = 0;
-    ctx->max_packet_ticks = 0;
-    ctx->packet_count = 0;
-#endif
-    if (p_epd->config.display_mode == MODE_CLOCK || p_epd->config.display_mode == MODE_CLOCK_CALENDAR) {
-        epd_switch_from_clock_mode(p_epd);
-    }
-    epd_update_display_mode(p_epd, MODE_PICTURE);
-    (void)packed_schedule_solid_fill(p_epd);
-}
-
-static void cmd_get_caps(ble_epd_t* p_epd) {
-    uint8_t rsp[10] = {EPD_RSP_CAPS, EPD_PACKED_VERSION};
-    rsp[2] = (uint8_t)EPD_PACKED_MIN_VALUE_LEN;
-    rsp[3] = (uint8_t)(EPD_PACKED_MIN_VALUE_LEN >> 8);
-    rsp[4] = EPD_PACKED_ROWS_PER_PACKET;
-    rsp[5] = EPD_PACKED_WIDTH_BYTES_MAX;
-    rsp[6] = p_epd->epd ? (uint8_t)p_epd->epd->color : 0;
-    rsp[7] = EPD_PACKED_RX_WINDOW;
-    rsp[8] = p_epd->packed_transfer.session ? 1 : 0;
-    rsp[9] = EPD_PACKED_CAP_SOLID_FILL | EPD_PACKED_CAP_ROW_FILL |
-             EPD_PACKED_CAP_IDLE_FENCE;
-    (void)ble_epd_string_send(p_epd, rsp, sizeof(rsp));
-}
-
-/* This command intentionally remains a normal queued command. If a physical
- * refresh is in progress, it cannot execute until that blocking callback has
- * returned; its notification is therefore a fence for subsequent EPT1 and
- * legacy writes from the browser. */
-static void cmd_wait_for_idle(ble_epd_t* p_epd) {
-    uint8_t busy = (p_epd->is_refreshing || p_epd->packed_transfer.session) ? 1U : 0U;
-    uint8_t rsp[2] = {EPD_RSP_DISPLAY_IDLE, busy};
-    (void)ble_epd_string_send(p_epd, rsp, sizeof(rsp));
 }
 
 static void cmd_query_status(ble_epd_t *p_epd, uint8_t *p_data, uint16_t length) {
@@ -1910,7 +1132,12 @@ static void cmd_reset_transfer(ble_epd_t *p_epd, uint8_t *p_data, uint16_t lengt
     if (length > 1) {
         p_epd->transfer_ctx.session_id = p_data[1];
     }
-    p_epd->transfer_ctx.transfer_active = false;
+    /* Hold clock ticks without flipping display_mode. First WRITE_BLOCK
+     * still sees clock mode and runs the full-refresh Init that leaves
+     * the partial window. */
+    p_epd->transfer_ctx.transfer_active = true;
+    EPD_RequestBusyAbort();
+    epd_clock_refresh_invalidate();
     NRF_LOG_INFO("[EPD]: Transfer state reset, session_id=%d\n", p_epd->transfer_ctx.session_id);
 }
 
@@ -1968,16 +1195,6 @@ static void cmd_cfg_erase(ble_epd_t *p_epd, uint8_t *p_data, uint16_t length) {
 static void epd_execute_command(ble_epd_t* p_epd, uint8_t* p_data, uint16_t length) {
     if (p_data == NULL || length == 0) return;
 
-    /* A normal command might have entered the scheduler before EPT1 began.
-     * Check again here so such a queued command cannot disturb panel RAM. */
-    if (p_epd->packed_transfer.session && !is_packed_command(p_data[0]) &&
-        p_data[0] != EPD_CMD_REFRESH && p_data[0] != EPD_CMD_WAIT_FOR_IDLE) {
-        packed_send_error(p_epd, p_epd->packed_transfer.transaction_id,
-                          p_epd->packed_transfer.active_plane, EPD_PACKED_ERR_BUSY,
-                          p_epd->packed_transfer.expected_offset);
-        return;
-    }
-
     if (!is_bulk_data_command(p_data[0])) {
         NRF_LOG_DEBUG("[EPD]: Executing command 0x%02x, LEN=%d\n", p_data[0], length);
     }
@@ -2005,14 +1222,6 @@ static void epd_execute_command(ble_epd_t* p_epd, uint8_t* p_data, uint16_t leng
         case EPD_CMD_WRITE_BLOCK:     cmd_write_block(p_epd, p_data, length);     break;
         case EPD_CMD_QUERY_STATUS:    cmd_query_status(p_epd, p_data, length);    break;
         case EPD_CMD_RESET_TRANSFER:  cmd_reset_transfer(p_epd, p_data, length);  break;
-        case EPD_CMD_BEGIN_PACKED_PLANE: cmd_begin_packed_plane(p_epd, p_data, length); break;
-        case EPD_CMD_PACKED_DATA:     cmd_packed_data(p_epd, p_data, length); break;
-        case EPD_CMD_END_PACKED_PLANE: cmd_end_packed_plane(p_epd, p_data, length); break;
-        case EPD_CMD_CANCEL_PACKED:   cmd_cancel_packed(p_epd, p_data, length); break;
-        case EPD_CMD_QUERY_PACKED_STATUS: cmd_query_packed_status(p_epd, p_data, length); break;
-        case EPD_CMD_GET_CAPS:        cmd_get_caps(p_epd); break;
-        case EPD_CMD_FILL_SOLID_IMAGE: cmd_fill_solid_image(p_epd, p_data, length); break;
-        case EPD_CMD_WAIT_FOR_IDLE:   cmd_wait_for_idle(p_epd); break;
         case EPD_CMD_SET_CONFIG:      cmd_set_config(p_epd, p_data, length);      break;
         case EPD_CMD_SYS_SLEEP:       cmd_sys_sleep(p_epd, p_data, length);       break;
         case EPD_CMD_SYS_RESET:       cmd_sys_reset(p_epd, p_data, length);       break;
@@ -2112,28 +1321,15 @@ static void epd_service_on_write(ble_epd_t* p_epd, uint8_t* p_data, uint16_t len
         NRF_LOG_DEBUG("[EPD]: on_write received command 0x%02x, LEN=%d\n", p_data[0], length);
     }
 
-    if (p_epd->packed_transfer.session &&
-        (p_data[0] == EPD_CMD_SYS_SLEEP || p_data[0] == EPD_CMD_SYS_RESET ||
-         p_data[0] == EPD_CMD_CFG_ERASE)) {
-        packed_invalidate(p_epd);
-    } else if (p_epd->packed_transfer.session &&
-               !is_packed_command(p_data[0]) && p_data[0] != EPD_CMD_REFRESH &&
-               p_data[0] != EPD_CMD_WAIT_FOR_IDLE) {
-        packed_send_error(p_epd, p_epd->packed_transfer.transaction_id,
-                          p_epd->packed_transfer.active_plane, EPD_PACKED_ERR_BUSY,
-                          p_epd->packed_transfer.expected_offset);
-        return;
-    }
-    if (p_data[0] != EPD_CMD_WRITE_BLOCK &&
-        p_data[0] != EPD_CMD_PACKED_DATA) {
+    if (p_data[0] != EPD_CMD_WRITE_BLOCK) {
         ble_log("[CMD]:%02x/%d", p_data[0], length);
     }
 
     // Urgent commands bypass queue and execute immediately
     // 紧急命令绕过队列立即执行
-    if (is_urgent_command(p_data[0])) {
+    if (is_urgent_command(p_data[0]) || epd_cmd_is_immediate(p_data[0])) {
         if (!is_bulk_data_command(p_data[0])) {
-            NRF_LOG_INFO("[EPD]: Urgent command 0x%02x, executing immediately (bypassing queue)\n", p_data[0]);
+            NRF_LOG_INFO("[EPD]: Immediate command 0x%02x, bypassing queue\n", p_data[0]);
         }
         epd_execute_command(p_epd, p_data, length);
         return;
@@ -2186,6 +1382,10 @@ static void on_write(ble_epd_t* p_epd, ble_evt_t* p_ble_evt) {
             NRF_LOG_DEBUG("send epd config\n");
             uint32_t err_code = ble_epd_string_send(p_epd, (uint8_t*)&p_epd->config, length);
             if (err_code != NRF_ERROR_INVALID_STATE) APP_ERROR_CHECK(err_code);
+            /* Report MTU/voltage without INIT so the web client can size
+             * WRITE_BLOCK. Default HTML MTU=20 would exceed EPD_MAX_BLOCKS. */
+            epd_send_mtu(p_epd);
+            epd_send_voltage(p_epd);
         } else {
             p_epd->is_notification_enabled = false;
         }
@@ -2360,7 +1560,7 @@ uint32_t ble_epd_init(ble_epd_t* p_epd) {
     // Initialize the service structure.
     // 初始化服务结构
     p_epd->max_data_len = BLE_EPD_MAX_DATA_LEN;
-    memset(&p_epd->packed_transfer, 0, sizeof(p_epd->packed_transfer));
+    memset(&p_epd->transfer_ctx, 0, sizeof(p_epd->transfer_ctx));
     p_epd->conn_handle = BLE_CONN_HANDLE_INVALID;
     p_epd->is_notification_enabled = false;
     p_epd->force_full_refresh = false;  // Initialize force refresh flag. 初始化强制刷新标志
@@ -2368,7 +1568,6 @@ uint32_t ble_epd_init(ble_epd_t* p_epd) {
     p_epd->is_refreshing = false;       // Initialize refreshing flag. 初始化刷新中标志
     p_epd->low_battery_screen_active = false;  // Low-battery page inactive by default. 默认未进入低电量页
     p_epd->last_refresh_start = 0;            // No refresh yet. 尚未刷新
-    p_epd->last_refresh_start_ticks = 0;     // No refresh ticks yet. 尚未刷新
     p_epd->last_set_time_ts = 0;             // No SET_TIME yet. 尚未校时
 
     // Initialize command queue
@@ -2464,14 +1663,6 @@ uint32_t ble_epd_string_send(ble_epd_t* p_epd, uint8_t* p_string, uint16_t lengt
  * @param[in] force_update  如果为true强制更新 / If true, force update regardless of mode
  */
 void ble_epd_on_timer(ble_epd_t* p_epd, uint32_t timestamp, bool force_update) {
-    if (p_epd->packed_transfer.session) {//当前正在进行图片/压缩图像数据传输
-        if (p_epd->packed_transfer.active && // 如果传输已激活，并且当前时间超过截止时间
-            (int32_t)(timestamp - p_epd->packed_transfer.deadline) >= 0) {
-            packed_abort(p_epd, EPD_PACKED_ERR_TIMEOUT);// 传输超时终止传输并上报超时错误
-        }
-        return;
-    }
-
     // 低电量警告页激活后，停止周期性屏幕刷新。
     // 仍然按 LOW_BATTERY_POLL_INTERVAL_S 周期采样电压：过低时直接关机，恢复时退出低电量模式，但不立即强制刷新。
     if (p_epd->low_battery_screen_active && !force_update) {
@@ -2515,16 +1706,16 @@ void ble_epd_on_timer(ble_epd_t* p_epd, uint32_t timestamp, bool force_update) {
     // 跨天判定链 (Cross-day detection)
     // ========================================================================
     // 设备时间戳按本地时区递增，day = timestamp / 86400。日期发生跨天时，对默认
-    // 日历/时钟模板统一强制一次全刷：
-    //   - 正确性：时钟模式平时只对时间做差分局刷，日期/农历不会随分钟刷新更新；
-    //     跨天全刷确保午夜后日期、星期、农历、节气、节日立即刷新，不必等下一次整点全刷。
-    //   - I/O：跨天后 lunar_db 单日缓存(按年月日)自动失效，新一天的记录重读一次即缓存，
-    //     配合单日缓存实现"今日记录严格 1 读/天"。
-    // 放在低电量 / 资源会话早退之后：若跨天恰逢这些暂停期，恢复后仍能在下一 tick 补触发。
+    // 日历/时钟模板统一强制一次全刷：时钟模式平时只对时间做差分局刷，日期/农历
+    // 不会随分钟刷新更新；跨天全刷确保午夜后日期、星期、农历立即刷新。
+    // 放在低电量早退之后：若跨天恰逢暂停期，恢复后仍能在下一 tick 补触发。
     static uint32_t s_last_tick_day = 0;
     static bool s_tick_day_inited = false;
     uint32_t current_day = timestamp / 86400U;
     bool day_rolled_over = false;
+    epd_refresh_schedule_in_t schedule_in;
+    epd_refresh_schedule_out_t decision;
+
     if (!s_tick_day_inited) {
         s_tick_day_inited = true;
         s_last_tick_day = current_day;
@@ -2533,43 +1724,23 @@ void ble_epd_on_timer(ble_epd_t* p_epd, uint32_t timestamp, bool force_update) {
         day_rolled_over = true;
     }
 
-    // 默认时钟模板也包含日期/农历；跨天时统一全刷，不能只更新 HH:MM。
-    bool day_change_refresh = day_rolled_over &&
-                              (p_epd->config.display_mode == MODE_CALENDAR ||
-                               p_epd->config.display_mode == MODE_CLOCK ||
-                               p_epd->config.display_mode == MODE_CLOCK_CALENDAR);
-
-    bool periodic_refresh = false;
-    if (p_epd->config.display_mode == MODE_CALENDAR) {
-        periodic_refresh = (timestamp % 86400U) == 0U;
-    } else if (p_epd->config.display_mode == MODE_CLOCK ||
-               p_epd->config.display_mode == MODE_CLOCK_CALENDAR) {
-        periodic_refresh = (timestamp % 60U) == 0U;
+    schedule_in = (epd_refresh_schedule_in_t){
+        .mode = (display_mode_t)p_epd->config.display_mode,
+        .timestamp = timestamp,
+        .force_update = force_update,
+        .low_battery_hold = false,
+        .day_rolled = day_rolled_over,
+        .last_refresh_start = p_epd->last_refresh_start,
+        .transfer_active = p_epd->transfer_ctx.transfer_active,
+    };
+    decision = epd_refresh_schedule(&schedule_in);
+    if (!decision.should_refresh) {
+        return;
     }
-
-    if (force_update || day_change_refresh || periodic_refresh) {
-
-        /* PRD §US-3.2: Refresh debounce guard window.
-         * If the last physical refresh started less than EPD_REFRESH_DEBOUNCE_S
-         * seconds ago, skip this periodic tick to prevent double-refresh
-         * after time sync that crosses a minute boundary.
-         * force_update (manual mode switch / initial draw) and day_change_refresh
-         * are exempt. */
-        if (!force_update && !day_change_refresh && p_epd->last_refresh_start != 0) {
-            uint32_t elapsed = timestamp - p_epd->last_refresh_start;
-            if (elapsed < EPD_REFRESH_DEBOUNCE_S) {
-                NRF_LOG_INFO("[EPD]: Refresh debounce: skipping (last refresh %u s ago, guard=%u s)",
-                             elapsed, EPD_REFRESH_DEBOUNCE_S);
-                return;
-            }
-        }
-
-        // 跨天走全刷重绘日期/农历，而非仅对时间做差分局刷。
-        if (day_change_refresh) {
-            p_epd->force_full_refresh = true;
-        }
-        // 通过app_scheduler调度GUI更新
-        // Schedule GUI update via app_scheduler
+    if (decision.force_full) {
+        p_epd->force_full_refresh = true;
+    }
+    {
         epd_gui_update_event_t event = {p_epd, timestamp};
         app_sched_event_put(&event, sizeof(epd_gui_update_event_t), epd_gui_update);
     }

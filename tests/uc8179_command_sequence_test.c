@@ -116,6 +116,11 @@ bool EPD_WaitBusy(uint32_t value, uint16_t timeout)
     return busy_ready;
 }
 
+bool EPD_BusyAbortRequested(void)
+{
+    return false;
+}
+
 static void test_partial_command_contract(void)
 {
     static const uint8_t expected_power[] = {0x07, 0x17, 0x3F, 0x3F, 0x03};
