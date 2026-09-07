@@ -101,7 +101,8 @@ SRC_FILES += \
   $(PROJ_DIR)/EPD/EPD_config.c \
   $(PROJ_DIR)/EPD/EPD_driver.c \
   $(PROJ_DIR)/EPD/EPD_service.c \
-  $(PROJ_DIR)/EPD/fm25q04b.c \
+  $(PROJ_DIR)/EPD/epd_refresh_policy.c \
+  $(PROJ_DIR)/EPD/epd_clock_refresh.c \
   $(PROJ_DIR)/EPD/UC8179.c \
   $(PROJ_DIR)/GUI/GUI.c \
   $(PROJ_DIR)/GUI/Lunar.c \
@@ -305,11 +306,17 @@ $(foreach target, $(TARGETS), $(call define_target, $(target)))
 # =============================================================================
 # 便捷目标
 # =============================================================================
-.PHONY: default build clean rebuild ota flash flash_full flash_softdevice erase size memory info
+.PHONY: default build host_test test clean rebuild ota flash flash_full flash_softdevice erase size memory info
 
 default: build
 
-build: nrf52811_xxaa
+host_test:
+	@chmod +x $(PROJ_DIR)/tests/run_host_tests.sh
+	HOST_TEST_OUT=$(OUTPUT_DIRECTORY)/host_tests $(PROJ_DIR)/tests/run_host_tests.sh
+
+test: host_test
+
+build: host_test nrf52811_xxaa
 	@echo "=== Build completed ==="
 	@$(MAKE) -f Makefile.nRF52_linux --no-print-directory size
 	@$(MAKE) -f Makefile.nRF52_linux --no-print-directory memory

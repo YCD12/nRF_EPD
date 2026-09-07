@@ -145,6 +145,12 @@ void EPD_GPIO_Init(void) {
     }
 }
 
+void EPD_GPIO_Ensure(void) {
+    if (m_driver_refs == 0) {
+        EPD_GPIO_Init();
+    }
+}
+
 /**
  * 反初始化EPD的GPIO和SPI
  * Uninitialize EPD GPIO and SPI
@@ -368,10 +374,30 @@ void EPD_Reset(uint32_t value, uint16_t duration) {
  * 刷新波形期间 UC8179 可能持续数秒。循环内 delay(1) 每 1ms 轮询一次，
  * 并每 500ms 喂狗一次。
  */
+static volatile bool m_busy_abort;
+
+void EPD_RequestBusyAbort(void)
+{
+    m_busy_abort = true;
+}
+
+void EPD_ClearBusyAbort(void)
+{
+    m_busy_abort = false;
+}
+
+bool EPD_BusyAbortRequested(void)
+{
+    return m_busy_abort;
+}
+
 bool EPD_WaitBusy(uint32_t value, uint16_t timeout) {
     const uint32_t ticks_per_ms = (APP_TIMER_CLOCK_FREQ / (APP_TIMER_CONFIG_RTC_FREQUENCY + 1)) / 1000UL;
 
     NRF_LOG_DEBUG("[EPD]: check busy\n");
+    if (m_busy_abort) {
+        return false;
+    }
     if (digitalRead(EPD_BUSY_PIN) != value) {
         NRF_LOG_DEBUG("[EPD]: busy release\n");
         return true;
@@ -382,6 +408,10 @@ bool EPD_WaitBusy(uint32_t value, uint16_t timeout) {
     uint32_t timeout_ticks  = (uint32_t)timeout * ticks_per_ms;
 
     while (digitalRead(EPD_BUSY_PIN) == value) {
+        if (m_busy_abort) {
+            NRF_LOG_INFO("[EPD]: busy wait aborted for picture transfer\n");
+            return false;
+        }
         delay(1);
 
         uint32_t now_ticks = app_timer_cnt_get();
@@ -540,35 +570,6 @@ static uint16_t m_cached_voltage = 3300;  // Default to normal voltage (3.3V = 3
 uint16_t EPD_ReadVoltageAndCache(void) {
     m_cached_voltage = EPD_ReadVoltage();
     return m_cached_voltage;
-}
-
-/**
- * 检测是否低电量
- * Check if battery is low
- *
- * @return true=低电量, false=电量正常 - true=low battery, false=normal
- *
- * 使用缓存的电压值进行判断,避免ADC操作
- * Uses cached voltage for checking, avoiding ADC operation
- *
- * 低电量阈值: 2800mV (2.8V)
- * Low battery threshold: 2800mV (2.8V)
- *
- * 重要提示:
- * Important notes:
- * - 此函数不执行ADC测量,而是使用最近一次刷新时缓存的电压值
- *   This function does not perform ADC measurement, but uses the voltage cached during the last refresh
- * - 要更新电压值,需要调用 EPD_ReadVoltageAndCache()
- *   To update voltage, call EPD_ReadVoltageAndCache()
- * - 在屏幕刷新函数中会自动更新电压缓存
- *   Voltage cache is automatically updated in screen refresh functions
- */
-bool EPD_IsLowBattery(void) {
-    // Use cached voltage to avoid ADC measurement
-    // 使用缓存电压避免ADC测量
-    // Voltage is updated during each screen refresh
-    // 电压在每次屏幕刷新时更新
-    return m_cached_voltage < LOW_BATTERY_THRESHOLD_MV;
 }
 
 /* One UC8179 model exposes both the full-refresh and true OLD/NEW paths. */

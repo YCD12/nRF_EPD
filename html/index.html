@@ -60,20 +60,20 @@
 				<div class="flex-group">
 					<label for="weekStart">星期第一天:</label>
 					<select id="weekStart">
-						<option value="1" selected>周一</option>
+						<option value="0" selected>周日</option>
+						<option value="1">周一</option>
 						<option value="2">周二</option>
 						<option value="3">周三</option>
 						<option value="4">周四</option>
 						<option value="5">周五</option>
 						<option value="6">周六</option>
-						<option value="0">周日</option>
 					</select>
 				</div>
 				<div class="flex-group">
 					<button id="calendarmodebutton" type="button" class="primary" onclick="syncTime(1)">日历模式</button>
-					<button id="clockmodebutton" type="button" class="primary" onclick="syncTime(2)">时钟模式</button>
+					<button id="clockmodebutton" type="button" class="primary" onclick="syncTime(2)">时钟+日历</button>
 					<button id="legacyclockbutton" type="button" class="primary" onclick="syncTimeLegacy()"
-						style="display:none;">老款时钟</button>
+						style="display:none;">全屏时钟</button>
 					<button id="clearscreenbutton" type="button" class="secondary" onclick="clearScreen()">清除屏幕</button>
 				</div>
 				<div class="flex-group right debug">
@@ -381,8 +381,8 @@
 	<script type="text/javascript" src="js/dithering.js?v=20260402b"></script>
 	<script type="text/javascript" src="js/paint.js?v=20260402b"></script>
 	<script type="text/javascript" src="js/crop.js?v=20260402b"></script>
-	<script type="text/javascript" src="js/ble_transfer.js?v=20260402b"></script>
-	<script type="text/javascript" src="js/main.js?v=20260402c"></script>
+	<script type="text/javascript" src="js/ble_transfer.js?v=20260907b"></script>
+	<script type="text/javascript" src="js/main.js?v=20260907c"></script>
 </body>
 
 </html>

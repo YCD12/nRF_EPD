@@ -141,6 +141,7 @@ void pinMode(uint32_t pin, uint32_t mode);  // 设置引脚模式
 // GPIO初始化相关函数
 void EPD_GPIO_Load(epd_config_t* cfg);  // 加载GPIO配置(从配置结构体)
 void EPD_GPIO_Init(void);               // 初始化GPIO引脚
+void EPD_GPIO_Ensure(void);             // 若未初始化则初始化，不增加额外引用
 void EPD_GPIO_Uninit(void);             // 反初始化GPIO引脚(恢复默认状态)
 
 // SPI
@@ -165,6 +166,9 @@ uint8_t EPD_ReadByte(void);                            // 读取单字节数据
 void EPD_FillRAM(uint8_t cmd, uint8_t value, uint32_t len);  // 填充显存(用相同的值填充指定长度)
 void EPD_Reset(uint32_t value, uint16_t duration);           // 复位EPD(通过复位引脚)
 bool EPD_WaitBusy(uint32_t value, uint16_t timeout);         // 等待EPD忙状态结束，超时返回false
+void EPD_RequestBusyAbort(void);                             // 传图打断时钟刷新等待
+void EPD_ClearBusyAbort(void);
+bool EPD_BusyAbortRequested(void);
 
 // LED Control (active low: LOW = ON, HIGH = OFF)
 // LED控制(低电平有效: LOW=点亮, HIGH=熄灭)
@@ -189,9 +193,6 @@ void EPD_LED_BLINK(void); // Blink LED once (BLE connect/disconnect only) - LED�
  * - EPD_ReadVoltageAndCache(): 读取电压并缓存,用于后续低电量检测
  *   EPD_ReadVoltageAndCache(): Read voltage and cache for subsequent low battery detection
  *
- * - EPD_IsLowBattery(): 使用缓存的电压值判断是否低电量,避免频繁ADC操作
- *   EPD_IsLowBattery(): Use cached voltage to check low battery, avoiding frequent ADC operations
- *
  * 注意: 电压缓存在每次屏幕刷新时更新,因此低电量检测基于最近一次刷新时的电压
  * Note: Voltage cache is updated during each screen refresh, so low battery detection is based on the voltage from the most recent refresh
  */
@@ -199,7 +200,6 @@ void EPD_LED_BLINK(void); // Blink LED once (BLE connect/disconnect only) - LED�
 #define CRITICAL_BATTERY_SHUTDOWN_MV 2700  // Critical battery shutdown threshold (mV) - 临界关机阈值(毫伏)
 uint16_t EPD_ReadVoltage(void);  // Returns voltage in mV (e.g., 3300 for 3.3V) - 返回电压值(毫伏),例如3300表示3.3V
 uint16_t EPD_ReadVoltageAndCache(void);  // Read voltage and cache for low battery detection - 读取电压并缓存用于低电量检测
-bool EPD_IsLowBattery(void);  // Uses cached voltage, no ADC operation - 使用缓存电压,无需ADC操作
 
 /**
  * EPD型号初始化函数
