@@ -1,9 +1,7 @@
 /**
- * EPD驱动程序头文件
- * EPD Driver Header File
+ * EPD 驱动程序头文件
  *
- * 提供电子墨水屏(E-Paper Display)的底层驱动接口
- * Provides low-level driver interface for E-Paper Display
+ * 电子墨水屏底层驱动接口
  */
 #ifndef __EPD_DRIVER_H
 #define __EPD_DRIVER_H
@@ -16,203 +14,179 @@
 #include "nrf_delay.h"
 #include "nrf_gpio.h"
 
-// EPD driver IC types
-// EPD驱动芯片类型
+// EPD 驱动芯片类型
 typedef enum {
-    EPD_DRIVER_IC_UC8179 = 0x12,  // UC8179驱动芯片
+    EPD_DRIVER_IC_UC8179 = 0x12,  // UC8179
 } epd_driver_ic_t;
 
-// UC81xx commands
-// UC81xx系列驱动芯片命令集
+// UC81xx 系列命令
 enum {
-    UC81xx_PSR = 0x00,    // Panel Setting - 面板设置
-    UC81xx_PWR = 0x01,    // Power Setting - 电源设置
-    UC81xx_POF = 0x02,    // Power OFF - 电源关闭
-    UC81xx_PFS = 0x03,    // Power OFF Sequence Setting - 电源关闭序列设置
-    UC81xx_PON = 0x04,    // Power ON - 电源开启
-    UC81xx_PMES = 0x05,   // Power ON Measure - 电源开启测量
-    UC81xx_BTST = 0x06,   // Booster Soft Start - 升压软启动
-    UC81xx_DSLP = 0x07,   // Deep sleep - 深度睡眠
-    UC81xx_DTM1 = 0x10,   // KW: OLD data; KWR: black/white data
-    UC81xx_DSP = 0x11,    // Data Stop - 数据停止
-    UC81xx_DRF = 0x12,    // Display Refresh - 显示刷新
-    UC81xx_DTM2 = 0x13,   // KW: NEW data; KWR: red data
-    UC81xx_DUSPI = 0x15,  // Dual SPI mode - 双SPI模式
-    UC81xx_LUTC = 0x20,   // VCOM LUT (LUTC) - VCOM查找表
-    UC81xx_LUTWW = 0x21,  // W2W LUT (LUTWW) - 白到白查找表
-    UC81xx_LUTBW = 0x22,  // B2W LUT (LUTBW / LUTR) - 黑到白查找表
-    UC81xx_LUTWB = 0x23,  // W2B LUT (LUTWB / LUTW) - 白到黑查找表
-    UC81xx_LUTBB = 0x24,  // B2B LUT (LUTBB / LUTB) - 黑到黑查找表
-    UC81xx_PLL = 0x30,    // PLL control - 锁相环控制
-    UC81xx_TSC = 0x40,    // Temperature Sensor Calibration - 温度传感器校准
-    UC81xx_TSE = 0x41,    // Temperature Sensor Selection - 温度传感器选择
-    UC81xx_TSW = 0x42,    // Temperature Sensor Write - 温度传感器写入
-    UC81xx_TSR = 0x43,    // Temperature Sensor Read - 温度传感器读取
-    UC81xx_CDI = 0x50,    // Vcom and data interval setting - Vcom和数据间隔设置
-    UC81xx_LPD = 0x51,    // Lower Power Detection - 低电量检测
-    UC81xx_TCON = 0x60,   // TCON setting - 时序控制器设置
-    UC81xx_TRES = 0x61,   // Resolution setting - 分辨率设置
-    UC81xx_GSST = 0x65,   // GSST Setting - 门驱动源设置
-    UC81xx_REV = 0x70,    // Revision - 版本号
-    UC81xx_FLG = 0x71,    // Get Status - 获取状态
-    UC81xx_AMV = 0x80,    // Auto Measurement Vcom - 自动测量Vcom
-    UC81xx_VV = 0x81,     // Read Vcom Value - 读取Vcom值
-    UC81xx_VDCS = 0x82,   // VCM_DC Setting - VCM直流设置
-    UC81xx_PTL = 0x90,    // Partial Window - 部分刷新窗口
-    UC81xx_PTIN = 0x91,   // Partial In - 进入部分刷新
-    UC81xx_PTOUT = 0x92,  // Partial Out - 退出部分刷新
-    UC81xx_PGM = 0xA0,    // Program Mode - 编程模式
-    UC81xx_APG = 0xA1,    // Active Progrmming - 激活编程
-    UC81xx_ROTP = 0xA2,   // Read OTP - 读取一次性可编程存储器
-    UC81xx_CCSET = 0xE0,  // Cascade Setting - 级联设置
-    UC81xx_PWS = 0xE3,    // Power Saving - 省电模式
-    UC81xx_TSSET = 0xE5,  // Force Temperauture - 强制温度
+    UC81xx_PSR = 0x00,    // 面板设置
+    UC81xx_PWR = 0x01,    // 电源设置
+    UC81xx_POF = 0x02,    // 电源关闭
+    UC81xx_PFS = 0x03,    // 电源关闭序列
+    UC81xx_PON = 0x04,    // 电源开启
+    UC81xx_PMES = 0x05,    // 电源开启测量
+    UC81xx_BTST = 0x06,    // 升压软启动
+    UC81xx_DSLP = 0x07,    // 深度睡眠
+    UC81xx_DTM1 = 0x10,    // KW：OLD 数据；KWR：黑白数据
+    UC81xx_DSP = 0x11,    // 数据停止
+    UC81xx_DRF = 0x12,    // 显示刷新
+    UC81xx_DTM2 = 0x13,    // KW：NEW 数据；KWR：红色数据
+    UC81xx_DUSPI = 0x15,  // 双 SPI 模式
+    UC81xx_LUTC = 0x20,   // VCOM LUT (LUTC)
+    UC81xx_LUTWW = 0x21,  // 白到白 LUT (LUTWW)
+    UC81xx_LUTBW = 0x22,  // 黑到白 LUT (LUTBW / LUTR)
+    UC81xx_LUTWB = 0x23,  // 白到黑 LUT (LUTWB / LUTW)
+    UC81xx_LUTBB = 0x24,  // 黑到黑 LUT (LUTBB / LUTB)
+    UC81xx_PLL = 0x30,    // PLL 控制
+    UC81xx_TSC = 0x40,    // 温度传感器校准
+    UC81xx_TSE = 0x41,    // 温度传感器选择
+    UC81xx_TSW = 0x42,    // 温度传感器写入
+    UC81xx_TSR = 0x43,    // 温度传感器读取
+    UC81xx_CDI = 0x50,    // Vcom 和数据间隔
+    UC81xx_LPD = 0x51,    // 低电量检测
+    UC81xx_TCON = 0x60,   // TCON 时序
+    UC81xx_TRES = 0x61,   // 分辨率
+    UC81xx_GSST = 0x65,   // 门驱动源设置
+    UC81xx_REV = 0x70,    // 版本号
+    UC81xx_FLG = 0x71,    // 获取状态
+    UC81xx_AMV = 0x80,    // 自动测量 Vcom
+    UC81xx_VV = 0x81,    // 读取 Vcom
+    UC81xx_VDCS = 0x82,   // VCM 直流设置
+    UC81xx_PTL = 0x90,    // 局刷窗口
+    UC81xx_PTIN = 0x91,   // 进入局刷
+    UC81xx_PTOUT = 0x92,  // 退出局刷
+    UC81xx_PGM = 0xA0,    // 编程模式
+    UC81xx_APG = 0xA1,    // 激活编程
+    UC81xx_ROTP = 0xA2,   // 读取 OTP
+    UC81xx_CCSET = 0xE0,  // 级联设置
+    UC81xx_PWS = 0xE3,    // 省电
+    UC81xx_TSSET = 0xE5,  // 强制温度
 };
 
-// EPD color type - 电子墨水屏颜色类型
+// 颜色类型
 typedef enum {
-    EPD_COLOR_BW = 1,    // 黑白两色
-    EPD_COLOR_BWR = 2,   // 黑白红三色
-    EPD_COLOR_BWRY = 3,  // 黑白红黄四色
+    EPD_COLOR_BW = 1,    // 黑白
+    EPD_COLOR_BWR = 2,   // 黑白红
+    EPD_COLOR_BWRY = 3,  // 黑白红黄
 } epd_color_t;
 
-// Do not change the existing IDs!
-// 不要修改现有的ID！这些ID用于识别不同的EPD型号
+// 不要修改现有 ID，用于识别 EPD 型号
 typedef enum {
-    EPD_UC8179_750_BWR = 7,  // 7.5寸黑白红三色墨水屏(UC8179驱动)
+    EPD_UC8179_750_BWR = 7,  // 7.5 寸黑白红（UC8179）
 } epd_model_id_t;
 
 struct epd_driver;
 
-// EPD型号结构体 - EPD Model Structure
+// EPD 型号
 typedef struct {
-    epd_model_id_t id;      // 型号ID - Model ID
-    epd_color_t color;      // 颜色类型 - Color type
-    struct epd_driver* drv; // 驱动指针 - Driver pointer
-    uint16_t width;         // 屏幕宽度(像素) - Screen width in pixels
-    uint16_t height;        // 屏幕高度(像素) - Screen height in pixels
+    epd_model_id_t id;      // 型号 ID
+    epd_color_t color;      // 颜色类型
+    struct epd_driver* drv; // 驱动
+    uint16_t width;         // 宽度（像素）
+    uint16_t height;        // 高度（像素）
 } epd_model_t;
 
-/**@brief EPD driver structure.
- * EPD驱动结构体
- *
- * @details This structure contains epd driver functions.
- * 此结构体包含EPD驱动的所有功能函数
- */
+/**@brief EPD 驱动函数表 */
 typedef struct epd_driver {
-    epd_driver_ic_t ic;                            /**< EPD driver IC type - EPD驱动芯片类型 */
-    void (*init)(epd_model_t* epd);                /**< Initialize the e-Paper register - 初始化电子墨水屏寄存器 */
-    void (*clear)(epd_model_t* epd, bool refresh); /**< Clear screen - 清屏(refresh=true则立即刷新显示) */
+    epd_driver_ic_t ic;                            /**< 驱动芯片类型 */
+    void (*init)(epd_model_t* epd);                /**< 初始化寄存器 */
+    void (*clear)(epd_model_t* epd, bool refresh); /**< 清屏；refresh=true 立即刷新 */
     void (*write_image)(epd_model_t* epd, uint8_t* black, uint8_t* color, uint16_t x, uint16_t y, uint16_t w,
-                        uint16_t h);                                              /**< write image - 写入图像数据到显存 */
-    void (*write_ram)(epd_model_t* epd, uint8_t cfg, uint8_t* data, uint8_t len); /* write data to epd ram - 直接写入数据到EPD显存 */
-    void (*refresh)(epd_model_t* epd);     /**< Sends the image buffer in RAM to e-Paper and displays - 将显存数据刷新到屏幕上显示 */
-    void (*sleep)(epd_model_t* epd);       /**< Enter sleep mode - 进入睡眠模式以降低功耗 */
-    int8_t (*read_temp)(epd_model_t* epd); /**< Read temperature from driver chip - 从驱动芯片读取温度值 */
-    /* Optional true OLD/NEW partial-refresh path. */
+                        uint16_t h);                                              /**< 写入图像到显存 */
+    void (*write_ram)(epd_model_t* epd, uint8_t cfg, uint8_t* data, uint8_t len); /**< 直接写入显存 */
+    void (*refresh)(epd_model_t* epd);     /**< 将显存刷新到屏幕 */
+    void (*sleep)(epd_model_t* epd);       /**< 进入睡眠以降功耗 */
+    int8_t (*read_temp)(epd_model_t* epd); /**< 从驱动芯片读温度 */
+    /* 可选：真 OLD/NEW 局刷路径 */
     void (*init_partial)(epd_model_t *epd);
     bool (*refresh_partial)(epd_model_t *epd, uint16_t x, uint16_t y,
                             uint16_t w, uint16_t h);
-    /* Write packed OLD and NEW bitmaps in one PTIN/PTL window. */
+    /* 在同一 PTIN/PTL 窗口写入打包的 OLD 与 NEW 位图 */
     bool (*diff_push)(epd_model_t *epd, uint16_t x, uint16_t y,
                       uint16_t w, uint16_t h,
                       const uint8_t *old_bm, const uint8_t *new_bm);
 } epd_driver_t;
 
-// GPIO电平定义 - GPIO level definitions
-#define LOW (0x0)   // 低电平
-#define HIGH (0x1)  // 高电平
+// GPIO 电平
+#define LOW (0x0)
+#define HIGH (0x1)
 
-// GPIO模式定义 - GPIO mode definitions
-#define DEFAULT (0xFF)          // 默认状态(断开连接)
-#define INPUT (0x0)             // 输入模式
-#define OUTPUT (0x1)            // 输出模式
-#define INPUT_PULLUP (0x2)      // 输入上拉模式
-#define INPUT_PULLDOWN (0x3)    // 输入下拉模式
+// GPIO 模式
+#define DEFAULT (0xFF)        // 默认（断开）
+#define INPUT (0x0)           // 输入
+#define OUTPUT (0x1)          // 输出
+#define INPUT_PULLUP (0x2)    // 输入上拉
+#define INPUT_PULLDOWN (0x3)  // 输入下拉
 
-// Arduino like function wrappers
-// 类Arduino风格的函数封装
-void pinMode(uint32_t pin, uint32_t mode);  // 设置引脚模式
-#define digitalWrite(pin, value) nrf_gpio_pin_write(pin, value)  // 写入数字电平
-#define digitalRead(pin) nrf_gpio_pin_read(pin)                   // 读取数字电平
-#define delay(ms) nrf_delay_ms(ms)                                // 延时(毫秒)
+// 类 Arduino 封装
+void pinMode(uint32_t pin, uint32_t mode);
+#define digitalWrite(pin, value) nrf_gpio_pin_write(pin, value)
+#define digitalRead(pin) nrf_gpio_pin_read(pin)
+#define delay(ms) nrf_delay_ms(ms)
 
 // GPIO
-// GPIO初始化相关函数
-void EPD_GPIO_Load(epd_config_t* cfg);  // 加载GPIO配置(从配置结构体)
-void EPD_GPIO_Init(void);               // 初始化GPIO引脚
-void EPD_GPIO_Ensure(void);             // 若未初始化则初始化，不增加额外引用
-void EPD_GPIO_Uninit(void);             // 反初始化GPIO引脚(恢复默认状态)
+void EPD_GPIO_Load(epd_config_t* cfg);  // 从配置加载引脚
+void EPD_GPIO_Init(void);               // 初始化 GPIO
+void EPD_GPIO_Ensure(void);             // 未初始化则初始化，不增加额外引用
+void EPD_GPIO_Uninit(void);             // 恢复默认状态
 
 // SPI
-// SPI通信函数
-void EPD_SPI_Write(uint8_t* value, uint8_t len);  // SPI写入数据
-void EPD_SPI_Read(uint8_t* value, uint8_t len);   // SPI读取数据
+void EPD_SPI_Write(uint8_t* value, uint8_t len); /* DC 已由调用方设好 */
+void EPD_SPI_Read(uint8_t* value, uint8_t len);  /* MOSI 改输入作半双工读 */
 
-// EPD
-// EPD基础操作函数
-void EPD_WriteCmd(uint8_t cmd);                        // 写入命令到EPD
-void EPD_WriteData(uint8_t* value, uint8_t len);       // 写入数据到EPD
-void EPD_ReadData(uint8_t* value, uint8_t len);        // 从EPD读取数据
-void EPD_WriteByte(uint8_t value);                     // 写入单字节数据
-uint8_t EPD_ReadByte(void);                            // 读取单字节数据
-// 宏定义:简化写入命令和数据的操作 - Macro: simplify command and data writing
+// EPD 基础操作
+void EPD_WriteCmd(uint8_t cmd);           /* DC=0 */
+void EPD_WriteData(uint8_t* value, uint8_t len); /* DC=1 */
+void EPD_ReadData(uint8_t* value, uint8_t len);
+void EPD_WriteByte(uint8_t value);    /* 单字节数据 */
+uint8_t EPD_ReadByte(void);           /* 单字节数据 */
+// 一次写入命令及若干数据字节
 #define EPD_Write(cmd, ...)                  \
     do {                                     \
         uint8_t _data[] = {__VA_ARGS__};     \
         EPD_WriteCmd(cmd);                   \
         EPD_WriteData(_data, sizeof(_data)); \
     } while (0)
-void EPD_FillRAM(uint8_t cmd, uint8_t value, uint32_t len);  // 填充显存(用相同的值填充指定长度)
-void EPD_Reset(uint32_t value, uint16_t duration);           // 复位EPD(通过复位引脚)
-bool EPD_WaitBusy(uint32_t value, uint16_t timeout);         // 等待EPD忙状态结束，超时返回false
-void EPD_RequestBusyAbort(void);                             // 传图打断时钟刷新等待
-void EPD_ClearBusyAbort(void);
-bool EPD_BusyAbortRequested(void);
+void EPD_FillRAM(uint8_t cmd, uint8_t value, uint32_t len);  // 用相同值填充显存
+void EPD_Reset(uint32_t value, uint16_t duration);           // 复位脚复位
+bool EPD_WaitBusy(uint32_t value, uint16_t timeout);         // 等忙结束，超时返回 false
+void EPD_RequestBusyAbort(void);    // 传图打断时钟刷新等待
+void EPD_ClearBusyAbort(void);      // 开始新一轮刷新前清除
+bool EPD_BusyAbortRequested(void);  // WaitBusy 是否应提前退出
 
-// LED Control (active low: LOW = ON, HIGH = OFF)
-// LED控制(低电平有效: LOW=点亮, HIGH=熄灭)
+// LED：低电平有效（LOW=亮，HIGH=灭）
 /**
- * LED行为说明 - LED Behavior:
- * - 屏幕刷新/唤醒: LED保持熄灭 - Refresh/wakeup: LED stays OFF
- * - BLE连接/断开: LED闪烁一次 - BLE connect/disconnect: LED blinks once
- * - 低电量保持(<=2.80 V): 每 30 s 闪一次 - Low-battery hold: blink once every 30 s
+ * LED 行为：
+ * - 屏幕刷新/唤醒：保持熄灭
+ * - BLE 连接/断开：闪一次
+ * - 低电量保持（<=2.80 V）：每 30 s 闪一次
  */
-void EPD_LED_ON(void);    // Turn LED on manually - 手动点亮LED
-void EPD_LED_OFF(void);   // Turn LED off - 熄灭LED
-void EPD_LED_BLINK(void); // Blink LED once (BLE connect/disconnect, low-battery hold)
+void EPD_LED_ON(void);
+void EPD_LED_OFF(void);
+void EPD_LED_BLINK(void);  // BLE 连接/断开、低电量保持时闪一次
 
-// VDD voltage (in millivolts)
-// VDD电压(单位:毫伏)
+// VDD 电压（毫伏）
 /**
- * 电压读取和低电量检测说明:
- * Voltage Reading and Low Battery Detection:
+ * 电压读取与低电量检测：
+ * - EPD_ReadVoltage()：直接读 ADC（mV）
+ * - EPD_ReadVoltageAndCache()：读取并缓存，供后续低电量判断
  *
- * - EPD_ReadVoltage(): 直接读取ADC获取当前电压(单位:mV)
- *   EPD_ReadVoltage(): Directly read ADC to get current voltage (in mV)
- *
- * - EPD_ReadVoltageAndCache(): 读取电压并缓存,用于后续低电量检测
- *   EPD_ReadVoltageAndCache(): Read voltage and cache for subsequent low battery detection
- *
- * 注意: 电压缓存在每次屏幕刷新时更新,因此低电量检测基于最近一次刷新时的电压
- * Note: Voltage cache is updated during each screen refresh, so low battery detection is based on the voltage from the most recent refresh
+ * 电压缓存在每次屏幕刷新时更新，低电量判断基于最近一次刷新时的电压。
  */
-#define LOW_BATTERY_THRESHOLD_MV 2800      // Low battery voltage threshold (mV) - 低电量阈值(毫伏)
-#define CRITICAL_BATTERY_SHUTDOWN_MV 2700  // Critical battery shutdown threshold (mV) - 临界关机阈值(毫伏)
-uint16_t EPD_ReadVoltage(void);  // Returns voltage in mV (e.g., 3300 for 3.3V) - 返回电压值(毫伏),例如3300表示3.3V
-uint16_t EPD_ReadVoltageAndCache(void);  // Read voltage and cache for low battery detection - 读取电压并缓存用于低电量检测
+#define LOW_BATTERY_THRESHOLD_MV 2800      // 低电量阈值（mV）
+#define CRITICAL_BATTERY_SHUTDOWN_MV 2700  // 临界关机阈值（mV）
+uint16_t EPD_ReadVoltage(void);            // 例如 3300 表示 3.3V
+uint16_t EPD_ReadVoltageAndCache(void);    // 读取并缓存
 
 /**
- * EPD型号初始化函数
- * EPD Model Initialization Function
+ * 按 ID 查找并初始化 EPD 型号
  *
- * @param id EPD型号ID
- * @return 返回EPD型号结构体指针
- *
- * 重要说明: 此函数会根据ID查找对应的EPD型号并初始化
- * Important: This function finds and initializes the EPD model based on the ID
+ * @param id 型号 ID
+ * @return 型号结构体指针
  */
 epd_model_t* epd_get_model(epd_model_id_t id);
-epd_model_t* epd_init(epd_model_id_t id);
+epd_model_t* epd_init(epd_model_id_t id); /* 查找型号并调用 drv->init */
 
 #endif

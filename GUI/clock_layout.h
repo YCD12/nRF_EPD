@@ -5,78 +5,81 @@
 #include <stddef.h>
 #include <stdint.h>
 
-/* Split-screen clock + calendar on the 800x480 panel.
- * Left 392 px is byte-aligned; TIME_REFRESH_* stays 8 px left of the separator.
+/* 800x480 分屏：左时钟 + 右日历。左侧 392 px 按字节对齐；
+ * TIME_REFRESH_* 在分隔线左侧再留 8 px。
  */
 #define SPLIT_LEFT_WIDTH 392
 #define SPLIT_RIGHT_START 392
 
-#define TIME_CS 6
-#define TIME_ND 2
-#define TIME_REFRESH_X 0
+#define TIME_CS 6                 /* 分屏 7 段缩放 */
+#define TIME_ND 2                 /* 时/分各两位 */
+#define TIME_REFRESH_X 0          /* 分屏时钟画布（相对左半屏） */
 #define TIME_REFRESH_Y 169
 #define TIME_REFRESH_WIDTH 384
 #define TIME_REFRESH_HEIGHT 150
 
-/* Draw7Number: width = nD*(11*cS+2)-2*cS, height = 20*cS+4 */
+/* Draw7Number：宽 = nD*(11*cS+2)-2*cS，高 = 20*cS+4 */
 #define CLOCK_DIGIT_BLOCK_WIDTH (TIME_ND * (11 * TIME_CS + 2) - 2 * TIME_CS)
 #define CLOCK_TIME_WIDTH (2 * CLOCK_DIGIT_BLOCK_WIDTH + 4 * TIME_CS)
 #define CLOCK_TIME_HEIGHT (20 * TIME_CS + 4)
 #define CLOCK_DIGIT_SINGLE_WIDTH (11 * TIME_CS + 2)
 
-static inline uint16_t clock_digit_block_width(uint16_t cS, uint16_t nD)
+static inline uint16_t clock_digit_block_width(uint16_t cS, uint16_t nD) /* HH 或 MM 一块 */
 {
     return (uint16_t)(nD * (11U * cS + 2U) - 2U * cS);
 }
 
+/* 分屏 TIME_REFRESH 居中用的 HH:MM 跨度（+4*cS）。 */
 static inline uint16_t clock_time_width(uint16_t cS, uint16_t nD)
 {
     return (uint16_t)(2U * clock_digit_block_width(cS, nD) + 4U * cS);
 }
 
-/* DrawTime: HH block + 2*cS to the colon + 4*cS to MM + MM block.
- * clock_time_width's +4*cS is the split TIME_REFRESH centering contract. */
+/* DrawTime：HH 块 + 2*cS 到冒号 + 4*cS 到 MM + MM 块。
+ * clock_time_width 的 +4*cS 是分屏 TIME_REFRESH 居中约定。 */
 static inline uint16_t clock_time_draw_width(uint16_t cS, uint16_t nD)
 {
     return (uint16_t)(2U * clock_digit_block_width(cS, nD) + 6U * cS);
 }
 
+/* 分屏用居中约定宽度，全屏用实际绘制宽度。 */
 static inline uint16_t clock_hhmm_span(uint16_t cS, uint16_t nD)
 {
     return (cS == TIME_CS) ? clock_time_width(cS, nD) : clock_time_draw_width(cS, nD);
 }
 
-static inline uint16_t clock_time_height(uint16_t cS)
+static inline uint16_t clock_time_height(uint16_t cS) /* 7 段数字高度 */
 {
     return (uint16_t)(20U * cS + 4U);
 }
 
-static inline uint16_t clock_digit_single_width(uint16_t cS)
+static inline uint16_t clock_digit_single_width(uint16_t cS) /* 含字间距的一位宽 */
 {
     return (uint16_t)(11U * cS + 2U);
 }
 
-static inline uint16_t clock_hhmm_local_x(uint16_t canvas_w, uint16_t cS, uint16_t nD)
+static inline uint16_t clock_hhmm_local_x(uint16_t canvas_w, uint16_t cS, uint16_t nD) /* 画布内水平居中 */
 {
     return (uint16_t)((canvas_w - clock_hhmm_span(cS, nD)) / 2U);
 }
 
-static inline uint16_t clock_hhmm_local_y(uint16_t canvas_h, uint16_t cS)
+static inline uint16_t clock_hhmm_local_y(uint16_t canvas_h, uint16_t cS) /* 画布内垂直居中 */
 {
     return (uint16_t)((canvas_h - clock_time_height(cS)) / 2U);
 }
 
-/* Colon squares were y + 4.5*cS + 1 and y + 13.5*cS + 3. cS is even. */
+/* 冒号方块：y + 4.5*cS + 1 与 y + 13.5*cS + 3。cS 为偶数。 */
 static inline uint16_t clock_colon_top_y(uint16_t y, uint16_t cS)
 {
     return (uint16_t)(y + (9U * cS) / 2U + 1U);
 }
 
-static inline uint16_t clock_colon_bot_y(uint16_t y, uint16_t cS)
+static inline uint16_t clock_colon_bot_y(uint16_t y, uint16_t cS) /* 下点 */
 {
     return (uint16_t)(y + (27U * cS) / 2U + 3U);
 }
 
+/* 分钟个位左缘：HH 块 + 冒号跨度 + 十位占位。 */
 static inline uint16_t clock_minute_ones_local_x(uint16_t hhmm_x, uint16_t cS, uint16_t nD)
 {
     uint16_t block = clock_digit_block_width(cS, nD);
@@ -84,7 +87,7 @@ static inline uint16_t clock_minute_ones_local_x(uint16_t hhmm_x, uint16_t cS, u
     return (uint16_t)(hhmm_x + block + 6U * cS + (block - clock_digit_single_width(cS)));
 }
 
-#define CLOCK_REFRESH_JUMP_MAX_S 600U
+#define CLOCK_REFRESH_JUMP_MAX_S 600U /* 超过则不当成「只变分」 */
 #define CLOCK_REFRESH_MARGIN_Y 2
 #define CLOCK_REFRESH_WINDOWS_MAX 2
 #define CLOCK_OLD_WINDOW_STRIDE_MAX (CLOCK_TIME_WIDTH / 8U)
@@ -92,12 +95,13 @@ static inline uint16_t clock_minute_ones_local_x(uint16_t hhmm_x, uint16_t cS, u
 #define CLOCK_OLD_WINDOW_BYTES (CLOCK_OLD_WINDOW_STRIDE_MAX * CLOCK_OLD_WINDOW_STORE_H)
 
 typedef struct {
-    uint16_t x;
+    uint16_t x; /* 画布局部坐标 */
     uint16_t y;
     uint16_t w;
     uint16_t h;
 } clock_refresh_window_t;
 
+/* 仅分钟个位变化（可缩到单数字窗）。 */
 static inline bool clock_only_minute_ones_changed(uint32_t prev_ts, uint32_t curr_ts)
 {
     uint32_t prev_minutes;
@@ -124,6 +128,7 @@ static inline bool clock_only_minute_ones_changed(uint32_t prev_ts, uint32_t cur
            (prev_min % 10U) != (curr_min % 10U);
 }
 
+/* 同时分变、小时不变（可缩到 MM）。 */
 static inline bool clock_only_minutes_changed(uint32_t prev_ts, uint32_t curr_ts)
 {
     uint32_t prev_minutes;
@@ -142,15 +147,17 @@ static inline bool clock_only_minutes_changed(uint32_t prev_ts, uint32_t curr_ts
 
 static inline uint16_t clock_digit_draw_width(uint16_t cS)
 {
-    /* Draw7Number nD=1: nD*(11*cS+2)-2*cS, includes the triangular ends. */
+    /* Draw7Number nD=1：nD*(11*cS+2)-2*cS，含三角端。 */
     return (uint16_t)(9U * cS + 2U);
 }
 
+/* 分钟十位左缘（冒号之后）。 */
 static inline uint16_t clock_minute_tens_local_x(uint16_t hhmm_x, uint16_t cS, uint16_t nD)
 {
     return (uint16_t)(hhmm_x + clock_digit_block_width(cS, nD) + 6U * cS);
 }
 
+/* 窗口能否放进 OLD 位图缓冲（宽 8 对齐）。 */
 static inline bool clock_refresh_window_fits_old(const clock_refresh_window_t *win)
 {
     if (win == NULL || win->w < 8U || (win->w & 7U) != 0U || win->h == 0U) {
@@ -159,6 +166,7 @@ static inline bool clock_refresh_window_fits_old(const clock_refresh_window_t *w
     return (uint32_t)(win->w / 8U) * win->h <= CLOCK_OLD_WINDOW_BYTES;
 }
 
+/* 画布内整段 HH:MM 窗，上下各加边距。 */
 static inline clock_refresh_window_t clock_hhmm_window_local(uint16_t canvas_w,
                                                             uint16_t canvas_h,
                                                             uint16_t cS,
@@ -184,6 +192,7 @@ static inline clock_refresh_window_t clock_hhmm_window_local(uint16_t canvas_w,
     return win;
 }
 
+/* x/w 对齐到 8 像素，满足控制器窗口。 */
 static inline void clock_align_window_x(uint16_t *x, uint16_t *w, uint16_t canvas_w)
 {
     uint16_t aligned;
@@ -201,14 +210,14 @@ static inline void clock_align_window_x(uint16_t *x, uint16_t *w, uint16_t canva
     *w = (uint16_t)(end - aligned);
 }
 
-/* Full-screen MODE_CLOCK uses height/45 (10 on 480). Split keeps TIME_CS. */
+/* 全屏 MODE_CLOCK 用 height/45（480 高时为 10）。分屏仍用 TIME_CS。 */
 static inline uint16_t clock_full_cs(uint16_t screen_h)
 {
     return (uint16_t)(screen_h / 45U);
 }
 
 typedef struct {
-    uint16_t origin_x;
+    uint16_t origin_x; /* 画布在屏幕上的原点 */
     uint16_t origin_y;
     uint16_t canvas_w;
     uint16_t canvas_h;
@@ -217,8 +226,8 @@ typedef struct {
 } clock_refresh_geom_t;
 
 /*
- * Split: TIME_REFRESH_* canvas, digits at screen (56, 182).
- * Full-screen 800x480: draw-span 468 centered in a 480x208 canvas at (160, 136).
+ * 分屏：TIME_REFRESH_* 画布，数字在屏幕 (56, 182)。
+ * 全屏 800x480：绘制跨度 468，居中于 (160, 136) 的 480x208 画布。
  */
 static inline clock_refresh_geom_t clock_refresh_geom(bool fullscreen,
                                                       uint16_t screen_w,
@@ -256,6 +265,7 @@ static inline clock_refresh_geom_t clock_refresh_geom(bool fullscreen,
     return g;
 }
 
+/* 单个局刷窗：个位变化则缩到个位，否则整段 HH:MM。 */
 static inline clock_refresh_window_t clock_refresh_local_window(const clock_refresh_geom_t *g,
                                                                uint32_t prev_ts,
                                                                uint32_t curr_ts)
@@ -278,6 +288,7 @@ static inline clock_refresh_window_t clock_refresh_local_window(const clock_refr
     return win;
 }
 
+/* 在 HH:MM 底窗上裁出一个数字窗并 8 对齐。 */
 static inline void clock_refresh_fill_digit_window(clock_refresh_window_t *win,
                                                    const clock_refresh_window_t *base,
                                                    uint16_t x, uint16_t w, uint16_t canvas_w)
@@ -288,6 +299,7 @@ static inline void clock_refresh_fill_digit_window(clock_refresh_window_t *win,
     clock_align_window_x(&win->x, &win->w, canvas_w);
 }
 
+/* 填 1～2 个局刷窗。个位 1 窗；MM 能放下则 1 窗，否则两个数字窗；其余整段 HH:MM。 */
 static inline uint8_t clock_refresh_local_windows(const clock_refresh_geom_t *g,
                                                   uint32_t prev_ts,
                                                   uint32_t curr_ts,
@@ -345,6 +357,7 @@ static inline uint8_t clock_refresh_local_windows(const clock_refresh_geom_t *g,
     return 1U;
 }
 
+/* 画布原点 + 局部居中 → 屏幕坐标。 */
 static inline void clock_hhmm_screen_xy(const clock_refresh_geom_t *g, uint16_t *x, uint16_t *y)
 {
     if (g == NULL) {
@@ -358,6 +371,7 @@ static inline void clock_hhmm_screen_xy(const clock_refresh_geom_t *g, uint16_t 
     }
 }
 
+/* 宽高为 0 时按 800x480。 */
 static inline clock_refresh_geom_t clock_refresh_geom_sized(bool fullscreen,
                                                            uint16_t screen_w,
                                                            uint16_t screen_h)

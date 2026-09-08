@@ -19,46 +19,46 @@
  * ============================================================================
  * 1. 命令队列机制 (Command Queue Mechanism)
  * ============================================================================
- *    - 使用环形缓冲区(circular buffer)管理命令队列
- *    - 支持最多2个普通命令同时排队 (EPD_CMD_QUEUE_SIZE)
- *    - 通过app_scheduler异步顺序执行命令
- *    - 紧急命令(INIT、WRITE_BLOCK、复位、睡眠、擦除配置)绕过队列立即执行
+ * - 使用环形缓冲区(circular buffer)管理命令队列
+ * - 支持最多2个普通命令同时排队 (EPD_CMD_QUEUE_SIZE)
+ * - 通过app_scheduler异步顺序执行命令
+ * - 紧急命令(INIT、WRITE_BLOCK、复位、睡眠、擦除配置)绕过队列立即执行
  *
- *    工作流程:
- *    (1) BLE写入特性 -> on_write() -> epd_service_on_write()
- *    (2) 紧急命令直接执行,普通命令入队
- *    (3) 如果队列未在处理,通过app_scheduler启动处理
- *    (4) epd_process_next_command()从队列取出一个命令执行
- *    (5) 执行完毕后,如果队列还有命令,继续调度下一个
- *    (6) 队列为空时标记is_processing=false
+ * 工作流程:
+ * (1) BLE写入特性 -> on_write() -> epd_service_on_write()
+ * (2) 紧急命令直接执行,普通命令入队
+ * (3) 如果队列未在处理,通过app_scheduler启动处理
+ * (4) epd_process_next_command()从队列取出一个命令执行
+ * (5) 执行完毕后,如果队列还有命令,继续调度下一个
+ * (6) 队列为空时标记is_processing=false
  *
  * ============================================================================
  * 2. 刷新策略 (epd_refresh_policy + epd_clock_refresh)
  * ============================================================================
- *    何时刷、全/局刷由 policy 决定；局刷窗口由 clock_layout 几何合同决定。
+ * 何时刷、全/局刷由 policy 决定；局刷窗口由 clock_layout 几何合同决定。
  *
  * ============================================================================
  * 3. 夜间静默逻辑 (Quiet Hours)
  * ============================================================================
- *    时间范围: 01:00 - 05:59
- *    目的: 减少夜间闪烁和功耗
- *    效果: 跳过整点全刷,仅使用局刷
- *    注意: 首次全刷和强制全刷不受夜间静默影响
+ * 时间范围: 01:00 - 05:59
+ * 目的: 减少夜间闪烁和功耗
+ * 效果: 跳过整点全刷,仅使用局刷
+ * 注意: 首次全刷和强制全刷不受夜间静默影响
  *
  * ============================================================================
  * 4. 显示模式管理
  * ============================================================================
- *    - MODE_PICTURE (0): 图片模式,用于显示自定义图片
- *    - MODE_CALENDAR (1): 日历模式,每天00:00更新
- *    - MODE_CLOCK_CALENDAR (2): 时钟+日历模式,每分钟更新时间区域
- *    - MODE_CLOCK (3): 时钟模式,每分钟更新
+ * - MODE_PICTURE (0): 图片模式,用于显示自定义图片
+ * - MODE_CALENDAR (1): 日历模式,每天00:00更新
+ * - MODE_CLOCK_CALENDAR (2): 时钟+日历模式,每分钟更新时间区域
+ * - MODE_CLOCK (3): 时钟模式,每分钟更新
  *
  * ============================================================================
  * 5. BLE服务管理
  * ============================================================================
- *    - 处理连接/断开事件
- *    - 处理特性写入(命令接收)
- *    - 发送通知给对端
+ * - 处理连接/断开事件
+ * - 处理特性写入(命令接收)
+ * - 发送通知给对端
  */
 
 #include "EPD_service.h"
@@ -81,31 +81,26 @@
 #include "epd_cmd_policy.h"
 #include "epd_refresh_policy.h"
 
-static void epd_enter_picture_mode(ble_epd_t *p_epd);
-
+static void epd_enter_picture_mode(ble_epd_t *p_epd); /* 切图片模式 */
 
 // ============================================================================
 // CRC16计算和传输响应函数
-// CRC16 Calculation and Transfer Response Functions
 // ============================================================================
 
-#define LOW_BATTERY_POLL_INTERVAL_S 10  // Low-battery mode voltage polling interval in seconds | 低电量模式电压轮询周期(秒)
+#define LOW_BATTERY_POLL_INTERVAL_S 10  // 低电量模式电压轮询周期(秒)
 
 // SET_TIME 频率限制(秒)。同一时间窗口内仅允许一次 SET_TIME 触发屏幕更新(PRD §4.3)。
 #define EPD_SET_TIME_RATE_LIMIT_S 10U
 
 /**@brief 计算CRC16-CCITT校验值
- *        Calculate CRC16-CCITT checksum
  *
  * @details 使用多项式0x8408 (反转的0x1021)
- *          用于验证BLE传输数据的完整性
- *          Uses polynomial 0x8408 (reversed 0x1021)
- *          Used to verify BLE transfer data integrity
+ * 用于验证BLE传输数据的完整性
  *
- * @param[in] data  数据指针 / Pointer to data
- * @param[in] len   数据长度 / Data length
+ * @param[in] data  数据指针
+ * @param[in] len  数据长度
  *
- * @return CRC16校验值 / CRC16 checksum value
+ * @return CRC16校验值
  */
 static uint16_t crc16_compute(const uint8_t* data, uint16_t len) {
     uint16_t crc = 0xFFFF;
@@ -119,16 +114,13 @@ static uint16_t crc16_compute(const uint8_t* data, uint16_t len) {
 }
 
 /**@brief 发送块响应(ACK/NACK)到APP
- *        Send block response (ACK/NACK) to APP
  *
  * @details 响应格式: [0xA0, block_id_L, block_id_H, status]
- *          status: 0x00 = 成功(ACK), 0x01 = 失败(NACK,需重传)
- *          Response format: [0xA0, block_id_L, block_id_H, status]
- *          status: 0x00 = success(ACK), 0x01 = failure(NACK, need retransmit)
+ * status: 0x00 = 成功(ACK), 0x01 = 失败(NACK,需重传)
  *
- * @param[in] p_epd     EPD服务结构指针 / Pointer to EPD service structure
- * @param[in] block_id  块ID / Block ID
- * @param[in] status    状态码(0x00=成功, 0x01=CRC错误) / Status (0x00=OK, 0x01=CRC error)
+ * @param[in] p_epd  EPD服务结构指针
+ * @param[in] block_id  块ID
+ * @param[in] status  状态码(0x00=成功, 0x01=CRC错误)
  */
 static void send_block_response(ble_epd_t* p_epd, uint16_t block_id, uint8_t status) {
     uint8_t rsp[] = {EPD_RSP_BLOCK_ACK, block_id & 0xFF, block_id >> 8, status};
@@ -136,13 +128,10 @@ static void send_block_response(ble_epd_t* p_epd, uint16_t block_id, uint8_t sta
 }
 
 /**@brief 发送传输状态响应到APP
- *        Send transfer status response to APP
  *
  * @details 响应格式: [0xA1, total_L, total_H, received_L, received_H, session_id, active]
- *          Sequential stream: received is the next expected block id.
- *          Response format: [0xA1, total_L, total_H, received_L, received_H, session_id, active]
  *
- * @param[in] p_epd  EPD服务结构指针 / Pointer to EPD service structure
+ * @param[in] p_epd  EPD服务结构指针
  */
 static void send_transfer_status(ble_epd_t* p_epd) {
     /* [0xA1, total_L, total_H, received_L, received_H, session_id, active] */
@@ -162,7 +151,6 @@ static void send_transfer_status(ble_epd_t* p_epd) {
 }
 
 // nRF52811默认引脚配置
-// Default pin configuration for nRF52811
 #define EPD_CFG_52811 {0x14, 0x13, 0x06, 0x05, 0x04, 0x03, 0x02, 0x07, 0xFF, 0x12, 0x07}
 
 
@@ -170,7 +158,6 @@ static void send_transfer_status(ble_epd_t* p_epd) {
 
 // ============================================================================
 // 命令队列管理函数
-// Command Queue Management Functions
 // ============================================================================
 //
 // 命令队列的设计目的:
@@ -188,39 +175,35 @@ static void send_transfer_status(ble_epd_t* p_epd) {
 // ============================================================================
 
 /**@brief 初始化命令队列
- *        Initialize command queue
  *
  * @details 清除所有队列项并将头/尾/计数重置为零。
- *          Clears all queue items and resets head/tail/count to zero.
  *
- * @param[in] queue  命令队列结构指针 / Pointer to command queue structure
+ * @param[in] queue  命令队列结构指针
  */
 static void epd_cmd_queue_init(epd_cmd_queue_t* queue) {
     memset(queue, 0, sizeof(epd_cmd_queue_t));
-    queue->head = 0;        // 队列头索引 / Queue head index
-    queue->tail = 0;        // 队列尾索引 / Queue tail index
-    queue->count = 0;       // 当前队列项数 / Current item count
-    queue->is_processing = false;  // 未在处理 / Not processing
+    queue->head = 0;  // 队列头索引
+    queue->tail = 0;  // 队列尾索引
+    queue->count = 0;  // 当前队列项数
+    queue->is_processing = false;  // 未在处理
     NRF_LOG_INFO("[EPD]: Command queue initialized\n");
 }
 
 /**@brief 将命令推入队列
- *        Push command to queue
  *
  * @details 将命令添加到队列尾部。如果队列已满,则丢弃命令。
- *          Adds a command to the tail of the queue. If queue is full, command is dropped.
  *
- *          队列满的处理:
- *          - 记录警告日志,显示被丢弃的命令ID
- *          - 返回false表示入队失败
- *          - 调用者需要检查返回值
+ * 队列满的处理:
+ * - 记录警告日志,显示被丢弃的命令ID
+ * - 返回false表示入队失败
+ * - 调用者需要检查返回值
  *
- * @param[in] queue   命令队列结构指针 / Pointer to command queue structure
- * @param[in] p_data  命令数据指针 / Pointer to command data
- * @param[in] length  命令数据长度 / Length of command data
+ * @param[in] queue  命令队列结构指针
+ * @param[in] p_data  命令数据指针
+ * @param[in] length  命令数据长度
  *
- * @return true 如果命令成功入队 / if command was queued successfully
- * @return false 如果队列已满 / if queue is full
+ * @return true 如果命令成功入队
+ * @return false 如果队列已满
  */
 static bool epd_cmd_queue_push(epd_cmd_queue_t* queue, uint8_t* p_data, uint16_t length) {
     // 检查队列是否已满
@@ -254,20 +237,18 @@ static bool epd_cmd_queue_push(epd_cmd_queue_t* queue, uint8_t* p_data, uint16_t
 }
 
 /**@brief 从队列中弹出命令
- *        Pop command from queue
  *
  * @details 从队列头部移除并返回命令。
- *          Removes and returns the command from the head of the queue.
  *
- * @param[in]  queue  命令队列结构指针 / Pointer to command queue structure
- * @param[out] item   存储弹出命令项的指针 / Pointer to store popped command item
+ * @param[in]  queue  命令队列结构指针
+ * @param[out] item   存储弹出命令项的指针
  *
- * @return true 如果成功弹出命令 / if command was popped successfully
- * @return false 如果队列为空 / if queue is empty
+ * @return true 如果成功弹出命令
+ * @return false 如果队列为空
  */
 static bool epd_cmd_queue_pop(epd_cmd_queue_t* queue, epd_cmd_queue_item_t* item) {
     if (queue->count == 0) {
-        return false;  // 队列为空 / Queue is empty
+        return false;  // 队列为空
     }
 
     // 从队列头部复制命令
@@ -282,17 +263,16 @@ static bool epd_cmd_queue_pop(epd_cmd_queue_t* queue, epd_cmd_queue_item_t* item
 }
 
 /**@brief 检查命令是否紧急(需要立即执行)
- *        Check if command is urgent (needs immediate execution)
  *
  * @details 紧急命令绕过队列立即执行。INIT 必须与 WRITE_BLOCK 同级，
- *          否则 GATT 写完成不代表屏已初始化。REFRESH 保持排队，避免堵 BLE。
+ * 否则 GATT 写完成不代表屏已初始化。REFRESH 保持排队，避免堵 BLE。
  */
 static bool is_urgent_command(uint8_t cmd) {
     return epd_cmd_is_urgent(cmd);
 }
 
-/* Clock refresh sleeps the panel and may drop p_epd->epd. Re-open GPIO
- * only if the connect-time ref is already gone, then run drv->init. */
+/* 时钟刷新会睡眠面板并可能清空 p_epd->epd。
+ * 仅当连接时的引用已失效时才重新打开 GPIO，再 drv->init。 */
 static bool epd_ensure_display(ble_epd_t *p_epd)
 {
     if (p_epd->epd != NULL) {
@@ -303,37 +283,37 @@ static bool epd_ensure_display(ble_epd_t *p_epd)
     return p_epd->epd != NULL;
 }
 
+/* WRITE_BLOCK 量大，少打 hexdump。 */
 static bool is_bulk_data_command(uint8_t cmd) {
     return cmd == EPD_CMD_WRITE_BLOCK;
 }
 
 // 异步命令处理的前向声明
-// Forward declaration for async command processing
 static void epd_process_next_command(void* p_event_data, uint16_t event_size);
 
 // ============================================================================
 // 命令队列管理函数结束
-// End of Command Queue Management Functions
 // ============================================================================
 
 /**@brief 资源缺失提示屏——GFX 分页回调：把每页黑平面顺序流式写入已打开的 DTM1 数据流。
  *
  * @details 关键：**不使用 PTIN/局部窗口(PTL)寻址**。真机多轮验证表明，全刷 `write_image`
- *          走 PTIN+`_setPartialRamArea` 的逐页局部窗口寻址，在"空 Flash 上电"这种上下文里
- *          极不稳定(白屏/红黑白噪点/无反应)；而 `UC8179_Clear` 用的"DTM1/DTM2 顺序写整帧
- *          (不带 PTIN)"是可靠的(clear(true) 真机能出干净白屏)。
- *          本回调即复用该顺序写方式：调用前已 `EPD_WriteCmd(DTM1)`(复位 RAM 写指针到 0)，
- *          这里按页把黑平面数据连续写入，各页拼接正好铺满整帧(与 EPD_FillRAM 同构)。
- *          红平面(DTM2)由外层统一填 0xFF(无红)，故此处忽略 color。
+ * 走 PTIN+`_setPartialRamArea` 的逐页局部窗口寻址，在"空 Flash 上电"这种上下文里
+ * 极不稳定(白屏/红黑白噪点/无反应)；而 `UC8179_Clear` 用的"DTM1/DTM2 顺序写整帧
+ * (不带 PTIN)"是可靠的(clear(true) 真机能出干净白屏)。
+ * 本回调即复用该顺序写方式：调用前已 `EPD_WriteCmd(DTM1)`(复位 RAM 写指针到 0)，
+ * 这里按页把黑平面数据连续写入，各页拼接正好铺满整帧(与 EPD_FillRAM 同构)。
+ * 红平面(DTM2)由外层统一填 0xFF(无红)，故此处忽略 color。
  */
-/* skip: already did the last normal frame at critical, do not refresh again. */
+/* skip：临界电压下已画过最后一帧正常画面，不再刷新。 */
 typedef struct {
     bool skip;
-    bool low_battery;    /* <= 2.80 V: keep layout, hold periodic refresh */
-    bool critical;       /* < 2.70 V: one last normal frame, then off     */
+    bool low_battery;    /* <= 2.80 V：保留布局，暂停周期刷新 */
+    bool critical;       /* < 2.70 V：最后一帧正常画面后关机 */
     uint16_t voltage_mv;
 } battery_guard_result_t;
 
+/* 读电压并判定低电保持 / 临界关机。 */
 static battery_guard_result_t epd_battery_guard(ble_epd_t *p_epd) {
     static uint16_t cached_mv = 3300;
     static bool power_off_drawn = false;
@@ -362,6 +342,7 @@ static battery_guard_result_t epd_battery_guard(ble_epd_t *p_epd) {
     return r;
 }
 
+/* 全刷：init → 绘整屏 → refresh。中途传图则让出。 */
 static bool epd_perform_full_refresh(ble_epd_t *p_epd, epd_model_t *epd,
                                      gui_data_t *data) {
     if (p_epd == NULL || epd == NULL || epd->drv == NULL || data == NULL ||
@@ -423,6 +404,7 @@ static bool epd_perform_full_refresh(ble_epd_t *p_epd, epd_model_t *epd,
     return true;
 }
 
+/* 把 GAP 设备名填进 GUI ssid。 */
 static void epd_fill_device_name(gui_data_t *data) {
     uint16_t dev_name_len = sizeof(data->ssid);
     uint32_t err_code = sd_ble_gap_device_name_get((uint8_t *)data->ssid, &dev_name_len);
@@ -432,27 +414,20 @@ static void epd_fill_device_name(gui_data_t *data) {
 }
 
 /**@brief GUI更新函数(由app_scheduler调度)
- *        GUI update function scheduled by app_scheduler
  *
  * @details 此函数处理完整的GUI更新过程,包括:
- *          1. 全刷/局刷决策
- *          2. 电池电压在整屏刷新前更新
- *          3. GUI渲染
- *          4. 显示刷新
+ * 1. 全刷/局刷决策
+ * 2. 电池电压在整屏刷新前更新
+ * 3. GUI渲染
+ * 4. 显示刷新
  *
- *          This function handles the complete GUI update process including:
- *          1. Full refresh vs partial refresh decision
- *          2. Refresh battery voltage before full-screen redraws
- *          3. GUI rendering
- *          4. Display refresh
- *
- * @param[in] p_event_data  epd_gui_update_event_t结构指针
+ * @param[in] p_event_data  epd_gui_update_event_t 结构指针
  * @param[in] event_size    事件数据大小
  */
 static void epd_gui_update(void* p_event_data, uint16_t event_size) {
     epd_gui_update_event_t* event = (epd_gui_update_event_t*)p_event_data;
     ble_epd_t* p_epd = event->p_epd;
-    uint16_t refresh_voltage_mv = 3300;  /* updated by battery guard, readable at finish_refresh */
+    uint16_t refresh_voltage_mv = 3300;  /* 由电量保护更新，结束刷新时可读 */
     bool critical_battery = false;
     bool low_battery = false;
     gui_data_t data;
@@ -462,16 +437,15 @@ static void epd_gui_update(void* p_event_data, uint16_t event_size) {
         return;
     }
 
-    // Set refreshing flag to prevent BLE disconnect from interrupting refresh
     // 设置刷新标志,防止BLE断开中断刷新过程
     // 当BLE断开时,on_disconnect会检查此标志,如果正在刷新则跳过sleep操作
     p_epd->is_refreshing = true;
     p_epd->last_refresh_start = event->timestamp;
 
-    app_feed_wdt();  // Feed watchdog at the beginning. 开始时喂狗
-    EPD_GPIO_Init();  // 初始化GPIO / Initialize GPIO
+    app_feed_wdt();  // 开始时喂狗
+    EPD_GPIO_Init();
     EPD_ClearBusyAbort();
-    UC8179_ClearBusyTimeout();  // Reset busy-timeout flag before each refresh cycle.
+    UC8179_ClearBusyTimeout();  // 每个刷新周期前清除忙超时标志
     epd_model_t* epd = p_epd->epd;
     if (epd == NULL) {
         epd = epd_get_model((epd_model_id_t)p_epd->config.model_id);
@@ -480,8 +454,7 @@ static void epd_gui_update(void* p_event_data, uint16_t event_size) {
             p_epd->force_full_refresh = true;
         }
     }
-    EPD_LED_OFF();  // Keep LED off during all refresh operations.
-                    // 所有刷新过程中保持LED熄灭。
+    EPD_LED_OFF();  // 刷新过程保持 LED 熄灭
 
     bool use_partial = false;
 
@@ -494,7 +467,7 @@ static void epd_gui_update(void* p_event_data, uint16_t event_size) {
     }
     low_battery = epd_battery_is_low(refresh_voltage_mv);
 
-    // ── Prepare GUI data ─────────────────────────────────────────────────────
+    // ── 准备 GUI 数据 ────────────────────────────────────────────────────────
     data = (gui_data_t){
         .mode        = mode,
         .color       = epd->color,
@@ -507,8 +480,8 @@ static void epd_gui_update(void* p_event_data, uint16_t event_size) {
     };
 
     /*
-     * UC8179 hardware OLD/NEW refresh is limited to the clock area.
-     * Low-battery and all other display modes use the single full-refresh path.
+     * UC8179 硬件 OLD/NEW 局刷仅用于时钟区。
+     * 低电量及其他显示模式走单一全刷路径。
      */
     {
         tm_t tm_now = {0};
@@ -596,10 +569,7 @@ finish_refresh:
 
     // ========================================================================
     // 刷新后处理
-    // Post-refresh handling
     // ========================================================================
-    // If BLE disconnected during refresh, put EPD to sleep now
-    // (on_disconnect skipped this to avoid interrupting refresh)
     // 如果刷新期间BLE断开,现在将EPD置于睡眠状态
     // (on_disconnect跳过了此操作以避免中断刷新)
     bool ble_disconnected = (p_epd->conn_handle == BLE_CONN_HANDLE_INVALID);
@@ -616,10 +586,9 @@ finish_refresh:
     if (power_down_display && epd->drv->sleep) {
         NRF_LOG_INFO("[EPD]: Powering down display until next refresh\n");
         epd->drv->sleep(epd);
-        nrf_delay_ms(200);  // for sleep. 等待睡眠生效
+        nrf_delay_ms(200);  // 等待睡眠生效
         p_epd->epd = NULL;
-        /* Keep the last timestamp so the next minute can wake with
-         * init_partial and still submit previous/current frames as OLD/NEW. */
+        /* 保留上次时间戳，下一分钟可用 init_partial 仍按 OLD/NEW 提交前后帧。 */
         if (!clock_mode || critical_battery) {
             p_epd->force_full_refresh = true;
             epd_clock_refresh_invalidate();
@@ -630,56 +599,49 @@ finish_refresh:
         sleep_mode_enter();
     }
 
-    EPD_GPIO_Uninit();  // 释放GPIO / Release GPIO
+    EPD_GPIO_Uninit();  // 释放GPIO
 
-    // Clear refreshing flag after refresh is complete
     // 刷新完成后清除刷新标志
     p_epd->is_refreshing = false;
 
-    app_feed_wdt();  // 最后喂狗 / Final watchdog feed
+    app_feed_wdt();  // 最后喂狗
 }
 
 /**@brief BLE连接事件处理函数
- *        Function for handling the @ref BLE_GAP_EVT_CONNECTED event from the S112 SoftDevice.
  *
  * @details 处理BLE连接事件:
- *          1. 保存连接句柄
- *          2. 初始化GPIO
- *          3. 闪烁LED一次表示连接成功
+ * 1. 保存连接句柄
+ * 2. 初始化GPIO
+ * 3. 闪烁LED一次表示连接成功
  *
- * @param[in] p_epd     EPD服务结构 / EPD Service structure
- * @param[in] p_ble_evt 从BLE协议栈接收的事件指针 / Pointer to the event received from BLE stack
+ * @param[in] p_epd  EPD服务结构
+ * @param[in] p_ble_evt 从BLE协议栈接收的事件指针
  */
 static void on_connect(ble_epd_t* p_epd, ble_evt_t* p_ble_evt) {
     p_epd->conn_handle = p_ble_evt->evt.gap_evt.conn_handle;
     EPD_GPIO_Init();
-    // Blink LED once on BLE connect
     // BLE连接时闪烁LED一次
     EPD_LED_BLINK();
 }
 
 /**@brief BLE断开事件处理函数
- *        Function for handling the @ref BLE_GAP_EVT_DISCONNECTED event from the S112 SoftDevice.
  *
  * @details 处理BLE断开事件:
- *          1. 重置连接句柄
- *          2. 如果正在刷新,跳过sleep和GPIO_Uninit(由epd_gui_update处理)
- *          3. 否则将EPD置于睡眠状态并释放GPIO
+ * 1. 重置连接句柄
+ * 2. 如果正在刷新,跳过sleep和GPIO_Uninit(由epd_gui_update处理)
+ * 3. 否则将EPD置于睡眠状态并释放GPIO
  *
- * @param[in] p_epd     EPD服务结构 / EPD Service structure
- * @param[in] p_ble_evt 从BLE协议栈接收的事件指针 / Pointer to the event received from BLE stack
+ * @param[in] p_epd  EPD服务结构
+ * @param[in] p_ble_evt 从BLE协议栈接收的事件指针
  */
 static void on_disconnect(ble_epd_t* p_epd, ble_evt_t* p_ble_evt) {
     UNUSED_PARAMETER(p_ble_evt);
     p_epd->conn_handle = BLE_CONN_HANDLE_INVALID;
     bool clock_mode = epd_is_clock_mode((display_mode_t)p_epd->config.display_mode);
 
-    // Blink LED once on BLE disconnect, even if the display is refreshing.
     // BLE断开时闪烁LED一次, 即使屏幕正在刷新。
     EPD_LED_BLINK();
 
-    // If screen refresh is in progress, skip sleep/GPIO_Uninit to avoid interrupting refresh
-    // The epd_gui_update function will handle GPIO_Uninit after refresh completes
     // 如果屏幕刷新正在进行,跳过sleep/GPIO_Uninit以避免中断刷新
     // epd_gui_update函数将在刷新完成后处理GPIO_Uninit
     if (p_epd->is_refreshing) {
@@ -688,11 +650,10 @@ static void on_disconnect(ble_epd_t* p_epd, ble_evt_t* p_ble_evt) {
         return;
     }
 
-    // Only put EPD to sleep if it has been initialized
     // 只有在EPD已初始化时才将其置于睡眠状态
     if (p_epd->epd != NULL) {
         p_epd->epd->drv->sleep(p_epd->epd);
-        nrf_delay_ms(200);  // for sleep. 等待睡眠生效
+        nrf_delay_ms(200);  // 等待睡眠生效
         EPD_GPIO_Uninit();
         p_epd->epd = NULL;
         if (!clock_mode) {
@@ -703,27 +664,24 @@ static void on_disconnect(ble_epd_t* p_epd, ble_evt_t* p_ble_evt) {
         epd_clock_refresh_invalidate();
     }
 
-    app_feed_wdt();  // Feed watchdog after disconnect operations. 断开操作后喂狗
+    app_feed_wdt();  // 断开处理后喂狗
 }
 
 /**@brief 更新显示模式(内部函数)
- *        Update display mode (internal function)
  *
  * @details 如果模式发生变化:
- *          1. 更新配置中的显示模式
- *          2. 写入配置到Flash
- *          3. 设置强制全刷标志,防止模式切换时残影
+ * 1. 更新配置中的显示模式
+ * 2. 写入配置到Flash
+ * 3. 设置强制全刷标志,防止模式切换时残影
  *
- * @param[in] p_epd  EPD服务结构指针 / Pointer to EPD Service structure
- * @param[in] mode   新的显示模式 / New display mode
+ * @param[in] p_epd  EPD服务结构指针
+ * @param[in] mode   新的显示模式
  */
 static void epd_update_display_mode(ble_epd_t* p_epd, display_mode_t mode) {
     if (p_epd->config.display_mode != mode) {
         p_epd->config.display_mode = mode;
         epd_config_write(&p_epd->config);
 
-        // When mode changes, force full refresh on next GUI update
-        // This prevents residual data when switching between modes
         // 模式变化时,下次GUI更新时强制全刷
         // 这防止了模式切换时的残影
         p_epd->force_full_refresh = true;
@@ -731,27 +689,28 @@ static void epd_update_display_mode(ble_epd_t* p_epd, display_mode_t mode) {
     }
 }
 
+/**@brief 离开时钟模式前切回全刷 Init，避免局刷状态干扰写图 */
 static void epd_switch_from_clock_mode(ble_epd_t* p_epd) {
-    if (p_epd->epd == NULL) return;  // EPD not initialized yet. EPD尚未初始化
+    if (p_epd->epd == NULL) return;  // EPD 尚未初始化
 
     if (epd_is_clock_mode((display_mode_t)p_epd->config.display_mode)) {
-        // Reinitialize the display to ensure it's in normal full-refresh mode
-        // This prevents partial mode state from interfering with direct write operations
         // 重新初始化显示屏以确保处于正常全刷模式
         // 这防止局刷状态干扰直接写入操作
         if (p_epd->epd->drv->init) {
             p_epd->epd->drv->init(p_epd->epd);
-            nrf_delay_ms(10);  // Give display time to reinitialize. 给显示屏时间重新初始化
+            nrf_delay_ms(10);  // 给显示屏重新初始化的时间
         }
     }
 }
 
+/* 退出时钟局刷并切到图片模式。 */
 static void epd_enter_picture_mode(ble_epd_t *p_epd)
 {
     epd_switch_from_clock_mode(p_epd);
     epd_update_display_mode(p_epd, MODE_PICTURE);
 }
 
+/* 拼 t=/v=/mtu= 通知串。 */
 static size_t epd_append_char(char* out, size_t out_size, size_t pos, char value) {
     if (out_size > 0 && pos < out_size - 1) {
         out[pos] = value;
@@ -759,6 +718,7 @@ static size_t epd_append_char(char* out, size_t out_size, size_t pos, char value
     return pos + 1;
 }
 
+/* 追加无前导零的十进制，超长时只计长度、不再写入。 */
 static size_t epd_append_uint(char* out, size_t out_size, size_t pos, uint32_t value) {
     char digits[10];
     uint8_t len = 0;
@@ -774,6 +734,7 @@ static size_t epd_append_uint(char* out, size_t out_size, size_t pos, uint32_t v
     return pos;
 }
 
+/* 生成 "t=123" / "v=3300" 这类前缀+数字串。 */
 static size_t epd_make_prefixed_uint(char* out, size_t out_size, const char* prefix, uint32_t value) {
     size_t pos = 0;
 
@@ -789,9 +750,8 @@ static size_t epd_make_prefixed_uint(char* out, size_t out_size, const char* pre
 }
 
 /**@brief 发送当前时间到BLE对端
- *        Send current time to BLE peer
  *
- * @param[in] p_epd  EPD服务结构指针 / Pointer to EPD Service structure
+ * @param[in] p_epd  EPD服务结构指针
  */
 static void epd_send_time(ble_epd_t* p_epd) {
     char buf[20] = {0};
@@ -800,9 +760,8 @@ static void epd_send_time(ble_epd_t* p_epd) {
 }
 
 /**@brief 发送当前电池电压到BLE对端
- *        Send current battery voltage to BLE peer
  *
- * @param[in] p_epd  EPD服务结构指针 / Pointer to EPD service structure
+ * @param[in] p_epd  EPD服务结构指针
  */
 static void epd_send_voltage(ble_epd_t* p_epd) {
     char buf[16] = {0};
@@ -812,9 +771,8 @@ static void epd_send_voltage(ble_epd_t* p_epd) {
 }
 
 /**@brief 发送MTU大小到BLE对端
- *        Send MTU size to BLE peer
  *
- * @param[in] p_epd  EPD服务结构指针 / Pointer to EPD Service structure
+ * @param[in] p_epd  EPD服务结构指针
  */
 static void epd_send_mtu(ble_epd_t* p_epd) {
     char buf[10] = {0};
@@ -823,19 +781,15 @@ static void epd_send_mtu(ble_epd_t* p_epd) {
 }
 
 /**@brief 解析SET_TIME/SYNC_TIME_SILENT中的时间戳
- *        Parse timestamp payload used by SET_TIME and SYNC_TIME_SILENT
  *
  * @details 载荷格式:
- *          - [1..4]: Unix时间戳(大端序, UTC秒)
- *          - [5]:    时区偏移(小时, int8_t, 可选, 默认+8)
- *          Payload format:
- *          - [1..4]: Unix timestamp (big-endian, UTC seconds)
- *          - [5]:    Timezone offset in hours (int8_t, optional, defaults to +8)
+ * - [1..4]: Unix时间戳(大端序, UTC秒)
+ * - [5]:    时区偏移(小时, int8_t, 可选, 默认+8)
  *
- * @param[in] p_data  命令数据 / Command payload
- * @param[in] length  数据长度 / Payload length
+ * @param[in] p_data  命令数据
+ * @param[in] length  数据长度
  *
- * @return 本地时区修正后的时间戳 / Timestamp adjusted to local timezone
+ * @return 本地时区修正后的时间戳
  */
 static uint32_t epd_parse_time_payload(const uint8_t* p_data, uint16_t length) {
     uint32_t parsed_timestamp = ((uint32_t)p_data[1] << 24) |
@@ -846,7 +800,8 @@ static uint32_t epd_parse_time_payload(const uint8_t* p_data, uint16_t length) {
     return parsed_timestamp + (timezone_hours * 60 * 60);
 }
 
-static void cmd_set_pins(ble_epd_t *p_epd, uint8_t *p_data, uint16_t length) {
+static void cmd_set_pins(ble_epd_t *p_epd, uint8_t *p_data, uint16_t length) /* 改引脚映射并重开 GPIO */
+{
     if (length < 8) return;
     epd_config_t candidate = p_epd->config;
     candidate.mosi_pin = p_data[1];
@@ -865,7 +820,8 @@ static void cmd_set_pins(ble_epd_t *p_epd, uint8_t *p_data, uint16_t length) {
     app_feed_wdt();
 }
 
-static void cmd_init(ble_epd_t *p_epd, uint8_t *p_data, uint16_t length) {
+static void cmd_init(ble_epd_t *p_epd, uint8_t *p_data, uint16_t length) /* 初始化驱动，回 MTU/时间/电压 */
+{
     EPD_GPIO_Ensure();
     p_epd->epd = epd_init((epd_model_id_t)(length > 1 ? p_data[1] : p_epd->config.model_id));
     p_epd->force_full_refresh = true;
@@ -880,7 +836,8 @@ static void cmd_init(ble_epd_t *p_epd, uint8_t *p_data, uint16_t length) {
     app_feed_wdt();
 }
 
-static void cmd_clear(ble_epd_t *p_epd, uint8_t *p_data, uint16_t length) {
+static void cmd_clear(ble_epd_t *p_epd, uint8_t *p_data, uint16_t length) /* 清屏并进图片模式 */
+{
     if (!epd_ensure_display(p_epd)) return;
     if (epd_is_clock_mode((display_mode_t)p_epd->config.display_mode)) {
         NRF_LOG_INFO("Switch mode: clear\n");
@@ -890,7 +847,8 @@ static void cmd_clear(ble_epd_t *p_epd, uint8_t *p_data, uint16_t length) {
     app_feed_wdt();
 }
 
-static void cmd_send_command(ble_epd_t *p_epd, uint8_t *p_data, uint16_t length) {
+static void cmd_send_command(ble_epd_t *p_epd, uint8_t *p_data, uint16_t length) /* 透传控制器命令 */
+{
     if (length < 2) return;
     if (!epd_ensure_display(p_epd)) return;
     if (epd_is_clock_mode((display_mode_t)p_epd->config.display_mode)) {
@@ -901,7 +859,8 @@ static void cmd_send_command(ble_epd_t *p_epd, uint8_t *p_data, uint16_t length)
     app_feed_wdt();
 }
 
-static void cmd_send_data(ble_epd_t *p_epd, uint8_t *p_data, uint16_t length) {
+static void cmd_send_data(ble_epd_t *p_epd, uint8_t *p_data, uint16_t length) /* 透传控制器数据 */
+{
     if (!epd_ensure_display(p_epd)) return;
     if (epd_is_clock_mode((display_mode_t)p_epd->config.display_mode)) {
         NRF_LOG_INFO("Switch mode: data\n");
@@ -911,7 +870,8 @@ static void cmd_send_data(ble_epd_t *p_epd, uint8_t *p_data, uint16_t length) {
     app_feed_wdt();
 }
 
-static void cmd_refresh(ble_epd_t *p_epd, uint8_t *p_data, uint16_t length) {
+static void cmd_refresh(ble_epd_t *p_epd, uint8_t *p_data, uint16_t length) /* 刷新显存到屏幕 */
+{
     (void)p_data; (void)length;
     if (!epd_ensure_display(p_epd)) return;
     EPD_ClearBusyAbort();
@@ -921,7 +881,8 @@ static void cmd_refresh(ble_epd_t *p_epd, uint8_t *p_data, uint16_t length) {
     app_feed_wdt();
 }
 
-static void cmd_sleep(ble_epd_t *p_epd, uint8_t *p_data, uint16_t length) {
+static void cmd_sleep(ble_epd_t *p_epd, uint8_t *p_data, uint16_t length) /* 面板睡眠 */
+{
     (void)p_data; (void)length;
     if (p_epd->epd == NULL) return;
     p_epd->epd->drv->sleep(p_epd->epd);
@@ -931,7 +892,8 @@ static void cmd_sleep(ble_epd_t *p_epd, uint8_t *p_data, uint16_t length) {
     app_feed_wdt();
 }
 
-static void cmd_set_time(ble_epd_t *p_epd, uint8_t *p_data, uint16_t length) {
+static void cmd_set_time(ble_epd_t *p_epd, uint8_t *p_data, uint16_t length) /* 校时（可带模式），受频率限制 */
+{
     epd_set_time_action_t action;
     bool rate_limited;
     bool mode_changed = false;
@@ -968,7 +930,8 @@ static void cmd_set_time(ble_epd_t *p_epd, uint8_t *p_data, uint16_t length) {
     app_feed_wdt();
 }
 
-static void cmd_sync_time_silent(ble_epd_t *p_epd, uint8_t *p_data, uint16_t length) {
+static void cmd_sync_time_silent(ble_epd_t *p_epd, uint8_t *p_data, uint16_t length) /* 只改时间戳，不刷新 */
+{
     if (length < 5) return;
     uint32_t ts = epd_parse_time_payload(p_data, length);
     set_timestamp(ts);
@@ -978,7 +941,8 @@ static void cmd_sync_time_silent(ble_epd_t *p_epd, uint8_t *p_data, uint16_t len
     app_feed_wdt();
 }
 
-static void cmd_set_week_start(ble_epd_t *p_epd, uint8_t *p_data, uint16_t length) {
+static void cmd_set_week_start(ble_epd_t *p_epd, uint8_t *p_data, uint16_t length) /* 0=周日，立即写配置 */
+{
     if (length < 2) return;
     if (p_data[1] < 7 && p_data[1] != p_epd->config.week_start) {
         p_epd->config.week_start = p_data[1];
@@ -987,7 +951,8 @@ static void cmd_set_week_start(ble_epd_t *p_epd, uint8_t *p_data, uint16_t lengt
     app_feed_wdt();
 }
 
-static void cmd_set_mode(ble_epd_t *p_epd, uint8_t *p_data, uint16_t length) {
+static void cmd_set_mode(ble_epd_t *p_epd, uint8_t *p_data, uint16_t length) /* 切显示模式并立刻刷新 */
+{
     if (length < 2) return;
     if (epd_display_mode_valid(p_data[1])) {
         display_mode_t new_mode = (display_mode_t)p_data[1];
@@ -1003,7 +968,8 @@ static void cmd_set_mode(ble_epd_t *p_epd, uint8_t *p_data, uint16_t length) {
     app_feed_wdt();
 }
 
-static void cmd_write_image(ble_epd_t *p_epd, uint8_t *p_data, uint16_t length) {
+static void cmd_write_image(ble_epd_t *p_epd, uint8_t *p_data, uint16_t length) /* 旧版无 CRC 写 RAM */
+{
     if (length < 3) return;
     if (epd_picture_write_blocked(p_epd->is_refreshing)) return;
     if (!epd_ensure_display(p_epd)) return;
@@ -1016,7 +982,8 @@ static void cmd_write_image(ble_epd_t *p_epd, uint8_t *p_data, uint16_t length) 
     app_feed_wdt();
 }
 
-static void cmd_write_block(ble_epd_t *p_epd, uint8_t *p_data, uint16_t length) {
+static void cmd_write_block(ble_epd_t *p_epd, uint8_t *p_data, uint16_t length) /* CRC 分块顺序写入 */
+{
     uint16_t block_id;
 
     if (length < 8) return;
@@ -1106,50 +1073,54 @@ static void cmd_write_block(ble_epd_t *p_epd, uint8_t *p_data, uint16_t length) 
     app_feed_wdt();
 }
 
-static void cmd_query_status(ble_epd_t *p_epd, uint8_t *p_data, uint16_t length) {
+static void cmd_query_status(ble_epd_t *p_epd, uint8_t *p_data, uint16_t length) /* 回传传输进度 */
+{
     (void)p_data; (void)length;
     send_transfer_status(p_epd);
 }
 
-static void cmd_reset_transfer(ble_epd_t *p_epd, uint8_t *p_data, uint16_t length) {
+static void cmd_reset_transfer(ble_epd_t *p_epd, uint8_t *p_data, uint16_t length) /* 清传输状态并打断时钟忙等 */
+{
     memset(&p_epd->transfer_ctx, 0, sizeof(image_transfer_ctx_t));
     if (length > 1) {
         p_epd->transfer_ctx.session_id = p_data[1];
     }
-    /* Hold clock ticks without flipping display_mode. First WRITE_BLOCK
-     * still sees clock mode and runs the full-refresh Init that leaves
-     * the partial window. */
+    /* 卡住时钟节拍但不改 display_mode。首块 WRITE_BLOCK 仍视为时钟模式，
+     * 走全刷 Init，从而退出局刷窗口。 */
     p_epd->transfer_ctx.transfer_active = true;
     EPD_RequestBusyAbort();
     epd_clock_refresh_invalidate();
     NRF_LOG_INFO("[EPD]: Transfer state reset, session_id=%d\n", p_epd->transfer_ctx.session_id);
 }
 
-static void cmd_set_config(ble_epd_t *p_epd, uint8_t *p_data, uint16_t length) {
+static void cmd_set_config(ble_epd_t *p_epd, uint8_t *p_data, uint16_t length) /* 整包配置写入并全刷 */
+{
     if (length < 2) return;
     memcpy(&p_epd->config, &p_data[1], (length - 1 > EPD_CONFIG_SIZE) ? EPD_CONFIG_SIZE : length - 1);
     epd_config_write(&p_epd->config);
 
-    // Always force full refresh and trigger update when config is updated,
-    // so any changes (mode, week_start, etc.) are immediately visible.
+    // 配置更新后强制全刷并立刻刷新，使模式、周起始日等马上可见。
     p_epd->force_full_refresh = true;
     ble_epd_on_timer(p_epd, timestamp(), true);
 
     app_feed_wdt();
 }
 
-static void cmd_sys_sleep(ble_epd_t *p_epd, uint8_t *p_data, uint16_t length) {
+static void cmd_sys_sleep(ble_epd_t *p_epd, uint8_t *p_data, uint16_t length) /* MCU 睡眠 */
+{
     (void)p_epd; (void)p_data; (void)length;
     sleep_mode_enter();
     app_feed_wdt();
 }
 
-static void cmd_sys_reset(ble_epd_t *p_epd, uint8_t *p_data, uint16_t length) {
+static void cmd_sys_reset(ble_epd_t *p_epd, uint8_t *p_data, uint16_t length) /* MCU 复位 */
+{
     (void)p_epd; (void)p_data; (void)length;
     nrf_pwr_mgmt_shutdown(NRF_PWR_MGMT_SHUTDOWN_RESET);
 }
 
-static void cmd_cfg_erase(ble_epd_t *p_epd, uint8_t *p_data, uint16_t length) {
+static void cmd_cfg_erase(ble_epd_t *p_epd, uint8_t *p_data, uint16_t length) /* 擦配置并复位 */
+{
     (void)p_data; (void)length;
     epd_config_clear(&p_epd->config);
     nrf_delay_ms(100);
@@ -1157,24 +1128,23 @@ static void cmd_cfg_erase(ble_epd_t *p_epd, uint8_t *p_data, uint16_t length) {
 }
 
 /**@brief 执行单个命令(由队列处理器调用)
- *        Execute a single command (called by queue processor)
  *
  * @details 此函数是所有EPD命令的核心处理函数。
- *          它根据命令ID执行相应的操作,包括:
- *          - 引脚配置 (EPD_CMD_SET_PINS)
- *          - 初始化 (EPD_CMD_INIT)
- *          - 清屏 (EPD_CMD_CLEAR)
- *          - 发送命令/数据 (EPD_CMD_SEND_COMMAND/DATA)
- *          - 刷新 (EPD_CMD_REFRESH)
- *          - 睡眠 (EPD_CMD_SLEEP)
- *          - 设置时间 (EPD_CMD_SET_TIME)
- *          - 设置模式 (EPD_CMD_SET_MODE)
- *          - 写入图像 (EPD_CMD_WRITE_IMAGE)
- *          - 系统控制 (EPD_CMD_SYS_RESET/SLEEP/CFG_ERASE)
+ * 它根据命令ID执行相应的操作,包括:
+ * - 引脚配置 (EPD_CMD_SET_PINS)
+ * - 初始化 (EPD_CMD_INIT)
+ * - 清屏 (EPD_CMD_CLEAR)
+ * - 发送命令/数据 (EPD_CMD_SEND_COMMAND/DATA)
+ * - 刷新 (EPD_CMD_REFRESH)
+ * - 睡眠 (EPD_CMD_SLEEP)
+ * - 设置时间 (EPD_CMD_SET_TIME)
+ * - 设置模式 (EPD_CMD_SET_MODE)
+ * - 写入图像 (EPD_CMD_WRITE_IMAGE)
+ * - 系统控制 (EPD_CMD_SYS_RESET/SLEEP/CFG_ERASE)
  *
- * @param[in] p_epd   EPD服务结构指针 / Pointer to EPD service structure
- * @param[in] p_data  命令数据指针 / Pointer to command data
- * @param[in] length  命令数据长度 / Length of command data
+ * @param[in] p_epd  EPD服务结构指针
+ * @param[in] p_data  命令数据指针
+ * @param[in] length  命令数据长度
  */
 static void epd_execute_command(ble_epd_t* p_epd, uint8_t* p_data, uint16_t length) {
     if (p_data == NULL || length == 0) return;
@@ -1186,7 +1156,6 @@ static void epd_execute_command(ble_epd_t* p_epd, uint8_t* p_data, uint16_t leng
         NRF_LOG_HEXDUMP_DEBUG(p_data, length);
     }
 
-    // Feed watchdog before command execution
     // 命令执行前喂狗
     app_feed_wdt();
 
@@ -1213,7 +1182,6 @@ static void epd_execute_command(ble_epd_t* p_epd, uint8_t* p_data, uint16_t leng
         default: break;
     }
 
-    // Feed watchdog after command execution
     // 命令执行后喂狗
     app_feed_wdt();
     if (!is_bulk_data_command(p_data[0])) {
@@ -1222,60 +1190,46 @@ static void epd_execute_command(ble_epd_t* p_epd, uint8_t* p_data, uint16_t leng
 }
 
 /**@brief 处理队列中的下一个命令(由app_scheduler调度)
- *        Process next command from queue (scheduled by app_scheduler)
  *
  * @details 此函数是命令队列处理的核心:
- *          1. 从队列中弹出一个命令
- *          2. 执行该命令
- *          3. 如果队列还有命令,调度下一次处理
- *          4. 队列为空时标记处理完成
+ * 1. 从队列中弹出一个命令
+ * 2. 执行该命令
+ * 3. 如果队列还有命令,调度下一次处理
+ * 4. 队列为空时标记处理完成
  *
- *          This function is the core of command queue processing:
- *          1. Pop one command from queue
- *          2. Execute the command
- *          3. If queue has more commands, schedule next processing
- *          4. Mark processing complete when queue is empty
  *
  * @param[in] p_event_data  EPD服务结构指针的指针(复制的数据)
- * @param[in] event_size    事件数据大小
+ * @param[in] event_size  事件数据大小
  */
 static void epd_process_next_command(void* p_event_data, uint16_t event_size) {
-    // Extract the pointer from the copied data
     // 从复制的数据中提取指针
     ble_epd_t* p_epd = *((ble_epd_t**)p_event_data);
     epd_cmd_queue_item_t cmd_item;
 
-    // Mark as processing
     // 标记正在处理
     p_epd->cmd_queue.is_processing = true;
 
-    // Pop one command from queue
     // 从队列中弹出一个命令
     if (epd_cmd_queue_pop(&p_epd->cmd_queue, &cmd_item)) {
         NRF_LOG_INFO("[EPD]: Processing queued command 0x%02x (remaining=%d)\n",
                      cmd_item.cmd, p_epd->cmd_queue.count);
 
-        // Execute the command
         // 执行命令
         epd_execute_command(p_epd, cmd_item.data, cmd_item.length);
 
-        // Feed watchdog between commands
         // 命令间喂狗
         app_feed_wdt();
 
-        // If queue still has commands, schedule next one
         // 如果队列还有命令,调度下一个
         if (p_epd->cmd_queue.count > 0) {
             NRF_LOG_DEBUG("[EPD]: Scheduling next command (queue count=%d)\n", p_epd->cmd_queue.count);
             app_sched_event_put(&p_epd, sizeof(ble_epd_t*), epd_process_next_command);
         } else {
-            // Queue is empty, mark processing complete
             // 队列为空,标记处理完成
             p_epd->cmd_queue.is_processing = false;
             NRF_LOG_INFO("[EPD]: Command queue empty, all commands processed\n");
         }
     } else {
-        // Queue is empty
         // 队列为空
         p_epd->cmd_queue.is_processing = false;
         NRF_LOG_DEBUG("[EPD]: Queue empty in process_next_command\n");
@@ -1283,21 +1237,16 @@ static void epd_process_next_command(void* p_event_data, uint16_t event_size) {
 }
 
 /**@brief 服务写入处理包装函数(将命令入队或执行)
- *        Service write handler wrapper (queues or executes commands)
  *
  * @details 此函数是BLE写入的入口点:
- *          1. 紧急命令绕过队列立即执行
- *          2. 普通命令添加到队列
- *          3. 如果队列未在处理,启动队列处理
+ * 1. 紧急命令绕过队列立即执行
+ * 2. 普通命令添加到队列
+ * 3. 如果队列未在处理,启动队列处理
  *
- *          This function is the entry point for BLE writes:
- *          1. Urgent commands bypass queue and execute immediately
- *          2. Normal commands are added to queue
- *          3. If queue is not processing, start queue processing
  *
- * @param[in] p_epd   EPD服务结构指针 / Pointer to EPD service structure
- * @param[in] p_data  命令数据指针 / Pointer to command data
- * @param[in] length  命令数据长度 / Length of command data
+ * @param[in] p_epd  EPD服务结构指针
+ * @param[in] p_data  命令数据指针
+ * @param[in] length  命令数据长度
  */
 static void epd_service_on_write(ble_epd_t* p_epd, uint8_t* p_data, uint16_t length) {
     if (p_data == NULL || length == 0) return;
@@ -1309,7 +1258,6 @@ static void epd_service_on_write(ble_epd_t* p_epd, uint8_t* p_data, uint16_t len
         ble_log("[CMD]:%02x/%d", p_data[0], length);
     }
 
-    // Urgent commands bypass queue and execute immediately
     // 紧急命令绕过队列立即执行
     if (is_urgent_command(p_data[0]) || epd_cmd_is_immediate(p_data[0])) {
         if (!is_bulk_data_command(p_data[0])) {
@@ -1319,13 +1267,11 @@ static void epd_service_on_write(ble_epd_t* p_epd, uint8_t* p_data, uint16_t len
         return;
     }
 
-    // Normal commands: add to queue
     // 普通命令:添加到队列
     if (epd_cmd_queue_push(&p_epd->cmd_queue, p_data, length)) {
         NRF_LOG_DEBUG("[EPD]: Command 0x%02x added to queue (count=%d, processing=%d)\n",
                       p_data[0], p_epd->cmd_queue.count, p_epd->cmd_queue.is_processing);
 
-        // If no command is currently being processed, start processing
         // 如果当前没有命令正在处理,开始处理
         if (!p_epd->cmd_queue.is_processing) {
             NRF_LOG_DEBUG("[EPD]: Starting command queue processing\n");
@@ -1337,28 +1283,22 @@ static void epd_service_on_write(ble_epd_t* p_epd, uint8_t* p_data, uint16_t len
 }
 
 /**@brief BLE GATTS写入事件处理函数
- *        Function for handling the @ref BLE_GATTS_EVT_WRITE event from the S112 SoftDevice.
  *
  * @details 处理两种类型的写入:
- *          1. CCCD写入:启用/禁用通知,启用时发送配置
- *          2. 特性值写入:调用命令处理函数
+ * 1. CCCD写入:启用/禁用通知,启用时发送配置
+ * 2. 特性值写入:调用命令处理函数
  *
- *          Handles two types of writes:
- *          1. CCCD write: enable/disable notifications, send config when enabled
- *          2. Characteristic value write: call command handler
  *
- * @param[in] p_epd     EPD服务结构 / EPD Service structure
- * @param[in] p_ble_evt 从BLE协议栈接收的事件指针 / Pointer to the event received from BLE stack
+ * @param[in] p_epd  EPD服务结构
+ * @param[in] p_ble_evt 从BLE协议栈接收的事件指针
  */
 static void on_write(ble_epd_t* p_epd, ble_evt_t* p_ble_evt) {
     ble_gatts_evt_write_t* p_evt_write = &p_ble_evt->evt.gatts_evt.params.write;
 
     // 检查是否是CCCD写入(通知启用/禁用)
-    // Check if this is a CCCD write (notification enable/disable)
     if ((p_evt_write->handle == p_epd->char_handles.cccd_handle) && (p_evt_write->len == 2)) {
         if (ble_srv_is_notification_enabled(p_evt_write->data)) {
             // 通知已启用,发送配置给对端
-            // Notification enabled, send config to peer
             NRF_LOG_DEBUG("notification enabled\n");
             p_epd->is_notification_enabled = true;
             ble_log("[SYS]:mtu=%d rst=0x%X", p_epd->max_data_len, get_reset_reason());
@@ -1366,8 +1306,8 @@ static void on_write(ble_epd_t* p_epd, ble_evt_t* p_ble_evt) {
             NRF_LOG_DEBUG("send epd config\n");
             uint32_t err_code = ble_epd_string_send(p_epd, (uint8_t*)&p_epd->config, length);
             if (err_code != NRF_ERROR_INVALID_STATE) APP_ERROR_CHECK(err_code);
-            /* Report MTU/voltage without INIT so the web client can size
-             * WRITE_BLOCK. Default HTML MTU=20 would exceed EPD_MAX_BLOCKS. */
+            /* 未 INIT 也上报 MTU/电压，供网页端计算 WRITE_BLOCK 分块。
+             * 默认 HTML MTU=20 会超出 EPD_MAX_BLOCKS。 */
             epd_send_mtu(p_epd);
             epd_send_voltage(p_epd);
         } else {
@@ -1375,19 +1315,16 @@ static void on_write(ble_epd_t* p_epd, ble_evt_t* p_ble_evt) {
         }
     } else if (p_evt_write->handle == p_epd->char_handles.value_handle) {
         // 特性值写入,处理命令
-        // Characteristic value write, handle command
         epd_service_on_write(p_epd, p_evt_write->data, p_evt_write->len);
     } else {
-        // Do Nothing. This event is not relevant for this service.
         // 不做任何事。此事件与此服务无关。
     }
 }
 
 /**@brief nRF52811的BLE事件处理函数
- *        BLE event handler for nRF52811
  *
- * @param[in] p_ble_evt  BLE事件指针 / Pointer to BLE event
- * @param[in] p_context  上下文指针(EPD服务结构) / Context pointer (EPD service structure)
+ * @param[in] p_ble_evt  BLE事件指针
+ * @param[in] p_context  上下文指针(EPD服务结构)
  */
 void ble_epd_evt_handler(ble_evt_t const* p_ble_evt, void* p_context) {
     if (p_context == NULL || p_ble_evt == NULL) return;
@@ -1397,15 +1334,14 @@ void ble_epd_evt_handler(ble_evt_t const* p_ble_evt, void* p_context) {
 }
 
 /**@brief BLE事件处理函数
- *        BLE event handler
  *
  * @details 分发BLE事件到相应的处理函数:
- *          - BLE_GAP_EVT_CONNECTED: 连接事件
- *          - BLE_GAP_EVT_DISCONNECTED: 断开事件
- *          - BLE_GATTS_EVT_WRITE: 写入事件
+ * - BLE_GAP_EVT_CONNECTED: 连接事件
+ * - BLE_GAP_EVT_DISCONNECTED: 断开事件
+ * - BLE_GATTS_EVT_WRITE: 写入事件
  *
- * @param[in] p_epd     EPD服务结构 / EPD Service structure
- * @param[in] p_ble_evt BLE事件指针 / Pointer to BLE event
+ * @param[in] p_epd  EPD服务结构
+ * @param[in] p_ble_evt BLE事件指针
  */
 void ble_epd_on_ble_evt(ble_epd_t* p_epd, ble_evt_t* p_ble_evt) {
     if ((p_epd == NULL) || (p_ble_evt == NULL)) {
@@ -1426,28 +1362,21 @@ void ble_epd_on_ble_evt(ble_epd_t* p_epd, ble_evt_t* p_ble_evt) {
             break;
 
         default:
-            // No implementation needed.
             // 无需实现。
             break;
     }
 }
 
 /**@brief 初始化BLE服务(内部函数)
- *        Initialize BLE service (internal function)
  *
  * @details 初始化BLE服务,包括:
- *          1. 注册自定义UUID
- *          2. 添加主服务
- *          3. 添加EPD特性(可写、可通知)
- *          4. 添加应用版本特性(只读)
+ * 1. 注册自定义UUID
+ * 2. 添加主服务
+ * 3. 添加EPD特性(可写、可通知)
+ * 4. 添加应用版本特性(只读)
  *
- *          Initialize BLE service, including:
- *          1. Register custom UUID
- *          2. Add primary service
- *          3. Add EPD characteristic (writable, notifiable)
- *          4. Add app version characteristic (read-only)
  *
- * @param[in] p_epd  EPD服务结构指针 / Pointer to EPD Service structure
+ * @param[in] p_epd  EPD服务结构指针
  *
  * @return 成功返回NRF_SUCCESS,否则返回错误代码
  */
@@ -1457,24 +1386,23 @@ static uint32_t epd_service_init(ble_epd_t* p_epd) {
     ble_add_char_params_t add_char_params;
     uint8_t app_version = APP_VERSION;
 
-    // 注册自定义UUID / Register custom UUID
+    // 注册自定义UUID
     VERIFY_SUCCESS(sd_ble_uuid_vs_add(&base_uuid, &ble_uuid.type));
 
-    // 添加主服务 / Add primary service
+    // 添加主服务
     ble_uuid.uuid = BLE_UUID_EPD_SVC;
     VERIFY_SUCCESS(sd_ble_gatts_service_add(BLE_GATTS_SRVC_TYPE_PRIMARY, &ble_uuid, &p_epd->service_handle));
 
     // 添加EPD特性(可写、可通知)
-    // Add EPD characteristic (writable, notifiable)
     memset(&add_char_params, 0, sizeof(add_char_params));
     add_char_params.uuid = BLE_UUID_EPD_CHAR;
     add_char_params.uuid_type = ble_uuid.type;
     add_char_params.max_len = BLE_EPD_MAX_DATA_LEN;
     add_char_params.init_len = sizeof(uint8_t);
     add_char_params.is_var_len = true;
-    add_char_params.char_props.notify = 1;        // 支持通知 / Support notification
-    add_char_params.char_props.write = 1;         // 支持写入(带响应) / Support write with response
-    add_char_params.char_props.write_wo_resp = 1; // 支持写入(无响应) / Support write without response
+    add_char_params.char_props.notify = 1;  // 支持通知
+    add_char_params.char_props.write = 1;  // 支持写入(带响应)
+    add_char_params.char_props.write_wo_resp = 1;  // 支持写入(无响应)
     add_char_params.read_access = SEC_OPEN;
     add_char_params.write_access = SEC_OPEN;
     add_char_params.cccd_write_access = SEC_OPEN;
@@ -1482,7 +1410,6 @@ static uint32_t epd_service_init(ble_epd_t* p_epd) {
     VERIFY_SUCCESS(characteristic_add(p_epd->service_handle, &add_char_params, &p_epd->char_handles));
 
     // 添加应用版本特性(只读)
-    // Add app version characteristic (read-only)
     memset(&add_char_params, 0, sizeof(add_char_params));
     add_char_params.uuid = BLE_UUID_APP_VER;
     add_char_params.uuid_type = ble_uuid.type;
@@ -1496,109 +1423,88 @@ static uint32_t epd_service_init(ble_epd_t* p_epd) {
 }
 
 /**@brief 准备睡眠模式
- *        Prepare for sleep mode
  *
  * @details 进入睡眠模式前的准备:
- *          1. 关闭LED
- *          2. 配置唤醒引脚
+ * 1. 关闭LED
+ * 2. 配置唤醒引脚
  *
- *          Preparation before entering sleep mode:
- *          1. Turn off LED
- *          2. Configure wakeup pin
  *
- * @param[in] p_epd  EPD服务结构指针 / Pointer to EPD Service structure
+ * @param[in] p_epd  EPD服务结构指针
  */
 void ble_epd_sleep_prepare(ble_epd_t* p_epd) {
-    // Turn off led. 关闭LED
     EPD_LED_OFF();
-    // Prepare wakeup pin. 准备唤醒引脚
+    // 配置唤醒脚
     if (p_epd->config.wakeup_pin != 0xFF) {
         nrf_gpio_cfg_sense_input(p_epd->config.wakeup_pin, NRF_GPIO_PIN_NOPULL, NRF_GPIO_PIN_SENSE_HIGH);
     }
 }
 
 /**@brief 初始化EPD服务
- *        Initialize EPD Service
  *
  * @details 初始化EPD服务的完整流程:
- *          1. 初始化服务结构
- *          2. 初始化命令队列
- *          3. 加载或创建默认配置
- *          4. 初始化GPIO和EPD驱动
- *          5. 添加BLE服务
+ * 1. 初始化服务结构
+ * 2. 初始化命令队列
+ * 3. 加载或创建默认配置
+ * 4. 初始化GPIO和EPD驱动
+ * 5. 添加BLE服务
  *
- *          Complete initialization process:
- *          1. Initialize service structure
- *          2. Initialize command queue
- *          3. Load or create default config
- *          4. Initialize GPIO and EPD driver
- *          5. Add BLE service
  *
- * @param[in] p_epd  EPD服务结构指针 / Pointer to EPD Service structure
+ * @param[in] p_epd  EPD服务结构指针
  *
  * @return 成功返回NRF_SUCCESS,否则返回错误代码
  */
 uint32_t ble_epd_init(ble_epd_t* p_epd) {
     if (p_epd == NULL) return NRF_ERROR_NULL;
 
-    // Initialize the service structure.
     // 初始化服务结构
     p_epd->max_data_len = BLE_EPD_MAX_DATA_LEN;
     memset(&p_epd->transfer_ctx, 0, sizeof(p_epd->transfer_ctx));
     p_epd->conn_handle = BLE_CONN_HANDLE_INVALID;
     p_epd->is_notification_enabled = false;
-    p_epd->force_full_refresh = false;  // Initialize force refresh flag. 初始化强制刷新标志
-    p_epd->last_full_clear    = 0;      // No full refresh yet. 尚未全刷
-    p_epd->is_refreshing = false;       // Initialize refreshing flag. 初始化刷新中标志
+    p_epd->force_full_refresh = false;
+    p_epd->last_full_clear    = 0;  // 尚未全刷
+    p_epd->is_refreshing = false;
     p_epd->low_battery_screen_active = false;
-    p_epd->last_refresh_start = 0;            // No refresh yet. 尚未刷新
-    p_epd->last_set_time_ts = 0;             // No SET_TIME yet. 尚未校时
+    p_epd->last_refresh_start = 0;
+    p_epd->last_set_time_ts = 0;
 
-    // Initialize command queue
     // 初始化命令队列
     epd_cmd_queue_init(&p_epd->cmd_queue);
 
     // 初始化并读取配置
-    // Initialize and read config
     epd_config_init(&p_epd->config);
     epd_config_read(&p_epd->config);
 
-    // write default config
     // 如果配置为空,写入默认配置
     if (epd_config_empty(&p_epd->config)) {
         uint8_t cfg[] = EPD_CFG_52811;
         memcpy(&p_epd->config, cfg, sizeof(cfg));
-        // 设置默认值 / Set default values
+        // 设置默认值
         if (p_epd->config.display_mode == 0xFF) p_epd->config.display_mode = MODE_CLOCK_CALENDAR;
         if (p_epd->config.week_start == 0xFF) p_epd->config.week_start = 0;
         if (p_epd->config.full_refresh_minutes == 0xFF) p_epd->config.full_refresh_minutes = 0;  // 0 = hourly (60 min)
         epd_config_write(&p_epd->config);
     }
 
-    // load config
     // 加载配置
     EPD_GPIO_Load(&p_epd->config);
 
-    // Add the service.
     // 添加BLE服务
     return epd_service_init(p_epd);
 }
 
 /**@brief 通过BLE发送字符串
- *        Send a string via BLE
  *
  * @details 将字符串作为通知发送给BLE对端。
- *          Sends the input string as a notification to the BLE peer.
  *
- * @param[in] p_epd     EPD服务结构指针 / Pointer to EPD Service structure
- * @param[in] p_string  要发送的字符串 / String to be sent
- * @param[in] length    字符串长度 / Length of the string
+ * @param[in] p_epd    EPD服务结构指针
+ * @param[in] p_string 要发送的字符串
+ * @param[in] length   字符串长度
  *
  * @return 成功返回NRF_SUCCESS,否则返回错误代码
  */
 uint32_t ble_epd_string_send(ble_epd_t* p_epd, uint8_t* p_string, uint16_t length) {
     // 检查连接状态和通知是否启用
-    // Check connection state and if notification is enabled
     if ((p_epd->conn_handle == BLE_CONN_HANDLE_INVALID) || (!p_epd->is_notification_enabled))
         return NRF_ERROR_INVALID_STATE;
     if (length > p_epd->max_data_len) return NRF_ERROR_INVALID_PARAM;
@@ -1628,23 +1534,16 @@ uint32_t ble_epd_string_send(ble_epd_t* p_epd, uint8_t* p_string, uint16_t lengt
 }
 
 /**@brief 定时器事件处理函数,触发GUI更新
- *        Timer event handler, triggers GUI update
  *
  * @details 定期调用以根据当前模式更新显示:
- *          - MODE_CALENDAR: 每天00:00:00更新 (timestamp % 86400 == 0)
- *          - MODE_CLOCK: 每分钟更新 (timestamp % 60 == 0)
- *          - MODE_CLOCK_CALENDAR: 每分钟更新 (timestamp % 60 == 0)
- *          - force_update为true时强制更新
+ * - MODE_CALENDAR: 每天00:00:00更新 (timestamp % 86400 == 0)
+ * - MODE_CLOCK: 每分钟更新 (timestamp % 60 == 0)
+ * - MODE_CLOCK_CALENDAR: 每分钟更新 (timestamp % 60 == 0)
+ * - force_update为true时强制更新
  *
- *          Called periodically to update the display based on current mode:
- *          - MODE_CALENDAR: Updates daily at 00:00:00
- *          - MODE_CLOCK: Updates every minute
- *          - MODE_CLOCK_CALENDAR: Updates every minute
- *          - Forces update when force_update is true
- *
- * @param[in] p_epd         EPD服务结构指针 / Pointer to EPD Service structure
- * @param[in] timestamp     当前Unix时间戳 / Current Unix timestamp
- * @param[in] force_update  如果为true强制更新 / If true, force update regardless of mode
+ * @param[in] p_epd         EPD服务结构指针
+ * @param[in] timestamp     当前Unix时间戳
+ * @param[in] force_update  为true时强制更新
  */
 void ble_epd_on_timer(ble_epd_t* p_epd, uint32_t timestamp, bool force_update) {
     // 低电量保持：停周期刷新，仍显示月历/时钟。每 LOW_BATTERY_POLL_INTERVAL_S
@@ -1668,7 +1567,7 @@ void ble_epd_on_timer(ble_epd_t* p_epd, uint32_t timestamp, bool force_update) {
             if (!epd_battery_is_low(voltage_mv)) {
                 p_epd->low_battery_screen_active = false;
                 p_epd->force_full_refresh = true;
-                // Immediately schedule a GUI update to redraw the normal screen with a full refresh
+                // 立刻调度 GUI 更新，全刷恢复正常界面
                 epd_gui_update_event_t event = {p_epd, timestamp};
                 uint32_t err_code = app_sched_event_put(&event, sizeof(epd_gui_update_event_t), epd_gui_update);
                 if (err_code != NRF_SUCCESS) {

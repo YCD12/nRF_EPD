@@ -4,8 +4,8 @@
 #include <stdbool.h>
 #include <stdint.h>
 
-/* Same thresholds as EPD_driver.h. Kept here so host tests do not pull the
- * driver. If EPD_driver.h is included first, these stay unused. */
+/* 阈值与 EPD_driver.h 一致。单独放在此头，避免主机测试拉入驱动。
+ * 若已先包含 EPD_driver.h，这些宏不会被重复定义。 */
 #ifndef LOW_BATTERY_THRESHOLD_MV
 #define LOW_BATTERY_THRESHOLD_MV 2800
 #endif
@@ -16,29 +16,32 @@
 #define LOW_BATTERY_LED_BLINK_INTERVAL_S 30
 #endif
 
+/* <= 2.80 V：低电量保持 */
 static inline bool epd_battery_is_low(uint16_t voltage_mv)
 {
     return voltage_mv <= (uint16_t)LOW_BATTERY_THRESHOLD_MV;
 }
 
+/* < 2.70 V：临界，画完最后一帧后关机 */
 static inline bool epd_battery_is_critical(uint16_t voltage_mv)
 {
     return voltage_mv < (uint16_t)CRITICAL_BATTERY_SHUTDOWN_MV;
 }
 
-/* Option A: keep calendar/clock. Header voltage text stays visible. */
+/* 方案 A：保留月历/时钟布局，头部电压文字仍可见。 */
 static inline bool epd_battery_replaces_gui(uint16_t voltage_mv)
 {
     (void)voltage_mv;
     return false;
 }
 
+/* 低电量时不用时钟局刷，避免波形功耗 */
 static inline bool epd_battery_allows_clock_partial(uint16_t voltage_mv)
 {
     return !epd_battery_is_low(voltage_mv);
 }
 
-/* One EPD_LED_BLINK per interval while low-battery hold is idle. */
+/* 低电量保持空闲时，每个间隔闪一次 LED。 */
 static inline bool epd_battery_should_blink_led(bool low_battery_hold, bool force_update,
                                                 uint32_t timestamp)
 {

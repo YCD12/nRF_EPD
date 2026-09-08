@@ -1,10 +1,12 @@
 #include "epd_refresh_policy.h"
 
+/* 夜间静默：01:00–05:59，周期全刷改为局刷。 */
 bool epd_refresh_in_quiet_hours(uint8_t hour)
 {
     return hour >= 1U && hour <= 5U;
 }
 
+/* 配置的全刷间隔（秒）。0 / 0xFF 表示每小时。 */
 uint32_t epd_refresh_full_interval_s(uint8_t full_refresh_minutes)
 {
     if (full_refresh_minutes == 0U || full_refresh_minutes == 0xFFU) {
@@ -13,6 +15,7 @@ uint32_t epd_refresh_full_interval_s(uint8_t full_refresh_minutes)
     return (uint32_t)full_refresh_minutes * 60U;
 }
 
+/* 日历每天 00:00；时钟每分钟。低电量/传图时不安排。 */
 epd_refresh_schedule_out_t epd_refresh_schedule(const epd_refresh_schedule_in_t *in)
 {
     epd_refresh_schedule_out_t out = {false, false};
@@ -36,10 +39,8 @@ epd_refresh_schedule_out_t epd_refresh_schedule(const epd_refresh_schedule_in_t 
         return out;
     }
 
-    /* Skip a duplicate periodic tick in the same minute (SET_TIME and the
-     * 1 Hz timer can both land on :00). Do not skip the next minute: a
-     * mid-minute enable at :16 is only 44s before :00, and the clock must
-     * still 局刷. */
+    /* 同一分钟内跳过重复的周期触发（SET_TIME 与 1 Hz 定时器都可能落在 :00）。
+     * 不要跳过下一分钟：若在 :16 中途使能，距 :00 仅 44 秒，时钟仍须局刷。 */
     if (!in->force_update && !out.force_full && in->last_refresh_start != 0U &&
         (in->timestamp / 60U) == (in->last_refresh_start / 60U)) {
         return out;
@@ -49,6 +50,7 @@ epd_refresh_schedule_out_t epd_refresh_schedule(const epd_refresh_schedule_in_t 
     return out;
 }
 
+/* 非时钟、无硬件局刷、首次/强制/周期边界（非夜间）走全刷。 */
 epd_refresh_kind_t epd_refresh_kind(const epd_refresh_kind_in_t *in)
 {
     uint32_t interval;
