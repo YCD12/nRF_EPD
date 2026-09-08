@@ -7,16 +7,15 @@
 #include "epd_clock_window.h"
 #include "epd_refresh_policy.h"
 
-/* Split HH:MM is 272x128. Full-screen ones/tens digits fit; the draw-span
- * HH:MM window does not. Minute tens rollovers use one MM window (split)
- * or two digit windows (fullscreen). Height max is the check limit only. */
+/* 分屏 HH:MM 为 272x128。全屏个位/十位数字能放下，整段 HH:MM 绘制窗放不下。
+ * 分钟十位进位：分屏用一个 MM 窗，全屏用两个数字窗。高度上限仅作检查。 */
 #define EPD_CLOCK_OLD_STRIDE_MAX CLOCK_OLD_WINDOW_STRIDE_MAX
 #define EPD_CLOCK_OLD_HEIGHT_MAX 208U
 
-static uint8_t s_clock_old_window[CLOCK_OLD_WINDOW_BYTES];
+static uint8_t s_clock_old_window[CLOCK_OLD_WINDOW_BYTES]; /* 上一帧窗口位图 */
 static uint32_t s_clock_last_timestamp;
 static bool s_clock_last_valid;
-static bool s_clock_cache_ready;
+static bool s_clock_cache_ready; /* 缓存窗口与本次相同则可复用 OLD */
 static uint16_t s_clock_cache_x;
 static uint16_t s_clock_cache_y;
 static uint16_t s_clock_cache_w;
@@ -29,7 +28,7 @@ typedef struct {
     uint16_t dst_stride;
     uint16_t height;
     bool failed;
-} epd_clock_capture_ctx_t;
+} epd_clock_capture_ctx_t; /* 用上一时刻重绘，捕获 OLD */
 
 typedef struct {
     epd_model_t *epd;
@@ -40,7 +39,7 @@ typedef struct {
     uint16_t window_x;
     uint16_t window_y;
     bool failed;
-} epd_clock_diff_ctx_t;
+} epd_clock_diff_ctx_t; /* 推 NEW，并回写缓存 */
 
 void epd_clock_refresh_invalidate(void)
 {
@@ -59,6 +58,7 @@ bool epd_clock_refresh_is_valid(void)
     return s_clock_last_valid;
 }
 
+/* 按行拷贝一页（stride 为字节）。 */
 static void epd_clock_store_page(uint8_t *dst, uint16_t dst_stride,
                                  const uint8_t *src, uint16_t src_stride,
                                  uint16_t h)
@@ -70,6 +70,7 @@ static void epd_clock_store_page(uint8_t *dst, uint16_t dst_stride,
     }
 }
 
+/* GFX 分页回调：把上一时刻画面存进 OLD 缓冲。 */
 static void epd_clock_capture_cb(void *user_data, uint8_t *black, uint8_t *color,
                                  uint16_t x, uint16_t y, uint16_t w, uint16_t h)
 {
@@ -93,6 +94,7 @@ static void epd_clock_capture_cb(void *user_data, uint8_t *black, uint8_t *color
                          ctx->dst_stride, black, page.src_stride, h);
 }
 
+/* GFX 分页回调：diff_push(OLD, NEW)，再把 NEW 存成下次的 OLD。 */
 static void epd_clock_diff_cb(void *user_data, uint8_t *black, uint8_t *color,
                               uint16_t x, uint16_t y, uint16_t w, uint16_t h)
 {
@@ -121,6 +123,7 @@ static void epd_clock_diff_cb(void *user_data, uint8_t *black, uint8_t *color,
     epd_clock_store_page(old_bm, ctx->old_stride, black, page.src_stride, h);
 }
 
+/* 刷新一个局刷窗：必要时重绘 OLD，再 diff_push + refresh_partial。 */
 static bool epd_clock_refresh_one(epd_model_t *epd, gui_data_t *data,
                                   const clock_refresh_geom_t *geom,
                                   const clock_refresh_window_t *local)
@@ -200,6 +203,7 @@ static bool epd_clock_refresh_one(epd_model_t *epd, gui_data_t *data,
     return true;
 }
 
+/* 按变化填 1～2 个窗，逐个 OLD/NEW 局刷；任一个失败则放弃。 */
 bool epd_clock_refresh_try(epd_model_t *epd, gui_data_t *data)
 {
     clock_refresh_geom_t geom;

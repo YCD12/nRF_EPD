@@ -5,18 +5,18 @@
 #include <stdint.h>
 
 /*
- * DrawGUI_ClockOnly calls GFX_setWindow() before paging.  That transposes the
- * window to (0,0) and packs each page with stride = page_width / 8.
- * Hardware x/y stay in screen space; source x/y stay page-local.
+ * DrawGUI_ClockOnly 分页前会调用 GFX_setWindow()，窗口原点变到 (0,0)，
+ * 每页 stride = page_width / 8。硬件 x/y 仍是屏幕坐标，源 x/y 是页内坐标。
  */
 typedef struct {
-    uint16_t hw_x;
+    uint16_t hw_x;       /* 屏幕坐标 */
     uint16_t hw_y;
-    uint16_t src_stride;
-    uint16_t src_x;
+    uint16_t src_stride; /* 页宽/8 */
+    uint16_t src_x;      /* 页内，setWindow 后为 0 */
     uint16_t src_y;
 } epd_clock_page_push_t;
 
+/* 把 GFX 分页矩形映射到硬件窗口；宽须 8 对齐。 */
 static inline bool epd_clock_map_gfx_page(uint16_t window_x, uint16_t window_y,
                                           uint16_t hardware_x, uint16_t hardware_y,
                                           uint16_t x, uint16_t y,

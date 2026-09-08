@@ -9,14 +9,14 @@ extern void app_feed_wdt(void);
 #define UC8179_MIN_PARTIAL_W  16U
 #define UC8179_MIN_PARTIAL_H  2U
 
-/* UC8179c C0.6 register values used by this panel. */
+/* 本屏使用的 UC8179c C0.6 寄存器值 */
 #define UC8179_PSR_KWR_OTP    0x0FU
 #define UC8179_PSR_KW_OTP     0x1FU
 #define UC8179_PSR_KW_REG     0x3FU
 #define UC8179_CDI_KWR        0x13U
 #define UC8179_CDI_KW_FULL    0x93U
-/* BDZ=1 keeps the border Hi-Z. N2OCP=1 matches the panel-proven A9 value.
- * DDX is still 00 (0xA1/0xA9 differ only in N2OCP); do not set DDX=01. */
+/* BDZ=1：边框高阻。N2OCP=1 与真机验证的 A9 一致。
+ * DDX 仍为 00（0xA1/0xA9 仅 N2OCP 不同）；不要设 DDX=01。 */
 #define UC8179_CDI_KW_DIFF    0xA9U
 #define UC8179_CDI_INTERVAL   0x07U
 #define UC8179_PARTIAL_VCOM   0x22U
@@ -28,7 +28,7 @@ void UC8179_ClearBusyTimeout(void) { m_uc8179_busy_timeout = false; }
 
 
 
-/* BUSY_N is low while busy and high when the controller is ready. */
+/* BUSY_N：忙时为低，就绪为高 */
 static bool UC8179_WaitBusy(uint16_t timeout) {
     bool ready = EPD_WaitBusy(LOW, timeout);
     if (!ready) {
@@ -37,15 +37,17 @@ static bool UC8179_WaitBusy(uint16_t timeout) {
     return ready;
 }
 
-static bool UC8179_PowerOn(void) {
+static bool UC8179_PowerOn(void) /* PON，等忙 */
+{
     EPD_WriteCmd(UC81xx_PON);
     return UC8179_WaitBusy(1000);
 }
 
-static bool UC8179_PowerOff(void) {
+static bool UC8179_PowerOff(void) /* POF + 100 ms 放电 */
+{
     EPD_WriteCmd(UC81xx_POF);
     bool ready = UC8179_WaitBusy(1000);
-    /* GDEY075Z08 reference keeps a 100 ms discharge guard after POF. */
+    /* 参考 GDEY075Z08：POF 后保留 100 ms 放电间隔 */
     delay(100);
     return ready;
 }
@@ -59,12 +61,11 @@ static bool UC8179_PowerOff(void) {
  * UC8179内置温度传感器,可用于根据环境温度调整刷新参数。
  * 温度会影响电子墨水的响应速度,低温时墨水更粘稠需要更长驱动时间。
  */
-// Read temperature from driver chip
 // 从驱动芯片读取温度
 int8_t UC8179_Read_Temp(epd_model_t* epd) {
     (void)epd;
     EPD_WriteCmd(UC81xx_TSC);  // 发送温度传感器控制命令
-    UC8179_WaitBusy(1000);      // 等待温度转换完成
+    UC8179_WaitBusy(1000);  // 等待温度转换完成
     return (int8_t)EPD_ReadByte();  // 读取温度值
 }
 
@@ -72,9 +73,9 @@ static void UC8179_SetPartialRamArea(uint16_t x, uint16_t y, uint16_t w, uint16_
 static void UC8179_Write_Image_Rows(const uint8_t* src, uint16_t wb, uint16_t h, uint8_t fill);
 
 /*
- * Panel-proven partial LUT from the previous working firmware.
- * One 6-byte state plus zeros: T1=1, T2=0x2A, T3=0x02, repeat=1.
- * WK uses 0x10 (not the GDEY 0x40 polarity). Border uses HOLD.
+ * 上一版固件真机验证过的局刷 LUT。
+ * 一组 6 字节状态，其余为 0：T1=1, T2=0x2A, T3=0x02, repeat=1。
+ * WK 用 0x10（不是 GDEY 的 0x40 极性）。边框用 HOLD。
  */
 static const uint8_t UC8179_LUT_HOLD[UC8179_LUT_SIZE] = {
     0x00, 0x01, 0x2A, 0x02, 0x00, 0x01,
@@ -88,7 +89,8 @@ static const uint8_t UC8179_LUT_WK[UC8179_LUT_SIZE] = {
     0x10, 0x01, 0x2A, 0x02, 0x00, 0x01,
 };
 
-static void UC8179_Load_Partial_LUT(void) {
+static void UC8179_Load_Partial_LUT(void) /* 写入 6 张局刷 LUT */
+{
     static const uint8_t registers[6] = {0x20, 0x21, 0x22, 0x23, 0x24, 0x25};
     static const uint8_t* const luts[6] = {
         UC8179_LUT_HOLD,
@@ -106,6 +108,7 @@ static void UC8179_Load_Partial_LUT(void) {
     }
 }
 
+/* 局刷窗：最小 16x2，x/w 8 对齐，不越界。 */
 static bool UC8179_PartialAreaValid(const epd_model_t *epd, uint16_t x, uint16_t y,
                                     uint16_t w, uint16_t h) {
     return epd != NULL &&
@@ -115,6 +118,7 @@ static bool UC8179_PartialAreaValid(const epd_model_t *epd, uint16_t x, uint16_t
            (uint32_t)y + h <= epd->height;
 }
 
+/* 按 src_stride 把窗口位图写入当前 DTM 流。 */
 static void UC8179_Write_Packed_Rows(const uint8_t *src, uint16_t src_stride,
                                      uint16_t w, uint16_t h) {
     uint16_t wb = w / 8U;
@@ -137,6 +141,7 @@ static void UC8179_Write_Packed_Rows(const uint8_t *src, uint16_t src_stride,
     }
 }
 
+/* 同一 PTL 窗口写入打包的 OLD(DTM1) 与 NEW(DTM2)。 */
 bool UC8179_Partial_Diff_Push(epd_model_t *epd, uint16_t x, uint16_t y,
                               uint16_t w, uint16_t h,
                               const uint8_t *old_bm, const uint8_t *new_bm) {
@@ -180,7 +185,7 @@ static void UC8179_SetPartialRamArea(uint16_t x, uint16_t y, uint16_t w, uint16_
               xe >> 8, xe & 0xFF,
               y >> 8, y & 0xFF,
               ye >> 8, ye & 0xFF,
-              0x00);  /* PT_SCAN=0: scan only inside the partial window. */
+              0x00);  /* PT_SCAN=0：只扫描局刷窗口内 */
 }
 
 /*
@@ -196,8 +201,9 @@ static void UC8179_SetPartialRamArea(uint16_t x, uint16_t y, uint16_t w, uint16_
  * - 使用芯片OTP(一次性可编程存储器)中的默认LUT
  */
 
-static void UC8179_ConfigurePowerAndTiming(const epd_model_t *epd) {
-    /* PWR has five parameters on UC8179c C0.6.  Bit 4 of byte 2 is fixed 1. */
+static void UC8179_ConfigurePowerAndTiming(const epd_model_t *epd) /* PWR/TRES/TCON */
+{
+    /* UC8179c C0.6 的 PWR 有 5 个参数。第 2 字节 bit4 固定为 1。 */
     EPD_Write(UC81xx_PWR, 0x07, 0x17, 0x3F, 0x3F, 0x03);
     EPD_Write(UC81xx_TRES,
               epd->width >> 8, epd->width & 0xFF,
@@ -206,7 +212,8 @@ static void UC8179_ConfigurePowerAndTiming(const epd_model_t *epd) {
     EPD_Write(UC81xx_TCON, 0x22);
 }
 
-static void UC8179_ConfigureFull(const epd_model_t *epd) {
+static void UC8179_ConfigureFull(const epd_model_t *epd) /* OTP LUT 全刷 PSR/CDI */
+{
     UC8179_ConfigurePowerAndTiming(epd);
     EPD_Write(UC81xx_PSR,
               epd->color == EPD_COLOR_BWR ? UC8179_PSR_KWR_OTP : UC8179_PSR_KW_OTP);
@@ -216,12 +223,13 @@ static void UC8179_ConfigureFull(const epd_model_t *epd) {
               UC8179_CDI_INTERVAL);
 }
 
+/* OTP 全刷：PON → DRF → POF。 */
 void UC8179_Refresh(epd_model_t* epd) {
     if (epd == NULL) return;
 
     NRF_LOG_DEBUG("[EPD]: refresh begin\n");
 
-    /* A previous partial update leaves PSR in KW/register-LUT mode. */
+    /* 上次局刷会把 PSR 留在 KW/寄存器 LUT 模式 */
     UC8179_ConfigureFull(epd);
     if (!UC8179_PowerOn()) {
         UC8179_PowerOff();
@@ -238,7 +246,8 @@ void UC8179_Refresh(epd_model_t* epd) {
     NRF_LOG_DEBUG("[EPD]: refresh end\n");
 }
 
-void UC8179_Init(epd_model_t* epd) {
+void UC8179_Init(epd_model_t* epd) /* 复位后进 OTP 全刷模式 */
+{
     if (epd == NULL) return;
 
     EPD_Reset(HIGH, 10);
@@ -251,19 +260,19 @@ void UC8179_Init_Partial(epd_model_t *epd)
     if (epd == NULL) return;
 
     NRF_LOG_INFO("[EPD]: UC8179 partial configure\n");
-    /* Wake from POF/DSLP without going through full-refresh OTP mode.
-     * OLD/NEW are supplied by software, so resetting SRAM is acceptable. */
+    /* 从 POF/DSLP 唤醒，不经过全刷 OTP 模式。
+     * OLD/NEW 由软件提供，复位 SRAM 可以接受。 */
     EPD_Reset(HIGH, 10);
     if (!UC8179_WaitBusy(1000)) return;
 
     UC8179_ConfigurePowerAndTiming(epd);
-    /* REG=1, KW/R=1: register LUT with DTM1=OLD and DTM2=NEW. */
+    /* REG=1, KW/R=1：寄存器 LUT，DTM1=OLD，DTM2=NEW */
     EPD_Write(UC81xx_PSR, UC8179_PSR_KW_REG);
     EPD_Write(UC81xx_VDCS, UC8179_PARTIAL_VCOM);
     EPD_Write(UC81xx_CDI, UC8179_CDI_KW_DIFF, UC8179_CDI_INTERVAL);
     UC8179_Load_Partial_LUT();
 
-    /* Keep high-voltage supplies off while OLD/NEW SRAM is populated. */
+    /* 写入 OLD/NEW SRAM 期间保持高压电源关闭 */
     NRF_LOG_INFO("[EPD]: UC8179 partial init done\n");
 }
 
@@ -291,10 +300,9 @@ void UC8179_Clear(epd_model_t* epd, bool refresh) {
 }
 
 /**
- * Refresh a previously populated OLD/NEW window.
+ * 刷新已写入的 OLD/NEW 窗口。
  *
- * High voltage is enabled only for the display operation.  The order follows
- * the UC8179 flow: PON -> PTIN/PTL -> DRF -> PTOUT -> POF.
+ * 仅在显示操作时开高压。顺序按 UC8179：PON -> PTIN/PTL -> DRF -> PTOUT -> POF。
  */
 bool UC8179_Refresh_Partial(epd_model_t *epd, uint16_t x, uint16_t y,
                              uint16_t w, uint16_t h) {
@@ -321,6 +329,7 @@ bool UC8179_Refresh_Partial(epd_model_t *epd, uint16_t x, uint16_t y,
     return refreshed && powered_off;
 }
 
+/* 逐行写入；src 为空则填 fill。 */
 static void UC8179_Write_Image_Rows(const uint8_t* src, uint16_t wb,
                                      uint16_t h, uint8_t fill) {
     uint8_t temp[UC8179_ROW_CHUNK_SIZE];
@@ -365,8 +374,8 @@ static void UC8179_Write_Image_Rows(const uint8_t* src, uint16_t wb,
  * - 每个字节包含8个像素(1位每像素)
  * - 黑色层(DTM1/0x10): 0=黑色, 1=白色
  * - 颜色层(DTM2/0x13):
- *   - BWR模式: 0=红色, 1=无红色
- *   - BW模式: 直接使用black数据
+ * - BWR模式: 0=红色, 1=无红色
+ * - BW模式: 直接使用black数据
  *
  * 注意:
  * - X坐标和宽度会自动对齐到8像素边界
@@ -378,7 +387,7 @@ void UC8179_Write_Image(epd_model_t* epd, uint8_t* black, uint8_t* color, uint16
     if (epd == NULL || w == 0U || h == 0U || (x & 7U) != 0U) return;
 
     uint16_t wb = (w + 7) / 8;  // width bytes, bitmaps are padded // 宽度字节数,位图已填充
-    w = wb * 8;                 // byte boundary // 宽度对齐到字节边界
+    w = wb * 8;  // byte boundary // 宽度对齐到字节边界
 
     // 边界检查
     if ((uint32_t)x + w > epd->width || (uint32_t)y + h > epd->height) return;
@@ -450,7 +459,7 @@ void UC8179_Write_Ram(epd_model_t* epd, uint8_t cfg, uint8_t* data, uint8_t len)
 void UC8179_Sleep(epd_model_t* epd) {
     (void)epd;
     UC8179_PowerOff();  // 关闭电源
-    delay(100);         // 等待电源稳定关闭
+    delay(100);  // 等待电源稳定关闭
     EPD_Write(UC81xx_DSLP, 0xA5);  // 进入深度睡眠,0xA5是确认码
 }
 
@@ -472,18 +481,17 @@ void UC8179_Sleep(epd_model_t* epd) {
  */
 static epd_driver_t epd_drv_uc8179_partial = {
     .ic = EPD_DRIVER_IC_UC8179,
-    .init = UC8179_Init,              // 全刷初始化
-    .clear = UC8179_Clear,            // 全刷清屏
-    .write_image = UC8179_Write_Image,// 全刷写入图像
-    .write_ram = UC8179_Write_Ram,    // 写入RAM数据
-    .refresh = UC8179_Refresh,        // 全刷刷新
-    .sleep = UC8179_Sleep,            // 进入睡眠
-    .read_temp = UC8179_Read_Temp,    // 读取温度
-    // Partial refresh support
+    .init = UC8179_Init,  // 全刷初始化
+    .clear = UC8179_Clear,  // 全刷清屏
+    .write_image = UC8179_Write_Image,  // 全刷写入图像
+    .write_ram = UC8179_Write_Ram,  // 写入RAM数据
+    .refresh = UC8179_Refresh,  // 全刷刷新
+    .sleep = UC8179_Sleep,  // 进入睡眠
+    .read_temp = UC8179_Read_Temp,  // 读取温度
     // 局刷功能支持
-    .init_partial = UC8179_Init_Partial,            // 局刷初始化
-    .refresh_partial = UC8179_Refresh_Partial,      // 局刷刷新
-    .diff_push = UC8179_Partial_Diff_Push,          // 同一窗口写入 OLD+NEW
+    .init_partial = UC8179_Init_Partial,  // 局刷初始化
+    .refresh_partial = UC8179_Refresh_Partial,  // 局刷刷新
+    .diff_push = UC8179_Partial_Diff_Push,  // 同一窗口写入 OLD+NEW
 };
 
 /*
@@ -509,12 +517,11 @@ static epd_driver_t epd_drv_uc8179_partial = {
  * 2. 频繁更新时使用局刷
  * 3. 每隔一段时间执行一次全刷以清除累积的残影
  */
-// UC8179 800x480 Black/White/Red with Partial Refresh
 // UC8179 800x480 黑白红三色屏(支持局刷)
 epd_model_t epd_uc8179_750_Partial_bwr = {
     .id = EPD_UC8179_750_BWR,
-    .color = EPD_COLOR_BWR,            // 黑白红三色
-    .drv = &epd_drv_uc8179_partial,    // 局刷驱动
+    .color = EPD_COLOR_BWR,  // 黑白红三色
+    .drv = &epd_drv_uc8179_partial,  // 局刷驱动
     .width = 800,
     .height = 480,
 };

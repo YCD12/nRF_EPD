@@ -5,6 +5,7 @@
 #include <stdint.h>
 #include <string.h>
 
+/* 向 out[pos] 追加字符串，保证结尾 '\0'，返回新 pos。 */
 static inline size_t clock_text_append(char *out, size_t out_sz, size_t pos, const char *s)
 {
     if (out == NULL || out_sz == 0U || s == NULL) {
@@ -17,6 +18,7 @@ static inline size_t clock_text_append(char *out, size_t out_sz, size_t pos, con
     return pos;
 }
 
+/* 追加无前导零的十进制（>=100 写成 "100"）。 */
 static inline size_t clock_text_append_u8(char *out, size_t out_sz, size_t pos, uint8_t value)
 {
     if (value >= 100U) {
@@ -34,6 +36,7 @@ static inline size_t clock_text_append_u8(char *out, size_t out_sz, size_t pos, 
     return pos;
 }
 
+/* 闰+月+日，如「闰正月初一」。 */
 static inline void clock_format_lunar_md(char *out, size_t out_sz,
                                          const char *leap, const char *month, const char *date)
 {
@@ -44,6 +47,7 @@ static inline void clock_format_lunar_md(char *out, size_t out_sz,
     (void)clock_text_append(out, out_sz, pos, date);
 }
 
+/* days==0：line1=节气名；否则「离xx」/「还有N天」。 */
 static inline void clock_format_jieqi_countdown(char *line1, size_t line1_sz,
                                                 char *line2, size_t line2_sz,
                                                 const char *jq_name, uint8_t days)
@@ -72,7 +76,7 @@ static inline void clock_format_jieqi_countdown(char *line1, size_t line1_sz,
     (void)clock_text_append(line2, line2_sz, pos, "天");
 }
 
-/* Last four characters of the BLE name, or the whole name if shorter. */
+/* BLE 名称末 4 个字符；不足 4 个则整段。 */
 static inline void clock_ssid_tail4(char *out, size_t out_sz, const char *ssid)
 {
     size_t len;
@@ -96,7 +100,7 @@ static inline void clock_ssid_tail4(char *out, size_t out_sz, const char *ssid)
     out[n] = '\0';
 }
 
-/* One decimal volt string, e.g. 3300 -> "3.3V". No battery-level icon. */
+/* 一位小数电压，如 3300 -> "3.3V"。不画电量图标。 */
 static inline void clock_format_voltage(char *out, size_t out_sz, uint16_t voltage_mv)
 {
     uint16_t volts;
