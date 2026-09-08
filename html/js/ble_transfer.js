@@ -142,13 +142,12 @@ const BleTransfer = {
                 this.log(3, `Block ${blockId} ACK: ${status === 0 ? 'OK' : 'FAIL ' + status}`);
             }
         } else if (data[0] === 0xA1) {
-            // Status response: [0xA1, total_L, total_H, received_L, received_H, session, active, bitmap...]
+            // [0xA1, total_L, total_H, received_L, received_H, session, active]
             this.pendingStatus = {
                 total: data[1] | (data[2] << 8),
                 received: data[3] | (data[4] << 8),
                 sessionId: data[5],
-                active: data[6] === 1,
-                bitmap: data.slice(7)
+                active: data[6] === 1
             };
             this.log(3, 'Status:', this.pendingStatus);
 
@@ -291,19 +290,15 @@ const BleTransfer = {
      */
     getMissingBlocks(status, totalBlocks) {
         const missing = [];
-        if (!status || !status.bitmap || status.bitmap.length === 0) {
+        const received = status && Number.isFinite(status.received) ? status.received : 0;
+        if (!status || totalBlocks <= 0) {
             for (let i = 0; i < totalBlocks; i++) missing.push(i);
             return missing;
         }
-
-        for (let i = 0; i < totalBlocks; i++) {
-            const byteIdx = Math.floor(i / 8);
-            const bitIdx = i % 8;
-            if (byteIdx >= status.bitmap.length ||
-                !(status.bitmap[byteIdx] & (1 << bitIdx))) {
-                missing.push(i);
-            }
+        if (received >= totalBlocks) {
+            return missing;
         }
+        for (let i = received; i < totalBlocks; i++) missing.push(i);
         return missing;
     },
 

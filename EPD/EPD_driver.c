@@ -470,8 +470,8 @@ void EPD_LED_OFF(void) {
  * LED闪烁一次
  * Blink LED once
  *
- * Used only for BLE connect/disconnect indication.
- * 仅用于BLE连接/断开提示。
+ * Used for BLE connect/disconnect and low-battery hold (every 30 s).
+ * 用于BLE连接/断开，以及低电量保持时每 30 秒闪一次。
  *
  * 闪烁时序: 点亮100ms -> 熄灭100ms -> 恢复默认状态
  * Blink sequence: ON 100ms -> OFF 100ms -> restore default state

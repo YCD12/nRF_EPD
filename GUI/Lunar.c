@@ -75,8 +75,8 @@ const char Lunar_BranchStrig[12][4] = {"申", "酉", "戌", "亥", "子", "丑",
  * ----------------------------------------------------------------------------
  * 农历转换核心数据表，采用压缩编码方式存储每年的农历信息
  *
- * 【重要】年份范围限制: 2024 ~ 2029 (共6年数据)
- *        有效显示范围: 2025 ~ 2029 (超出范围使用2025年数据)
+ * 【重要】查表年份: 2024 ~ 2027（2024 只给 2025 春节前用）
+ *        有效显示范围: 2025 ~ 2027 (超出范围使用2025年数据)
  ******************************************************************************/
 
 /**
@@ -99,15 +99,13 @@ const char Lunar_BranchStrig[12][4] = {"申", "酉", "戌", "亥", "子", "丑",
  * 农历月份有大月(30天)和小月(29天)之分，每年不同，需要查表确定
  * 闰月是为了协调农历年与回归年的差异而设置的额外月份
  */
-/* 2024 ~ 2029  */
+/* 2024 ~ 2027；2024 仅服务 2025 春节前的公历日期 */
 const uint32_t lunar_month_days[] = {
     2024,        /* 索引0: 基准年份标识 */
     0x0000096C,  /* 2024: 农历甲辰年（龙年）月份数据 */
     0x0000D4AE,  /* 2025: 农历乙巳年（蛇年）月份数据 */
     0x0000149C,  /* 2026: 农历丙午年（马年）月份数据 */
     0x00001A4C,  /* 2027: 农历丁未年（羊年）月份数据 */
-    0x0000BD26,  /* 2028: 农历戊申年（猴年）月份数据 */
-    0x00001AA6,  /* 2029: 农历己酉年（鸡年）月份数据 */
 };
 
 /**
@@ -130,15 +128,13 @@ const uint32_t lunar_month_days[] = {
  * 农历新年(春节)每年公历日期不同，通常在1月21日到2月20日之间
  * 通过查表获取春节日期，再结合月份天数表可推算任意农历日期
  */
-/* 2024 ~ 2029  */
+/* 2024 ~ 2027 */
 const uint32_t solar_1_1[] = {
     2024,        /* 索引0: 基准年份标识 */
     0x000FD04A,  /* 2024年春节: 公历2月10日 */
     0x000FD23D,  /* 2025年春节: 公历1月29日 */
     0x000FD451,  /* 2026年春节: 公历2月17日 */
     0x000FD646,  /* 2027年春节: 公历2月6日 */
-    0x000FD83A,  /* 2028年春节: 公历1月26日 */
-    0x000FDA4D,  /* 2029年春节: 公历2月13日 */
 };
 
 /*******************************************************************************
@@ -206,14 +202,14 @@ static uint16_t SolarToInt(uint16_t y, uint8_t m, uint8_t d) {
  *
  * 【算法流程】
  * 1. 参数有效性检查
- * 2. 年份范围检查（超出2025-2029范围则使用2025年数据）
+ * 2. 年份范围检查（超出2025-2027范围则使用2025年数据）
  * 3. 查找该公历日期对应的农历年（通过比较春节日期）
  * 4. 计算公历日期与春节的天数差
  * 5. 根据月份天数表逐月累减，确定农历月份和日期
  * 6. 处理闰月情况
  *
  * 【年份限制说明】
- * 有效年份范围: 2025 ~ 2029
+ * 有效年份范围: 2025 ~ 2027
  * 超出范围时使用2025年的农历数据，仅显示农历月日，年份不准确
  */
 void LUNAR_SolarToLunar(struct Lunar_Date* lunar, uint16_t solar_year, uint8_t solar_month, uint8_t solar_date) {
@@ -232,19 +228,22 @@ void LUNAR_SolarToLunar(struct Lunar_Date* lunar, uint16_t solar_year, uint8_t s
 
     /* 步骤2: 计算年份范围 - Calculate Year Range */
     uint16_t year_base = (uint16_t)solar_1_1[0];                                    /* 基准年份: 2024 */
-    uint16_t year_count = (uint16_t)(sizeof(solar_1_1) / sizeof(uint32_t) - 1);    /* 数据条目数: 6 */
-    uint16_t year_min = (uint16_t)(year_base + 1);                                  /* 有效起始年: 2025 */
-    uint16_t year_max = (uint16_t)(year_base + year_count - 1);                    /* 有效结束年: 2029 */
+    uint16_t year_count = (uint16_t)(sizeof(solar_1_1) / sizeof(uint32_t) - 1);
+    uint16_t year_min = (uint16_t)LUNAR_DISPLAY_YEAR_MIN;
+    uint16_t year_max = (uint16_t)LUNAR_DISPLAY_YEAR_MAX;
 
     /* 步骤3: 年份范围限制处理 - Year Range Limitation */
     uint16_t calc_year = solar_year;
     if (calc_year < year_min || calc_year > year_max) {
-        /* 只保留 2025~2029 的精确数据，其余年份按 2025 年的农历数据显示 */
+        /* 只保留 2025~2027 的精确数据，其余年份按 2025 年的农历数据显示 */
         calc_year = year_min;
     }
 
     /* 步骤4: 计算数据表索引 - Calculate Table Index */
-    year_index = (uint16_t)(calc_year - year_base + 1);  /* 索引 1~year_count（对应 2024~2029） */
+    year_index = (uint16_t)(calc_year - year_base + 1);
+    if (year_index < 1U || year_index > year_count) {
+        year_index = 1U;
+    }
 
     /* 步骤5: 判断公历日期是否在当年春节之前 - Check if Before Lunar New Year */
     /* 将公历日期编码为单一数值便于比较 */
@@ -361,11 +360,11 @@ uint8_t LUNAR_GetBranch(const struct Lunar_Date* lunar) { return lunar->Year % 1
 
 /**
  * 节气年份范围定义 - Solar Term Year Range
- * 【重要】有效年份: 2024 ~ 2029
- *        超出范围时使用2025年的节气数据
+ * 【重要】查表年份: 2024 ~ 2027
+ *        有效显示: 2025 ~ 2027，超出时用 2025 年节气
  */
 #define JIEQI_YEAR_MIN 2024
-#define JIEQI_YEAR_MAX 2029
+#define JIEQI_YEAR_MAX LUNAR_DISPLAY_YEAR_MAX
 
 /**
  * 节气日期修正标志表 - Solar Term Date Correction Flags
@@ -394,8 +393,6 @@ static const uint8_t YearMonthBit[(JIEQI_YEAR_MAX - JIEQI_YEAR_MIN + 1) * 3] = {
     0xBE, 0xA6, 0x99,  /* 2025年节气修正标志 */
     0x9C, 0xA2, 0x98,  /* 2026年节气修正标志 */
     0x80, 0x00, 0x18,  /* 2027年节气修正标志 */
-    0x0F, 0xEF, 0xDB,  /* 2028年节气修正标志 */
-    0xBE, 0xA6, 0x99,  /* 2029年节气修正标志 */
 };
 
 /**
@@ -470,7 +467,7 @@ const uint8_t MonthDayMax[12] = {
  ** 功能描述: 获取指定日期所在半月的节气日期
  **          Get Solar Term Date for the Half-Month of Given Date
  ** 输入参数:
- **          myear   - 公历年份 (有效范围: 2025~2029)
+ **          myear   - 公历年份 (有效范围: 2025~2027)
  **          mmonth  - 公历月份 (1-12)
  **          mday    - 公历日期 (1-31)，用于判断上半月或下半月
  **          JQdate  - 输出参数，存储节气日期
@@ -499,15 +496,13 @@ uint8_t GetJieQi(uint16_t myear, uint8_t mmonth, uint8_t mday, uint8_t* JQdate) 
     if ((mmonth == 0) || (mmonth > 12)) return 0;
 
     /* 计算年份有效范围 - Calculate Valid Year Range */
-    uint16_t year_base = JIEQI_YEAR_MIN;                         /* 表中起始年: 2024 */
-    uint16_t year_count = (JIEQI_YEAR_MAX - JIEQI_YEAR_MIN + 1); /* 共6年数据: 2024~2029 */
-    uint16_t year_min = (uint16_t)(year_base + 1);               /* 有效显示起始年: 2025 */
-    uint16_t year_max = (uint16_t)(year_base + year_count - 1);  /* 有效显示结束年: 2029 */
+    uint16_t year_base = JIEQI_YEAR_MIN;
+    uint16_t year_min = (uint16_t)LUNAR_DISPLAY_YEAR_MIN;
+    uint16_t year_max = (uint16_t)LUNAR_DISPLAY_YEAR_MAX;
 
     /* 年份范围限制 - Year Range Limitation */
     uint16_t calc_year = myear;
     if (calc_year < year_min || calc_year > year_max) {
-        /* 只保留 2025~2029 的精确数据，其余年份按 2025 年的节气数据显示 */
         calc_year = year_min;
     }
 
@@ -541,7 +536,7 @@ uint8_t GetJieQi(uint16_t myear, uint8_t mmonth, uint8_t mday, uint8_t* JQdate) 
  ** 功能描述: 获取当前日期的节气信息及距离下一个节气的天数
  **          Get Solar Term Info and Days Until Next Term
  ** 输入参数:
- **          myear   - 公历年份 (有效范围: 2025~2029)
+ **          myear   - 公历年份 (有效范围: 2025~2027)
  **          mmonth  - 公历月份 (1-12)
  **          mday    - 公历日期 (1-31)
  **          day     - 输出参数，距离节气的天数

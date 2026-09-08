@@ -105,7 +105,6 @@ enum EPD_CMDS {
  * Transfer Configuration Constants
  */
 #define EPD_MAX_BLOCKS          512   /**< Maximum number of blocks (96KB / 192B). 最大块数 */
-#define EPD_BLOCK_BITMAP_SIZE   64    /**< Block bitmap size in bytes (512 bits). 块位图大小(字节) */
 #define EPD_MAX_RETRIES         3     /**< Maximum retry count for failed blocks. 失败块的最大重传次数 */
 
 /**
@@ -158,18 +157,15 @@ typedef struct {
  *
  * @details Tracks the state of an ongoing image transfer to support:
  *          - CRC validation per block
- *          - Resume after disconnect
- *          - Missing block identification
+ *          - Sequential stream; gaps restart from 0
  *          跟踪正在进行的图像传输状态,支持:
  *          - 每块CRC验证
- *          - 断开后恢复传输
- *          - 识别缺失块
+ *          - 顺序流，空洞从 0 重来
  */
 typedef struct {
     uint8_t  session_id;                           /**< Session ID for transfer validation. 传输验证的会话ID */
     uint16_t total_blocks;                         /**< Total number of blocks in transfer. 传输中的总块数 */
     uint16_t received_blocks;                      /**< Number of successfully received blocks. 成功接收的块数 */
-    uint8_t  block_bitmap[EPD_BLOCK_BITMAP_SIZE];  /**< Bitmap tracking received blocks. 跟踪已接收块的位图 */
     bool     transfer_active;                      /**< Flag indicating active transfer. 标志是否有活跃传输 */
 } image_transfer_ctx_t;
 
@@ -213,8 +209,8 @@ typedef struct {
     bool is_refreshing;           /**< Flag to indicate screen refresh is in progress. */
                                   /**< 标志屏幕刷新正在进行中。
                                    *   防止BLE断开时中断刷新过程 */
-    bool low_battery_screen_active; /**< Low-battery warning screen is currently shown. */
-                                    /**< 当前是否处于低电量警告页面，激活后暂停自动刷新。 */
+    bool low_battery_screen_active; /**< Low-battery hold: periodic refresh paused. */
+                                    /**< 低电量保持：暂停周期刷新，仍显示月历/时钟。 */
 
     // 刷新消抖与校时保护
     uint32_t last_refresh_start;    /**< Timestamp (s) when the last physical refresh began. */

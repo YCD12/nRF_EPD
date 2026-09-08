@@ -56,12 +56,27 @@ static void test_ssid_tail_clamps_short_and_empty_names(void)
     assert(buf[0] == '\0');
 }
 
+static void test_voltage_is_one_decimal_no_icon_level(void)
+{
+    char buf[8];
+
+    clock_format_voltage(buf, sizeof(buf), 3300);
+    assert(strcmp(buf, "3.3V") == 0);
+
+    clock_format_voltage(buf, sizeof(buf), 2800);
+    assert(strcmp(buf, "2.8V") == 0);
+
+    clock_format_voltage(buf, sizeof(buf), 2699);
+    assert(strcmp(buf, "2.6V") == 0);
+}
+
 int main(void)
 {
     test_lunar_date_concatenates_leap_month_day();
     test_jieqi_today_uses_name_only();
     test_jieqi_countdown_two_lines();
     test_ssid_tail_clamps_short_and_empty_names();
+    test_voltage_is_one_decimal_no_icon_level();
     puts("PASS: clock text");
     return 0;
 }

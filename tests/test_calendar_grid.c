@@ -56,6 +56,13 @@ static void test_split_month_grid_uses_right_rect(void)
     assert(day1.by == 136 + (56 - 26) / 2 + 3);
 }
 
+static void test_product_panel_does_not_ship_helvB14(void)
+{
+    /* 800x480 is always large. helvB14 was only for height<=300. */
+    assert(480 > GUI_LARGE_SCREEN_H);
+    assert(GUI_HELVB14_ENABLED == 0);
+}
+
 static void test_monday_week_start_shifts_first_column(void)
 {
     calendar_grid_rect_t rect = {10, 84, 780, 470};
@@ -74,6 +81,7 @@ int main(void)
     test_full_month_grid_january_2026();
     test_split_month_grid_uses_right_rect();
     test_monday_week_start_shifts_first_column();
+    test_product_panel_does_not_ship_helvB14();
     puts("PASS: calendar grid");
     return 0;
 }

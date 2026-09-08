@@ -71,6 +71,18 @@ static void test_write_block_rejects_more_than_512_blocks(void)
     assert(epd_block_plane_fits(48000U, 172U));
 }
 
+static void test_sequential_status_does_not_need_a_bitmap(void)
+{
+    /* WRITE_BLOCK is a sequential stream; QUERY_STATUS only needs received. */
+    assert(EPD_TRANSFER_BITMAP_BYTES == 0U);
+    assert(epd_transfer_status_complete(204, 204));
+    assert(!epd_transfer_status_complete(203, 204));
+    assert(!epd_transfer_status_complete(0, 204));
+    assert(!epd_transfer_status_complete(0, 0));
+    assert(epd_transfer_missing_from(0, 204) == 0);
+    assert(epd_transfer_missing_from(100, 204) == 100);
+}
+
 static void test_set_time_rate_limit_still_applies_valid_mode(void)
 {
     epd_set_time_action_t a;
@@ -98,6 +110,7 @@ int main(void)
     test_picture_writes_need_a_live_display();
     test_write_block_accepts_only_sequential_ids();
     test_write_block_rejects_more_than_512_blocks();
+    test_sequential_status_does_not_need_a_bitmap();
     test_set_time_rate_limit_still_applies_valid_mode();
     puts("PASS: cmd policy");
     return 0;

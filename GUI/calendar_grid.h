@@ -5,6 +5,8 @@
 #include <stdint.h>
 
 #define GUI_LARGE_SCREEN_H 300
+/* This product is 800x480. Small-panel helvB14 is not linked. */
+#define GUI_HELVB14_ENABLED 0
 
 typedef struct {
     int16_t x;

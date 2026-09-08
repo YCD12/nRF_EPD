@@ -52,6 +52,21 @@ typedef enum {
 #define EPD_BLOCK_STATUS_INVALID 0x02U
 #define EPD_BLOCK_STATUS_RESTART 0x03U
 #define EPD_BLOCK_MAX_COUNT 512U
+#define EPD_TRANSFER_BITMAP_BYTES 0U
+
+static inline bool epd_transfer_status_complete(uint16_t received, uint16_t total)
+{
+    return total > 0U && received == total;
+}
+
+/* Sequential stream: blocks 0 .. received-1 are present. */
+static inline uint16_t epd_transfer_missing_from(uint16_t received, uint16_t total)
+{
+    if (epd_transfer_status_complete(received, total)) {
+        return total;
+    }
+    return received;
+}
 
 static inline bool epd_block_total_valid(uint16_t total_blocks)
 {
