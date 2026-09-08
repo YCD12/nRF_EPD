@@ -2,6 +2,7 @@
 #include <stdio.h>
 #include <string.h>
 
+#include "epd_battery_policy.h"
 #include "epd_refresh_policy.h"
 
 static epd_refresh_schedule_in_t base_schedule(void)
@@ -31,6 +32,32 @@ static void test_quiet_hours_and_interval(void)
     assert(epd_refresh_full_interval_s(0) == 3600U);
     assert(epd_refresh_full_interval_s(0xFF) == 3600U);
     assert(epd_refresh_full_interval_s(30) == 1800U);
+}
+
+static void test_low_battery_keeps_calendar_clock_layout(void)
+{
+    /* Option A: hold periodic refresh, do not replace the GUI. */
+    assert(epd_battery_is_low(LOW_BATTERY_THRESHOLD_MV));
+    assert(epd_battery_is_low(CRITICAL_BATTERY_SHUTDOWN_MV));
+    assert(!epd_battery_is_low(LOW_BATTERY_THRESHOLD_MV + 1U));
+    assert(epd_battery_is_critical(CRITICAL_BATTERY_SHUTDOWN_MV - 1U));
+    assert(!epd_battery_is_critical(CRITICAL_BATTERY_SHUTDOWN_MV));
+    assert(!epd_battery_replaces_gui(LOW_BATTERY_THRESHOLD_MV));
+    assert(!epd_battery_replaces_gui(CRITICAL_BATTERY_SHUTDOWN_MV - 1U));
+    assert(!epd_battery_allows_clock_partial(LOW_BATTERY_THRESHOLD_MV));
+    assert(epd_battery_allows_clock_partial(LOW_BATTERY_THRESHOLD_MV + 1U));
+}
+
+static void test_low_battery_led_blinks_every_30s(void)
+{
+    assert(LOW_BATTERY_LED_BLINK_INTERVAL_S == 30U);
+    assert(!epd_battery_should_blink_led(false, false, 30U));
+    assert(!epd_battery_should_blink_led(true, true, 30U));
+    assert(!epd_battery_should_blink_led(true, false, 29U));
+    assert(!epd_battery_should_blink_led(true, false, 31U));
+    assert(epd_battery_should_blink_led(true, false, 0U));
+    assert(epd_battery_should_blink_led(true, false, 30U));
+    assert(epd_battery_should_blink_led(true, false, 60U));
 }
 
 static void test_schedule_skips_low_battery_hold(void)
@@ -199,6 +226,8 @@ int main(void)
 {
     test_is_clock_mode();
     test_quiet_hours_and_interval();
+    test_low_battery_keeps_calendar_clock_layout();
+    test_low_battery_led_blinks_every_30s();
     test_schedule_skips_low_battery_hold();
     test_schedule_calendar_daily_and_clock_minutely();
     test_schedule_day_rollover_forces_full();

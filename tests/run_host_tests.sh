@@ -24,6 +24,7 @@ run test_clock_layout -IGUI tests/test_clock_layout.c
 run test_calendar_grid -IGUI tests/test_calendar_grid.c
 run test_clock_refresh_window -IGUI tests/test_clock_refresh_window.c
 run test_clock_text -IGUI tests/test_clock_text.c
+run test_lunar -IGUI GUI/Lunar.c tests/test_lunar.c
 run test_clock_window_page -IEPD tests/test_clock_window_page.c
 run test_refresh_policy -IEPD -IGUI EPD/epd_refresh_policy.c tests/test_refresh_policy.c
 run test_clock_refresh -IEPD -IGUI -Itests/stubs EPD/epd_clock_refresh.c tests/test_clock_refresh.c

@@ -96,4 +96,30 @@ static inline void clock_ssid_tail4(char *out, size_t out_sz, const char *ssid)
     out[n] = '\0';
 }
 
+/* One decimal volt string, e.g. 3300 -> "3.3V". No battery-level icon. */
+static inline void clock_format_voltage(char *out, size_t out_sz, uint16_t voltage_mv)
+{
+    uint16_t volts;
+    uint16_t decivolts;
+    size_t pos = 0;
+
+    if (out == NULL || out_sz == 0U) {
+        return;
+    }
+    volts = (uint16_t)(voltage_mv / 1000U);
+    decivolts = (uint16_t)((voltage_mv % 1000U) / 100U);
+    if (volts >= 10U) {
+        pos = clock_text_append_u8(out, out_sz, pos, (uint8_t)volts);
+    } else {
+        char ones[2] = {(char)('0' + (uint8_t)volts), '\0'};
+        pos = clock_text_append(out, out_sz, pos, ones);
+    }
+    pos = clock_text_append(out, out_sz, pos, ".");
+    {
+        char dec[2] = {(char)('0' + (uint8_t)decivolts), '\0'};
+        pos = clock_text_append(out, out_sz, pos, dec);
+    }
+    (void)clock_text_append(out, out_sz, pos, "V");
+}
+
 #endif

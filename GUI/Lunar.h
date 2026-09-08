@@ -11,6 +11,11 @@
 #define SEC_PER_DY (86400)  /* Seconds per day - 一天的秒数 (24*60*60) */
 #define SEC_PER_HR (3600)   /* Seconds per hour - 一小时的秒数 (60*60) */
 
+/* Gregorian display window. 2024 rows stay in the tables so 2025-01-01
+ * through CNY still resolve to 甲辰腊月. Years outside this window reuse 2025. */
+#define LUNAR_DISPLAY_YEAR_MIN 2025
+#define LUNAR_DISPLAY_YEAR_MAX 2027
+
 /**
  * @brief 时间结构体 - Time Structure
  * @note 用于存储公历日期和时间信息
@@ -56,7 +61,7 @@ extern const char JieQiStr[24][7];              /* 二十四节气名称 */
 /**
  * @brief 公历转农历 - Solar to Lunar Calendar Conversion
  * @param lunar 输出参数，存储转换后的农历日期
- * @param solar_year 公历年份 (有效范围: 2025-2029)
+ * @param solar_year 公历年份 (有效范围: 2025-2027)
  * @param solar_month 公历月份 (1-12)
  * @param solar_date 公历日期 (1-31)
  * @note 超出有效年份范围时，将使用2025年的农历数据
@@ -89,7 +94,7 @@ uint8_t LUNAR_GetBranch(const struct Lunar_Date* lunar);
 
 /**
  * @brief 获取节气信息及距离天数 - Get Solar Term Info and Days Distance
- * @param myear 公历年份 (有效范围: 2025-2029)
+ * @param myear 公历年份 (有效范围: 2025-2027)
  * @param mmonth 公历月份 (1-12)
  * @param mday 公历日期 (1-31)
  * @param day 输出参数，距离下一个节气的天数
@@ -99,7 +104,7 @@ uint8_t GetJieQiStr(uint16_t myear, uint8_t mmonth, uint8_t mday, uint8_t* day);
 
 /**
  * @brief 获取指定日期所在半月的节气日期 - Get Solar Term Date
- * @param myear 公历年份 (有效范围: 2025-2029)
+ * @param myear 公历年份 (有效范围: 2025-2027)
  * @param mmonth 公历月份 (1-12)
  * @param mday 公历日期 (1-31)，用于判断上半月/下半月
  * @param JQdate 输出参数，节气的日期

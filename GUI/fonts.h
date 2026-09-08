@@ -70,11 +70,7 @@ extern const uint8_t u8g2_font_wqy12_t_lunar[] U8G2_FONT_SECTION("u8g2_font_wqy1
 // 以下字库来自 u8g2，用于显示数字
 // Following fonts are from u8g2 library, used for displaying numbers
 
-// Helvetica 14号粗体数字字体（仅数字）
-// Helvetica Bold 14pt (numbers only)
-extern const uint8_t u8g2_font_helvB14_tn[] U8G2_FONT_SECTION("u8g2_font_helvB14_tn");
-
-// Helvetica 18号粗体数字字体（仅数字）
-// Helvetica Bold 18pt (numbers only)
+// Helvetica 18号粗体数字字体（仅数字）。本板 800x480 不链接 14 号。
+// Helvetica Bold 18pt (numbers only). helvB14 is not shipped.
 extern const uint8_t u8g2_font_helvB18_tn[] U8G2_FONT_SECTION("u8g2_font_helvB18_tn");
 #endif

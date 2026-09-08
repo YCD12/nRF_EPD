@@ -76,6 +76,7 @@
 #include "sdk_macros.h"
 #include "Lunar.h"
 #include "UC8179.h"
+#include "epd_battery_policy.h"
 #include "epd_clock_refresh.h"
 #include "epd_cmd_policy.h"
 #include "epd_refresh_policy.h"
@@ -137,16 +138,15 @@ static void send_block_response(ble_epd_t* p_epd, uint16_t block_id, uint8_t sta
 /**@brief 发送传输状态响应到APP
  *        Send transfer status response to APP
  *
- * @details 响应格式: [0xA1, total_L, total_H, received_L, received_H, session_id, active, bitmap...]
- *          用于断点续传时查询已接收的块
- *          Response format: [0xA1, total_L, total_H, received_L, received_H, session_id, active, bitmap...]
- *          Used to query received blocks for resume upload
+ * @details 响应格式: [0xA1, total_L, total_H, received_L, received_H, session_id, active]
+ *          Sequential stream: received is the next expected block id.
+ *          Response format: [0xA1, total_L, total_H, received_L, received_H, session_id, active]
  *
  * @param[in] p_epd  EPD服务结构指针 / Pointer to EPD service structure
  */
 static void send_transfer_status(ble_epd_t* p_epd) {
-    // 响应格式: [0xA1, total_L, total_H, received_L, received_H, session_id, active, bitmap...]
-    uint8_t rsp[7 + EPD_BLOCK_BITMAP_SIZE];
+    /* [0xA1, total_L, total_H, received_L, received_H, session_id, active] */
+    uint8_t rsp[7];
     rsp[0] = EPD_RSP_STATUS;
     rsp[1] = p_epd->transfer_ctx.total_blocks & 0xFF;
     rsp[2] = p_epd->transfer_ctx.total_blocks >> 8;
@@ -155,12 +155,7 @@ static void send_transfer_status(ble_epd_t* p_epd) {
     rsp[5] = p_epd->transfer_ctx.session_id;
     rsp[6] = p_epd->transfer_ctx.transfer_active ? 1 : 0;
 
-    // 只发送必要的位图长度
-    uint16_t bitmap_len = (p_epd->transfer_ctx.total_blocks + 7) / 8;
-    if (bitmap_len > EPD_BLOCK_BITMAP_SIZE) bitmap_len = EPD_BLOCK_BITMAP_SIZE;
-    memcpy(&rsp[7], p_epd->transfer_ctx.block_bitmap, bitmap_len);
-
-    ble_epd_string_send(p_epd, rsp, 7 + bitmap_len);
+    ble_epd_string_send(p_epd, rsp, sizeof(rsp));
     NRF_LOG_INFO("[EPD]: Transfer status sent: total=%d, received=%d, session=%d, active=%d\n",
                  p_epd->transfer_ctx.total_blocks, p_epd->transfer_ctx.received_blocks,
                  p_epd->transfer_ctx.session_id, p_epd->transfer_ctx.transfer_active);
@@ -331,15 +326,12 @@ static void epd_process_next_command(void* p_event_data, uint16_t event_size);
  *          这里按页把黑平面数据连续写入，各页拼接正好铺满整帧(与 EPD_FillRAM 同构)。
  *          红平面(DTM2)由外层统一填 0xFF(无红)，故此处忽略 color。
  */
-/* Returns true when the caller should skip all further rendering and jump to
- * finish_refresh — either because the critical-battery screen was already drawn
- * (avoid re-flashing every minute) or the voltage just crossed critical and we
- * need the caller to draw it then shut down. */
+/* skip: already did the last normal frame at critical, do not refresh again. */
 typedef struct {
-    bool skip;           /* jump straight to finish_refresh           */
-    bool low_battery;    /* show low-battery warning but keep running  */
-    bool critical;       /* draw critical screen then power off        */
-    uint16_t voltage_mv; /* sampled voltage for this refresh cycle     */
+    bool skip;
+    bool low_battery;    /* <= 2.80 V: keep layout, hold periodic refresh */
+    bool critical;       /* < 2.70 V: one last normal frame, then off     */
+    uint16_t voltage_mv;
 } battery_guard_result_t;
 
 static battery_guard_result_t epd_battery_guard(ble_epd_t *p_epd) {
@@ -347,15 +339,15 @@ static battery_guard_result_t epd_battery_guard(ble_epd_t *p_epd) {
     static bool power_off_drawn = false;
     cached_mv = EPD_ReadVoltageAndCache();
 
-    bool low      = (cached_mv <= LOW_BATTERY_THRESHOLD_MV);
-    bool critical = (cached_mv <  CRITICAL_BATTERY_SHUTDOWN_MV);
+    bool low      = epd_battery_is_low(cached_mv);
+    bool critical = epd_battery_is_critical(cached_mv);
     p_epd->low_battery_screen_active = low;
 
     battery_guard_result_t r = {false, low, critical, cached_mv};
 
     if (critical) {
         if (power_off_drawn) {
-            NRF_LOG_WARNING("[EPD]: Critical battery screen already drawn, skipping redundant update\n");
+            NRF_LOG_WARNING("[EPD]: Critical battery already handled, skipping redundant update\n");
             r.skip = true;
             return r;
         }
@@ -365,7 +357,7 @@ static battery_guard_result_t epd_battery_guard(ble_epd_t *p_epd) {
     }
 
     if (low) {
-        NRF_LOG_WARNING("[EPD]: Low battery detected (%d mV), showing warning screen\n", cached_mv);
+        NRF_LOG_WARNING("[EPD]: Low battery (%d mV), holding periodic refresh\n", cached_mv);
     }
     return r;
 }
@@ -423,7 +415,7 @@ static bool epd_perform_full_refresh(ble_epd_t *p_epd, epd_model_t *epd,
     p_epd->last_full_clear = data->timestamp;
     p_epd->force_full_refresh = false;
 
-    if (data->voltage_mv > LOW_BATTERY_THRESHOLD_MV &&
+    if (epd_battery_allows_clock_partial(data->voltage_mv) &&
         epd_is_clock_mode(data->mode)) {
         epd_clock_refresh_mark_valid(data->timestamp);
     }
@@ -500,7 +492,7 @@ static void epd_gui_update(void* p_event_data, uint16_t event_size) {
         critical_battery   = bat.critical;
         if (bat.skip) goto finish_refresh;
     }
-    low_battery = (refresh_voltage_mv <= LOW_BATTERY_THRESHOLD_MV);
+    low_battery = epd_battery_is_low(refresh_voltage_mv);
 
     // ── Prepare GUI data ─────────────────────────────────────────────────────
     data = (gui_data_t){
@@ -536,7 +528,7 @@ static void epd_gui_update(void* p_event_data, uint16_t event_size) {
                  epd->drv->init_partial != NULL &&
                  epd->drv->diff_push != NULL &&
                  epd->drv->refresh_partial != NULL &&
-                 !low_battery),
+                 epd_battery_allows_clock_partial(refresh_voltage_mv)),
             .hour = tm_now.tm_hour,
         };
         kind = epd_refresh_kind(&kind_in);
@@ -616,7 +608,7 @@ finish_refresh:
     }
 
     if (critical_battery) {
-        NRF_LOG_ERROR("[EPD]: Critical battery warning displayed (%d mV), shutting down\n", refresh_voltage_mv);
+        NRF_LOG_ERROR("[EPD]: Critical battery (%d mV), shutting down\n", refresh_voltage_mv);
     }
 
     bool clock_mode = epd_is_clock_mode(mode);
@@ -1077,7 +1069,6 @@ static void cmd_write_block(ble_epd_t *p_epd, uint8_t *p_data, uint16_t length) 
             if (block_id == 0 || !p_epd->transfer_ctx.transfer_active) {
                 p_epd->transfer_ctx.total_blocks    = total_blocks;
                 p_epd->transfer_ctx.received_blocks = 0;
-                memset(p_epd->transfer_ctx.block_bitmap, 0, EPD_BLOCK_BITMAP_SIZE);
                 p_epd->transfer_ctx.transfer_active = true;
                 if (epd_is_clock_mode((display_mode_t)p_epd->config.display_mode)) {
                     NRF_LOG_INFO("Switch mode: block\n");
@@ -1100,13 +1091,6 @@ static void cmd_write_block(ble_epd_t *p_epd, uint8_t *p_data, uint16_t length) 
             }
 
             p_epd->epd->drv->write_ram(p_epd->epd, cfg, payload, payload_len);
-            {
-                uint16_t byte_idx = block_id / 8;
-                uint8_t  bit_idx  = block_id % 8;
-                if (byte_idx < EPD_BLOCK_BITMAP_SIZE) {
-                    p_epd->transfer_ctx.block_bitmap[byte_idx] |= (1 << bit_idx);
-                }
-            }
             p_epd->transfer_ctx.received_blocks++;
             if (block_id == 0 || block_id + 1U == total_blocks) {
                 NRF_LOG_INFO("[LEGACY] block=%u/%u cfg=0x%02x CRC OK",
@@ -1566,7 +1550,7 @@ uint32_t ble_epd_init(ble_epd_t* p_epd) {
     p_epd->force_full_refresh = false;  // Initialize force refresh flag. 初始化强制刷新标志
     p_epd->last_full_clear    = 0;      // No full refresh yet. 尚未全刷
     p_epd->is_refreshing = false;       // Initialize refreshing flag. 初始化刷新中标志
-    p_epd->low_battery_screen_active = false;  // Low-battery page inactive by default. 默认未进入低电量页
+    p_epd->low_battery_screen_active = false;
     p_epd->last_refresh_start = 0;            // No refresh yet. 尚未刷新
     p_epd->last_set_time_ts = 0;             // No SET_TIME yet. 尚未校时
 
@@ -1663,15 +1647,13 @@ uint32_t ble_epd_string_send(ble_epd_t* p_epd, uint8_t* p_string, uint16_t lengt
  * @param[in] force_update  如果为true强制更新 / If true, force update regardless of mode
  */
 void ble_epd_on_timer(ble_epd_t* p_epd, uint32_t timestamp, bool force_update) {
-    // 低电量警告页激活后，停止周期性屏幕刷新。
-    // 仍然按 LOW_BATTERY_POLL_INTERVAL_S 周期采样电压：过低时直接关机，恢复时退出低电量模式，但不立即强制刷新。
+    // 低电量保持：停周期刷新，仍显示月历/时钟。每 LOW_BATTERY_POLL_INTERVAL_S
+    // 采样：临界则再刷一帧正常画面后关机，恢复则强制全刷。
     if (p_epd->low_battery_screen_active && !force_update) {
         if (timestamp % LOW_BATTERY_POLL_INTERVAL_S == 0) {
             uint16_t voltage_mv = EPD_ReadVoltageAndCache();
 
-            // 电压低于关机阈值时，创建一个低电量事件，gui更新为低电量提示，
-            // 如果低电量事件创建失败，则直接进入睡眠模式
-            if (voltage_mv < CRITICAL_BATTERY_SHUTDOWN_MV) {
+            if (epd_battery_is_critical(voltage_mv)) {
                 epd_gui_update_event_t event = {p_epd, timestamp};
                 uint32_t err_code =
                     app_sched_event_put(&event, sizeof(epd_gui_update_event_t), epd_gui_update);
@@ -1683,7 +1665,7 @@ void ble_epd_on_timer(ble_epd_t* p_epd, uint32_t timestamp, bool force_update) {
             }
 
             // 电压恢复到低电量阈值以上时，退出低电量模式，并强制全刷恢复正常屏幕显示
-            if (voltage_mv > LOW_BATTERY_THRESHOLD_MV) {
+            if (!epd_battery_is_low(voltage_mv)) {
                 p_epd->low_battery_screen_active = false;
                 p_epd->force_full_refresh = true;
                 // Immediately schedule a GUI update to redraw the normal screen with a full refresh
@@ -1694,6 +1676,10 @@ void ble_epd_on_timer(ble_epd_t* p_epd, uint32_t timestamp, bool force_update) {
                 }
                 return;
             }
+        }
+
+        if (epd_battery_should_blink_led(true, false, timestamp)) {
+            EPD_LED_BLINK();
         }
 
         // 低电量模式下不进行周期刷新，避免屏幕刷新占用SPI导致资源写入失败

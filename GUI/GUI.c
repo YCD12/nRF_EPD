@@ -20,8 +20,6 @@
     GFX_setFont(gfx, font);                       \
     GFX_printf(gfx, __VA_ARGS__);
 
-#define BATTERY_FULL_MV 3300
-
 // 节日数据结构体
 // Festival data structure
 typedef struct {
@@ -29,17 +27,6 @@ typedef struct {
     uint8_t day;        // 日期 | Day
     char name[10];      // 节日名称(3x3+1) 最多3个汉字 | Festival name (max 3 Chinese characters)
 } Festival;
-
-static void format_voltage(char* out, uint16_t voltage_mv) {
-    uint16_t volts = voltage_mv / 1000;
-    uint16_t decivolts = (voltage_mv % 1000) / 100;
-
-    out[0] = (char)('0' + volts);
-    out[1] = '.';
-    out[2] = (char)('0' + decivolts);
-    out[3] = 'V';
-    out[4] = '\0';
-}
 
 static void format_lunar_month(char* out, const char* prefix, const char* month) {
     size_t pos = 0;
@@ -237,101 +224,13 @@ static void DrawTimeSyncTip(Adafruit_GFX* gfx, gui_data_t* data) {
     GFX_printf(gfx, url);
 }
 
-/**
- * @brief 绘制低电量提示页
- *        Draw low battery warning page
- *
- * @param gfx  图形上下文指针 | Pointer to graphics context
- * @param data GUI数据指针 | Pointer to GUI data
- */
-static void DrawLowBatteryTip(Adafruit_GFX* gfx, gui_data_t* data) {
-    char voltage[12] = {0};
-    const uint8_t* voltage_font = (data->height >= 300) ? u8g2_font_helvB18_tn : u8g2_font_helvB14_tn;
-    const char* power_off_text = "power off";
+static void DrawVoltage(Adafruit_GFX* gfx, int16_t right_x, int16_t y, uint16_t voltage_mv) {
+    char voltage[8];
 
-    format_voltage(voltage, data->voltage_mv);
-
-    int16_t body_w = data->width / 3;
-    int16_t body_h = data->height / 6;
-    if (body_w > 110) body_w = 110;
-    if (body_h > 55) body_h = 55;
-    if (body_w < 72) body_w = 72;
-    if (body_h < 34) body_h = 34;
-
-    int16_t terminal_w = body_w / 12;
-    int16_t terminal_h = body_h / 3;
-    int16_t body_x = (data->width - (body_w + terminal_w + 6)) / 2;
-    int16_t body_y = (data->height - body_h) / 2 - body_h / 6;
-    if (body_y < 10) body_y = 10;
-    int16_t fill_margin = 5;
-    int16_t inner_w = body_w - fill_margin * 2;
-    int16_t inner_h = body_h - fill_margin * 2;
-    int16_t fill_w = inner_w / 6;
-    if (fill_w < 6) fill_w = 6;
-
-    GFX_drawRoundRect(gfx, body_x, body_y, body_w, body_h, 8, GFX_BLACK);
-    GFX_fillRoundRect(gfx, body_x + body_w + 4, body_y + (body_h - terminal_h) / 2, terminal_w, terminal_h, 3, GFX_BLACK);
-    GFX_fillRect(gfx, body_x + fill_margin, body_y + fill_margin, fill_w, inner_h, GFX_BLACK);
-
-    GFX_setFont(gfx, voltage_font);
-    GFX_setTextColor(gfx, GFX_BLACK, GFX_WHITE);
-    int16_t voltage_w = GFX_getUTF8Width(gfx, voltage);
-    int16_t voltage_h = GFX_getFontHeight(gfx);
-    GFX_setCursor(gfx,
-                  body_x + (body_w - voltage_w) / 2,
-                  body_y + (body_h + voltage_h) / 2 - 2);
-    GFX_printf(gfx, "%s", voltage);
-
-    if (data->voltage_mv < CRITICAL_BATTERY_SHUTDOWN_MV) {
-        GFX_setFont(gfx, u8g2_font_wqy9_t_lunar);
-        int16_t text_w = GFX_getUTF8Width(gfx, power_off_text);
-        int16_t text_h = GFX_getFontHeight(gfx);
-        GFX_setCursor(gfx,
-                      body_x + (body_w - text_w) / 2,
-                      body_y + body_h + text_h + 10);
-        GFX_printf(gfx, "%s", power_off_text);
-    }
-}
-
-/**
- * @brief 绘制电池图标和电压显示
- *        Draw battery icon and voltage display
- *
- * @param gfx        图形上下文指针 | Pointer to graphics context
- * @param x          右边界X坐标 | Right edge X coordinate
- * @param y          Y坐标 | Y coordinate
- * @param iw         图标宽度 | Icon width
- * @param voltage_mv 电压(毫伏) | Voltage in millivolts
- *
- * 电池百分比显示：满电=3.3V，空电=2.8V
- * Battery percentage display: Full=3.3V, Empty=2.8V
- */
-static void DrawBattery(Adafruit_GFX* gfx, int16_t x, int16_t y, uint8_t iw, uint16_t voltage_mv) {
-    x -= iw;  // 从右边界开始向左绘制 | Start drawing from right edge to left
-    uint8_t fill_width = (iw > 4) ? (uint8_t)(iw - 4) : 0;
-    uint8_t level = 0;
-    if (voltage_mv >= BATTERY_FULL_MV) {
-        level = 100;
-    } else if (voltage_mv > LOW_BATTERY_THRESHOLD_MV) {
-        level = (uint8_t)(((uint32_t)(voltage_mv - LOW_BATTERY_THRESHOLD_MV) * 100) /
-                          (BATTERY_FULL_MV - LOW_BATTERY_THRESHOLD_MV));
-    }
-
-    // Format voltage as "X.XV" directly (e.g., "3.3V")
-    // 直接格式化电压为"X.XV"格式(如"3.3V")
-    uint16_t volts = voltage_mv / 1000;           // 整数部分(伏特) | Integer part (volts)
-    uint16_t millivolts = (voltage_mv % 1000) / 100;  // 小数部分(0.1V) | Decimal part
-
-    // 绘制电压文字 | Draw voltage text
+    clock_format_voltage(voltage, sizeof(voltage), voltage_mv);
     GFX_setFont(gfx, u8g2_font_wqy9_t_lunar);
-    GFX_setCursor(gfx, x - GFX_getUTF8Width(gfx, "3.2V") - 2, y + 9);
-    GFX_printf(gfx, "%d.%dV", volts, millivolts);
-    // 绘制电池外框 | Draw battery outline
-    GFX_fillRect(gfx, x, y, iw, 10, GFX_WHITE);   // 白色填充 | White fill
-    GFX_drawRect(gfx, x, y, iw, 10, GFX_BLACK);   // 黑色边框 | Black border
-    GFX_fillRect(gfx, x + iw, y + 4, 2, 2, GFX_BLACK);  // 电池正极凸起 | Battery positive terminal
-    // 根据电量绘制填充 | Draw fill based on battery level
-    GFX_fillRect(gfx, x + 2, y + 2, (uint16_t)(fill_width * level / 100), 6, GFX_BLACK);
+    GFX_setCursor(gfx, right_x - GFX_getUTF8Width(gfx, voltage), y + 9);
+    GFX_printf(gfx, "%s", voltage);
 }
 
 /**
@@ -469,9 +368,9 @@ static void DrawDateHeader(Adafruit_GFX* gfx, int16_t x, int16_t y, tm_t* tm, st
     GFX_setTextColor(gfx, GFX_RED, GFX_WHITE);
     GFX_printf(gfx, " [%s]", Lunar_ZodiacString[LUNAR_GetZodiac(Lunar)]);
 
-    // 绘制右侧信息：电池和WiFi名称 | Draw right side info: battery and WiFi name
+    // 绘制右侧信息：电压和WiFi名称 | Draw right side info: voltage and WiFi name
     GFX_setTextColor(gfx, GFX_BLACK, GFX_WHITE);
-    DrawBattery(gfx, data->width - 10 - 2, data->height > GUI_LARGE_SCREEN_H ? 16 : 6, 20, data->voltage_mv);
+    DrawVoltage(gfx, data->width - 10 - 2, data->height > GUI_LARGE_SCREEN_H ? 16 : 6, data->voltage_mv);
     GFX_setCursor(gfx, data->width - GFX_getUTF8Width(gfx, data->ssid) - 10, y);
     GFX_printf(gfx, "%s", data->ssid);
 }
@@ -543,7 +442,7 @@ static void DrawMonthGrid(Adafruit_GFX* gfx, tm_t* tm, gui_data_t* data, calenda
             GFX_setTextColor(gfx, cell.weekend ? GFX_RED : GFX_BLACK, GFX_WHITE);
         }
 
-        GFX_setFont(gfx, m.large ? u8g2_font_helvB18_tn : u8g2_font_helvB14_tn);
+        GFX_setFont(gfx, u8g2_font_helvB18_tn);
         GFX_setCursor(gfx, cell.bx + (2 * cell.cr - GFX_getUTF8Widthf(gfx, "%d", day)) / 2,
                       cell.by - (cell.cr - GFX_getFontHeight(gfx)));
         GFX_printf(gfx, "%d", day);
@@ -725,21 +624,12 @@ static void DrawCalendar_Right(Adafruit_GFX* gfx, tm_t* tm, struct Lunar_Date* L
     int16_t separator_bottom = large ? 420 : data->height - 10;
     GFX_drawFastVLine(gfx, offset_x - 2, separator_top, separator_bottom - separator_top, GFX_BLACK);
 
-    // Top header: BT name on left, battery+voltage on right (same line)
-    // Use wqy9 font for both to ensure consistent alignment
-    // 顶部头：左侧蓝牙名称，右侧电池+电压(同一行)
-    // 两者都使用wqy9字体以确保一致对齐
-    int16_t header_y = large ? 86 : 78;  // +60 for top margin | 顶部边距+60
+    // Top header: BT name on left, voltage on right (same line)
+    // 顶部头：左侧蓝牙名称，右侧电压(同一行)
+    int16_t header_y = large ? 86 : 78;
 
-    // Set text color before drawing battery (DrawBattery doesn't set its own color)
-    // 在绘制电池前设置文字颜色(DrawBattery不设置自己的颜色)
     GFX_setTextColor(gfx, GFX_BLACK, GFX_WHITE);
-
-    // Battery icon + voltage on right side
-    // DrawBattery uses wqy9 font, battery icon height=10, voltage text baseline at y+9
-    // 右侧电池图标+电压
-    // DrawBattery使用wqy9字体，电池图标高度=10，电压文字基线在y+9
-    DrawBattery(gfx, data->width - 10 - 2, header_y - 9, 20, data->voltage_mv);
+    DrawVoltage(gfx, data->width - 10 - 2, header_y - 9, data->voltage_mv);
 
     // BT name on left side of calendar area (use wqy9 to match voltage font)
     // 日历区域左侧的蓝牙名称(使用wqy9以匹配电压字体)
@@ -761,16 +651,40 @@ static void DrawCalendar_Right(Adafruit_GFX* gfx, tm_t* tm, struct Lunar_Date* L
     DrawMonthGrid(gfx, tm, data, days);
 }
 
-// Draw clock on the left side of the split screen (for partial refresh)
-// width_limit: the width of the left area (should be SPLIT_LEFT_WIDTH)
-// Layout: Top line at y=68 (aligned with calendar week header bottom)
-//         Time display centered between top line and bottom line
-//         Bottom line at y=300, bottom info below, leaving space for future content
-// 在分屏的左侧绘制时钟(用于局部刷新)
-// width_limit: 左侧区域的宽度(应该是SPLIT_LEFT_WIDTH)
-// 布局：顶部线在y=68(与日历星期头底部对齐)
-//       时间显示在顶部线和底部线之间居中
-//       底部线在y=300，底部信息在下方，为未来内容留出空间
+static void DrawYmd(Adafruit_GFX* gfx, const tm_t* tm, uint16_t num_color, bool pad2)
+{
+    GFX_printf_styled(gfx, num_color, GFX_WHITE, u8g2_font_helvB18_tn, "%d", tm->tm_year + YEAR0);
+    GFX_printf_styled(gfx, GFX_BLACK, GFX_WHITE, u8g2_font_wqy12_t_lunar, "年");
+    GFX_printf_styled(gfx, num_color, GFX_WHITE, u8g2_font_helvB18_tn,
+                      pad2 ? "%02d" : "%d", tm->tm_mon + 1);
+    GFX_printf_styled(gfx, GFX_BLACK, GFX_WHITE, u8g2_font_wqy12_t_lunar, "月");
+    GFX_printf_styled(gfx, num_color, GFX_WHITE, u8g2_font_helvB18_tn,
+                      pad2 ? "%02d" : "%d", tm->tm_mday);
+    GFX_printf_styled(gfx, GFX_BLACK, GFX_WHITE, u8g2_font_wqy12_t_lunar, pad2 ? "日 " : "日");
+}
+
+static void DrawJieqiRight(Adafruit_GFX* gfx, const tm_t* tm,
+                           int16_t right_x, int16_t y1, int16_t y2,
+                           uint16_t line1_color, uint16_t line2_color)
+{
+    char line1[16];
+    char line2[16];
+    uint8_t days = 0;
+    uint8_t jq = GetJieQiStr(tm->tm_year + YEAR0, tm->tm_mon + 1, tm->tm_mday, &days);
+
+    GFX_setFont(gfx, u8g2_font_wqy12_t_lunar);
+    clock_format_jieqi_countdown(line1, sizeof(line1), line2, sizeof(line2),
+                                 JieQiStr[jq % 24], days);
+    GFX_setTextColor(gfx, line1_color, GFX_WHITE);
+    GFX_setCursor(gfx, right_x - GFX_getUTF8Width(gfx, line1), y1);
+    GFX_printf(gfx, "%s", line1);
+    if (line2[0] != '\0') {
+        GFX_setTextColor(gfx, line2_color, GFX_WHITE);
+        GFX_setCursor(gfx, right_x - GFX_getUTF8Width(gfx, line2), y2);
+        GFX_printf(gfx, "%s", line2);
+    }
+}
+
 /**
  * @brief 在分屏左侧绘制时钟界面
  *        Draw clock interface on left side of split screen
@@ -808,20 +722,8 @@ static void DrawClock_Left(Adafruit_GFX* gfx, tm_t* tm, struct Lunar_Date* Lunar
     // Use helvB18 for numbers and wqy12 for Chinese characters
     // === 第1行：年/月/日，使用大字体 ===
     // 数字使用helvB18，汉字使用wqy12
-    GFX_setCursor(gfx, padding, 92);  // +60 for top margin | 顶部边距+60
-    GFX_setTextColor(gfx, text_color, GFX_WHITE);
-    GFX_setFont(gfx, u8g2_font_helvB18_tn);
-    GFX_printf(gfx, "%d", tm->tm_year + YEAR0);
-    GFX_setFont(gfx, u8g2_font_wqy12_t_lunar);
-    GFX_printf(gfx, "年");
-    GFX_setFont(gfx, u8g2_font_helvB18_tn);
-    GFX_printf(gfx, "%d", tm->tm_mon + 1);
-    GFX_setFont(gfx, u8g2_font_wqy12_t_lunar);
-    GFX_printf(gfx, "月");
-    GFX_setFont(gfx, u8g2_font_helvB18_tn);
-    GFX_printf(gfx, "%d", tm->tm_mday);
-    GFX_setFont(gfx, u8g2_font_wqy12_t_lunar);
-    GFX_printf(gfx, "日");
+    GFX_setCursor(gfx, padding, 92);
+    DrawYmd(gfx, tm, text_color, false);
 
     // === Line 2: Lunar date on left, Temperature on right ===
     // === 第2行：左侧农历日期，右侧温度 ===
@@ -883,24 +785,8 @@ static void DrawClock_Left(Adafruit_GFX* gfx, tm_t* tm, struct Lunar_Date* Lunar
     GFX_setCursor(gfx, padding, bottom_info_y2);
     GFX_printf(gfx, "%d周", GetWeekOfYear(tm->tm_year, tm->tm_mon, tm->tm_mday, tm->tm_wday));
 
-    // === Bottom section: Right side - Next solar term countdown ===
-    // === 底部区域：右侧 - 下一个节气倒计时 ===
-    {
-        char line1[16];
-        char line2[16];
-        uint8_t days_to_jieqi = 0;
-        uint8_t next_jieqi = GetJieQiStr(tm->tm_year + YEAR0, tm->tm_mon + 1, tm->tm_mday, &days_to_jieqi);
-
-        clock_format_jieqi_countdown(line1, sizeof(line1), line2, sizeof(line2),
-                                     JieQiStr[next_jieqi % 24], days_to_jieqi);
-        GFX_setCursor(gfx, width_limit - padding - GFX_getUTF8Width(gfx, line1), bottom_info_y1);
-        GFX_printf(gfx, "%s", line1);
-        if (line2[0] != '\0') {
-            GFX_setCursor(gfx, width_limit - padding - GFX_getUTF8Width(gfx, line2), bottom_info_y2);
-            GFX_printf(gfx, "%s", line2);
-        }
-    }
-
+    DrawJieqiRight(gfx, tm, width_limit - padding, bottom_info_y1, bottom_info_y2,
+                   text_color, text_color);
 }
 
 // Draw the full split screen with both clock and calendar (for initial full refresh)
@@ -959,12 +845,7 @@ static void DrawClock(Adafruit_GFX* gfx, tm_t* tm, struct Lunar_Date* Lunar, gui
 
     uint8_t padding = data->height > GUI_LARGE_SCREEN_H ? 100 : 40;
     GFX_setCursor(gfx, padding, 36);
-    GFX_printf_styled(gfx, text_color, GFX_WHITE, u8g2_font_helvB18_tn, "%d", tm->tm_year + YEAR0);
-    GFX_printf_styled(gfx, GFX_BLACK, GFX_WHITE, u8g2_font_wqy12_t_lunar, "年");
-    GFX_printf_styled(gfx, text_color, GFX_WHITE, u8g2_font_helvB18_tn, "%02d", tm->tm_mon + 1);
-    GFX_printf_styled(gfx, GFX_BLACK, GFX_WHITE, u8g2_font_wqy12_t_lunar, "月");
-    GFX_printf_styled(gfx, text_color, GFX_WHITE, u8g2_font_helvB18_tn, "%02d", tm->tm_mday);
-    GFX_printf_styled(gfx, GFX_BLACK, GFX_WHITE, u8g2_font_wqy12_t_lunar, "日 ");
+    DrawYmd(gfx, tm, text_color, true);
 
     GFX_setCursor(gfx, padding, 58);
     GFX_setFont(gfx, u8g2_font_wqy9_t_lunar);
@@ -976,7 +857,7 @@ static void DrawClock(Adafruit_GFX* gfx, tm_t* tm, struct Lunar_Date* Lunar, gui
         GFX_printf(gfx, "%s", lunar_md);
     }
 
-    DrawBattery(gfx, data->width - padding, 25, 20, data->voltage_mv);
+    DrawVoltage(gfx, data->width - padding, 25, data->voltage_mv);
 
     char ssid[5] = {0};
     int16_t sw = GFX_getUTF8Width(gfx, "25℃[1234]");
@@ -1003,24 +884,8 @@ static void DrawClock(Adafruit_GFX* gfx, tm_t* tm, struct Lunar_Date* Lunar, gui
     GFX_setCursor(gfx, padding, data->height - 68 + 30 + 20);
     GFX_printf(gfx, " %d周", GetWeekOfYear(tm->tm_year, tm->tm_mon, tm->tm_mday, tm->tm_wday));
 
-    {
-        char line1[16];
-        char line2[16];
-        uint8_t day = 0;
-        uint8_t JQday = GetJieQiStr(tm->tm_year + YEAR0, tm->tm_mon + 1, tm->tm_mday, &day);
-
-        clock_format_jieqi_countdown(line1, sizeof(line1), line2, sizeof(line2),
-                                     JieQiStr[JQday % 24], day);
-        GFX_setTextColor(gfx, text_color, GFX_WHITE);
-        GFX_setCursor(gfx, data->width - GFX_getUTF8Width(gfx, line1) - padding, data->height - 68 + 30);
-        GFX_printf(gfx, "%s", line1);
-        if (line2[0] != '\0') {
-            GFX_setTextColor(gfx, GFX_BLACK, GFX_WHITE);
-            GFX_setCursor(gfx, data->width - GFX_getUTF8Width(gfx, line2) - padding,
-                          data->height - 68 + 30 + 20);
-            GFX_printf(gfx, "%s", line2);
-        }
-    }
+    DrawJieqiRight(gfx, tm, data->width - padding, data->height - 68 + 30,
+                   data->height - 68 + 30 + 20, text_color, GFX_BLACK);
 }
 
 /**
@@ -1069,11 +934,6 @@ void DrawGUI(gui_data_t* data, buffer_callback callback, void* callback_data) {
     do {
         // 填充白色背景 | Fill white background
         GFX_fillScreen(&gfx, GFX_WHITE);
-
-        if (data->voltage_mv <= LOW_BATTERY_THRESHOLD_MV) {
-            DrawLowBatteryTip(&gfx, data);
-            continue;
-        }
 
         // 计算农历日期 | Calculate lunar date
         LUNAR_SolarToLunar(&Lunar, tm.tm_year + YEAR0, tm.tm_mon + 1, tm.tm_mday);
