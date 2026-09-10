@@ -47,7 +47,7 @@ void ble_epd_evt_handler(ble_evt_t const* p_ble_evt, void* p_context);
     static ble_epd_t _name; \
     NRF_SDH_BLE_OBSERVER(_name##_obs, BLE_EPD_BLE_OBSERVER_PRIO, ble_epd_evt_handler, &_name)
 
-#define APP_VERSION 0x27  // WRITE_BLOCK CRC 分块传图，不含 EPT
+#define APP_VERSION 0x2B  // 右上角与下方相同的 9 字节上限
 
 // EPD 服务的 128 位基础 UUID（自定义服务）
 #define BLE_UUID_EPD_SVC_BASE \
@@ -76,6 +76,7 @@ enum EPD_CMDS {
     EPD_CMD_SET_WEEK_START = 0x21,   /**< 设置周起始日（0:周日, 1:周一...） */
     EPD_CMD_SET_MODE = 0x22,         /**< 设置显示模式（0:图片, 1:日历, 2:时钟+日历, 3:全屏时钟） */
     EPD_CMD_SYNC_TIME_SILENT = 0x23, /**< 静默校时（不立即刷新） */
+    EPD_CMD_SET_ANNOTATIONS = 0x24,  /**< 写入/清除日历日期短标签 */
 
     // 图像写入 (0x30-0x3F)
     EPD_CMD_WRITE_IMAGE = 0x30,    /**< 写入图像到 RAM（旧版，无 CRC） */
@@ -94,8 +95,9 @@ enum EPD_CMDS {
 /**
  * 响应类型（MCU -> APP）
  */
-#define EPD_RSP_BLOCK_ACK 0xA0  /**< 块 ACK/NACK */
-#define EPD_RSP_STATUS    0xA1  /**< 传输状态 */
+#define EPD_RSP_BLOCK_ACK    0xA0  /**< 块 ACK/NACK */
+#define EPD_RSP_STATUS       0xA1  /**< 传输状态 */
+#define EPD_RSP_ANNOTATIONS  0xA2  /**< 日历短标签分片 */
 
 /**
  * 传输配置

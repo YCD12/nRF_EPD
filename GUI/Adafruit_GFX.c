@@ -905,7 +905,7 @@ void GFX_fillCircle(Adafruit_GFX* gfx, int16_t x0, int16_t y0, int16_t r, uint16
     @param  color    16-bit 5-6-5 Color to fill with
 */
 /**************************************************************************/
-void GFX_fillCircleHelper(Adafruit_GFX* gfx, int16_t x0, int16_t y0, int16_t r, uint8_t corners, int16_t delta,
+void GFX_fillCircleHelper(Adafruit_GFX* gfx, int16_t x0, int16_t y0, int16_t r, uint8_t cornername, int16_t delta,
                           uint16_t color) {
     int16_t f = 1 - r;
     int16_t ddF_x = 1;
@@ -929,12 +929,12 @@ void GFX_fillCircleHelper(Adafruit_GFX* gfx, int16_t x0, int16_t y0, int16_t r, 
         // These checks avoid double-drawing certain lines, important
         // for the SSD1306 library which has an INVERT drawing mode.
         if (x < (y + 1)) {
-            if (corners & 1) GFX_drawFastVLine(gfx, x0 + x, y0 - y, 2 * y + delta, color);
-            if (corners & 2) GFX_drawFastVLine(gfx, x0 - x, y0 - y, 2 * y + delta, color);
+            if (cornername & 1) GFX_drawFastVLine(gfx, x0 + x, y0 - y, 2 * y + delta, color);
+            if (cornername & 2) GFX_drawFastVLine(gfx, x0 - x, y0 - y, 2 * y + delta, color);
         }
         if (y != py) {
-            if (corners & 1) GFX_drawFastVLine(gfx, x0 + py, y0 - px, 2 * px + delta, color);
-            if (corners & 2) GFX_drawFastVLine(gfx, x0 - py, y0 - px, 2 * px + delta, color);
+            if (cornername & 1) GFX_drawFastVLine(gfx, x0 + py, y0 - px, 2 * px + delta, color);
+            if (cornername & 2) GFX_drawFastVLine(gfx, x0 - py, y0 - px, 2 * px + delta, color);
             py = y;
         }
         px = x;
@@ -969,19 +969,20 @@ void GFX_drawRect(Adafruit_GFX* gfx, int16_t x, int16_t y, int16_t w, int16_t h,
     @param    color 16-bit 5-6-5 Color to draw with
 */
 /**************************************************************************/
-void GFX_drawRoundRect(Adafruit_GFX* gfx, int16_t x, int16_t y, int16_t w, int16_t h, int16_t r, uint16_t color) {
+void GFX_drawRoundRect(Adafruit_GFX* gfx, int16_t x0, int16_t y0, int16_t w, int16_t h, int16_t radius,
+                       uint16_t color) {
     int16_t max_radius = ((w < h) ? w : h) / 2;  // 1/2 minor axis
-    if (r > max_radius) r = max_radius;
+    if (radius > max_radius) radius = max_radius;
     // smarter version
-    GFX_drawFastHLine(gfx, x + r, y, w - 2 * r, color);          // Top
-    GFX_drawFastHLine(gfx, x + r, y + h - 1, w - 2 * r, color);  // Bottom
-    GFX_drawFastVLine(gfx, x, y + r, h - 2 * r, color);          // Left
-    GFX_drawFastVLine(gfx, x + w - 1, y + r, h - 2 * r, color);  // Right
+    GFX_drawFastHLine(gfx, x0 + radius, y0, w - 2 * radius, color);          // Top
+    GFX_drawFastHLine(gfx, x0 + radius, y0 + h - 1, w - 2 * radius, color);  // Bottom
+    GFX_drawFastVLine(gfx, x0, y0 + radius, h - 2 * radius, color);          // Left
+    GFX_drawFastVLine(gfx, x0 + w - 1, y0 + radius, h - 2 * radius, color);  // Right
     // draw four corners
-    GFX_drawCircleHelper(gfx, x + r, y + r, r, 1, color);
-    GFX_drawCircleHelper(gfx, x + w - r - 1, y + r, r, 2, color);
-    GFX_drawCircleHelper(gfx, x + w - r - 1, y + h - r - 1, r, 4, color);
-    GFX_drawCircleHelper(gfx, x + r, y + h - r - 1, r, 8, color);
+    GFX_drawCircleHelper(gfx, x0 + radius, y0 + radius, radius, 1, color);
+    GFX_drawCircleHelper(gfx, x0 + w - radius - 1, y0 + radius, radius, 2, color);
+    GFX_drawCircleHelper(gfx, x0 + w - radius - 1, y0 + h - radius - 1, radius, 4, color);
+    GFX_drawCircleHelper(gfx, x0 + radius, y0 + h - radius - 1, radius, 8, color);
 }
 
 /**************************************************************************/
@@ -995,14 +996,15 @@ void GFX_drawRoundRect(Adafruit_GFX* gfx, int16_t x, int16_t y, int16_t w, int16
     @param    color 16-bit 5-6-5 Color to draw/fill with
 */
 /**************************************************************************/
-void GFX_fillRoundRect(Adafruit_GFX* gfx, int16_t x, int16_t y, int16_t w, int16_t h, int16_t r, uint16_t color) {
+void GFX_fillRoundRect(Adafruit_GFX* gfx, int16_t x0, int16_t y0, int16_t w, int16_t h, int16_t radius,
+                       uint16_t color) {
     int16_t max_radius = ((w < h) ? w : h) / 2;  // 1/2 minor axis
-    if (r > max_radius) r = max_radius;
+    if (radius > max_radius) radius = max_radius;
     // smarter version
-    GFX_fillRect(gfx, x + r, y, w - 2 * r, h, color);
+    GFX_fillRect(gfx, x0 + radius, y0, w - 2 * radius, h, color);
     // draw four corners
-    GFX_fillCircleHelper(gfx, x + w - r - 1, y + r, r, 1, h - 2 * r - 1, color);
-    GFX_fillCircleHelper(gfx, x + r, y + r, r, 2, h - 2 * r - 1, color);
+    GFX_fillCircleHelper(gfx, x0 + w - radius - 1, y0 + radius, radius, 1, h - 2 * radius - 1, color);
+    GFX_fillCircleHelper(gfx, x0 + radius, y0 + radius, radius, 2, h - 2 * radius - 1, color);
 }
 
 /**************************************************************************/
@@ -1338,17 +1340,16 @@ static uint16_t utf8_next(Adafruit_GFX* gfx, uint8_t b) {
 }
 
 int16_t GFX_drawUTF8(Adafruit_GFX* gfx, int16_t x, int16_t y, const char* str) {
-    uint16_t e;
-    int16_t delta, sum;
+    int16_t sum;
 
     gfx->utf8_state = 0;
     sum = 0;
     for (;;) {
-        e = utf8_next(gfx, (uint8_t)*str);
+        uint16_t e = utf8_next(gfx, (uint8_t)*str);
         if (e == 0x0ffff) break;
         str++;
         if (e != 0x0fffe) {
-            delta = u8g2_DrawGlyph(&gfx->u8g2, x, y, e);
+            int16_t delta = u8g2_DrawGlyph(&gfx->u8g2, x, y, e);
 
             switch (gfx->u8g2.font_decode.dir) {
                 case 0:
@@ -1372,7 +1373,6 @@ int16_t GFX_drawUTF8(Adafruit_GFX* gfx, int16_t x, int16_t y, const char* str) {
 }
 
 int16_t GFX_getUTF8Width(Adafruit_GFX* gfx, const char* str) {
-    uint16_t e;
     int16_t dx, w;
 
     gfx->u8g2.font_decode.glyph_width = 0;
@@ -1380,7 +1380,7 @@ int16_t GFX_getUTF8Width(Adafruit_GFX* gfx, const char* str) {
     w = 0;
     dx = 0;
     for (;;) {
-        e = utf8_next(gfx, (uint8_t)*str);
+        uint16_t e = utf8_next(gfx, (uint8_t)*str);
         if (e == 0x0ffff) break;
         str++;
         if (e != 0x0fffe) {
@@ -1510,7 +1510,6 @@ int16_t GFX_getUTF8Widthf(Adafruit_GFX* gfx, const char* format, ...) {
 }
 
 size_t GFX_print(Adafruit_GFX* gfx, const char c) {
-    int16_t delta;
     uint16_t e = utf8_next(gfx, (uint8_t)c);
     if (e == '\n') {
         gfx->tx = 0;
@@ -1518,7 +1517,7 @@ size_t GFX_print(Adafruit_GFX* gfx, const char c) {
     } else if (e == '\r') {
         gfx->tx = 0;
     } else if (e < 0x0fffe) {
-        delta = u8g2_DrawGlyph(&gfx->u8g2, gfx->tx, gfx->ty, e);
+        int16_t delta = u8g2_DrawGlyph(&gfx->u8g2, gfx->tx, gfx->ty, e);
         switch (gfx->u8g2.font_decode.dir) {
             case 0:
                 gfx->tx += delta;

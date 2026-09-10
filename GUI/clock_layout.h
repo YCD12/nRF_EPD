@@ -309,8 +309,6 @@ static inline uint8_t clock_refresh_local_windows(const clock_refresh_geom_t *g,
     clock_refresh_window_t base;
     clock_refresh_window_t mm;
     uint16_t hhmm_x;
-    uint16_t tens_x;
-    uint16_t draw_w;
 
     if (g == NULL || out == NULL || max == 0U) {
         return 0U;
@@ -328,7 +326,8 @@ static inline uint8_t clock_refresh_local_windows(const clock_refresh_geom_t *g,
     }
 
     if (clock_only_minutes_changed(prev_ts, curr_ts)) {
-        tens_x = clock_minute_tens_local_x(hhmm_x, g->cS, g->nD);
+        uint16_t tens_x = clock_minute_tens_local_x(hhmm_x, g->cS, g->nD);
+
         mm = base;
         mm.x = tens_x;
         mm.w = clock_digit_block_width(g->cS, g->nD);
@@ -340,7 +339,7 @@ static inline uint8_t clock_refresh_local_windows(const clock_refresh_geom_t *g,
         if (max < 2U) {
             return 0U;
         }
-        draw_w = clock_digit_draw_width(g->cS);
+        uint16_t draw_w = clock_digit_draw_width(g->cS);
         clock_refresh_fill_digit_window(&out[0], &base, tens_x, draw_w, g->canvas_w);
         clock_refresh_fill_digit_window(&out[1], &base,
                                         (uint16_t)(tens_x + clock_digit_single_width(g->cS)),

@@ -938,3 +938,21 @@ body.dark-mode .page-subtitle {
     color: #cbd5e1;
 }
 
+.anno-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.9rem;
+}
+
+.anno-table th,
+.anno-table td {
+    border-bottom: 1px solid var(--border-color);
+    padding: 0.35rem 0.5rem;
+    text-align: left;
+}
+
+body.dark-mode .anno-table th,
+body.dark-mode .anno-table td {
+    border-bottom-color: var(--dark-border);
+}
+

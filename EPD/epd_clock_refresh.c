@@ -124,7 +124,7 @@ static void epd_clock_diff_cb(void *user_data, uint8_t *black, uint8_t *color,
 }
 
 /* 刷新一个局刷窗：必要时重绘 OLD，再 diff_push + refresh_partial。 */
-static bool epd_clock_refresh_one(epd_model_t *epd, gui_data_t *data,
+static bool epd_clock_refresh_one(epd_model_t *epd, const gui_data_t *data,
                                   const clock_refresh_geom_t *geom,
                                   const clock_refresh_window_t *local)
 {
@@ -204,7 +204,7 @@ static bool epd_clock_refresh_one(epd_model_t *epd, gui_data_t *data,
 }
 
 /* 按变化填 1～2 个窗，逐个 OLD/NEW 局刷；任一个失败则放弃。 */
-bool epd_clock_refresh_try(epd_model_t *epd, gui_data_t *data)
+bool epd_clock_refresh_try(epd_model_t *epd, const gui_data_t *data)
 {
     clock_refresh_geom_t geom;
     clock_refresh_window_t wins[CLOCK_REFRESH_WINDOWS_MAX];

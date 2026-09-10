@@ -237,15 +237,9 @@ static int16_t u8g2_add_vector_x(int16_t dx, int8_t x, int8_t y, uint8_t dir) {
 // 解码并绘制字形的游程长度数据
 static void u8g2_font_decode_len(u8g2_font_t* u8g2, uint8_t len, uint8_t is_foreground) {
     uint8_t cnt;     /* total number of remaining pixels, which have to be drawn */
-    uint8_t rem;     /* remaining pixel to the right edge of the glyph */
-    uint8_t current; /* number of pixels, which need to be drawn for the draw procedure */
-    /* current is either equal to cnt or equal to rem */
 
     /* local coordinates of the glyph */
     uint8_t lx, ly;
-
-    /* target position on the screen */
-    int16_t x, y;
 
     u8g2_font_decode_t* decode = &(u8g2->font_decode);
 
@@ -256,6 +250,11 @@ static void u8g2_font_decode_len(u8g2_font_t* u8g2, uint8_t len, uint8_t is_fore
     ly = decode->y;
 
     for (;;) {
+        uint8_t rem;     /* remaining pixel to the right edge of the glyph */
+        uint8_t current; /* number of pixels, which need to be drawn for the draw procedure */
+        int16_t x, y;
+
+        /* current is either equal to cnt or equal to rem */
         /* calculate the number of pixel to the right edge of the glyph */
         rem = decode->glyph_width;
         rem -= lx;
@@ -336,7 +335,6 @@ static void u8g2_font_setup_decode(u8g2_font_t* u8g2, const uint8_t* glyph_data)
 */
 /* optimized */
 static int8_t u8g2_font_decode_glyph(u8g2_font_t* u8g2, const uint8_t* glyph_data) {
-    uint8_t a, b;
     int8_t x, y;
     int8_t d;
     int8_t h;
@@ -360,8 +358,8 @@ static int8_t u8g2_font_decode_glyph(u8g2_font_t* u8g2, const uint8_t* glyph_dat
 
         /* decode glyph */
         for (;;) {
-            a = u8g2_font_decode_get_unsigned_bits(decode, u8g2->font_info.bits_per_0);
-            b = u8g2_font_decode_get_unsigned_bits(decode, u8g2->font_info.bits_per_1);
+            uint8_t a = u8g2_font_decode_get_unsigned_bits(decode, u8g2->font_info.bits_per_0);
+            uint8_t b = u8g2_font_decode_get_unsigned_bits(decode, u8g2->font_info.bits_per_1);
             do {
                 u8g2_font_decode_len(u8g2, a, 0);
                 u8g2_font_decode_len(u8g2, b, 1);
@@ -494,11 +492,10 @@ int16_t u8g2_DrawGlyph(u8g2_font_t* u8g2, int16_t x, int16_t y, uint16_t encodin
 
 // 绘制字符串
 int16_t u8g2_DrawStr(u8g2_font_t* u8g2, int16_t x, int16_t y, const char* s) {
-    int16_t sum, delta;
-    sum = 0;
+    int16_t sum = 0;
 
     while (*s != '\0') {
-        delta = u8g2_DrawGlyph(u8g2, x, y, *s);
+        int16_t delta = u8g2_DrawGlyph(u8g2, x, y, *s);
         switch (u8g2->font_decode.dir) {
             case 0:
                 x += delta;

@@ -21,6 +21,7 @@ static void test_refresh_and_set_time_stay_queued(void)
     assert(!epd_cmd_is_urgent(0x22)); /* SET_MODE */
     assert(!epd_cmd_is_urgent(0x23)); /* SYNC_TIME_SILENT */
     assert(!epd_cmd_is_urgent(0x30)); /* WRITE_IMAGE: fallback, queued after INIT */
+    assert(epd_cmd_is_urgent(0x24)); /* SET_ANNOTATIONS: sequential chunks, queue depth is 2 */
 }
 
 static void test_week_start_is_immediate_so_mode_switch_fits_queue(void)
@@ -47,6 +48,7 @@ static void test_picture_writes_need_a_live_display(void)
     assert(epd_cmd_needs_display(0x31)); /* WRITE_BLOCK */
     assert(!epd_cmd_needs_display(0x20));
     assert(!epd_cmd_needs_display(0x01)); /* INIT creates the display */
+    assert(!epd_cmd_needs_display(0x24)); /* SET_ANNOTATIONS writes FDS, refresh is separate */
 }
 
 static void test_write_block_accepts_only_sequential_ids(void)

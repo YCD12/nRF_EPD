@@ -29,7 +29,7 @@ typedef struct {
 void DrawGUI(gui_data_t* data, buffer_callback callback, void* callback_data);
 
 // 仅绘制 HH:MM，供时钟局刷。画布尺寸由 clock_refresh_geom() 决定（分屏 TIME_REFRESH_* 或全屏数字框）
-void DrawGUI_ClockOnly(gui_data_t* data, buffer_callback callback, void* callback_data);
+void DrawGUI_ClockOnly(const gui_data_t* data, buffer_callback callback, void* callback_data);
 
 // 屏幕坐标系下的 HH:MM（或分钟个位）窗口。data->mode/width/height 决定画布。
 // prev_ts 必须是上一次成功的时钟刷新（全刷或局刷），不能用 GUI 本地副本。
