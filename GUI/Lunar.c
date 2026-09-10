@@ -214,7 +214,7 @@ static uint16_t SolarToInt(uint16_t y, uint8_t m, uint8_t d) {
 void LUNAR_SolarToLunar(struct Lunar_Date* lunar, uint16_t solar_year, uint8_t solar_month, uint8_t solar_date) {
     uint8_t i, lunarM, m, d, leap, dm;
     uint16_t year_index, lunarY, y, offset;
-    uint32_t solar_data, solar11, days;
+    uint32_t solar_data, solar11, lunar_days;
 
     /* 步骤1: 参数有效性检查 */
     if (solar_month < 1 || solar_month > 12 || solar_date < 1 || solar_date > 31) {
@@ -262,8 +262,8 @@ void LUNAR_SolarToLunar(struct Lunar_Date* lunar, uint16_t solar_year, uint8_t s
     offset = SolarToInt(calc_year, solar_month, solar_date) - SolarToInt(y, m, d);
 
     /* 步骤8: 获取该农历年的月份信息 */
-    days = lunar_month_days[year_index];
-    leap = GetBitInt(days, 4, 13);    /* 提取闰月月份 (0=无闰月, 1-12=闰几月) */
+    lunar_days = lunar_month_days[year_index];
+    leap = GetBitInt(lunar_days, 4, 13);    /* 提取闰月月份 (0=无闰月, 1-12=闰几月) */
 
     /* 步骤9: 计算农历年份 */
     lunarY = (uint16_t)(year_base + year_index - 1);
@@ -273,7 +273,7 @@ void LUNAR_SolarToLunar(struct Lunar_Date* lunar, uint16_t solar_year, uint8_t s
     /* 步骤10: 逐月累减确定农历月份 */
     for (i = 0; i < 13; i++) {
         /* 获取当月天数: Bit[12-i]为1表示大月(30天)，为0表示小月(29天) */
-        if (GetBitInt(days, 1, 12 - i) == 1) {
+        if (GetBitInt(lunar_days, 1, 12 - i) == 1) {
             dm = 30;    /* 大月30天 */
         } else {
             dm = 29;    /* 小月29天 */
@@ -504,9 +504,6 @@ uint8_t GetJieQi(uint16_t myear, uint8_t mmonth, uint8_t mday, uint8_t* JQdate) 
         calc_year = year_min;
     }
 
-    /* 重复检查（冗余但保留原代码逻辑） */
-    if ((mmonth == 0) || (mmonth > 12)) return 0;
-
     /* 计算节气序号 */
     JQ = (mmonth - 1) * 2;  /* 获得节气顺序标号(0～23)，每月2个节气 */
     if (mday >= 15) JQ++;   /* 判断是否是下半月，下半月取第二个节气 */
@@ -553,7 +550,7 @@ uint8_t GetJieQi(uint16_t myear, uint8_t mmonth, uint8_t mday, uint8_t* JQdate) 
  * ------------------------------------------------------------------------------------------------------
  ******************************************************************************/
 uint8_t GetJieQiStr(uint16_t myear, uint8_t mmonth, uint8_t mday, uint8_t* day) {
-    uint8_t JQdate, JQ, MaxDay;
+    uint8_t JQdate, JQ;
 
     /* 获取当前半月的节气日期 */
     if (GetJieQi(myear, mmonth, mday, &JQdate) == 0) return 0xFF;
@@ -588,6 +585,8 @@ uint8_t GetJieQiStr(uint16_t myear, uint8_t mmonth, uint8_t mday, uint8_t* day) 
         }
         else  /* 当前在下半月，下一个节气在下个月 - 需要翻月 */
         {
+            uint8_t MaxDay;
+
             MaxDay = MonthDayMax[mmonth - 1];    /* 获取当月最大天数 */
 
             /* 处理闰年2月 */
@@ -681,7 +680,7 @@ int is_leap(int yr) {
  */
 unsigned char day_of_week_get(unsigned char month, unsigned char day, unsigned short year) {
     /* 月份修正表：补偿各月天数差对星期计算的影响 */
-    static int t[] = {0, 3, 2, 5, 0, 3, 5, 1, 4, 6, 2, 4};
+    static const int t[] = {0, 3, 2, 5, 0, 3, 5, 1, 4, 6, 2, 4};
     year -= (uint8_t)(month < 3);    /* 1月和2月，年份减1 */
     return (year + year / 4 - year / 100 + year / 400 + t[month - 1] + day) % 7;
 }
@@ -795,7 +794,7 @@ uint8_t get_first_day_week(uint16_t year, uint8_t month) { return day_of_week_ge
  *
  * 注意: 此函数的tm_year应为实际年份（如2025），与transformTime的输出格式不同
  */
-uint32_t transformTimeStruct(struct devtm* result) {
+uint32_t transformTimeStruct(const struct devtm* result) {
     uint32_t Cyear = 0;
 
     /* 计算1970年到指定年份之间的闰年数量 */

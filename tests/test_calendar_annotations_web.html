@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <title>calendar annotations pack test</title>
+</head>
+<body>
+  <pre id="out">running</pre>
+  <script src="../html/js/calendar_annotations.js"></script>
+  <script>
+    const out = document.getElementById('out');
+    const lines = [];
+    function check(name, cond) {
+      lines.push((cond ? 'PASS ' : 'FAIL ') + name);
+      if (!cond) throw new Error(name);
+    }
+    try {
+      CalendarAnnotations.annotations = [
+        { date: '2026-08-02', label: '休', fontSize: 0, color: 0, position: 0 },
+        { date: '2026-08-05', label: '班', fontSize: 12, color: 2, position: 1 },
+      ];
+      const bytes = CalendarAnnotations.pack();
+      const view = new DataView(bytes.buffer);
+      check('magic', view.getUint32(0, true) === 0x4F4E4E41);
+      check('count', view.getUint16(6, true) === 2);
+      check('no glyph header', bytes[8] === 0 && bytes[15] === 0);
+      check('first label 休', bytes[16 + 5] === 3);
+      check('second flags large red corner', bytes[32 + 4] === (1 | (2 << 1) | (2 << 3) | (1 << 5)));
+      let rejected = false;
+      try { CalendarAnnotations.assertLabel('生'); } catch (e) { rejected = true; }
+      check('rejects missing glyph 生', rejected);
+      check('allows 休', CalendarAnnotations.assertLabel('休') === '休');
+      const unpacked = CalendarAnnotations.unpack(bytes);
+      check('unpack count', unpacked.length === 2);
+      check('unpack first', unpacked[0].date === '2026-08-02' && unpacked[0].label === '休' && unpacked[0].fontSize === 0);
+      check('unpack second', unpacked[1].label === '班' && unpacked[1].fontSize === 12 && unpacked[1].color === 2 && unpacked[1].position === 1);
+      check('corner allows 休班', CalendarAnnotations.assertLabel('休班') === '休班');
+      check('corner allows one latin', CalendarAnnotations.assertLabel('A') === 'A');
+      check('below keeps 9-byte limit', CalendarAnnotations.assertLabel('休班') === '休班');
+      check('clamp 10 ASCII to 9 bytes', CalendarAnnotations.clampLabelToMaxBytes('1234567890') === '123456789');
+      check('flags roundtrip', CalendarAnnotations.packFlags(CalendarAnnotations.unpackFlags(1 | (2 << 1) | (2 << 3) | (1 << 5))) === (1 | (2 << 1) | (2 << 3) | (1 << 5)));
+      let oversize = false;
+      try { CalendarAnnotations.assertLabel('1234567890', 1); } catch (e) { oversize = true; }
+      check('corner rejects 10 ASCII bytes', oversize);
+      const chunk = new Uint8Array(5 + bytes.length);
+      chunk[0] = 0xA2;
+      chunk[3] = bytes.length & 0xff;
+      chunk[4] = (bytes.length >> 8) & 0xff;
+      chunk.set(bytes, 5);
+      CalendarAnnotations.annotations = [];
+      CalendarAnnotations.handleNotification({ buffer: chunk.buffer, byteOffset: 0, byteLength: chunk.length });
+      check('notify install', CalendarAnnotations.annotations.length === 2 && CalendarAnnotations.annotations[1].label === '班');
+      out.textContent = lines.join('\n') + '\nPASS: calendar annotations web';
+    } catch (e) {
+      out.textContent = lines.join('\n') + '\n' + e.message;
+    }
+  </script>
+</body>
+</html>

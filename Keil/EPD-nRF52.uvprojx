@@ -429,6 +429,11 @@
               <FileType>1</FileType>
               <FilePath>..\EPD\epd_clock_refresh.c</FilePath>
             </File>
+            <File>
+              <FileName>calendar_annotations_store.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\EPD\calendar_annotations_store.c</FilePath>
+            </File>
 
 
 
@@ -442,6 +447,11 @@
               <FileName>GUI.c</FileName>
               <FileType>1</FileType>
               <FilePath>..\GUI\GUI.c</FilePath>
+            </File>
+            <File>
+              <FileName>calendar_annotations.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\GUI\calendar_annotations.c</FilePath>
             </File>
 
             <File>
@@ -1213,6 +1223,11 @@
               <FileType>1</FileType>
               <FilePath>..\EPD\epd_clock_refresh.c</FilePath>
             </File>
+            <File>
+              <FileName>calendar_annotations_store.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\EPD\calendar_annotations_store.c</FilePath>
+            </File>
 
 
 
@@ -1226,6 +1241,11 @@
               <FileName>GUI.c</FileName>
               <FileType>1</FileType>
               <FilePath>..\GUI\GUI.c</FilePath>
+            </File>
+            <File>
+              <FileName>calendar_annotations.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\GUI\calendar_annotations.c</FilePath>
             </File>
 
             <File>

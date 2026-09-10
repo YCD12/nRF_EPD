@@ -1,12 +1,12 @@
 let bleDevice, gattServer;
 let epdService, epdCharacteristic;
-let startTime, msgIndex, appVersion;
+let startTime, appVersion;
 let canvas, ctx, textDecoder;
 let paintManager, cropManager;
 
 // APP版本号 (便于调试)
-const APP_VERSION = '2.0.6';
-const APP_BUILD_DATE = '2026-04-02';
+const APP_VERSION = '2.0.10';
+const APP_BUILD_DATE = '2026-09-08';
 const EPD_DEVICE_NAME_PREFIX = 'NRF_EPD';
 const SCAN_DURATION_MS = 5000;
 const LOG_CONSOLE_STORAGE_KEY = 'epd_log_to_console';
@@ -36,6 +36,7 @@ const EpdCmd = {
   SET_WEEK_START: 0x21,
   SET_MODE: 0x22,
   SYNC_TIME_SILENT: 0x23,
+  SET_ANNOTATIONS: 0x24,
 
   WRITE_IMG: 0x30, // v1.6
 
@@ -109,7 +110,6 @@ function resetVariables() {
   gattServer = null;
   epdService = null;
   epdCharacteristic = null;
-  msgIndex = 0;
 }
 
 function formatVoltageDisplay(voltageMv) {
@@ -908,7 +908,7 @@ async function reConnect() {
   setTimeout(async function () { await connect(); }, 300);
 }
 
-function handleNotify(value, idx) {
+function handleNotify(value) {
   const data = new Uint8Array(value.buffer, value.byteOffset, value.byteLength);
 
   // Route CRC transfer responses to BleTransfer module
@@ -918,8 +918,44 @@ function handleNotify(value, idx) {
     }
     return;
   }
+  if (data.length >= 1 && data[0] === 0xA2 && window.CalendarAnnotations) {
+    window.CalendarAnnotations.handleNotification(value);
+    return;
+  }
 
-  if (idx == 0) {
+  if (textDecoder == null) textDecoder = new TextDecoder();
+  const msg = textDecoder.decode(data);
+
+  // 固件可能在配置包前发送日志，也可能因为平台时序导致通知顺序变化。
+  // 先按协议前缀解析字符串通知，不再依赖“第 0 个通知就是配置”。
+  if (msg.startsWith('mtu=') && msg.length > 4) {
+    addLog(msg, '⇓');
+    const mtuSize = parseInt(msg.substring(4), 10);
+    if (Number.isFinite(mtuSize)) {
+      document.getElementById('mtusize').value = mtuSize;
+      addLog(`MTU 已更新为: ${mtuSize}`);
+    }
+    return;
+  }
+
+  if (msg.startsWith('v=') && msg.length > 2) {
+    const voltageMv = parseInt(msg.substring(2), 10);
+    if (Number.isFinite(voltageMv)) {
+      updateBatteryVoltageDisplay(voltageMv);
+      addLog(msg, '⇓');
+    }
+    return;
+  }
+
+  if (msg.startsWith('t=') && msg.length > 2) {
+    const t = parseInt(msg.substring(2), 10) + new Date().getTimezoneOffset() * 60;
+    addLog(`远端时间: ${new Date(t * 1000).toLocaleString()}`);
+    addLog(`本地时间: ${new Date().toLocaleString()}`);
+    return;
+  }
+
+  // 当前固件配置包固定为 epd_config_t 的 14 字节二进制数据。
+  if (data.length === 14) {
     addLog(`收到配置：${bytes2hex(data)}`);
     const epdpins = document.getElementById("epdpins");
     const epddriver = document.getElementById("epddriver");
@@ -974,25 +1010,7 @@ function handleNotify(value, idx) {
       }
     }
   } else {
-    if (textDecoder == null) textDecoder = new TextDecoder();
-    const msg = textDecoder.decode(data);
-    if (msg.startsWith('mtu=') && msg.length > 4) {
-      addLog(msg, '⇓');
-      const mtuSize = parseInt(msg.substring(4));
-      document.getElementById('mtusize').value = mtuSize;
-      addLog(`MTU 已更新为: ${mtuSize}`);
-    } else if (msg.startsWith('v=') && msg.length > 2) {
-      const voltageMv = parseInt(msg.substring(2), 10);
-      if (!Number.isNaN(voltageMv)) {
-        updateBatteryVoltageDisplay(voltageMv);
-      }
-    } else if (msg.startsWith('t=') && msg.length > 2) {
-      const t = parseInt(msg.substring(2)) + new Date().getTimezoneOffset() * 60;
-      addLog(`远端时间: ${new Date(t * 1000).toLocaleString()}`);
-      addLog(`本地时间: ${new Date().toLocaleString()}`);
-    } else {
-      addLog(msg, '⇓');
-    }
+    addLog(msg, '⇓');
   }
 }
 
@@ -1144,13 +1162,18 @@ async function connect() {
     }
 
     try {
-      await epdCharacteristic.startNotifications();
-      epdCharacteristic.addEventListener('characteristicvaluechanged', (event) => {
-        handleNotify(event.target.value, msgIndex++);
-      });
-      // 给系统一点时间完成监听器挂载
-      await new Promise(r => setTimeout(r, 200));
+      // 必须先挂监听器，再开启通知。固件会在 CCCD 写入完成时立即推送
+      // 配置/MTU/电压，否则首批通知可能在 startNotifications() 返回前丢失。
       updateBatteryVoltageDisplay(null, '等待上报');
+      epdCharacteristic.addEventListener('characteristicvaluechanged', (event) => {
+        handleNotify(event.target.value);
+      });
+      await epdCharacteristic.startNotifications();
+
+      // 兼容未在 CCCD 开启时主动上报电压的旧固件，并遵循协议连接初始化顺序。
+      if (!await write(EpdCmd.INIT)) {
+        addLog('连接后初始化失败，无法请求设备电压');
+      }
     } catch (e) {
       console.error(e);
       if (e.message) addLog("startNotifications: " + e.message);
@@ -1166,6 +1189,9 @@ async function connect() {
     // Initialize CRC transfer module if available
     if (typeof BleTransfer !== 'undefined') {
       BleTransfer.init();
+    }
+    if (window.CalendarAnnotations && appVersion >= 0x29) {
+      window.CalendarAnnotations.loadFromDevice();
     }
 
     if (clearLogOnNextSuccessfulConnect) {
@@ -1569,6 +1595,9 @@ document.body.onload = () => {
   updateOrientationBadge();
   updateBatteryVoltageDisplay();
   checkDebugMode();
+  if (window.CalendarAnnotations) {
+    window.CalendarAnnotations.init();
+  }
   if (typeof initDfuPanel === 'function') {
     initDfuPanel();
   }

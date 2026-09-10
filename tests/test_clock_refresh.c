@@ -6,7 +6,7 @@
 
 #include "epd_clock_refresh.h"
 
-void DrawGUI_ClockOnly(gui_data_t *data, buffer_callback callback, void *callback_data)
+void DrawGUI_ClockOnly(const gui_data_t *data, buffer_callback callback, void *callback_data)
 {
     (void)data;
     (void)callback;

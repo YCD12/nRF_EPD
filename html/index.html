@@ -6,7 +6,7 @@
 	<meta name="viewport" content="width=device-width, initial-scale=1">
 	<title>墨水屏控制台</title>
 	<link rel="shortcut icon" type="image/png" href="favicon.png">
-	<link rel="stylesheet" href="css/main.css?v=20260402b">
+	<link rel="stylesheet" href="css/main.css?v=20260908a">
 </head>
 
 <body>
@@ -80,6 +80,43 @@
 					<input type="text" id="cmdTXT" value="">
 					<button id="sendcmdbutton" type="button" class="primary" onclick="sendcmd()">发送命令</button>
 				</div>
+			</div>
+		</section>
+		<section class="section">
+			<h2>日期标注 <span id="calendarAnnotationCount" class="device-badge">0/64</span></h2>
+			<div class="flex-container">
+				<div class="flex-group">
+					<label for="calendarAnnotationDate">日期:</label>
+					<input id="calendarAnnotationDate" type="date" min="2000-01-01" max="2099-12-31">
+					<label for="calendarAnnotationLabel">短标签:</label>
+					<input id="calendarAnnotationLabel" type="text" maxlength="9" placeholder="可留空，仅红点" aria-describedby="calendarAnnotationLabelHint">
+					<label for="calendarAnnotationPosition">位置:</label>
+					<select id="calendarAnnotationPosition">
+						<option value="0" selected>日期下方</option>
+						<option value="1">右上角</option>
+					</select>
+					<label for="calendarAnnotationFontSize">字号:</label>
+					<select id="calendarAnnotationFontSize">
+						<option value="0" selected>跟随日历</option>
+						<option value="9">小 (wqy9)</option>
+						<option value="12">大 (wqy12)</option>
+					</select>
+					<label for="calendarAnnotationColor">文字颜色:</label>
+					<select id="calendarAnnotationColor">
+						<option value="0" selected>黑</option>
+						<option value="1">白</option>
+						<option value="2">红</option>
+					</select>
+					<span id="calendarAnnotationLabelHint" class="device-badge" aria-live="polite">0/9 UTF-8 字节</span>
+					<button type="button" class="secondary" onclick="CalendarAnnotations.addOrUpdate()">添加/更新</button>
+					<button type="button" class="primary" onclick="CalendarAnnotations.save()">保存到设备</button>
+					<button type="button" class="secondary" onclick="CalendarAnnotations.loadFromDevice()">从设备读取</button>
+					<button type="button" class="secondary" onclick="CalendarAnnotations.clearDevice()">清除设备标注</button>
+				</div>
+			</div>
+			<div class="dfu-hint">位置可选日期下方或右上角。两种位置的字数限制相同：最多 9 个 UTF-8 字节（中文最多 3 个）。下方会盖过节日/农历，并在右上角打红点；右上角则节日/农历仍保留。留空则只打红点。汉字须在机内日历字库。英文字母用已有的 wqy9，不另加字库、不额外占 Flash（大号格子含字母时也会改用 wqy9）。连接后会自动从设备读回；保存会覆盖设备上的全部标注。</div>
+			<div class="flex-container">
+				<table class="anno-table"><thead><tr><th>日期</th><th>短标签</th><th>位置</th><th>字号</th><th>颜色</th><th>操作</th></tr></thead><tbody id="calendarAnnotationsList"></tbody></table>
 			</div>
 		</section>
 		<section class="section">
@@ -382,7 +419,8 @@
 	<script type="text/javascript" src="js/paint.js?v=20260402b"></script>
 	<script type="text/javascript" src="js/crop.js?v=20260402b"></script>
 	<script type="text/javascript" src="js/ble_transfer.js?v=20260908a"></script>
-	<script type="text/javascript" src="js/main.js?v=20260907c"></script>
+	<script type="text/javascript" src="js/calendar_annotations.js?v=20260909a"></script>
+	<script type="text/javascript" src="js/main.js?v=20260909a"></script>
 </body>
 
 </html>

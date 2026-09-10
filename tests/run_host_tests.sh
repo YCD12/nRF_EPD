@@ -20,6 +20,8 @@ run() {
 }
 
 run test_cmd_policy -I. -IEPD -IGUI tests/test_cmd_policy.c
+run test_calendar_annotations -IGUI GUI/calendar_annotations.c tests/test_calendar_annotations.c
+run test_wqy_ascii -IGUI GUI/fonts.c GUI/u8g2_font.c tests/test_wqy_ascii.c
 run test_clock_layout -IGUI tests/test_clock_layout.c
 run test_calendar_grid -IGUI tests/test_calendar_grid.c
 run test_clock_refresh_window -IGUI tests/test_clock_refresh_window.c

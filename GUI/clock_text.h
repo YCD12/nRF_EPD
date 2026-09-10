@@ -26,11 +26,11 @@ static inline size_t clock_text_append_u8(char *out, size_t out_sz, size_t pos, 
         return pos;
     }
     if (value >= 10U) {
-        char tens[2] = {(char)('0' + (value / 10U)), '\0'};
+        const char tens[2] = {(char)('0' + (value / 10U)), '\0'};
         pos = clock_text_append(out, out_sz, pos, tens);
     }
     {
-        char ones[2] = {(char)('0' + (value % 10U)), '\0'};
+        const char ones[2] = {(char)('0' + (value % 10U)), '\0'};
         pos = clock_text_append(out, out_sz, pos, ones);
     }
     return pos;
@@ -115,12 +115,12 @@ static inline void clock_format_voltage(char *out, size_t out_sz, uint16_t volta
     if (volts >= 10U) {
         pos = clock_text_append_u8(out, out_sz, pos, (uint8_t)volts);
     } else {
-        char ones[2] = {(char)('0' + (uint8_t)volts), '\0'};
+        const char ones[2] = {(char)('0' + (uint8_t)volts), '\0'};
         pos = clock_text_append(out, out_sz, pos, ones);
     }
     pos = clock_text_append(out, out_sz, pos, ".");
     {
-        char dec[2] = {(char)('0' + (uint8_t)decivolts), '\0'};
+        const char dec[2] = {(char)('0' + (uint8_t)decivolts), '\0'};
         pos = clock_text_append(out, out_sz, pos, dec);
     }
     (void)clock_text_append(out, out_sz, pos, "V");

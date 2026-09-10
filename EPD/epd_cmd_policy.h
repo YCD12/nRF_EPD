@@ -10,6 +10,7 @@
 static inline bool epd_cmd_is_urgent(uint8_t cmd)
 {
     return cmd == 0x01U || /* INIT：须在 WRITE_BLOCK 前完成 */
+           cmd == 0x24U || /* SET_ANNOTATIONS：顺序分片，队列只有 2 槽 */
            cmd == 0x31U || /* WRITE_BLOCK */
            cmd == 0x32U || /* QUERY_STATUS */
            cmd == 0x33U || /* RESET_TRANSFER */

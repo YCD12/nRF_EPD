@@ -42,6 +42,14 @@ typedef struct {
 } calendar_cell_pos_t;
 
 typedef struct {
+    int16_t text_x;
+    int16_t text_y;
+    int16_t circle_x;
+    int16_t circle_y;
+    uint8_t circle_r;
+} calendar_holiday_mark_t;
+
+typedef struct {
     uint8_t col_w;
     uint8_t remainder; /* 最后一列多出的像素 */
     uint8_t row_h;
@@ -91,6 +99,103 @@ static inline calendar_cell_pos_t calendar_grid_cell(const calendar_grid_rect_t 
     cell.by = (int16_t)(rect->y + (m->cell_h - 2 * cell.cr) / 2 +
                         ((day_index + m->adjusted_first_day) / 7) * m->cell_h + 3);
     return cell;
+}
+
+static inline void calendar_grid_cell_origin(const calendar_grid_rect_t *rect,
+                                             const calendar_grid_metrics_t *m,
+                                             uint8_t day_index,
+                                             int16_t *x,
+                                             int16_t *y)
+{
+    int16_t col = (int16_t)((m->adjusted_first_day + day_index) % 7);
+    int16_t row = (int16_t)((day_index + m->adjusted_first_day) / 7);
+
+    if (x != NULL) {
+        *x = (int16_t)(rect->x + col * m->cell_w);
+    }
+    if (y != NULL) {
+        *y = (int16_t)(rect->y + row * m->cell_h);
+    }
+}
+
+/* 短标签右对齐画在格子右上角。x/y 是基线坐标。 */
+static inline void calendar_annotation_corner_cursor(const calendar_grid_rect_t *rect,
+                                                     const calendar_grid_metrics_t *m,
+                                                     uint8_t day_index,
+                                                     int16_t text_w,
+                                                     int16_t font_ascent,
+                                                     int16_t *x,
+                                                     int16_t *y)
+{
+    int16_t cell_x;
+    int16_t cell_y;
+    int16_t pad = m->large ? 4 : 3;
+    int16_t cursor_x;
+
+    calendar_grid_cell_origin(rect, m, day_index, &cell_x, &cell_y);
+    cursor_x = (int16_t)(cell_x + m->cell_w - pad - text_w);
+
+    if (cursor_x < (int16_t)(cell_x + pad)) {
+        cursor_x = (int16_t)(cell_x + pad);
+    }
+    if (x != NULL) {
+        *x = cursor_x;
+    }
+    if (y != NULL) {
+        *y = (int16_t)(cell_y + pad + font_ascent);
+    }
+}
+
+/* 默认画在日期圆右侧；右上角有短标签时改到格子左下，避免叠字。 */
+static inline calendar_holiday_mark_t calendar_holiday_mark(const calendar_grid_rect_t *rect,
+                                                            const calendar_grid_metrics_t *m,
+                                                            const calendar_cell_pos_t *cell,
+                                                            uint8_t day_index,
+                                                            bool avoid_corner)
+{
+    calendar_holiday_mark_t mark;
+
+    mark.circle_r = m->large ? 10 : 8;
+    if (avoid_corner) {
+        int16_t cell_x;
+        int16_t cell_y;
+        int16_t pad = m->large ? 6 : 4;
+
+        calendar_grid_cell_origin(rect, m, day_index, &cell_x, &cell_y);
+
+        mark.text_x = (int16_t)(cell_x + pad);
+        mark.text_y = (int16_t)(cell_y + m->cell_h - pad);
+        mark.circle_x = (int16_t)(cell_x + pad + mark.circle_r);
+        mark.circle_y = (int16_t)(mark.text_y - 2);
+    } else {
+        mark.text_x = (int16_t)(cell->bx + (m->large ? 31 : 22));
+        mark.text_y = (int16_t)(cell->by + 3);
+        mark.circle_x = (int16_t)(cell->bx + (m->large ? 36 : 27));
+        mark.circle_y = (int16_t)(cell->by - 2);
+    }
+    return mark;
+}
+
+static inline void calendar_annotation_dot_center(const calendar_grid_rect_t *rect,
+                                                  const calendar_grid_metrics_t *m,
+                                                  uint8_t day_index,
+                                                  int16_t *x,
+                                                  int16_t *y,
+                                                  uint8_t *r)
+{
+    int16_t cell_x;
+    int16_t cell_y;
+
+    calendar_grid_cell_origin(rect, m, day_index, &cell_x, &cell_y);
+    if (x != NULL) {
+        *x = (int16_t)(cell_x + m->cell_w - (m->large ? 8 : 6));
+    }
+    if (y != NULL) {
+        *y = (int16_t)(cell_y + (m->large ? 7 : 5));
+    }
+    if (r != NULL) {
+        *r = m->large ? 3 : 2;
+    }
 }
 
 #endif

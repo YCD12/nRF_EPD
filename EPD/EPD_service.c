@@ -22,7 +22,7 @@
  * - 使用环形缓冲区(circular buffer)管理命令队列
  * - 支持最多2个普通命令同时排队 (EPD_CMD_QUEUE_SIZE)
  * - 通过app_scheduler异步顺序执行命令
- * - 紧急命令(INIT、WRITE_BLOCK、复位、睡眠、擦除配置)绕过队列立即执行
+ * - 紧急命令(INIT、WRITE_BLOCK、SET_ANNOTATIONS、复位、睡眠、擦除配置)绕过队列立即执行
  *
  * 工作流程:
  * (1) BLE写入特性 -> on_write() -> epd_service_on_write()
@@ -80,6 +80,8 @@
 #include "epd_clock_refresh.h"
 #include "epd_cmd_policy.h"
 #include "epd_refresh_policy.h"
+#include "calendar_annotations.h"
+#include "calendar_annotations_store.h"
 
 static void epd_enter_picture_mode(ble_epd_t *p_epd); /* 切图片模式 */
 
@@ -285,7 +287,7 @@ static bool epd_ensure_display(ble_epd_t *p_epd)
 
 /* WRITE_BLOCK 量大，少打 hexdump。 */
 static bool is_bulk_data_command(uint8_t cmd) {
-    return cmd == EPD_CMD_WRITE_BLOCK;
+    return cmd == EPD_CMD_WRITE_BLOCK || cmd == EPD_CMD_SET_ANNOTATIONS;
 }
 
 // 异步命令处理的前向声明
@@ -951,6 +953,83 @@ static void cmd_set_week_start(ble_epd_t *p_epd, uint8_t *p_data, uint16_t lengt
     app_feed_wdt();
 }
 
+static ble_epd_t *s_anno_epd;
+
+static void epd_refresh_annotations(ble_epd_t *p_epd)
+{
+    if (p_epd == NULL || p_epd->config.display_mode == MODE_PICTURE) {
+        return;
+    }
+    p_epd->force_full_refresh = true;
+    ble_epd_on_timer(p_epd, timestamp(), true);
+}
+
+static void annotations_store_applied(void)
+{
+    epd_refresh_annotations(s_anno_epd);
+}
+
+static void cmd_send_annotations(ble_epd_t *p_epd)
+{
+    uint8_t buf[BLE_EPD_MAX_DATA_LEN];
+    uint16_t offset = 0;
+    uint16_t max_len = p_epd->max_data_len;
+
+    if (max_len > sizeof(buf)) {
+        max_len = (uint16_t)sizeof(buf);
+    }
+    if (max_len <= CALENDAR_ANNO_NOTIFY_HDR) {
+        return;
+    }
+    for (;;) {
+        uint16_t n = calendar_annotations_notify_chunk(offset, buf, max_len);
+        if (n <= CALENDAR_ANNO_NOTIFY_HDR) {
+            break;
+        }
+        if (ble_epd_string_send(p_epd, buf, n) != NRF_SUCCESS) {
+            break;
+        }
+        offset = (uint16_t)(offset + (n - CALENDAR_ANNO_NOTIFY_HDR));
+        app_feed_wdt();
+    }
+}
+
+static void cmd_set_annotations(ble_epd_t *p_epd, uint8_t *p_data, uint16_t length)
+{
+    calendar_anno_rx_t rx;
+    uint16_t offset;
+    uint16_t total;
+
+    if (length < 2) return;
+    if (p_data[1] == CALENDAR_ANNO_OP_GET) {
+        cmd_send_annotations(p_epd);
+        app_feed_wdt();
+        return;
+    }
+    if (p_data[1] == CALENDAR_ANNO_OP_CLEAR) {
+        if (calendar_annotations_store_clear()) {
+            epd_refresh_annotations(p_epd);
+        }
+        app_feed_wdt();
+        return;
+    }
+    if (p_data[1] != CALENDAR_ANNO_OP_WRITE || length < 6) return;
+    offset = (uint16_t)p_data[2] | ((uint16_t)p_data[3] << 8);
+    total = (uint16_t)p_data[4] | ((uint16_t)p_data[5] << 8);
+    if (offset == 0U && calendar_annotations_store_busy()) {
+        NRF_LOG_WARNING("anno: drop write, fds busy\n");
+        return;
+    }
+    rx = calendar_annotations_rx_write(offset, total, &p_data[6], (uint16_t)(length - 6U));
+    if (rx == CALENDAR_ANNO_RX_DONE) {
+        calendar_annotations_store_save();
+        epd_refresh_annotations(p_epd);
+    } else if (rx == CALENDAR_ANNO_RX_RECOVERED) {
+        epd_refresh_annotations(p_epd);
+    }
+    app_feed_wdt();
+}
+
 static void cmd_set_mode(ble_epd_t *p_epd, uint8_t *p_data, uint16_t length) /* 切显示模式并立刻刷新 */
 {
     if (length < 2) return;
@@ -1170,6 +1249,7 @@ static void epd_execute_command(ble_epd_t* p_epd, uint8_t* p_data, uint16_t leng
         case EPD_CMD_SET_TIME:        cmd_set_time(p_epd, p_data, length);        break;
         case EPD_CMD_SYNC_TIME_SILENT: cmd_sync_time_silent(p_epd, p_data, length); break;
         case EPD_CMD_SET_WEEK_START:  cmd_set_week_start(p_epd, p_data, length);  break;
+        case EPD_CMD_SET_ANNOTATIONS: cmd_set_annotations(p_epd, p_data, length); break;
         case EPD_CMD_SET_MODE:        cmd_set_mode(p_epd, p_data, length);        break;
         case EPD_CMD_WRITE_IMAGE:     cmd_write_image(p_epd, p_data, length);     break;
         case EPD_CMD_WRITE_BLOCK:     cmd_write_block(p_epd, p_data, length);     break;
@@ -1474,6 +1554,9 @@ uint32_t ble_epd_init(ble_epd_t* p_epd) {
     // 初始化并读取配置
     epd_config_init(&p_epd->config);
     epd_config_read(&p_epd->config);
+    s_anno_epd = p_epd;
+    calendar_annotations_store_init();
+    calendar_annotations_store_on_applied(annotations_store_applied);
 
     // 如果配置为空,写入默认配置
     if (epd_config_empty(&p_epd->config)) {

@@ -118,7 +118,7 @@ void transformTime(uint32_t unix_time, struct devtm* result);
  * @param result 时间结构体
  * @return Unix 时间戳
  */
-uint32_t transformTimeStruct(struct devtm* result);
+uint32_t transformTimeStruct(const struct devtm* result);
 
 /**
  * @brief 指定月份 1 号是星期几（0-6，0 为星期日）
