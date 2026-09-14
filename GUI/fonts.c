@@ -1,4 +1,7 @@
 #include "fonts.h"
+#include "font_geometry.h"
+
+#if GUI_INCLUDE_INTERNAL_FONTS
 
 /*
   Fontname: -wenquanyi-wenquanyi bitmap song-bold-r-normal--12-120-75-75-P-119-ISO10646-1
@@ -331,3 +334,45 @@ const uint8_t u8g2_font_helvB18_tn[389] U8G2_FONT_SECTION("u8g2_font_helvB18_tn"
   "\14\215\14\315\214LY\35\304\14M\214y\66\61\64r\60d\3\71\37,\11\373\30\35\310\220P\20M"
   "\214yvDARq@S\61\71i\65ARr U\4:\12\343\14/\34\310C\36\10\0\0\0"
   "\4\377\377\0";
+
+#endif /* GUI_INCLUDE_INTERNAL_FONTS */
+
+#if GUI_USE_EXTERNAL_FONTS
+
+#include "font_store.h"
+
+static uint8_t m_external_fonts_ready;
+
+#endif /* GUI_USE_EXTERNAL_FONTS */
+
+uint8_t GUI_ExternalFontsInit(void) {
+#if GUI_USE_EXTERNAL_FONTS
+    if (m_external_fonts_ready) {
+        return 1U;
+    }
+    m_external_fonts_ready = (font_store_init() == NRF_SUCCESS) ? 1U : 0U;
+    return m_external_fonts_ready;
+#else
+    return 0U;
+#endif
+}
+
+const u8g2_font_source_t* GUI_GetExternalFont(gui_font_id_t font_id) {
+#if GUI_USE_EXTERNAL_FONTS
+    if (!m_external_fonts_ready) {
+        return NULL;
+    }
+
+    return font_store_get_source((font_store_slot_t)font_id);
+#else
+    (void)font_id;
+    return NULL;
+#endif
+}
+
+const gui_font_metrics_t* GUI_GetFontMetrics(gui_font_id_t font_id) {
+    if ((unsigned)font_id >= 3U) {
+        return NULL;
+    }
+    return &font_slot_geometry[font_id];
+}

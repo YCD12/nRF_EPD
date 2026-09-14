@@ -173,6 +173,12 @@ void GFX_drawBitmap(Adafruit_GFX* gfx, int16_t x, int16_t y, const uint8_t bitma
 void GFX_setCursor(Adafruit_GFX* gfx, int16_t x, int16_t y);
 // 设置当前字体 | Set current font
 void GFX_setFont(Adafruit_GFX* gfx, const uint8_t* font);
+// 设置外置字体源 | Set an external font source
+void GFX_setExternalFont(Adafruit_GFX* gfx, const u8g2_font_source_t* source);
+// 设置固定宽度缺字占位参数 | Set fixed-width missing-glyph placeholder metrics
+void GFX_setFontPlaceholder(Adafruit_GFX* gfx, const u8g2_font_placeholder_t* placeholder);
+// 选择仅占位符字体 | Select placeholder-only font mode
+void GFX_setMissingFont(Adafruit_GFX* gfx, const u8g2_font_placeholder_t* placeholder);
 // 设置字体模式（透明/不透明）| Set font mode (transparent/opaque)
 void GFX_setFontMode(Adafruit_GFX* gfx, uint8_t is_transparent);
 // 设置字体方向 | Set font direction

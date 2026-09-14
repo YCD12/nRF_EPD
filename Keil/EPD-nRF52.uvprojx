@@ -405,6 +405,11 @@
               <FilePath>..\EPD\EPD_config.c</FilePath>
             </File>
             <File>
+              <FileName>fm25q04b.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\EPD\fm25q04b.c</FilePath>
+            </File>
+            <File>
               <FileName>EPD_driver.c</FileName>
               <FileType>1</FileType>
               <FilePath>..\EPD\EPD_driver.c</FilePath>
@@ -433,6 +438,16 @@
               <FileName>calendar_annotations_store.c</FileName>
               <FileType>1</FileType>
               <FilePath>..\EPD\calendar_annotations_store.c</FilePath>
+            </File>
+            <File>
+              <FileName>font_store.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\EPD\font_store.c</FilePath>
+            </File>
+            <File>
+              <FileName>font_transfer.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\EPD\font_transfer.c</FilePath>
             </File>
 
 
@@ -1199,6 +1214,11 @@
               <FilePath>..\EPD\EPD_config.c</FilePath>
             </File>
             <File>
+              <FileName>fm25q04b.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\EPD\fm25q04b.c</FilePath>
+            </File>
+            <File>
               <FileName>EPD_driver.c</FileName>
               <FileType>1</FileType>
               <FilePath>..\EPD\EPD_driver.c</FilePath>
@@ -1227,6 +1247,11 @@
               <FileName>calendar_annotations_store.c</FileName>
               <FileType>1</FileType>
               <FilePath>..\EPD\calendar_annotations_store.c</FilePath>
+            </File>
+            <File>
+              <FileName>font_store.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\EPD\font_store.c</FilePath>
             </File>
 
 

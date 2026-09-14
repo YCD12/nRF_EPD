@@ -66,11 +66,14 @@ SRC_FILES += \
   $(SDK_ROOT)/modules/nrfx/mdk/system_nrf52.c \
   $(PROJ_DIR)/main.c \
   $(PROJ_DIR)/EPD/EPD_config.c \
+  $(PROJ_DIR)/EPD/fm25q04b.c \
   $(PROJ_DIR)/EPD/EPD_driver.c \
   $(PROJ_DIR)/EPD/EPD_service.c \
   $(PROJ_DIR)/EPD/epd_refresh_policy.c \
   $(PROJ_DIR)/EPD/epd_clock_refresh.c \
   $(PROJ_DIR)/EPD/calendar_annotations_store.c \
+  $(PROJ_DIR)/EPD/font_store.c \
+  $(PROJ_DIR)/EPD/font_transfer.c \
   $(PROJ_DIR)/EPD/UC8179.c \
   $(PROJ_DIR)/GUI/GUI.c \
   $(PROJ_DIR)/GUI/calendar_annotations.c \
@@ -133,8 +136,13 @@ OPT = -Os -g3
 # Uncomment the line below to enable link time optimization
 OPT += -flto
 
+GUI_USE_EXTERNAL_FONTS ?= 1
+GUI_INCLUDE_INTERNAL_FONTS ?= 0
+
 # C flags common to all targets
 CFLAGS += $(OPT)
+CFLAGS += -DGUI_USE_EXTERNAL_FONTS=$(GUI_USE_EXTERNAL_FONTS)
+CFLAGS += -DGUI_INCLUDE_INTERNAL_FONTS=$(GUI_INCLUDE_INTERNAL_FONTS)
 CFLAGS += -DAPP_TIMER_V2
 CFLAGS += -DAPP_TIMER_V2_RTC1_ENABLED
 CFLAGS += -DCONFIG_GPIO_AS_PINRESET

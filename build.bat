@@ -314,11 +314,14 @@ if not defined NRFJPROG_EXE (
 exit /b 0
 
 :flash
-call :build %*
+rem Refresh application validation in both bootloader settings pages as well.
+call :ota %*
 if errorlevel 1 exit /b %errorlevel%
 call :require_nrfjprog
 if errorlevel 1 exit /b 1
-"%NRFJPROG_EXE%" -f nrf52 --program "%FIRMWARE_HEX%" --sectorerase
+"%NRFJPROG_EXE%" -f nrf52 --program "%FIRMWARE_HEX%" --sectorerase --verify
+if errorlevel 1 exit /b %errorlevel%
+"%NRFJPROG_EXE%" -f nrf52 --program "%FIRMWARE_PREFIX%-settings.hex" --sectorerase --verify
 if errorlevel 1 exit /b %errorlevel%
 "%NRFJPROG_EXE%" -f nrf52 --reset
 exit /b %errorlevel%

@@ -67,6 +67,7 @@
 #include <string.h>
 
 #include "app_scheduler.h"
+#include "app_timer.h"
 #include "ble_srv_common.h"
 #include "main.h"
 #include "nrf_delay.h"
@@ -82,6 +83,8 @@
 #include "epd_refresh_policy.h"
 #include "calendar_annotations.h"
 #include "calendar_annotations_store.h"
+#include "font_store.h"
+#include "font_transfer.h"
 
 static void epd_enter_picture_mode(ble_epd_t *p_epd); /* 切图片模式 */
 
@@ -90,9 +93,19 @@ static void epd_enter_picture_mode(ble_epd_t *p_epd); /* 切图片模式 */
 // ============================================================================
 
 #define LOW_BATTERY_POLL_INTERVAL_S 10  // 低电量模式电压轮询周期(秒)
+#define EPD_FONT_REFRESH_DELAY_S 5U     // 连续上传多个槽位时合并一次全屏刷新
 
 // SET_TIME 频率限制(秒)。同一时间窗口内仅允许一次 SET_TIME 触发屏幕更新(PRD §4.3)。
 #define EPD_SET_TIME_RATE_LIMIT_S 10U
+
+static uint32_t epd_elapsed_ms(uint32_t start_ticks)
+{
+    const uint32_t ticks_per_ms =
+        (APP_TIMER_CLOCK_FREQ / (APP_TIMER_CONFIG_RTC_FREQUENCY + 1U)) / 1000U;
+    const uint32_t elapsed_ticks = app_timer_cnt_diff_compute(app_timer_cnt_get(), start_ticks);
+
+    return (ticks_per_ms == 0U) ? 0U : elapsed_ticks / ticks_per_ms;
+}
 
 /**@brief 计算CRC16-CCITT校验值
  *
@@ -104,7 +117,7 @@ static void epd_enter_picture_mode(ble_epd_t *p_epd); /* 切图片模式 */
  *
  * @return CRC16校验值
  */
-static uint16_t crc16_compute(const uint8_t* data, uint16_t len) {
+uint16_t crc16_compute(const uint8_t* data, uint16_t len) {
     uint16_t crc = 0xFFFF;
     for (uint16_t i = 0; i < len; i++) {
         crc ^= data[i];
@@ -273,6 +286,34 @@ static bool is_urgent_command(uint8_t cmd) {
     return epd_cmd_is_urgent(cmd);
 }
 
+static bool font_blocks_display_command(uint8_t cmd)
+{
+    return epd_cmd_needs_display(cmd) ||
+           cmd == EPD_CMD_INIT ||
+           cmd == EPD_CMD_SLEEP ||
+           cmd == EPD_CMD_SET_TIME ||
+           cmd == EPD_CMD_SET_MODE ||
+           cmd == EPD_CMD_SET_ANNOTATIONS;
+}
+
+static void epd_report_font_busy(ble_epd_t* p_epd,
+                                  const uint8_t* p_data,
+                                  uint16_t length)
+{
+    if (p_epd == NULL || p_data == NULL || length == 0U) {
+        return;
+    }
+    /* WRITE_BLOCK has an application-level ACK path.  Tell the image
+     * transfer to restart instead of silently dropping the packet and
+     * leaving its sender waiting for a response that can never arrive. */
+    if (p_data[0] == EPD_CMD_WRITE_BLOCK && length >= 3U) {
+        uint16_t block_id = (uint16_t)p_data[1] | ((uint16_t)p_data[2] << 8);
+        send_block_response(p_epd, block_id, EPD_BLOCK_STATUS_RESTART);
+    }
+}
+
+
+
 /* 时钟刷新会睡眠面板并可能清空 p_epd->epd。
  * 仅当连接时的引用已失效时才重新打开 GPIO，再 drv->init。 */
 static bool epd_ensure_display(ble_epd_t *p_epd)
@@ -287,7 +328,7 @@ static bool epd_ensure_display(ble_epd_t *p_epd)
 
 /* WRITE_BLOCK 量大，少打 hexdump。 */
 static bool is_bulk_data_command(uint8_t cmd) {
-    return cmd == EPD_CMD_WRITE_BLOCK || cmd == EPD_CMD_SET_ANNOTATIONS;
+    return cmd == EPD_CMD_WRITE_BLOCK || cmd == EPD_CMD_SET_ANNOTATIONS || cmd == EPD_CMD_FONT_STORE;
 }
 
 // 异步命令处理的前向声明
@@ -347,6 +388,8 @@ static battery_guard_result_t epd_battery_guard(ble_epd_t *p_epd) {
 /* 全刷：init → 绘整屏 → refresh。中途传图则让出。 */
 static bool epd_perform_full_refresh(ble_epd_t *p_epd, epd_model_t *epd,
                                      gui_data_t *data) {
+    uint32_t phase_start;
+
     if (p_epd == NULL || epd == NULL || epd->drv == NULL || data == NULL ||
         epd->drv->init == NULL || epd->drv->write_image == NULL ||
         epd->drv->refresh == NULL) {
@@ -361,7 +404,10 @@ static bool epd_perform_full_refresh(ble_epd_t *p_epd, epd_model_t *epd,
                                      p_epd->transfer_ctx.transfer_active)) {
         return false;
     }
+    phase_start = app_timer_cnt_get();
     epd->drv->init(epd);
+    NRF_LOG_INFO("[EPD]: full init phase %u ms\n", epd_elapsed_ms(phase_start));
+    ble_log("[EPD]:init=%ums", epd_elapsed_ms(phase_start));
     if (UC8179_HadBusyTimeout() || EPD_BusyAbortRequested()) {
         NRF_LOG_ERROR("[EPD]: BUSY timeout during full refresh init\n");
         p_epd->force_full_refresh = true;
@@ -378,13 +424,19 @@ static bool epd_perform_full_refresh(ble_epd_t *p_epd, epd_model_t *epd,
                                      p_epd->transfer_ctx.transfer_active)) {
         return false;
     }
+    phase_start = app_timer_cnt_get();
     DrawGUI(data, (buffer_callback)epd->drv->write_image, epd);
+    NRF_LOG_INFO("[EPD]: GUI draw phase %u ms\n", epd_elapsed_ms(phase_start));
+    ble_log("[EPD]:draw=%ums", epd_elapsed_ms(phase_start));
     app_feed_wdt();
     if (epd_clock_refresh_must_yield((display_mode_t)p_epd->config.display_mode,
                                      p_epd->transfer_ctx.transfer_active)) {
         return false;
     }
+    phase_start = app_timer_cnt_get();
     epd->drv->refresh(epd);
+    NRF_LOG_INFO("[EPD]: panel refresh phase %u ms\n", epd_elapsed_ms(phase_start));
+    ble_log("[EPD]:refresh=%ums", epd_elapsed_ms(phase_start));
     app_feed_wdt();
 
     if (UC8179_HadBusyTimeout() || EPD_BusyAbortRequested()) {
@@ -434,6 +486,19 @@ static void epd_gui_update(void* p_event_data, uint16_t event_size) {
     bool low_battery = false;
     gui_data_t data;
     display_mode_t mode = (display_mode_t)p_epd->config.display_mode;
+
+    /* A refresh event may already be in app_scheduler when the first font
+     * packet arrives.  Checking only in ble_epd_on_timer() is too late: that
+     * queued event would still enter DrawGUI and contend with the external
+     * Flash transaction.  Drop the stale event and let the normal timer (or
+     * the delayed font refresh) schedule a new one later. */
+    if (p_epd->font.operation_pending || font_store_update_active()) {
+        return;
+    }
+    if (p_epd->font.refresh_pending &&
+        (int32_t)(event->timestamp - p_epd->font.refresh_due) < 0) {
+        return;
+    }
 
     if (epd_clock_refresh_must_yield(mode, p_epd->transfer_ctx.transfer_active)) {
         return;
@@ -639,6 +704,19 @@ static void on_connect(ble_epd_t* p_epd, ble_evt_t* p_ble_evt) {
 static void on_disconnect(ble_epd_t* p_epd, ble_evt_t* p_ble_evt) {
     UNUSED_PARAMETER(p_ble_evt);
     p_epd->conn_handle = BLE_CONN_HANDLE_INVALID;
+    p_epd->is_notification_enabled = false;
+
+    /* Do not reset FIFO/command state from the BLE event context.  A font
+     * worker may already be running from app_scheduler; let that worker
+     * serialize the cancellation and discard stale work in one place. */
+    p_epd->font.abort_requested = true;
+    p_epd->font.task_pending |= FONT_TASK_TIMEOUT_ABORT;
+    p_epd->font.task_wait_tx &= (uint8_t)~FONT_TASK_TIMEOUT_ABORT;
+    if (!p_epd->font.task_scheduled) {
+        (void)font_task_schedule(p_epd, FONT_TASK_TIMEOUT_ABORT);
+    }
+    NRF_LOG_WARNING("[FONT]: upload abort deferred after BLE disconnect\n");
+
     bool clock_mode = epd_is_clock_mode((display_mode_t)p_epd->config.display_mode);
 
     // BLE断开时闪烁LED一次, 即使屏幕正在刷新。
@@ -964,6 +1042,15 @@ static void epd_refresh_annotations(ble_epd_t *p_epd)
     ble_epd_on_timer(p_epd, timestamp(), true);
 }
 
+void epd_refresh_fonts(ble_epd_t *p_epd)
+{
+    if (p_epd == NULL || p_epd->config.display_mode == MODE_PICTURE) {
+        return;
+    }
+    p_epd->font.refresh_pending = true;
+    p_epd->font.refresh_due = timestamp() + EPD_FONT_REFRESH_DELAY_S;
+}
+
 static void annotations_store_applied(void)
 {
     epd_refresh_annotations(s_anno_epd);
@@ -1029,6 +1116,7 @@ static void cmd_set_annotations(ble_epd_t *p_epd, uint8_t *p_data, uint16_t leng
     }
     app_feed_wdt();
 }
+
 
 static void cmd_set_mode(ble_epd_t *p_epd, uint8_t *p_data, uint16_t length) /* 切显示模式并立刻刷新 */
 {
@@ -1228,6 +1316,20 @@ static void cmd_cfg_erase(ble_epd_t *p_epd, uint8_t *p_data, uint16_t length) /*
 static void epd_execute_command(ble_epd_t* p_epd, uint8_t* p_data, uint16_t length) {
     if (p_data == NULL || length == 0) return;
 
+    /* A queued display command may have been accepted just before the font
+     * transaction set its guard.  Drop it here as a second line of defense;
+     * otherwise it can start a panel refresh while the external Flash is
+     * being written. */
+    if (p_epd->font.operation_pending || font_store_update_active()) {
+        if (p_data[0] != EPD_CMD_FONT_STORE &&
+            font_blocks_display_command(p_data[0])) {
+            NRF_LOG_WARNING("[EPD]: drop display command 0x%02x during font update\n",
+                            p_data[0]);
+            epd_report_font_busy(p_epd, p_data, length);
+            return;
+        }
+    }
+
     if (!is_bulk_data_command(p_data[0])) {
         NRF_LOG_DEBUG("[EPD]: Executing command 0x%02x, LEN=%d\n", p_data[0], length);
     }
@@ -1250,6 +1352,7 @@ static void epd_execute_command(ble_epd_t* p_epd, uint8_t* p_data, uint16_t leng
         case EPD_CMD_SYNC_TIME_SILENT: cmd_sync_time_silent(p_epd, p_data, length); break;
         case EPD_CMD_SET_WEEK_START:  cmd_set_week_start(p_epd, p_data, length);  break;
         case EPD_CMD_SET_ANNOTATIONS: cmd_set_annotations(p_epd, p_data, length); break;
+        case EPD_CMD_FONT_STORE:      cmd_font_store(p_epd, p_data, length);      break;
         case EPD_CMD_SET_MODE:        cmd_set_mode(p_epd, p_data, length);        break;
         case EPD_CMD_WRITE_IMAGE:     cmd_write_image(p_epd, p_data, length);     break;
         case EPD_CMD_WRITE_BLOCK:     cmd_write_block(p_epd, p_data, length);     break;
@@ -1338,6 +1441,66 @@ static void epd_service_on_write(ble_epd_t* p_epd, uint8_t* p_data, uint16_t len
         ble_log("[CMD]:%02x/%d", p_data[0], length);
     }
 
+    /* GET is read-only and must never enter the two-entry display queue.
+     * During a busy notification window, restart the dedicated list worker
+     * from slot zero; duplicate A3 records are harmless and this prevents a
+     * browser list request from being silently lost behind a refresh. */
+    if (p_data[0] == EPD_CMD_FONT_STORE && length >= 2U &&
+        p_data[1] == FONT_STORE_OP_GET) {
+        font_store_send_list(p_epd);
+        return;
+    }
+
+    /* Stop timer-driven display work as soon as a mutating font command is
+     * received, even if the command is still waiting in the app scheduler. */
+    bool font_guard = (p_data[0] == EPD_CMD_FONT_STORE && length >= 2U &&
+                       p_data[1] != 0x00U);
+    if (font_guard && p_epd->font.abort_requested) return;
+    if (font_guard) {
+        p_epd->font.operation_pending = true;
+        p_epd->font.last_activity_ts = app_uptime_seconds();
+    }
+
+    /* High-speed font data is copied into a dedicated FIFO immediately.  It
+     * must not consume one of the two general command-queue entries. */
+    if (p_data[0] == EPD_CMD_FONT_STORE && length >= 2U &&
+        p_data[1] == FONT_STORE_OP_STREAM_DATA) {
+        cmd_font_store(p_epd, p_data, length);
+        return;
+    }
+
+    /* GET only schedules three short notifications and does not mutate the
+     * store.  Mutating control commands get a private scheduler slot so a
+     * pending refresh can never make BEGIN/COMMIT/ABORT disappear from the
+     * two-entry display command queue. */
+    if (p_data[0] == EPD_CMD_FONT_STORE && length >= 2U &&
+        p_data[1] != FONT_STORE_OP_GET) {
+        if (p_epd->font.cmd_pending) {
+            font_store_send_ack(p_epd, p_data[1], FONT_STORE_BUSY, 0xFFU);
+            return;
+        }
+        if (length > sizeof(p_epd->font.cmd.data)) {
+            font_store_send_ack(p_epd, p_data[1], FONT_STORE_INVALID, 0xFFU);
+            p_epd->font.operation_pending = false;
+            return;
+        }
+        p_epd->font.cmd.cmd = EPD_CMD_FONT_STORE;
+        memcpy(p_epd->font.cmd.data, p_data, length);
+        p_epd->font.cmd.length = length;
+        p_epd->font.cmd_pending = true;
+        (void)font_task_schedule(p_epd, FONT_TASK_CONTROL);
+        return;
+    }
+
+    if ((p_epd->font.operation_pending || font_store_update_active()) &&
+        p_data[0] != EPD_CMD_FONT_STORE &&
+        font_blocks_display_command(p_data[0])) {
+        NRF_LOG_WARNING("[EPD]: reject display command 0x%02x during font update\n",
+                        p_data[0]);
+        epd_report_font_busy(p_epd, p_data, length);
+        return;
+    }
+
     // 紧急命令绕过队列立即执行
     if (is_urgent_command(p_data[0]) || epd_cmd_is_immediate(p_data[0])) {
         if (!is_bulk_data_command(p_data[0])) {
@@ -1359,6 +1522,9 @@ static void epd_service_on_write(ble_epd_t* p_epd, uint8_t* p_data, uint16_t len
         }
     } else {
         NRF_LOG_ERROR("[EPD]: Failed to queue command 0x%02x (queue full)\n", p_data[0]);
+        if (font_guard && !font_store_update_active()) {
+            p_epd->font.operation_pending = false;
+        }
     }
 }
 
@@ -1441,6 +1607,15 @@ void ble_epd_on_ble_evt(ble_epd_t* p_epd, ble_evt_t* p_ble_evt) {
             on_write(p_epd, p_ble_evt);
             break;
 
+        case BLE_GATTS_EVT_HVN_TX_COMPLETE:
+            /* Notification workers use a single non-blocking HVX attempt.
+             * Retry only after SoftDevice reports that TX queue space was
+             * released, so BLE event handling never sleeps on resources. */
+            font_task_wake_tx(p_epd, FONT_TASK_LIST |
+                                       FONT_TASK_OPERATION_ACK |
+                                       FONT_TASK_STREAM_ACK);
+            break;
+
         default:
             // 无需实现。
             break;
@@ -1484,6 +1659,10 @@ static uint32_t epd_service_init(ble_epd_t* p_epd) {
     add_char_params.char_props.write = 1;  // 支持写入(带响应)
     add_char_params.char_props.write_wo_resp = 1;  // 支持写入(无响应)
     add_char_params.read_access = SEC_OPEN;
+    /* This is the shared, historically unpaired Web Bluetooth command
+     * characteristic (including INIT). Requiring encryption here also forces
+     * pairing before any ordinary command can run. Font CRC/transactions do
+     * not require changing the transport's security contract. */
     add_char_params.write_access = SEC_OPEN;
     add_char_params.cccd_write_access = SEC_OPEN;
 
@@ -1545,6 +1724,7 @@ uint32_t ble_epd_init(ble_epd_t* p_epd) {
     p_epd->last_full_clear    = 0;  // 尚未全刷
     p_epd->is_refreshing = false;
     p_epd->low_battery_screen_active = false;
+    memset(&p_epd->font, 0, sizeof(p_epd->font));
     p_epd->last_refresh_start = 0;
     p_epd->last_set_time_ts = 0;
 
@@ -1586,34 +1766,39 @@ uint32_t ble_epd_init(ble_epd_t* p_epd) {
  *
  * @return 成功返回NRF_SUCCESS,否则返回错误代码
  */
+uint32_t ble_epd_notification_try_send(ble_epd_t* p_epd,
+                                               uint8_t* p_string,
+                                               uint16_t length)
+{
+    ble_gatts_hvx_params_t hvx_params;
+
+    if (p_epd == NULL ||
+        (p_epd->conn_handle == BLE_CONN_HANDLE_INVALID) ||
+        (!p_epd->is_notification_enabled)) {
+        return NRF_ERROR_INVALID_STATE;
+    }
+    if (p_string == NULL || length > p_epd->max_data_len) {
+        return NRF_ERROR_INVALID_PARAM;
+    }
+
+    memset(&hvx_params, 0, sizeof(hvx_params));
+    hvx_params.handle = p_epd->char_handles.value_handle;
+    hvx_params.p_data = p_string;
+    hvx_params.p_len = &length;
+    hvx_params.type = BLE_GATT_HVX_NOTIFICATION;
+    return sd_ble_gatts_hvx(p_epd->conn_handle, &hvx_params);
+}
+
 uint32_t ble_epd_string_send(ble_epd_t* p_epd, uint8_t* p_string, uint16_t length) {
     // 检查连接状态和通知是否启用
     if ((p_epd->conn_handle == BLE_CONN_HANDLE_INVALID) || (!p_epd->is_notification_enabled))
         return NRF_ERROR_INVALID_STATE;
     if (length > p_epd->max_data_len) return NRF_ERROR_INVALID_PARAM;
 
-    ble_gatts_hvx_params_t hvx_params;
-
-    memset(&hvx_params, 0, sizeof(hvx_params));
-
-    hvx_params.handle = p_epd->char_handles.value_handle;
-    hvx_params.p_data = p_string;
-    hvx_params.p_len = &length;
-    hvx_params.type = BLE_GATT_HVX_NOTIFICATION;
-
-    uint32_t err_code;
-    int retries = 50;
-    do {
-        err_code = sd_ble_gatts_hvx(p_epd->conn_handle, &hvx_params);
-        if (err_code == NRF_ERROR_RESOURCES) {
-            nrf_delay_ms(5);
-            retries--;
-        } else {
-            break;
-        }
-    } while (retries > 0);
-
-    return err_code;
+    /* Notifications are best-effort here.  Retrying synchronously can block
+     * the BLE/application event path for 250 ms when the HVX queue is full.
+     * Font-specific responses already use the scheduler/TX_COMPLETE path. */
+    return ble_epd_notification_try_send(p_epd, p_string, length);
 }
 
 /**@brief 定时器事件处理函数,触发GUI更新
@@ -1629,6 +1814,41 @@ uint32_t ble_epd_string_send(ble_epd_t* p_epd, uint8_t* p_string, uint16_t lengt
  * @param[in] force_update  为true时强制更新
  */
 void ble_epd_on_timer(ble_epd_t* p_epd, uint32_t timestamp, bool force_update) {
+    /* Retry deferred font tasks from the timer path.  This path only posts a
+     * scheduler event; Flash/SPI work remains in font_task_worker(). */
+    font_task_retry(p_epd);
+    if ((p_epd->font.operation_pending || font_store_update_active()) &&
+        p_epd->font.last_activity_ts != 0U &&
+        (uint32_t)(app_uptime_seconds() - p_epd->font.last_activity_ts) >=
+            FONT_STORE_IDLE_TIMEOUT_S &&
+        (p_epd->font.task_pending & FONT_TASK_TIMEOUT_ABORT) == 0U) {
+        (void)font_task_schedule(p_epd, FONT_TASK_TIMEOUT_ABORT);
+    }
+
+    /* Do not enqueue a refresh while a font transaction is being received or
+     * while its post-commit merge window is active.  The old implementation
+     * only checked the update flag when the delayed refresh became due, so a
+     * periodic refresh could still start in the middle of an upload. */
+    if (p_epd->font.operation_pending || font_store_update_active()) {
+        return;
+    }
+
+    /* Font commits used to start a full refresh immediately from the BLE
+     * command handler.  On a 7.5-inch panel that blocks the app scheduler for
+     * several seconds, so the following list request or next font upload
+     * timed out even though the Flash transaction had already succeeded.
+     * Defer and coalesce the refresh; an active upload or queued command wins. */
+    if (p_epd->font.refresh_pending &&
+        (int32_t)(timestamp - p_epd->font.refresh_due) >= 0 &&
+        !p_epd->is_refreshing &&
+        !font_store_update_active() &&
+        p_epd->cmd_queue.count == 0U &&
+        !p_epd->cmd_queue.is_processing) {
+        p_epd->font.refresh_pending = false;
+        p_epd->force_full_refresh = true;
+        force_update = true;
+    }
+
     // 低电量保持：停周期刷新，仍显示月历/时钟。每 LOW_BATTERY_POLL_INTERVAL_S
     // 采样：临界则再刷一帧正常画面后关机，恢复则强制全刷。
     if (p_epd->low_battery_screen_active && !force_update) {

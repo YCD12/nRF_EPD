@@ -1,6 +1,13 @@
 # Build output
 _build/
 
+# Local review, build and browser-automation artifacts
+/output/
+/.playwright-cli/
+/uncommitted.patch
+__pycache__/
+*.pyc
+
 # 压缩包超过 Gitee 100MB 限制，不入库
 # tools/*.tar.bz2
 # tools/*.tar.gz

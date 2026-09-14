@@ -69,9 +69,8 @@ nrfutil settings generate \
     --softdevice          "$SD_HEX" \
     --application-version "$FW_VER" \
     --bootloader-version  1 \
-    --bl-settings-version 1 \
+    --bl-settings-version 2 \
     --key-file            "$P_KEY" \
-    --no-backup \
     "$SETTINGS"
 echo "  -> $SETTINGS"
 

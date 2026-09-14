@@ -47,7 +47,7 @@ void ble_epd_evt_handler(ble_evt_t const* p_ble_evt, void* p_context);
     static ble_epd_t _name; \
     NRF_SDH_BLE_OBSERVER(_name##_obs, BLE_EPD_BLE_OBSERVER_PRIO, ble_epd_evt_handler, &_name)
 
-#define APP_VERSION 0x2B  // 右上角与下方相同的 9 字节上限
+#define APP_VERSION 0x2F  // FST3 双目录外置字库 + 滑动窗口传输
 
 // EPD 服务的 128 位基础 UUID（自定义服务）
 #define BLE_UUID_EPD_SVC_BASE \
@@ -77,6 +77,7 @@ enum EPD_CMDS {
     EPD_CMD_SET_MODE = 0x22,         /**< 设置显示模式（0:图片, 1:日历, 2:时钟+日历, 3:全屏时钟） */
     EPD_CMD_SYNC_TIME_SILENT = 0x23, /**< 静默校时（不立即刷新） */
     EPD_CMD_SET_ANNOTATIONS = 0x24,  /**< 写入/清除日历日期短标签 */
+    EPD_CMD_FONT_STORE = 0x25,       /**< 外置字库列表/全量字库包上传 */
 
     // 图像写入 (0x30-0x3F)
     EPD_CMD_WRITE_IMAGE = 0x30,    /**< 写入图像到 RAM（旧版，无 CRC） */
@@ -98,6 +99,9 @@ enum EPD_CMDS {
 #define EPD_RSP_BLOCK_ACK    0xA0  /**< 块 ACK/NACK */
 #define EPD_RSP_STATUS       0xA1  /**< 传输状态 */
 #define EPD_RSP_ANNOTATIONS  0xA2  /**< 日历短标签分片 */
+#define EPD_RSP_FONT_LIST    0xA3  /**< 外置字库槽信息 */
+#define EPD_RSP_FONT_ACK     0xA4  /**< 外置字库操作结果 */
+#define EPD_RSP_FONT_STREAM_ACK 0xA5 /**< 外置字库滑动窗口累计 ACK */
 
 /**
  * 传输配置
@@ -116,12 +120,7 @@ enum EPD_CMDS {
 #define EPD_CMD_QUEUE_SIZE 2                       /**< 普通命令队列容量（最多 2 条待处理） */
 #define EPD_CMD_MAX_DATA_LEN BLE_EPD_MAX_DATA_LEN  /**< 单条命令最大数据长度 */
 
-/**@brief 命令队列项 */
-typedef struct {
-    uint8_t cmd;                        /**< 命令 ID */
-    uint8_t data[EPD_CMD_MAX_DATA_LEN]; /**< 命令数据（含命令字节） */
-    uint16_t length;                    /**< 数据长度 */
-} epd_cmd_queue_item_t;
+#include "font_transfer_state.h"
 
 /**@brief 命令队列（环形缓冲）
  *
@@ -171,6 +170,7 @@ typedef struct {
     uint32_t last_full_clear;       /**< 上次全屏清除/刷新时间戳（秒）。0 表示从未全刷 */
     bool is_refreshing;             /**< 屏幕刷新进行中（防止 BLE 断开时中断刷新） */
     bool low_battery_screen_active; /**< 低电量保持：暂停周期刷新，仍显示月历/时钟 */
+    font_transfer_state_t font;
 
     // 刷新消抖与校时保护
     uint32_t last_refresh_start; /**< 上一次物理刷新开始时间戳（秒），用于消抖 */
@@ -181,6 +181,7 @@ typedef struct {
 
     // 图像传输
     image_transfer_ctx_t transfer_ctx; /**< CRC 校验与断点续传上下文 */
+
 } ble_epd_t;
 
 /**@brief GUI 更新事件（经 app_scheduler 传递实例和时间戳） */

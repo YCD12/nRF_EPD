@@ -37,6 +37,7 @@
 #ifndef __U8G2_H
 #define __U8G2_H
 
+#include <stddef.h>
 #include <stdint.h>
 
 #ifdef __GNUC__
@@ -68,6 +69,45 @@
 #endif
 
 #define U8G2_FONT_SECTION(name) U8X8_FONT_SECTION(name)
+
+/* External font reads are performed in blocks by u8g2.  FM25Q04B accepts at
+ * most 251 data bytes in one SPI transfer (255-byte driver limit minus the
+ * four-byte read header), so matching that size avoids splitting every cache
+ * miss into two physical reads. */
+#ifndef U8G2_FONT_CACHE_SIZE
+#define U8G2_FONT_CACHE_SIZE 251U
+#endif
+
+/* Keep a few recently resolved code points so width measurement and drawing
+ * do not rescan a large external Unicode lookup table for the same glyph. */
+#ifndef U8G2_GLYPH_CACHE_SIZE
+#define U8G2_GLYPH_CACHE_SIZE 4U
+#endif
+
+typedef int (*u8g2_font_read_fn_t)(const void* context,
+                                   uint32_t offset,
+                                   uint8_t* data,
+                                   size_t length);
+
+typedef struct {
+    const uint8_t* data;       /* non-NULL for an internal Flash font */
+    uint32_t length;           /* required for an external font */
+    u8g2_font_read_fn_t read;  /* NULL for an internal Flash font */
+    const void* context;
+    uint32_t revision;         /* changes when an external resource is replaced */
+} u8g2_font_source_t;
+
+typedef struct {
+    int8_t max_char_width;
+    int8_t max_char_height;
+    int8_t x_offset;
+    int8_t y_offset;
+    int8_t ascent;
+    int8_t descent;
+    int8_t ascent_para;
+    int8_t descent_para;
+    int8_t advance;
+} u8g2_font_placeholder_t;
 
 /* the macro U8G2_USE_LARGE_FONTS enables large fonts (>32K) */
 /* it can be enabled for those uC supporting larger arrays */
@@ -118,8 +158,8 @@ typedef struct _u8g2_font_info_t {
 
 // 字体解码结构体，用于解码和绘制字形
 typedef struct _u8g2_font_decode_t {
-    const uint8_t* decode_ptr; /* pointer to the compressed data */
-                               /* 指向压缩数据的指针 */
+    uint32_t decode_offset; /* offset into the current font source */
+                            /* 当前字体源中的压缩数据偏移 */
 
     int16_t target_x;          // 目标X坐标
     int16_t target_y;          // 目标Y坐标
@@ -144,6 +184,22 @@ typedef struct _u8g2_font_t {
     const uint8_t* font; /* current font for all text procedures */
                          /* 当前字体数据指针，用于所有文本操作 */
 
+    u8g2_font_source_t font_source;
+    uint32_t font_cache_base;
+    uint16_t font_cache_length;
+    uint8_t font_cache_valid;
+    uint8_t font_read_error;
+    uint8_t font_info_valid;
+    uint8_t placeholder_enabled;
+    u8g2_font_placeholder_t placeholder;
+    uint8_t font_cache[U8G2_FONT_CACHE_SIZE];
+    uint16_t glyph_cache_encoding[U8G2_GLYPH_CACHE_SIZE];
+    uint32_t glyph_cache_offset[U8G2_GLYPH_CACHE_SIZE];
+    uint8_t glyph_cache_valid[U8G2_GLYPH_CACHE_SIZE];
+    uint8_t glyph_cache_next;
+    uint32_t glyph_cache_end[U8G2_GLYPH_CACHE_SIZE];
+    uint32_t glyph_end_offset;
+
     u8g2_font_decode_t font_decode; /* new font decode structure */
                                     /* 字体解码结构 */
     u8g2_font_info_t font_info;     /* new font info structure */
@@ -162,6 +218,12 @@ uint8_t u8g2_IsGlyph(u8g2_font_t* u8g2, uint16_t requested_encoding);
 // 获取字形宽度（返回X增量）
 int8_t u8g2_GetGlyphWidth(u8g2_font_t* u8g2, uint16_t requested_encoding);
 
+/* Resolve a glyph and calculate its advance in one lookup.  This is used by
+ * layout code that must distinguish a missing glyph from a zero-width glyph. */
+uint8_t u8g2_GetGlyphWidthIfPresent(u8g2_font_t* u8g2,
+                                    uint16_t requested_encoding,
+                                    int8_t* advance);
+
 // 设置字体模式（透明/不透明）
 void u8g2_SetFontMode(u8g2_font_t* u8g2, uint8_t is_transparent);
 
@@ -176,6 +238,20 @@ int16_t u8g2_DrawStr(u8g2_font_t* u8g2, int16_t x, int16_t y, const char* s);
 
 // 设置字体
 void u8g2_SetFont(u8g2_font_t* u8g2, const uint8_t* font);
+
+/* Select a font stored outside MCU memory, for example in FM25Q04B.  The
+ * source remains owned by the caller and must stay valid while selected. */
+void u8g2_SetExternalFont(u8g2_font_t* u8g2, const u8g2_font_source_t* source);
+
+/* Keep a fixed-width placeholder for missing glyphs.  When no font source is
+ * selected, these metrics also become the active font metrics. */
+void u8g2_SetPlaceholder(u8g2_font_t* u8g2, const u8g2_font_placeholder_t* placeholder);
+
+/* Select placeholder-only mode after a font slot has been deleted. */
+void u8g2_SetMissingFont(u8g2_font_t* u8g2, const u8g2_font_placeholder_t* placeholder);
+
+/* Invalidate the current block after an external resource update. */
+void u8g2_InvalidateFontCache(u8g2_font_t* u8g2);
 
 // 设置前景色
 void u8g2_SetForegroundColor(u8g2_font_t* u8g2, uint16_t fg);

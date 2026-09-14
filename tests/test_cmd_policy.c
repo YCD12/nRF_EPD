@@ -20,6 +20,7 @@ static void test_refresh_and_set_time_stay_queued(void)
     assert(!epd_cmd_is_urgent(0x20)); /* SET_TIME */
     assert(!epd_cmd_is_urgent(0x22)); /* SET_MODE */
     assert(!epd_cmd_is_urgent(0x23)); /* SYNC_TIME_SILENT */
+    assert(!epd_cmd_is_urgent(0x25)); /* FONT_STORE: scheduler serializes Flash writes */
     assert(!epd_cmd_is_urgent(0x30)); /* WRITE_IMAGE: fallback, queued after INIT */
     assert(epd_cmd_is_urgent(0x24)); /* SET_ANNOTATIONS: sequential chunks, queue depth is 2 */
 }

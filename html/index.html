@@ -120,6 +120,20 @@
 			</div>
 		</section>
 		<section class="section">
+			<h2>外置字库</h2>
+			<div class="dfu-hint">当前支持 WQY9、WQY12、HELVB18 三个字库。字库采用动态连续存储，每次更新都要提交完整目标组合：选择需要保留的 BIN，勾选需要删除的字库；未选择且设备已有的字库会被拒绝，避免误删。删除后设备不回退内置字库，而是显示固定宽度占位符。</div>
+			<div class="font-store-toolbar">
+				<button id="fontPackRefresh" type="button" class="secondary font-store-control">刷新列表</button>
+				<button id="fontPackUpdate" type="button" class="primary font-store-control">全量更新字库</button>
+				<progress id="fontPackProgress" max="100" value="0"></progress>
+			</div>
+			<div class="font-store-list">
+				<div class="font-store-row"><b>WQY9</b><span id="fontState0" class="device-badge">未查询</span><input id="fontFile0" class="font-store-control" type="file" accept=".bin,.font"><label><input id="fontDelete0" class="font-store-control" type="checkbox"> 删除</label></div>
+				<div class="font-store-row"><b>WQY12</b><span id="fontState1" class="device-badge">未查询</span><input id="fontFile1" class="font-store-control" type="file" accept=".bin,.font"><label><input id="fontDelete1" class="font-store-control" type="checkbox"> 删除</label></div>
+				<div class="font-store-row"><b>HELVB18</b><span id="fontState2" class="device-badge">未查询</span><input id="fontFile2" class="font-store-control" type="file" accept=".bin,.font"><label><input id="fontDelete2" class="font-store-control" type="checkbox"> 删除</label></div>
+			</div>
+		</section>
+		<section class="section">
 			<h2>Nordic DFU 升级</h2>
 			<div class="flex-container">
 				<div class="flex-group">
@@ -420,7 +434,8 @@
 	<script type="text/javascript" src="js/crop.js?v=20260402b"></script>
 	<script type="text/javascript" src="js/ble_transfer.js?v=20260908a"></script>
 	<script type="text/javascript" src="js/calendar_annotations.js?v=20260909a"></script>
-	<script type="text/javascript" src="js/main.js?v=20260909a"></script>
+	<script type="text/javascript" src="js/font_store.js?v=20260914a"></script>
+	<script type="text/javascript" src="js/main.js?v=20260914a"></script>
 </body>
 
 </html>

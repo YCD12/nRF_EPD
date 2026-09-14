@@ -39,9 +39,10 @@
  * lengths (max 255); the read/write header is always 4 bytes, so usable
  * payload = 255 - 4 = 251 bytes. Exceeding this silently truncates the length
  * to its low byte and returns NRF_SUCCESS with unread/unwritten data.
- * ASSERT in fm25q04b_read guards this; fm25q04b_write caps chunk to this value.
+ * fm25q04b_read splits larger requests and fm25q04b_write caps each page
+ * program to this value.
  */
-#define FM25Q04B_SPI_PAYLOAD_MAX      128U
+#define FM25Q04B_SPI_PAYLOAD_MAX      251U
 #define FM25Q04B_READ_CHUNK_MAX       FM25Q04B_SPI_PAYLOAD_MAX
 #define FM25Q04B_ERASE_TIMEOUT_MS     5000U
 #define FM25Q04B_PROGRAM_TIMEOUT_MS   1000U
@@ -244,6 +245,7 @@ ret_code_t fm25q04b_init(void) {
     spi_config.frequency = NRF_DRV_SPI_FREQ_8M;
     spi_config.mode = NRF_DRV_SPI_MODE_0;
     spi_config.bit_order = NRF_DRV_SPI_BIT_ORDER_MSB_FIRST;
+    spi_config.orc = 0xFFU;
 
     ret = nrf_drv_spi_init(&m_fm25q04b_spi, &spi_config, NULL, NULL);
     if (ret != NRF_SUCCESS) {
@@ -440,14 +442,14 @@ ret_code_t fm25q04b_read(uint32_t address, void* data, size_t length) {
          * VLA adapts per-call: small reads (font glyphs) stay light,
          * bulk reads (manifests) get up to 256 bytes per transfer. */
         ASSERT(chunk <= FM25Q04B_READ_CHUNK_MAX);
-        uint8_t tx_buf[4 + chunk];
+        /* The configured SPI/SPIM ORC is 0xFF: after the command header,
+         * RX clocks the remaining bytes without a dummy TX payload. */
+        uint8_t tx_buf[4];
         uint8_t rx_buf[4 + chunk];
 
         tx_buf[0] = FM25Q04B_CMD_READ_DATA;
         fm25q04b_encode_address(&tx_buf[1], address);
-        memset(&tx_buf[4], 0xFF, chunk);
-
-        ret = fm25q04b_transfer(tx_buf, 4 + chunk, rx_buf, 4 + chunk);
+        ret = fm25q04b_transfer(tx_buf, sizeof(tx_buf), rx_buf, 4 + chunk);
         if (ret != NRF_SUCCESS) {
             return ret;
         }
@@ -460,6 +462,35 @@ ret_code_t fm25q04b_read(uint32_t address, void* data, size_t length) {
     }
 
     return NRF_SUCCESS;
+}
+
+int fm25q04b_read_region(const void* context, uint32_t offset, uint8_t* data, size_t length) {
+    const fm25q04b_region_t* region = (const fm25q04b_region_t*)context;
+    ret_code_t ret;
+
+    if (region == NULL) {
+        return (int)NRF_ERROR_NULL;
+    }
+    if (data == NULL && length != 0) {
+        return (int)NRF_ERROR_NULL;
+    }
+    if (offset > region->length || length > (size_t)(region->length - offset)) {
+        return (int)NRF_ERROR_INVALID_ADDR;
+    }
+    if (length > 0) {
+        size_t flash_remaining;
+
+        if (region->base_address >= FM25Q04B_SIZE_BYTES) {
+            return (int)NRF_ERROR_INVALID_ADDR;
+        }
+        flash_remaining = (size_t)(FM25Q04B_SIZE_BYTES - region->base_address);
+        if (offset > flash_remaining || length > flash_remaining - offset) {
+            return (int)NRF_ERROR_INVALID_ADDR;
+        }
+    }
+
+    ret = fm25q04b_read(region->base_address + offset, data, length);
+    return (int)ret;
 }
 
 ret_code_t fm25q04b_write(uint32_t address, const void* data, size_t length) {

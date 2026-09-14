@@ -49,12 +49,36 @@ static void test_year_after_2027_does_not_use_2028_tables(void)
     assert(lunar.Year != 2028);
 }
 
+static void test_august_11_2026_is_lunar_june_29(void)
+{
+    struct Lunar_Date lunar;
+
+    LUNAR_SolarToLunar(&lunar, 2026, 8, 11);
+    assert(lunar.Year == 2026);
+    assert(lunar.Month == 6);
+    assert(lunar.Date == 29);
+    assert(lunar.IsLeap == 0);
+}
+
+static void test_august_11_2025_is_lunar_june_18(void)
+{
+    struct Lunar_Date lunar;
+
+    LUNAR_SolarToLunar(&lunar, 2025, 8, 11);
+    assert(lunar.Year == 2025);
+    assert(lunar.Month == 6);
+    assert(lunar.Date == 18);
+    assert(lunar.IsLeap == 1);
+}
+
 int main(void)
 {
     test_display_range_is_2025_to_2027();
     test_supported_new_years();
     test_january_2025_before_cny_uses_2024_table();
     test_year_after_2027_does_not_use_2028_tables();
+    test_august_11_2025_is_lunar_june_18();
+    test_august_11_2026_is_lunar_june_29();
     puts("PASS: lunar range");
     return 0;
 }

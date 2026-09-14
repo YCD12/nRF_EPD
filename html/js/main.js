@@ -3,10 +3,12 @@ let epdService, epdCharacteristic;
 let startTime, appVersion;
 let canvas, ctx, textDecoder;
 let paintManager, cropManager;
+let gattWriteTail = Promise.resolve();
+let connectionGeneration = 0;
 
 // APP版本号 (便于调试)
-const APP_VERSION = '2.0.10';
-const APP_BUILD_DATE = '2026-09-08';
+const APP_VERSION = '2.0.14';
+const APP_BUILD_DATE = '2026-09-14';
 const EPD_DEVICE_NAME_PREFIX = 'NRF_EPD';
 const SCAN_DURATION_MS = 5000;
 const LOG_CONSOLE_STORAGE_KEY = 'epd_log_to_console';
@@ -37,6 +39,7 @@ const EpdCmd = {
   SET_MODE: 0x22,
   SYNC_TIME_SILENT: 0x23,
   SET_ANNOTATIONS: 0x24,
+  FONT_STORE: 0x25,
 
   WRITE_IMG: 0x30, // v1.6
 
@@ -107,9 +110,13 @@ async function withTimeout(promise, timeoutMs, timeoutMessage) {
 }
 
 function resetVariables() {
+  connectionGeneration++;
+  gattWriteTail = Promise.resolve();
   gattServer = null;
   epdService = null;
   epdCharacteristic = null;
+  appVersion = null;
+  document.getElementById('mtusize').value = 20;
 }
 
 function formatVoltageDisplay(voltageMv) {
@@ -143,29 +150,47 @@ function updateBatteryVoltageDisplay(voltageMv = null, fallbackText = '未连接
   }
 }
 
-async function write(cmd, data, withResponse = true) {
-  if (!epdCharacteristic) {
+async function write(cmd, data, withResponse = true, logPayload = true, serialize = true) {
+  if (!epdCharacteristic || !gattServer || !gattServer.connected) {
     addLog("服务不可用，请检查蓝牙连接");
     return false;
   }
+  const characteristic = epdCharacteristic;
+  const generation = connectionGeneration;
   let payload = [cmd];
   if (data) {
     if (typeof data == 'string') data = hex2bytes(data);
     if (data instanceof Uint8Array) data = Array.from(data);
     payload.push(...data)
   }
-  addLog(bytes2hex(payload), '⇑');
-  try {
-    if (withResponse)
-      await epdCharacteristic.writeValueWithResponse(Uint8Array.from(payload));
-    else
-      await epdCharacteristic.writeValueWithoutResponse(Uint8Array.from(payload));
-  } catch (e) {
-    console.error(e);
-    if (e.message) addLog("write: " + e.message);
-    return false;
+  const operationBody = async () => {
+    if (generation !== connectionGeneration || characteristic !== epdCharacteristic ||
+        !gattServer || !gattServer.connected) {
+      addLog("服务已变更，放弃过期的蓝牙写入");
+      return false;
+    }
+    if (logPayload) addLog(bytes2hex(payload), '⇑');
+    try {
+      if (withResponse)
+        await characteristic.writeValueWithResponse(Uint8Array.from(payload));
+      else
+        await characteristic.writeValueWithoutResponse(Uint8Array.from(payload));
+    } catch (e) {
+      console.error(e);
+      if (e.message) addLog("write: " + e.message);
+      return false;
+    }
+    return generation === connectionGeneration && characteristic === epdCharacteristic &&
+      !!gattServer && gattServer.connected;
+  };
+  const operation = serialize ? gattWriteTail.then(operationBody) : operationBody();
+  /* Keep the serialized queue alive after a failed write, while preserving
+   * the result for the caller that owns this operation.  Stream packets can
+   * explicitly bypass this queue and use a bounded burst. */
+  if (serialize) {
+    gattWriteTail = operation.catch(() => {});
   }
-  return true;
+  return operation;
 }
 
 async function writeImage(data, step = 'bw') {
@@ -592,7 +617,7 @@ function downloadDataArray() {
 function updateButtonStatus(forceDisabled = false) {
   const connected = gattServer != null && gattServer.connected;
   const status = forceDisabled ? 'disabled' : (connected ? null : 'disabled');
-  document.getElementById("reconnectbutton").disabled = (gattServer == null || gattServer.connected) ? 'disabled' : null;
+  document.getElementById("reconnectbutton").disabled = !bleDevice || connected || isConnecting;
   document.getElementById("sendcmdbutton").disabled = status;
   document.getElementById("calendarmodebutton").disabled = status;
   document.getElementById("clockmodebutton").disabled = status;
@@ -603,8 +628,11 @@ function updateButtonStatus(forceDisabled = false) {
 
 function disconnect() {
   const isInternalRetryDisconnect = internalDisconnectInProgress || Date.now() < internalDisconnectSuppressUntil;
-  updateButtonStatus();
+  if (window.FontStore && typeof window.FontStore.onDisconnect === 'function') {
+    window.FontStore.onDisconnect();
+  }
   resetVariables();
+  updateButtonStatus();
   updateBatteryVoltageDisplay(null, '未连接');
   if (!isInternalRetryDisconnect) {
     clearLogOnNextSuccessfulConnect = true;
@@ -922,6 +950,12 @@ function handleNotify(value) {
     window.CalendarAnnotations.handleNotification(value);
     return;
   }
+  if (data.length >= 1 &&
+      (data[0] === 0xA3 || data[0] === 0xA4 || data[0] === 0xA5) &&
+      window.FontStore) {
+    window.FontStore.handleNotification(value);
+    return;
+  }
 
   if (textDecoder == null) textDecoder = new TextDecoder();
   const msg = textDecoder.decode(data);
@@ -1141,6 +1175,14 @@ async function connect() {
       }
     }
 
+    const connectedCharacteristic = epdCharacteristic;
+    const generation = connectionGeneration;
+    const ensureConnected = () => {
+      if (generation !== connectionGeneration || targetDevice !== bleDevice ||
+          connectedCharacteristic !== epdCharacteristic || !gattServer || !gattServer.connected) {
+        throw new Error('连接初始化已中断，请重新连接设备');
+      }
+    };
     try {
       const versionCharacteristic = await epdService.getCharacteristic('62750003-d828-918d-fb46-b6c11c675aec');
       const versionData = await versionCharacteristic.readValue();
@@ -1151,6 +1193,7 @@ async function connect() {
       console.error(e);
       appVersion = 0x15;
     }
+    ensureConnected();
 
     if (appVersion < 0x16) {
       const oldURL = "https://tsl0922.github.io/EPD-nRF5/v1.5";
@@ -1166,32 +1209,44 @@ async function connect() {
       // 配置/MTU/电压，否则首批通知可能在 startNotifications() 返回前丢失。
       updateBatteryVoltageDisplay(null, '等待上报');
       epdCharacteristic.addEventListener('characteristicvaluechanged', (event) => {
-        handleNotify(event.target.value);
+        if (generation === connectionGeneration && event.target === epdCharacteristic) {
+          handleNotify(event.target.value);
+        }
       });
       await epdCharacteristic.startNotifications();
+      ensureConnected();
 
       // 兼容未在 CCCD 开启时主动上报电压的旧固件，并遵循协议连接初始化顺序。
       if (!await write(EpdCmd.INIT)) {
-        addLog('连接后初始化失败，无法请求设备电压');
+        throw new Error('连接后初始化失败：INIT 命令未完成');
       }
     } catch (e) {
       console.error(e);
-      if (e.message) addLog("startNotifications: " + e.message);
+      throw e;
     }
 
-    await syncTimeOnConnect();
+    ensureConnected();
+    const timeSynced = await syncTimeOnConnect();
+    ensureConnected();
+    if (appVersion >= 0x21 && !timeSynced) throw new Error('连接后自动时间同步失败');
     if (await waitForNegotiatedMtu()) {
       addLog(`传图MTU已就绪: ${currentMtuValue()}`);
     } else {
       addLog('尚未收到设备MTU，发图前会再等待一次');
     }
+    ensureConnected();
 
     // Initialize CRC transfer module if available
     if (typeof BleTransfer !== 'undefined') {
       BleTransfer.init();
     }
     if (window.CalendarAnnotations && appVersion >= 0x29) {
-      window.CalendarAnnotations.loadFromDevice();
+      await window.CalendarAnnotations.loadFromDevice();
+      ensureConnected();
+    }
+    if (window.FontStore && appVersion >= 0x2D) {
+      await window.FontStore.refresh();
+      ensureConnected();
     }
 
     if (clearLogOnNextSuccessfulConnect) {
@@ -1206,8 +1261,15 @@ async function connect() {
 
     document.getElementById("connectbutton").innerHTML = '断开';
     updateButtonStatus();
+  } catch (e) {
+    addLog(`连接初始化失败: ${e.message || e}`);
+    if (targetDevice === bleDevice) {
+      if (targetDevice.gatt && targetDevice.gatt.connected) targetDevice.gatt.disconnect();
+      if (gattServer || epdCharacteristic) disconnect();
+    }
   } finally {
     isConnecting = false;
+    updateButtonStatus();
   }
 }
 
@@ -1597,6 +1659,9 @@ document.body.onload = () => {
   checkDebugMode();
   if (window.CalendarAnnotations) {
     window.CalendarAnnotations.init();
+  }
+  if (window.FontStore) {
+    window.FontStore.init();
   }
   if (typeof initDfuPanel === 'function') {
     initDfuPanel();

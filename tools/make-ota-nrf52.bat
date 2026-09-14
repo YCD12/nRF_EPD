@@ -28,7 +28,9 @@ if not exist "%sd_hex%" (
     exit /b 0
 )
 
-nrfutil settings generate --family NRF52810 --application "%fw_hex%" --softdevice "%sd_hex%" --application-version %fw_ver% --bootloader-version 1 --bl-settings-version 1 --key-file "%p_key%" --no-backup "%settings%"
+rem SDK 17 bootloader uses settings v2 and restores its backup page on boot.
+rem Generate both pages so SWD updates cannot restore the previous app CRC.
+nrfutil settings generate --family NRF52810 --application "%fw_hex%" --softdevice "%sd_hex%" --application-version %fw_ver% --bootloader-version 1 --bl-settings-version 2 --key-file "%p_key%" "%settings%"
 if errorlevel 1 exit /b 1
 
 mergehex -m "%sd_hex%" "%bl_hex%" "%fw_hex%" "%settings%" -o "%fw_full_hex%"

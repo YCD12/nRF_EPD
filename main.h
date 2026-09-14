@@ -1,5 +1,6 @@
 #include <stdint.h>
 
+uint32_t app_uptime_seconds(void);
 uint32_t timestamp(void);
 void set_timestamp(uint32_t timestamp);
 void sleep_mode_enter(void);

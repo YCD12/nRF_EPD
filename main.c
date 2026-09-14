@@ -34,6 +34,7 @@
 #include "nrf_sdh_ble.h"
 #include "nrf_sdh_soc.h"
 #include "EPD_service.h"
+#include "fonts.h"
 #include "app_error.h"
 #include "app_scheduler.h"
 #include "app_timer.h"
@@ -150,6 +151,9 @@ void assert_nrf_callback(uint16_t line_num, const uint8_t* p_file_name) {
 // 返回当前时间戳
 uint32_t timestamp(void) { return m_timestamp; }
 
+static volatile uint32_t m_uptime_seconds = 1U;
+uint32_t app_uptime_seconds(void) { return m_uptime_seconds; }
+
 // set the timestamp
 // 设置时间戳
 // 停止时钟定时器，更新时间戳，然后重新启动定时器
@@ -265,6 +269,7 @@ static void ble_dfu_evt_handler(ble_dfu_buttonless_evt_type_t event) {
 static void clock_timer_timeout_handler(void* p_context) {
     UNUSED_PARAMETER(p_context);
 
+    m_uptime_seconds++;
     m_timestamp++;  // 时间戳递增（每秒一次）
 
     ble_epd_on_timer(&m_epd, m_timestamp, false);  // 通知EPD服务定时器事件
@@ -569,12 +574,17 @@ static void on_ble_evt(ble_evt_t* p_ble_evt) {
                          phy->status, phy->tx_phy, phy->rx_phy);
         } break;
 
-        case BLE_GAP_EVT_SEC_PARAMS_REQUEST:
-            // Pairing not supported
-            // 不支持配对，拒绝配对请求
-            APP_ERROR_CHECK(
-                sd_ble_gap_sec_params_reply(m_conn_handle, BLE_GAP_SEC_STATUS_PAIRING_NOT_SUPP, NULL, NULL));
+        case BLE_GAP_EVT_SEC_PARAMS_REQUEST: {
+            /* Keep the existing unpaired protocol. Enabling Just Works on
+             * the shared command characteristic breaks existing browser
+             * initialization and does not authenticate a device owner. */
+            APP_ERROR_CHECK(sd_ble_gap_sec_params_reply(
+                p_ble_evt->evt.gap_evt.conn_handle,
+                BLE_GAP_SEC_STATUS_PAIRING_NOT_SUPP,
+                NULL,
+                NULL));
             break;
+        }
 
         case BLE_GATTS_EVT_SYS_ATTR_MISSING:
             // No system attributes have been stored.
@@ -969,6 +979,12 @@ int main(void) {
     APP_ERROR_CHECK(nrf_drv_wdt_init(&config, wdt_event_handler));  // 初始化看门狗
     APP_ERROR_CHECK(nrf_drv_wdt_channel_alloc(&m_wdt_channel_id));  // 分配看门狗通道
     nrf_drv_wdt_enable();  // 启动看门狗
+
+#if GUI_USE_EXTERNAL_FONTS
+    /* Probe the resource Flash before GUI rendering starts.  If a fixed font
+     * slot is unavailable, gui_set_font() uses its fixed-width placeholder. */
+    (void)GUI_ExternalFontsInit();
+#endif
 
     // 系统初始化序列
     timers_init();            // 初始化定时器模块

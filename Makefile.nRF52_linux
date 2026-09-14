@@ -99,11 +99,14 @@ SRC_FILES += \
   $(PROJ_DIR)/main.c \
   $(PROJ_DIR)/gcc_sbrk.c \
   $(PROJ_DIR)/EPD/EPD_config.c \
+  $(PROJ_DIR)/EPD/fm25q04b.c \
   $(PROJ_DIR)/EPD/EPD_driver.c \
   $(PROJ_DIR)/EPD/EPD_service.c \
   $(PROJ_DIR)/EPD/epd_refresh_policy.c \
   $(PROJ_DIR)/EPD/epd_clock_refresh.c \
   $(PROJ_DIR)/EPD/calendar_annotations_store.c \
+  $(PROJ_DIR)/EPD/font_store.c \
+  $(PROJ_DIR)/EPD/font_transfer.c \
   $(PROJ_DIR)/EPD/UC8179.c \
   $(PROJ_DIR)/GUI/GUI.c \
   $(PROJ_DIR)/GUI/calendar_annotations.c \
@@ -202,7 +205,12 @@ LIB_FILES += \
 # =============================================================================
 OPT = -Os -g3 -flto
 
+GUI_USE_EXTERNAL_FONTS ?= 1
+GUI_INCLUDE_INTERNAL_FONTS ?= 0
+
 CFLAGS += $(OPT)
+CFLAGS += -DGUI_USE_EXTERNAL_FONTS=$(GUI_USE_EXTERNAL_FONTS)
+CFLAGS += -DGUI_INCLUDE_INTERNAL_FONTS=$(GUI_INCLUDE_INTERNAL_FONTS)
 ifeq ($(USE_SYSVIEW),1)
 CFLAGS += -DUSE_SYSVIEW
 endif

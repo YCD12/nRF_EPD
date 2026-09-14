@@ -21,7 +21,31 @@ run() {
 
 run test_cmd_policy -I. -IEPD -IGUI tests/test_cmd_policy.c
 run test_calendar_annotations -IGUI GUI/calendar_annotations.c tests/test_calendar_annotations.c
-run test_wqy_ascii -IGUI GUI/fonts.c GUI/u8g2_font.c tests/test_wqy_ascii.c
+run test_wqy_ascii -IGUI -DGUI_USE_EXTERNAL_FONTS=0 -DGUI_INCLUDE_INTERNAL_FONTS=1 GUI/fonts.c GUI/u8g2_font.c tests/test_wqy_ascii.c
+run test_font_files -IGUI GUI/u8g2_font.c tests/test_font_files.c
+run test_external_font_text -IGUI GUI/Adafruit_GFX.c GUI/u8g2_font.c tests/test_external_font_text.c
+run test_u8g2_external_cache -IGUI GUI/u8g2_font.c tests/test_u8g2_external_cache.c
+run test_u8g2_placeholder -IGUI GUI/u8g2_font.c tests/test_u8g2_placeholder.c
+run test_u8g2_bounds -IGUI GUI/u8g2_font.c tests/test_u8g2_bounds.c
+run test_font_store -I. -IEPD -IGUI \
+    -ISDK/17.1.0_ddde560/components/libraries/util \
+    -ISDK/17.1.0_ddde560/components/softdevice/s112/headers \
+    -DFONT_STORE_HOST_TEST EPD/font_store.c tests/test_font_store.c
+run test_font_store_atomic -I. -IEPD -IGUI \
+    -ISDK/17.1.0_ddde560/components/libraries/util \
+    -ISDK/17.1.0_ddde560/components/softdevice/s112/headers \
+    -DFONT_STORE_HOST_TEST EPD/font_store.c tests/test_font_store_atomic.c
+run test_font_transfer -Itests/font_transfer_stubs -I. -IEPD -IGUI \
+    -ISDK/17.1.0_ddde560/components/libraries/util \
+    -ISDK/17.1.0_ddde560/components/softdevice/s112/headers \
+    -DFONT_TRANSFER_HOST_TEST EPD/font_transfer.c tests/test_font_transfer.c
+run test_fm25q04b_read -Itests/spi_stubs -I. -IEPD \
+    -ISDK/17.1.0_ddde560/components/libraries/util \
+    -ISDK/17.1.0_ddde560/components/softdevice/s112/headers \
+    EPD/fm25q04b.c tests/test_fm25q04b_read.c
+run test_external_font_sources -I. -IEPD -IGUI -ISDK/17.1.0_ddde560/components/libraries/util \
+    -ISDK/17.1.0_ddde560/components/softdevice/s112/headers \
+    -DGUI_USE_EXTERNAL_FONTS=1 -DGUI_INCLUDE_INTERNAL_FONTS=0 GUI/fonts.c tests/test_external_font_sources.c
 run test_clock_layout -IGUI tests/test_clock_layout.c
 run test_calendar_grid -IGUI tests/test_calendar_grid.c
 run test_clock_refresh_window -IGUI tests/test_clock_refresh_window.c
@@ -31,5 +55,13 @@ run test_clock_window_page -IEPD tests/test_clock_window_page.c
 run test_refresh_policy -IEPD -IGUI EPD/epd_refresh_policy.c tests/test_refresh_policy.c
 run test_clock_refresh -IEPD -IGUI -Itests/stubs EPD/epd_clock_refresh.c tests/test_clock_refresh.c
 run test_uc8179 -IEPD -Itests/stubs -Itools/test/host/shim EPD/UC8179.c tests/uc8179_command_sequence_test.c
+
+if command -v node >/dev/null 2>&1; then
+    node --test tests/test_ble_lifecycle.cjs
+else
+    echo "Node.js unavailable; run node --test tests/test_ble_lifecycle.cjs separately."
+fi
+
+python3 tests/test_font_store_tool.py
 
 echo "HOST_OK"

@@ -1207,6 +1207,18 @@ void GFX_setCursor(Adafruit_GFX* gfx, int16_t x, int16_t y) {
 /**************************************************************************/
 void GFX_setFont(Adafruit_GFX* gfx, const uint8_t* font) { u8g2_SetFont(&gfx->u8g2, font); }
 
+void GFX_setExternalFont(Adafruit_GFX* gfx, const u8g2_font_source_t* source) {
+    u8g2_SetExternalFont(&gfx->u8g2, source);
+}
+
+void GFX_setFontPlaceholder(Adafruit_GFX* gfx, const u8g2_font_placeholder_t* placeholder) {
+    u8g2_SetPlaceholder(&gfx->u8g2, placeholder);
+}
+
+void GFX_setMissingFont(Adafruit_GFX* gfx, const u8g2_font_placeholder_t* placeholder) {
+    u8g2_SetMissingFont(&gfx->u8g2, placeholder);
+}
+
 /**************************************************************************/
 /**
  * @brief   设置字体渲染模式
@@ -1285,6 +1297,20 @@ int8_t GFX_getFontHeight(Adafruit_GFX* gfx) { return gfx->u8g2.font_info.ascent_
 /**************************************************************************/
 int16_t GFX_drawGlyph(Adafruit_GFX* gfx, int16_t x, int16_t y, uint16_t e) {
     return u8g2_DrawGlyph(&gfx->u8g2, x, y, e);
+}
+
+bool GFX_hasGlyph(Adafruit_GFX* gfx, uint16_t e) {
+    return u8g2_IsGlyph(&gfx->u8g2, e) != 0U;
+}
+
+int16_t GFX_getGlyphAdvance(Adafruit_GFX* gfx, uint16_t e) {
+    if (GFX_hasGlyph(gfx, e)) {
+        return u8g2_GetGlyphWidth(&gfx->u8g2, e);
+    }
+    if (e == (uint16_t)' ') {
+        return 0;
+    }
+    return gfx->u8g2.placeholder_enabled ? gfx->u8g2.placeholder.advance : 0;
 }
 
 /**************************************************************************/
@@ -1374,6 +1400,11 @@ int16_t GFX_drawUTF8(Adafruit_GFX* gfx, int16_t x, int16_t y, const char* str) {
 
 int16_t GFX_getUTF8Width(Adafruit_GFX* gfx, const char* str) {
     int16_t dx, w;
+    int8_t glyph_advance;
+    bool have_last_real_glyph = false;
+    int8_t last_real_advance = 0;
+    int8_t last_real_width = 0;
+    int8_t last_real_x_offset = 0;
 
     gfx->u8g2.font_decode.glyph_width = 0;
     gfx->utf8_state = 0;
@@ -1384,16 +1415,31 @@ int16_t GFX_getUTF8Width(Adafruit_GFX* gfx, const char* str) {
         if (e == 0x0ffff) break;
         str++;
         if (e != 0x0fffe) {
-            dx = u8g2_GetGlyphWidth(&gfx->u8g2, e);
-            w += dx;
+            bool real_glyph = u8g2_GetGlyphWidthIfPresent(
+                &gfx->u8g2, e, &glyph_advance) != 0U;
+            if (real_glyph) {
+                have_last_real_glyph = true;
+                last_real_advance = glyph_advance;
+                last_real_width = gfx->u8g2.font_decode.glyph_width;
+                last_real_x_offset = gfx->u8g2.glyph_x_offset;
+                dx = glyph_advance;
+                w += dx;
+            } else if (e == (uint16_t)' ') {
+                dx = 0;
+            } else if (gfx->u8g2.placeholder_enabled) {
+                dx = gfx->u8g2.placeholder.advance;
+                w += dx;
+            } else {
+                dx = 0;
+            }
         }
     }
     /* adjust the last glyph, check for issue #16: do not adjust if width is 0 */
-    if (gfx->u8g2.font_decode.glyph_width != 0) {
-        w -= dx;
-        w += gfx->u8g2.font_decode.glyph_width; /* the real pixel width of the glyph, sideeffect of GetGlyphWidth */
+    if (have_last_real_glyph && last_real_width != 0) {
+        w -= last_real_advance;
+        w += last_real_width; /* the real pixel width of the last real glyph */
         /* issue #46: we have to add the x offset also */
-        w += gfx->u8g2.glyph_x_offset; /* this value is set as a side effect of u8g2_GetGlyphWidth() */
+        w += last_real_x_offset; /* side effect of GetGlyphWidth() for that glyph */
     }
 
     return w;
