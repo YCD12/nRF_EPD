@@ -7,19 +7,16 @@
 #include "epd_clock_window.h"
 #include "epd_refresh_policy.h"
 
-/* 分屏 HH:MM 为 272x128。全屏个位/十位数字能放下，整段 HH:MM 绘制窗放不下。
- * 分钟十位进位：分屏用一个 MM 窗，全屏用两个数字窗。高度上限仅作检查。 */
+/* Preserve the established window geometry and submit it in bounded strips.
+ * Minute carries use one MM window in split mode, two digits in full mode. */
 #define EPD_CLOCK_OLD_STRIDE_MAX CLOCK_OLD_WINDOW_STRIDE_MAX
 #define EPD_CLOCK_OLD_HEIGHT_MAX 208U
 
-static uint8_t s_clock_old_window[CLOCK_OLD_WINDOW_BYTES]; /* 上一帧窗口位图 */
+/* Regenerate OLD from the last successfully displayed time, one strip at a
+ * time. OLD must survive while the shared GFX page buffer renders NEW. */
+static uint8_t s_clock_old_window[512];
 static uint32_t s_clock_last_timestamp;
 static bool s_clock_last_valid;
-static bool s_clock_cache_ready; /* 缓存窗口与本次相同则可复用 OLD */
-static uint16_t s_clock_cache_x;
-static uint16_t s_clock_cache_y;
-static uint16_t s_clock_cache_w;
-static uint16_t s_clock_cache_h;
 
 typedef struct {
     uint8_t *dst;
@@ -31,7 +28,7 @@ typedef struct {
 } epd_clock_capture_ctx_t; /* 用上一时刻重绘，捕获 OLD */
 
 typedef struct {
-    epd_model_t *epd;
+    const epd_model_t *epd;
     uint8_t *old_bitmap;
     uint16_t old_stride;
     uint16_t hardware_x;
@@ -39,12 +36,11 @@ typedef struct {
     uint16_t window_x;
     uint16_t window_y;
     bool failed;
-} epd_clock_diff_ctx_t; /* 推 NEW，并回写缓存 */
+} epd_clock_diff_ctx_t; /* 提交本条带的 OLD/NEW */
 
 void epd_clock_refresh_invalidate(void)
 {
     s_clock_last_valid = false;
-    s_clock_cache_ready = false;
 }
 
 void epd_clock_refresh_mark_valid(uint32_t timestamp)
@@ -78,7 +74,7 @@ static void epd_clock_capture_cb(void *user_data, uint8_t *black, uint8_t *color
     epd_clock_capture_ctx_t *ctx = (epd_clock_capture_ctx_t *)user_data;
     epd_clock_page_push_t page;
 
-    if (ctx == NULL) return;
+    if (ctx == NULL || ctx->failed) return;
     if (black == NULL ||
         !epd_clock_map_gfx_page(ctx->window_x, ctx->window_y,
                                 0U, 0U, x, y, w, h, &page) ||
@@ -94,7 +90,7 @@ static void epd_clock_capture_cb(void *user_data, uint8_t *black, uint8_t *color
                          ctx->dst_stride, black, page.src_stride, h);
 }
 
-/* GFX 分页回调：diff_push(OLD, NEW)，再把 NEW 存成下次的 OLD。 */
+/* GFX page callback: submit this strip's regenerated OLD and NEW data. */
 static void epd_clock_diff_cb(void *user_data, uint8_t *black, uint8_t *color,
                               uint16_t x, uint16_t y, uint16_t w, uint16_t h)
 {
@@ -102,7 +98,7 @@ static void epd_clock_diff_cb(void *user_data, uint8_t *black, uint8_t *color,
     epd_clock_diff_ctx_t *ctx = (epd_clock_diff_ctx_t *)user_data;
     epd_clock_page_push_t page;
 
-    if (ctx == NULL) return;
+    if (ctx == NULL || ctx->failed) return;
     if (ctx->epd == NULL || ctx->epd->drv == NULL ||
         ctx->epd->drv->diff_push == NULL || black == NULL ||
         !epd_clock_map_gfx_page(ctx->window_x, ctx->window_y,
@@ -120,11 +116,10 @@ static void epd_clock_diff_cb(void *user_data, uint8_t *black, uint8_t *color,
         return;
     }
 
-    epd_clock_store_page(old_bm, ctx->old_stride, black, page.src_stride, h);
 }
 
-/* 刷新一个局刷窗：必要时重绘 OLD，再 diff_push + refresh_partial。 */
-static bool epd_clock_refresh_one(epd_model_t *epd, const gui_data_t *data,
+/* Regenerate OLD/NEW in strips, then trigger one physical window refresh. */
+static bool epd_clock_refresh_one(const epd_model_t *epd, const gui_data_t *data,
                                   const clock_refresh_geom_t *geom,
                                   const clock_refresh_window_t *local)
 {
@@ -135,7 +130,6 @@ static bool epd_clock_refresh_one(epd_model_t *epd, const gui_data_t *data,
     uint16_t window_x;
     uint16_t window_y;
     uint16_t width_bytes;
-    bool reuse_old;
 
     GetTimeRefreshAreaFromLocal(data, local->x, local->y, local->w, local->h,
                                 &x, &y, &w, &h);
@@ -150,61 +144,54 @@ static bool epd_clock_refresh_one(epd_model_t *epd, const gui_data_t *data,
     width_bytes = (uint16_t)(w / 8U);
     if ((uint32_t)window_x + w > (uint32_t)geom->canvas_w ||
         width_bytes == 0U || width_bytes > EPD_CLOCK_OLD_STRIDE_MAX ||
-        h > EPD_CLOCK_OLD_HEIGHT_MAX ||
-        (uint32_t)width_bytes * h > sizeof(s_clock_old_window)) {
+        h > EPD_CLOCK_OLD_HEIGHT_MAX) {
         return false;
     }
 
-    reuse_old = s_clock_cache_ready &&
-                s_clock_cache_x == x && s_clock_cache_y == y &&
-                s_clock_cache_w == w && s_clock_cache_h == h;
-
-    if (!reuse_old) {
+    for (uint16_t row = 0U; row < h;) {
+        uint16_t rows = sizeof(s_clock_old_window) / width_bytes;
+        if (rows > h - row) rows = h - row;
+        /* Both renders use exactly the same logical strip. The driver gets
+         * absolute panel coordinates; refresh only after the whole window. */
+        GetTimeRefreshAreaFromLocal(data, window_x, window_y + row, w, rows,
+                                    NULL, NULL, NULL, NULL);
         gui_data_t old_data = *data;
         epd_clock_capture_ctx_t capture = {
             .dst = s_clock_old_window,
             .window_x = window_x,
-            .window_y = window_y,
+            .window_y = window_y + row,
             .dst_stride = width_bytes,
-            .height = h,
+            .height = rows,
             .failed = false,
         };
 
         old_data.timestamp = s_clock_last_timestamp;
         DrawGUI_ClockOnly(&old_data, epd_clock_capture_cb, &capture);
         if (capture.failed) return false;
-    }
-
-    {
         epd_clock_diff_ctx_t ctx = {
             .epd = epd,
             .old_bitmap = s_clock_old_window,
             .old_stride = width_bytes,
             .hardware_x = x,
-            .hardware_y = y,
+            .hardware_y = y + row,
             .window_x = window_x,
-            .window_y = window_y,
+            .window_y = window_y + row,
             .failed = false,
         };
-        s_clock_cache_ready = false;
         DrawGUI_ClockOnly(data, epd_clock_diff_cb, &ctx);
         if (ctx.failed) return false;
+        row += rows;
     }
 
     if (!epd->drv->refresh_partial(epd, x, y, w, h) || UC8179_HadBusyTimeout()) {
         return false;
     }
 
-    s_clock_cache_ready = true;
-    s_clock_cache_x = x;
-    s_clock_cache_y = y;
-    s_clock_cache_w = w;
-    s_clock_cache_h = h;
     return true;
 }
 
 /* 按变化填 1～2 个窗，逐个 OLD/NEW 局刷；任一个失败则放弃。 */
-bool epd_clock_refresh_try(epd_model_t *epd, const gui_data_t *data)
+bool epd_clock_refresh_try(const epd_model_t *epd, const gui_data_t *data)
 {
     clock_refresh_geom_t geom;
     clock_refresh_window_t wins[CLOCK_REFRESH_WINDOWS_MAX];
@@ -228,6 +215,7 @@ bool epd_clock_refresh_try(epd_model_t *epd, const gui_data_t *data)
 
     for (i = 0U; i < n; i++) {
         if (!epd_clock_refresh_one(epd, data, &geom, &wins[i])) {
+            epd_clock_refresh_invalidate();
             return false;
         }
     }

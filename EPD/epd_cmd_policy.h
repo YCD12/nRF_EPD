@@ -3,27 +3,28 @@
 
 #include <stdbool.h>
 #include <stdint.h>
+#include "epd_protocol.h"
 
-/* 命令 ID 与 EPD_service.h 的 EPD_CMDS 一致。此处用数值，避免主机测试拉入 BLE 协议栈。 */
+/* 命令 ID 统一定义在纯数据头 epd_protocol.h，主机测试无需引入 BLE 协议栈。 */
 
-/* 紧急命令绕过队列立即执行 */
+/* 紧急命令绕过队列；INIT 入口只登记请求，实际初始化由主循环执行。 */
 static inline bool epd_cmd_is_urgent(uint8_t cmd)
 {
-    return cmd == 0x01U || /* INIT：须在 WRITE_BLOCK 前完成 */
-           cmd == 0x24U || /* SET_ANNOTATIONS：顺序分片，队列只有 2 槽 */
-           cmd == 0x31U || /* WRITE_BLOCK */
-           cmd == 0x32U || /* QUERY_STATUS */
-           cmd == 0x33U || /* RESET_TRANSFER */
-           cmd == 0x91U || /* SYS_RESET */
-           cmd == 0x92U || /* SYS_SLEEP */
-           cmd == 0x99U;   /* CFG_ERASE */
+    return cmd == EPD_CMD_INIT ||
+           cmd == EPD_CMD_SET_ANNOTATIONS ||
+           cmd == EPD_CMD_WRITE_BLOCK ||
+           cmd == EPD_CMD_QUERY_STATUS ||
+           cmd == EPD_CMD_RESET_TRANSFER ||
+           cmd == EPD_CMD_SYS_RESET ||
+           cmd == EPD_CMD_SYS_SLEEP ||
+           cmd == EPD_CMD_CFG_ERASE;
 }
 
 /* 仅改配置。不得占用 2 槽显示队列：首次切模式会连发 WEEK_START + SILENT + SET_MODE，
  * 否则 SET_MODE 会被挤掉。 */
 static inline bool epd_cmd_is_immediate(uint8_t cmd)
 {
-    return cmd == 0x21U; /* SET_WEEK_START */
+    return cmd == EPD_CMD_SET_WEEK_START;
 }
 
 /* 切模式时占用的队列槽数（静默校时 + SET_MODE） */
@@ -36,12 +37,12 @@ static inline unsigned epd_cmd_mode_switch_queued_count(bool week_changed)
 /* 需要点亮面板、走显示通路的命令 */
 static inline bool epd_cmd_needs_display(uint8_t cmd)
 {
-    return cmd == 0x02U || /* CLEAR */
-           cmd == 0x03U || /* SEND_COMMAND */
-           cmd == 0x04U || /* SEND_DATA */
-           cmd == 0x05U || /* REFRESH */
-           cmd == 0x30U || /* WRITE_IMAGE */
-           cmd == 0x31U;   /* WRITE_BLOCK */
+    return cmd == EPD_CMD_CLEAR ||
+           cmd == EPD_CMD_SEND_COMMAND ||
+           cmd == EPD_CMD_SEND_DATA ||
+           cmd == EPD_CMD_REFRESH ||
+           cmd == EPD_CMD_WRITE_IMAGE ||
+           cmd == EPD_CMD_WRITE_BLOCK;
 }
 
 typedef enum {

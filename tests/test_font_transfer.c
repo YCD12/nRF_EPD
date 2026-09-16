@@ -7,6 +7,7 @@
 static ble_epd_t epd;
 static unsigned lock_depth, events_head, events_tail, sends, writes;
 static uint32_t now = 100U, received;
+static uint32_t tx_error;
 static bool active, scheduler_full, tx_full, inject_tx_complete, inject_ack, inject_packet;
 static uint8_t written[32];
 static void (*after_unlock)(void);
@@ -53,6 +54,7 @@ static void reset(void)
     active = true;
     lock_depth = events_head = events_tail = sends = writes = received = 0U;
     scheduler_full = tx_full = inject_tx_complete = inject_ack = inject_packet = false;
+    tx_error = NRF_SUCCESS;
     after_unlock = NULL;
 }
 uint16_t crc16_compute(const uint8_t* data, uint16_t length)
@@ -106,7 +108,10 @@ uint32_t ble_epd_notification_try_send(ble_epd_t* p, uint8_t* data, uint16_t len
     assert(lock_depth == 0U && p == &epd && length <= 11U);
     if (inject_tx_complete) {
         inject_tx_complete = false;
-        font_task_wake_tx(p, FONT_TASK_OPERATION_ACK);
+        uint8_t task = data[0] == EPD_RSP_FONT_LIST ? FONT_TASK_LIST :
+                       data[0] == EPD_RSP_FONT_STREAM_ACK ? FONT_TASK_STREAM_ACK :
+                       FONT_TASK_OPERATION_ACK;
+        font_task_wake_tx(p, task);
         return NRF_ERROR_RESOURCES;
     }
     if (inject_ack) {
@@ -114,6 +119,7 @@ uint32_t ble_epd_notification_try_send(ble_epd_t* p, uint8_t* data, uint16_t len
         font_store_send_ack(p, FONT_STORE_OP_PACK_COMMIT, FONT_STORE_CRC, 0xFFU);
     }
     if (tx_full) return NRF_ERROR_RESOURCES;
+    if (tx_error != NRF_SUCCESS) return tx_error;
     assert(sends < 128U);
     memcpy(responses[sends], data, length);
     response_lengths[sends++] = length;
@@ -124,8 +130,64 @@ static void enqueue_from_irq(void)
     font_store_send_ack(&epd, FONT_STORE_OP_PACK_ABORT, FONT_STORE_OK, 0xFFU);
 }
 
+static void test_notification_retries(void)
+{
+    const uint8_t tasks[] = {FONT_TASK_OPERATION_ACK, FONT_TASK_LIST, FONT_TASK_STREAM_ACK};
+    for (unsigned i = 0; i < 3U; i++) {
+        for (unsigned failure = 0; failure < 3U; failure++) {
+            reset();
+            tx_full = failure == 0U;
+            tx_error = failure == 1U ? NRF_ERROR_NO_MEM : NRF_SUCCESS;
+            inject_tx_complete = failure == 2U;
+            if (i == 0U) {
+                font_store_send_ack(&epd, FONT_STORE_OP_PACK_COMMIT, FONT_STORE_CRC, 0xFFU);
+            } else if (i == 1U) {
+                font_store_send_list(&epd);
+            } else {
+                epd.font.stream.ack_pending = true;
+                epd.font.stream.ack_status = FONT_STORE_CRC;
+                epd.font.stream.next_sequence = 0x1234U;
+                epd.font.stream.next_offset = 0x12345678U;
+                font_task_schedule(&epd, FONT_TASK_STREAM_ACK);
+            }
+            /* Stop after the failed attempt to inspect reply ownership. */
+            unsigned event = events_head++;
+            events[event].handler(&events[event].epd, sizeof(ble_epd_t *));
+            assert(sends == 0U);
+            if (i == 0U) assert(epd.font.ack_inflight_valid);
+            if (i == 1U) assert(epd.font.list_pending && epd.font.list_slot == 0U);
+            if (i == 2U) assert(epd.font.stream.ack_pending &&
+                                epd.font.stream.ack_status == FONT_STORE_CRC);
+            tx_full = false;
+            tx_error = NRF_SUCCESS;
+            if (failure == 0U) font_task_wake_tx(&epd, tasks[i]);
+            else font_task_retry(&epd);
+            run_events();
+            assert(sends == (i == 1U ? FONT_STORE_SLOT_COUNT : 1U));
+            if (i == 0U) {
+                const uint8_t expected[] = {EPD_RSP_FONT_ACK, FONT_STORE_OP_PACK_COMMIT,
+                                           FONT_STORE_CRC, 0xFFU};
+                assert(response_lengths[0] == sizeof(expected));
+                assert(memcmp(responses[0], expected, sizeof(expected)) == 0);
+            } else if (i == 1U) {
+                for (unsigned slot = 0; slot < FONT_STORE_SLOT_COUNT; slot++) {
+                    uint8_t expected[11] = {EPD_RSP_FONT_LIST, slot};
+                    assert(response_lengths[slot] == sizeof(expected));
+                    assert(memcmp(responses[slot], expected, sizeof(expected)) == 0);
+                }
+            } else {
+                const uint8_t expected[] = {EPD_RSP_FONT_STREAM_ACK, 0x34, 0x12,
+                    0x78, 0x56, 0x34, 0x12, FONT_STREAM_FIFO_SIZE, FONT_STORE_CRC};
+                assert(response_lengths[0] == sizeof(expected));
+                assert(memcmp(responses[0], expected, sizeof(expected)) == 0);
+            }
+        }
+    }
+}
+
 int main(void)
 {
+    test_notification_retries();
     reset();
     epd.font.stream.total_length = 2U;
     inject_packet = true;

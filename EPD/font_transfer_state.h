@@ -69,7 +69,7 @@ typedef struct {
 typedef struct {
     volatile bool operation_pending;     /**< 字库命令已收到，阻止新的显示刷新 */
     volatile bool refresh_pending;      /**< 字库变更后等待合并刷新 */
-    volatile uint32_t refresh_due;      /**< 合并刷新最早允许启动的时间戳 */
+    volatile uint32_t refresh_due;      /**< 合并刷新最早允许启动的 uptime 秒数 */
     volatile uint32_t last_activity_ts; /**< 字库事务最后活动时间，用于空闲超时 */
     volatile uint32_t last_begin_ts;    /**< 上一次 BEGIN 时间，用于更新频率限制 */
     volatile uint8_t task_pending;      /**< 待执行的字体任务位图 */

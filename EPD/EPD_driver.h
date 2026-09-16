@@ -83,7 +83,7 @@ struct epd_driver;
 typedef struct {
     epd_model_id_t id;      // 型号 ID
     epd_color_t color;      // 颜色类型
-    struct epd_driver* drv; // 驱动
+    const struct epd_driver* drv; // 驱动
     uint16_t width;         // 宽度（像素）
     uint16_t height;        // 高度（像素）
 } epd_model_t;
@@ -91,20 +91,20 @@ typedef struct {
 /**@brief EPD 驱动函数表 */
 typedef struct epd_driver {
     epd_driver_ic_t ic;                            /**< 驱动芯片类型 */
-    void (*init)(epd_model_t* epd);                /**< 初始化寄存器 */
-    void (*clear)(epd_model_t* epd, bool refresh); /**< 清屏；refresh=true 立即刷新 */
-    void (*write_image)(epd_model_t* epd, uint8_t* black, uint8_t* color, uint16_t x, uint16_t y, uint16_t w,
+    void (*init)(const epd_model_t * epd);                /**< 初始化寄存器 */
+    void (*clear)(const epd_model_t * epd, bool refresh); /**< 清屏；refresh=true 立即刷新 */
+    void (*write_image)(const epd_model_t * epd, uint8_t* black, uint8_t* color, uint16_t x, uint16_t y, uint16_t w,
                         uint16_t h);                                              /**< 写入图像到显存 */
-    void (*write_ram)(epd_model_t* epd, uint8_t cfg, uint8_t* data, uint8_t len); /**< 直接写入显存 */
-    void (*refresh)(epd_model_t* epd);     /**< 将显存刷新到屏幕 */
-    void (*sleep)(epd_model_t* epd);       /**< 进入睡眠以降功耗 */
-    int8_t (*read_temp)(epd_model_t* epd); /**< 从驱动芯片读温度 */
+    void (*write_ram)(const epd_model_t * epd, uint8_t cfg, uint8_t* data, uint8_t len); /**< 直接写入显存 */
+    void (*refresh)(const epd_model_t * epd);     /**< 将显存刷新到屏幕 */
+    void (*sleep)(const epd_model_t * epd);       /**< 进入睡眠以降功耗 */
+    int8_t (*read_temp)(const epd_model_t * epd); /**< 从驱动芯片读温度 */
     /* 可选：真 OLD/NEW 局刷路径 */
-    void (*init_partial)(epd_model_t *epd);
-    bool (*refresh_partial)(epd_model_t *epd, uint16_t x, uint16_t y,
+    void (*init_partial)(const epd_model_t *epd);
+    bool (*refresh_partial)(const epd_model_t *epd, uint16_t x, uint16_t y,
                             uint16_t w, uint16_t h);
     /* 在同一 PTIN/PTL 窗口写入打包的 OLD 与 NEW 位图 */
-    bool (*diff_push)(epd_model_t *epd, uint16_t x, uint16_t y,
+    bool (*diff_push)(const epd_model_t *epd, uint16_t x, uint16_t y,
                       uint16_t w, uint16_t h,
                       const uint8_t *old_bm, const uint8_t *new_bm);
 } epd_driver_t;
@@ -186,7 +186,7 @@ uint16_t EPD_ReadVoltageAndCache(void);    // 读取并缓存
  * @param id 型号 ID
  * @return 型号结构体指针
  */
-epd_model_t* epd_get_model(epd_model_id_t id);
-epd_model_t* epd_init(epd_model_id_t id); /* 查找型号并调用 drv->init */
+const epd_model_t * epd_get_model(epd_model_id_t id);
+const epd_model_t * epd_init(epd_model_id_t id); /* 查找型号并调用 drv->init */
 
 #endif

@@ -5,10 +5,12 @@ let canvas, ctx, textDecoder;
 let paintManager, cropManager;
 let gattWriteTail = Promise.resolve();
 let connectionGeneration = 0;
+let initWaiter = null;
+let initToken = 0;
 
 // APP版本号 (便于调试)
-const APP_VERSION = '2.0.14';
-const APP_BUILD_DATE = '2026-09-14';
+const APP_VERSION = '2.0.15';
+const APP_BUILD_DATE = '2026-09-15';
 const EPD_DEVICE_NAME_PREFIX = 'NRF_EPD';
 const SCAN_DURATION_MS = 5000;
 const LOG_CONSOLE_STORAGE_KEY = 'epd_log_to_console';
@@ -110,6 +112,8 @@ async function withTimeout(promise, timeoutMs, timeoutMessage) {
 }
 
 function resetVariables() {
+  if (initWaiter) initWaiter.resolve(false);
+  initWaiter = null;
   connectionGeneration++;
   gattWriteTail = Promise.resolve();
   gattServer = null;
@@ -155,6 +159,7 @@ async function write(cmd, data, withResponse = true, logPayload = true, serializ
     addLog("服务不可用，请检查蓝牙连接");
     return false;
   }
+  if (cmd === EpdCmd.INIT) serialize = true;
   const characteristic = epdCharacteristic;
   const generation = connectionGeneration;
   let payload = [cmd];
@@ -169,16 +174,26 @@ async function write(cmd, data, withResponse = true, logPayload = true, serializ
       addLog("服务已变更，放弃过期的蓝牙写入");
       return false;
     }
+    let waiter = null;
+    if (cmd === EpdCmd.INIT && appVersion >= 0x32) {
+      waiter = { token: (++initToken & 255), generation };
+      waiter.promise = new Promise(resolve => { waiter.resolve = resolve; });
+      initWaiter = waiter;
+      payload = [cmd, payload.length > 1 ? payload[1] : 0xff, waiter.token];
+    }
     if (logPayload) addLog(bytes2hex(payload), '⇑');
     try {
       if (withResponse)
         await characteristic.writeValueWithResponse(Uint8Array.from(payload));
       else
         await characteristic.writeValueWithoutResponse(Uint8Array.from(payload));
+      if (waiter && !await withTimeout(waiter.promise, 30000, "屏幕初始化确认超时")) return false;
     } catch (e) {
       console.error(e);
       if (e.message) addLog("write: " + e.message);
       return false;
+    } finally {
+      if (waiter && initWaiter === waiter) initWaiter = null;
     }
     return generation === connectionGeneration && characteristic === epdCharacteristic &&
       !!gattServer && gattServer.connected;
@@ -236,8 +251,11 @@ async function writeImageCRC(data, step = 'bw') {
 
 async function setDriver() {
   if (!confirm('确认设置驱动配置？此操作将重新初始化屏幕。')) return;
-  await write(EpdCmd.SET_PINS, document.getElementById("epdpins").value);
-  await write(EpdCmd.INIT, document.getElementById("epddriver").value);
+  if (!await write(EpdCmd.SET_PINS, document.getElementById("epdpins").value) ||
+      !await write(EpdCmd.INIT, document.getElementById("epddriver").value)) {
+    addLog("驱动初始化失败，请检查连接和引脚配置");
+    return;
+  }
   addLog("驱动配置已设置");
 }
 
@@ -490,7 +508,12 @@ async function sendimg() {
 
   if (!await waitForNegotiatedMtu()) {
     addLog("尚未收到MTU，发送一次INIT用于协商（不作为常规传图步骤）");
-    await write(EpdCmd.INIT, epdDriverSelect.value);
+    if (!await write(EpdCmd.INIT, epdDriverSelect.value)) {
+      addLog("屏幕初始化失败，取消发送");
+      updateButtonStatus();
+      hideStatusBar();
+      return;
+    }
     if (!await waitForNegotiatedMtu()) {
       addLog("MTU仍为默认20，取消发送以免超过512块上限导致花屏");
       updateButtonStatus();
@@ -938,6 +961,15 @@ async function reConnect() {
 
 function handleNotify(value) {
   const data = new Uint8Array(value.buffer, value.byteOffset, value.byteLength);
+
+  if (data.length >= 5 && data[0] === 0xA6) {
+    if (initWaiter && initWaiter.generation === connectionGeneration &&
+        initWaiter.token === data[1]) {
+      if (data[2] === 0) document.getElementById('mtusize').value = data[3] | (data[4] << 8);
+      initWaiter.resolve(data[2] === 0);
+    }
+    return;
+  }
 
   // Route CRC transfer responses to BleTransfer module
   if (data.length >= 1 && (data[0] === 0xA0 || data[0] === 0xA1)) {

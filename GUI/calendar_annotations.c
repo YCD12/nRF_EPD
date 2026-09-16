@@ -2,6 +2,15 @@
 
 #include <string.h>
 
+#if CALENDAR_ANNOTATIONS_USE_NRF_CRITICAL
+#include "app_util_platform.h"
+#define ANNO_CRITICAL_ENTER() CRITICAL_REGION_ENTER()
+#define ANNO_CRITICAL_EXIT()  CRITICAL_REGION_EXIT()
+#else
+#define ANNO_CRITICAL_ENTER() do { } while (0)
+#define ANNO_CRITICAL_EXIT()  do { } while (0)
+#endif
+
 #define FLAG_PRESENT 0x01U
 #define FONT_MODE_MASK 0x06U
 #define FONT_MODE_SHIFT 1U
@@ -14,7 +23,7 @@ static uint32_t m_live_words[CALENDAR_ANNOTATIONS_MAX_BYTES / 4U];
 static uint16_t m_live_len;
 static uint16_t m_rx_off;
 static uint16_t m_rx_total;
-static bool m_rx_active;
+static volatile bool m_rx_active;
 static bool m_live_locked;
 static calendar_annotations_reload_fn m_reload;
 
@@ -213,10 +222,13 @@ bool calendar_annotations_load(const uint8_t* data, size_t length)
 
 uint16_t calendar_annotations_count(void)
 {
-    if (m_rx_active || m_live_len < CALENDAR_ANNOTATIONS_HEADER_SIZE) {
-        return 0;
+    uint16_t count = 0U;
+    ANNO_CRITICAL_ENTER();
+    if (!m_rx_active && m_live_len >= CALENDAR_ANNOTATIONS_HEADER_SIZE) {
+        count = read_u16_le(live_bytes() + 6);
     }
-    return read_u16_le(live_bytes() + 6);
+    ANNO_CRITICAL_EXIT();
+    return count;
 }
 
 uint16_t calendar_annotations_blob(const uint8_t** data)
@@ -239,33 +251,47 @@ bool calendar_annotations_get(uint16_t year, uint8_t month, uint8_t day,
     uint16_t low = 0;
     uint16_t high;
     uint32_t want;
+    bool found = false;
 
     if (annotation != NULL) {
         memset(annotation, 0, sizeof(*annotation));
     }
-    if (annotation == NULL || m_rx_active || month < 1U || month > 12U || day < 1U || day > 31U ||
-        m_live_len < CALENDAR_ANNOTATIONS_HEADER_SIZE) {
+    if (annotation == NULL || month < 1U || month > 12U || day < 1U || day > 31U) {
         return false;
     }
-    high = calendar_annotations_count();
-    want = ((uint32_t)year << 16) | ((uint32_t)month << 8) | day;
-    while (low < high) {
-        uint16_t middle = (uint16_t)(low + (high - low) / 2U);
-        const uint8_t* record = live_bytes() + CALENDAR_ANNOTATIONS_HEADER_SIZE +
-                                (size_t)middle * CALENDAR_ANNOTATIONS_RECORD_SIZE;
-        uint32_t key = record_key(record);
+    ANNO_CRITICAL_ENTER();
+    if (!m_rx_active && m_live_len >= CALENDAR_ANNOTATIONS_HEADER_SIZE) {
+        high = read_u16_le(live_bytes() + 6);
+        want = ((uint32_t)year << 16) | ((uint32_t)month << 8) | day;
+        while (low < high) {
+            uint16_t middle = (uint16_t)(low + (high - low) / 2U);
+            const uint8_t* record = live_bytes() + CALENDAR_ANNOTATIONS_HEADER_SIZE +
+                                    (size_t)middle * CALENDAR_ANNOTATIONS_RECORD_SIZE;
+            uint32_t key = record_key(record);
 
-        if (key == want) {
-            decode_record(record, annotation);
-            return true;
-        }
-        if (key < want) {
-            low = (uint16_t)(middle + 1U);
-        } else {
-            high = middle;
+            if (key == want) {
+                decode_record(record, annotation);
+                found = true;
+                break;
+            }
+            if (key < want) low = (uint16_t)(middle + 1U);
+            else high = middle;
         }
     }
-    return false;
+    ANNO_CRITICAL_EXIT();
+    return found;
+}
+
+bool calendar_annotations_rx_active(void)
+{
+    return m_rx_active;
+}
+
+bool calendar_annotations_rx_cancel(void)
+{
+    if (!m_rx_active) return false;
+    restore_live();
+    return true;
 }
 
 calendar_anno_rx_t calendar_annotations_rx_write(uint16_t offset, uint16_t total,

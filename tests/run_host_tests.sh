@@ -20,10 +20,29 @@ run() {
 }
 
 run test_cmd_policy -I. -IEPD -IGUI tests/test_cmd_policy.c
+run test_advertising -DSVCALL_AS_NORMAL_FUNCTION -DS112 \
+    -Itests/advertising_stubs -Itests/storage_stubs -IEPD \
+    -ISDK/17.1.0_ddde560/components/softdevice/s112/headers \
+    -ISDK/17.1.0_ddde560/components/libraries/util \
+    -ISDK/17.1.0_ddde560/components/ble/common \
+    -ISDK/17.1.0_ddde560/components/ble/ble_advertising \
+    SDK/17.1.0_ddde560/components/ble/common/ble_advdata.c \
+    SDK/17.1.0_ddde560/components/ble/ble_advertising/ble_advertising.c \
+    EPD/epd_advertising.c tests/test_advertising.c
+run test_command_queue -Itests/font_transfer_stubs -IEPD tests/test_command_queue.c
+run test_async_queues -Itests/font_transfer_stubs -IEPD -IGUI \
+    -DCALENDAR_ANNOTATIONS_USE_NRF_CRITICAL=1 \
+    EPD/calendar_annotations_tx.c GUI/calendar_annotations.c tests/test_async_queues.c
+run test_storage -Itests/storage_stubs -Itests/font_transfer_stubs -Itests/stubs -I. -IEPD -IGUI \
+    EPD/storage_retry.c EPD/EPD_config.c EPD/calendar_annotations_store.c \
+    GUI/calendar_annotations.c tests/test_storage.c
 run test_calendar_annotations -IGUI GUI/calendar_annotations.c tests/test_calendar_annotations.c
 run test_wqy_ascii -IGUI -DGUI_USE_EXTERNAL_FONTS=0 -DGUI_INCLUDE_INTERNAL_FONTS=1 GUI/fonts.c GUI/u8g2_font.c tests/test_wqy_ascii.c
 run test_font_files -IGUI GUI/u8g2_font.c tests/test_font_files.c
 run test_external_font_text -IGUI GUI/Adafruit_GFX.c GUI/u8g2_font.c tests/test_external_font_text.c
+run test_gfx_primitives -IGUI GUI/Adafruit_GFX.c GUI/u8g2_font.c tests/test_gfx_primitives.c
+run test_gfx_primitives_fixed -DGFX_FIXED_BWR_PANEL=1 -DGFX_FIXED_FONT_DIRECTION_0=1 \
+    -IGUI GUI/Adafruit_GFX.c GUI/u8g2_font.c tests/test_gfx_primitives.c
 run test_u8g2_external_cache -IGUI GUI/u8g2_font.c tests/test_u8g2_external_cache.c
 run test_u8g2_placeholder -IGUI GUI/u8g2_font.c tests/test_u8g2_placeholder.c
 run test_u8g2_bounds -IGUI GUI/u8g2_font.c tests/test_u8g2_bounds.c
@@ -54,6 +73,14 @@ run test_lunar -IGUI GUI/Lunar.c tests/test_lunar.c
 run test_clock_window_page -IEPD tests/test_clock_window_page.c
 run test_refresh_policy -IEPD -IGUI EPD/epd_refresh_policy.c tests/test_refresh_policy.c
 run test_clock_refresh -IEPD -IGUI -Itests/stubs EPD/epd_clock_refresh.c tests/test_clock_refresh.c
+run test_gui_render -IGUI -IEPD -Itests/stubs -Itools/test/host/shim \
+    GUI/GUI.c GUI/Adafruit_GFX.c GUI/u8g2_font.c GUI/Lunar.c GUI/calendar_annotations.c \
+    EPD/epd_clock_refresh.c tests/test_gui_render.c
+run test_gui_render_fixed -DGFX_FIXED_BWR_PANEL=1 -DGFX_FIXED_FONT_DIRECTION_0=1 \
+    -DGUI_FIXED_PANEL_WIDTH=800 -DGUI_FIXED_PANEL_HEIGHT=480 \
+    -IGUI -IEPD -Itests/stubs -Itools/test/host/shim \
+    GUI/GUI.c GUI/Adafruit_GFX.c GUI/u8g2_font.c GUI/Lunar.c GUI/calendar_annotations.c \
+    EPD/epd_clock_refresh.c tests/test_gui_render.c
 run test_uc8179 -IEPD -Itests/stubs -Itools/test/host/shim EPD/UC8179.c tests/uc8179_command_sequence_test.c
 
 if command -v node >/dev/null 2>&1; then
@@ -63,5 +90,6 @@ else
 fi
 
 python3 tests/test_font_store_tool.py
+python3 tests/test_service_lifecycle.py
 
 echo "HOST_OK"

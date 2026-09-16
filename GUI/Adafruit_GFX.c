@@ -78,6 +78,11 @@ static void GFX_u8g2_draw_hv_line(u8g2_font_t* u8g2, int16_t x, int16_t y, int16
     // 通过u8g2成员指针反向获取Adafruit_GFX结构体指针
     // Get Adafruit_GFX struct pointer from u8g2 member pointer
     Adafruit_GFX* gfx = CONTAINER_OF(u8g2, Adafruit_GFX, u8g2);
+#if GFX_FIXED_FONT_DIRECTION_0
+    /* Missing-glyph boxes still need vertical edges. */
+    if (dir == 1U) GFX_drawFastVLine(gfx, x, y, len, color);
+    else GFX_drawFastHLine(gfx, x, y, len, color);
+#else
     switch (dir) {
         case 0:  // 向右画水平线 | Draw horizontal line to the right
             GFX_drawFastHLine(gfx, x, y, len, color);
@@ -92,6 +97,7 @@ static void GFX_u8g2_draw_hv_line(u8g2_font_t* u8g2, int16_t x, int16_t y, int16
             GFX_drawFastVLine(gfx, x, y - len + 1, len, color);
             break;
     }
+#endif
 }
 
 /**************************************************************************/
@@ -124,7 +130,6 @@ size_t   GFX_get_buffer_size(void) { return sizeof(s_gfx_buffer); }
 void GFX_begin(Adafruit_GFX* gfx, int16_t w, int16_t h, int16_t buffer_height) {
     // 清零整个GFX结构体 | Zero out the entire GFX structure
     memset(gfx, 0, sizeof(Adafruit_GFX));
-    memset(&gfx->u8g2, 0, sizeof(gfx->u8g2));
 
     // 设置屏幕尺寸 | Set screen dimensions
     gfx->WIDTH = gfx->_width = w;
@@ -346,6 +351,7 @@ void GFX_setWindow(Adafruit_GFX* gfx, uint16_t x, uint16_t y, uint16_t w, uint16
     gfx->ph = MIN(h, gfx->_height - gfx->py);
 
     // 根据旋转角度转换坐标 | Transform coordinates based on rotation
+#if !GFX_FIXED_BWR_PANEL
     switch (gfx->rotation) {
         case GFX_ROTATE_0:
             // 无需转换 | No transformation needed
@@ -368,12 +374,14 @@ void GFX_setWindow(Adafruit_GFX* gfx, uint16_t x, uint16_t y, uint16_t w, uint16
             gfx->py = gfx->HEIGHT - gfx->py - gfx->ph;
             break;
     }
+#endif
 
     // 调整宽度和x坐标到8的倍数边界（电子纸控制器要求）
     // Align width and x to 8-pixel boundary (e-paper controller requirement)
     gfx->pw += gfx->px % 8;                          // 补偿x偏移 | Compensate for x offset
     if (gfx->pw % 8 > 0) gfx->pw += 8 - (gfx->pw % 8);  // 向上取整到8的倍数 | Round up to multiple of 8
     gfx->px -= gfx->px % 8;                          // 向下对齐到8的倍数 | Align down to multiple of 8
+    gfx->total_pages = (gfx->ph + gfx->page_height - 1) / gfx->page_height;
 }
 
 /**************************************************************************/
@@ -387,6 +395,7 @@ void GFX_setWindow(Adafruit_GFX* gfx, uint16_t x, uint16_t y, uint16_t w, uint16
  *          Uses static variables to cache last conversion result for performance
  */
 /**************************************************************************/
+#if !GFX_FIXED_BWR_PANEL
 static uint8_t color4(uint16_t color) {
     // 缓存上次转换结果 | Cache last conversion result
     static uint16_t _prev_color = GFX_BLACK;
@@ -448,6 +457,8 @@ static uint8_t color4(uint16_t color) {
     _prev_color4 = cv4;
     return cv4;
 }
+#endif
+
 /**************************************************************************/
 /*!
    @brief    Draw a pixel
@@ -478,6 +489,7 @@ void GFX_drawPixel(Adafruit_GFX* gfx, int16_t x, int16_t y, uint16_t color) {
     if (x < 0 || x >= gfx->_width || y < 0 || y >= gfx->_height) return;
 
     // 根据旋转角度转换坐标到物理坐标 | Transform coordinates to physical based on rotation
+#if !GFX_FIXED_BWR_PANEL
     switch (gfx->rotation) {
         case GFX_ROTATE_0:
             // 无需转换 | No transformation needed
@@ -498,6 +510,7 @@ void GFX_drawPixel(Adafruit_GFX* gfx, int16_t x, int16_t y, uint16_t color) {
             y = gfx->HEIGHT - y - 1;
             break;
     }
+#endif
 
     // transpose partial window to 0,0
     // 将坐标转换到局部窗口的相对坐标 | Convert to relative coordinates within partial window
@@ -517,6 +530,7 @@ void GFX_drawPixel(Adafruit_GFX* gfx, int16_t x, int16_t y, uint16_t color) {
     if (y < 0 || y >= gfx->page_height) return;
 
     // 根据颜色模式写入像素数据 | Write pixel data based on color mode
+#if !GFX_FIXED_BWR_PANEL
     if (gfx->color == gfx->buffer) {  // 4c 四色模式
         // 四色模式：每像素2位，每字节存储4个像素
         // 4-color mode: 2 bits per pixel, 4 pixels per byte
@@ -538,7 +552,9 @@ void GFX_drawPixel(Adafruit_GFX* gfx, int16_t x, int16_t y, uint16_t color) {
                 gfx->buffer[i] = (gfx->buffer[i] & 0xFC) | pv;
                 break;
         }
-    } else if (gfx->color != NULL) {  // 3c 三色模式
+    } else
+#endif
+    if (gfx->color != NULL) {  // 3c 三色模式
         // 三色模式：使用两个独立的缓冲区
         // - buffer: 黑白信息（1=白，0=黑）
         // - color: 彩色信息（0=彩色，1=非彩色）
@@ -715,8 +731,7 @@ void GFX_drawDottedLine(Adafruit_GFX* gfx, int16_t x0, int16_t y0, int16_t x1, i
 */
 /**************************************************************************/
 void GFX_drawFastVLine(Adafruit_GFX* gfx, int16_t x, int16_t y, int16_t h, uint16_t color) {
-    // 通过调用通用直线函数实现 | Implemented by calling generic line function
-    GFX_drawLine(gfx, x, y, x, y + h - 1, color);
+    for (int16_t i = 0; i < h; ++i) GFX_drawPixel(gfx, x, y + i, color);
 }
 
 /**************************************************************************/
@@ -730,8 +745,7 @@ void GFX_drawFastVLine(Adafruit_GFX* gfx, int16_t x, int16_t y, int16_t h, uint1
 */
 /**************************************************************************/
 void GFX_drawFastHLine(Adafruit_GFX* gfx, int16_t x, int16_t y, int16_t w, uint16_t color) {
-    // 通过调用通用直线函数实现 | Implemented by calling generic line function
-    GFX_drawLine(gfx, x, y, x + w - 1, y, color);
+    for (int16_t i = 0; i < w; ++i) GFX_drawPixel(gfx, x + i, y, color);
 }
 
 /**************************************************************************/
@@ -769,12 +783,15 @@ void GFX_fillScreen(Adafruit_GFX* gfx, uint16_t color) {
     // 计算单页缓冲区大小（字节数）| Calculate page buffer size in bytes
     uint32_t size = ((gfx->WIDTH + 7) / 8) * gfx->page_height;
 
+#if !GFX_FIXED_BWR_PANEL
     if (gfx->color == gfx->buffer) {        // 4c 四色模式
         // 四色模式：每字节4个像素，用转换后的颜色值复制填充整个字节
         // 4-color mode: 4 pixels per byte, replicate converted color to fill entire byte
         uint8_t pv = color4(color) * 0x55;  // 0b01010101 将2位颜色值扩展到8位
         memset(gfx->buffer, pv, size * 2);  // 两倍大小（包含黑白和彩色数据）
-    } else {
+    } else
+#endif
+    {
         // 单色或三色模式 | Mono or 3-color mode
         // 填充黑白缓冲区 | Fill black/white buffer
         memset(gfx->buffer, color == GFX_WHITE ? 0xFF : 0x00, size);
@@ -1377,6 +1394,9 @@ int16_t GFX_drawUTF8(Adafruit_GFX* gfx, int16_t x, int16_t y, const char* str) {
         if (e != 0x0fffe) {
             int16_t delta = u8g2_DrawGlyph(&gfx->u8g2, x, y, e);
 
+#if GFX_FIXED_FONT_DIRECTION_0
+            x += delta;
+#else
             switch (gfx->u8g2.font_decode.dir) {
                 case 0:
                     x += delta;
@@ -1391,6 +1411,7 @@ int16_t GFX_drawUTF8(Adafruit_GFX* gfx, int16_t x, int16_t y, const char* str) {
                     y -= delta;
                     break;
             }
+#endif
 
             sum += delta;
         }
@@ -1564,6 +1585,9 @@ size_t GFX_print(Adafruit_GFX* gfx, const char c) {
         gfx->tx = 0;
     } else if (e < 0x0fffe) {
         int16_t delta = u8g2_DrawGlyph(&gfx->u8g2, gfx->tx, gfx->ty, e);
+#if GFX_FIXED_FONT_DIRECTION_0
+        gfx->tx += delta;
+#else
         switch (gfx->u8g2.font_decode.dir) {
             case 0:
                 gfx->tx += delta;
@@ -1578,6 +1602,7 @@ size_t GFX_print(Adafruit_GFX* gfx, const char c) {
                 gfx->ty -= delta;
                 break;
         }
+#endif
     }
     return 1;
 }
@@ -1589,6 +1614,10 @@ size_t GFX_write(Adafruit_GFX* gfx, const char* buffer, size_t size) {
         size--;
     }
     return cnt;
+}
+
+size_t GFX_puts(Adafruit_GFX* gfx, const char* text) {
+    return GFX_write(gfx, text, strlen(text));
 }
 
 size_t GFX_printf(Adafruit_GFX* gfx, const char* format, ...) {

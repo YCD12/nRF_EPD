@@ -28,7 +28,9 @@ typedef struct {
 
 #define EPD_CONFIG_SIZE (sizeof(epd_config_t) / sizeof(uint8_t))
 
-void epd_config_init(epd_config_t* cfg);   // 初始化配置与 FDS
+uint32_t epd_config_init(epd_config_t* cfg); // Startup waits for FDS_EVT_INIT
+void epd_config_process(void);             // Main-context async save / delete / GC
+bool epd_config_clear_complete(void);
 void epd_config_read(epd_config_t* cfg);   // 从 Flash 读取
 void epd_config_write(epd_config_t* cfg);  // 写入 Flash
 void epd_config_clear(epd_config_t* cfg);  // 清除 Flash 中的配置

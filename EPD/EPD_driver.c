@@ -41,6 +41,7 @@ static const nrf_drv_spi_t spi = NRF_DRV_SPI_INSTANCE(SPI_INSTANCE); /**< SPI �
  * @param mode 引脚模式(INPUT/OUTPUT/INPUT_PULLUP/INPUT_PULLDOWN/DEFAULT)
  */
 void pinMode(uint32_t pin, uint32_t mode) {
+    if (!nrf_gpio_pin_present_check(pin)) return;
     switch (mode) {
         case INPUT:  // 输入模式(无上下拉)
             nrf_gpio_cfg_input(pin, NRF_GPIO_PIN_NOPULL);
@@ -146,7 +147,8 @@ void EPD_GPIO_Ensure(void) /* refs==0 时才 Init */
  * 使用引用计数机制,只有在所有引用都释放后才真正反初始化
  */
 void EPD_GPIO_Uninit(void) {
-    if (--m_driver_refs > 0) return;  // 如果还有其他引用则直接返回
+    if (m_driver_refs == 0U) return;
+    if (--m_driver_refs > 0U) return;  // 如果还有其他引用则直接返回
 
     EPD_LED_OFF();  // 关闭LED
 
@@ -514,9 +516,9 @@ uint16_t EPD_ReadVoltageAndCache(void) {
 }
 
 /* One UC8179 model exposes both the full-refresh and true OLD/NEW paths. */
-extern epd_model_t epd_uc8179_750_Partial_bwr;
+extern const epd_model_t epd_uc8179_750_Partial_bwr;
 
-static epd_model_t* epd_models[] = {
+static const epd_model_t * epd_models[] = {
     &epd_uc8179_750_Partial_bwr,
 };
 
@@ -544,8 +546,8 @@ static epd_model_t* epd_models[] = {
  *
  * - 时钟模式是最常用的模式,需要部分刷新功能
  */
-epd_model_t* epd_get_model(epd_model_id_t id) {
-    epd_model_t* epd = NULL;
+const epd_model_t * epd_get_model(epd_model_id_t id) {
+    const epd_model_t * epd = NULL;
     for (uint8_t i = 0; i < ARRAY_SIZE(epd_models); i++) {
         if (epd_models[i]->id == id) {
             epd = epd_models[i];
@@ -556,8 +558,8 @@ epd_model_t* epd_get_model(epd_model_id_t id) {
     return epd;
 }
 
-epd_model_t* epd_init(epd_model_id_t id) {
-    epd_model_t* epd = epd_get_model(id);
+const epd_model_t * epd_init(epd_model_id_t id) {
+    const epd_model_t * epd = epd_get_model(id);
     epd->drv->init(epd);
     return epd;
 }

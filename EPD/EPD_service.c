@@ -22,7 +22,7 @@
  * - 使用环形缓冲区(circular buffer)管理命令队列
  * - 支持最多2个普通命令同时排队 (EPD_CMD_QUEUE_SIZE)
  * - 通过app_scheduler异步顺序执行命令
- * - 紧急命令(INIT、WRITE_BLOCK、SET_ANNOTATIONS、复位、睡眠、擦除配置)绕过队列立即执行
+ * - 紧急命令绕过队列；INIT 只登记请求，由主循环初始化并确认完成
  *
  * 工作流程:
  * (1) BLE写入特性 -> on_write() -> epd_service_on_write()
@@ -85,8 +85,10 @@
 #include "calendar_annotations_store.h"
 #include "font_store.h"
 #include "font_transfer.h"
+#include "storage_retry.h"
 
 static void epd_enter_picture_mode(ble_epd_t *p_epd); /* 切图片模式 */
+static void epd_gui_update(void* p_event_data, uint16_t event_size);
 
 // ============================================================================
 // CRC16计算和传输响应函数
@@ -94,9 +96,23 @@ static void epd_enter_picture_mode(ble_epd_t *p_epd); /* 切图片模式 */
 
 #define LOW_BATTERY_POLL_INTERVAL_S 10  // 低电量模式电压轮询周期(秒)
 #define EPD_FONT_REFRESH_DELAY_S 5U     // 连续上传多个槽位时合并一次全屏刷新
+#define EPD_ANNOTATIONS_RX_TIMEOUT_S 10U
+#define EPD_IMAGE_RX_TIMEOUT_S 30U
 
 // SET_TIME 频率限制(秒)。同一时间窗口内仅允许一次 SET_TIME 触发屏幕更新(PRD §4.3)。
 #define EPD_SET_TIME_RATE_LIMIT_S 10U
+
+static void epd_display_request(ble_epd_t *p_epd, uint32_t requested_timestamp)
+{
+    epd_display_queue_request(&p_epd->display_queue, requested_timestamp);
+    epd_display_queue_schedule(&p_epd->display_queue, p_epd, epd_gui_update);
+}
+
+static void epd_display_complete(ble_epd_t *p_epd)
+{
+    epd_display_queue_finish(&p_epd->display_queue);
+    epd_display_queue_schedule(&p_epd->display_queue, p_epd, epd_gui_update);
+}
 
 static uint32_t epd_elapsed_ms(uint32_t start_ticks)
 {
@@ -188,94 +204,6 @@ static void send_transfer_status(ble_epd_t* p_epd) {
 // - is_processing标志防止重复启动处理流程
 //
 // ============================================================================
-
-/**@brief 初始化命令队列
- *
- * @details 清除所有队列项并将头/尾/计数重置为零。
- *
- * @param[in] queue  命令队列结构指针
- */
-static void epd_cmd_queue_init(epd_cmd_queue_t* queue) {
-    memset(queue, 0, sizeof(epd_cmd_queue_t));
-    queue->head = 0;  // 队列头索引
-    queue->tail = 0;  // 队列尾索引
-    queue->count = 0;  // 当前队列项数
-    queue->is_processing = false;  // 未在处理
-    NRF_LOG_INFO("[EPD]: Command queue initialized\n");
-}
-
-/**@brief 将命令推入队列
- *
- * @details 将命令添加到队列尾部。如果队列已满,则丢弃命令。
- *
- * 队列满的处理:
- * - 记录警告日志,显示被丢弃的命令ID
- * - 返回false表示入队失败
- * - 调用者需要检查返回值
- *
- * @param[in] queue  命令队列结构指针
- * @param[in] p_data  命令数据指针
- * @param[in] length  命令数据长度
- *
- * @return true 如果命令成功入队
- * @return false 如果队列已满
- */
-static bool epd_cmd_queue_push(epd_cmd_queue_t* queue, uint8_t* p_data, uint16_t length) {
-    // 检查队列是否已满
-    if (queue->count >= EPD_CMD_QUEUE_SIZE) {
-        NRF_LOG_WARNING("[EPD]: Command queue full (size=%d), dropping command 0x%02x\n",
-                        EPD_CMD_QUEUE_SIZE, p_data[0]);
-        return false;
-    }
-
-    // 检查数据长度是否超限
-    if (length > EPD_CMD_MAX_DATA_LEN) {
-        NRF_LOG_WARNING("[EPD]: Command data too long (%d > %d), truncating\n",
-                        length, EPD_CMD_MAX_DATA_LEN);
-        length = EPD_CMD_MAX_DATA_LEN;
-    }
-
-    // 将命令复制到队列尾部
-    epd_cmd_queue_item_t* item = &queue->items[queue->tail];
-    item->cmd = p_data[0];
-    item->length = length;
-    memcpy(item->data, p_data, length);
-
-    // 更新队列尾指针和计数(环形缓冲区)
-    // 使用模运算实现环形缓冲区
-    queue->tail = (queue->tail + 1) % EPD_CMD_QUEUE_SIZE;
-    queue->count++;
-
-    NRF_LOG_DEBUG("[EPD]: Command 0x%02x queued at index %d (count=%d)\n",
-                  item->cmd, (queue->tail - 1 + EPD_CMD_QUEUE_SIZE) % EPD_CMD_QUEUE_SIZE, queue->count);
-    return true;
-}
-
-/**@brief 从队列中弹出命令
- *
- * @details 从队列头部移除并返回命令。
- *
- * @param[in]  queue  命令队列结构指针
- * @param[out] item   存储弹出命令项的指针
- *
- * @return true 如果成功弹出命令
- * @return false 如果队列为空
- */
-static bool epd_cmd_queue_pop(epd_cmd_queue_t* queue, epd_cmd_queue_item_t* item) {
-    if (queue->count == 0) {
-        return false;  // 队列为空
-    }
-
-    // 从队列头部复制命令
-    memcpy(item, &queue->items[queue->head], sizeof(epd_cmd_queue_item_t));
-    // 更新队列头指针和计数(环形缓冲区)
-    queue->head = (queue->head + 1) % EPD_CMD_QUEUE_SIZE;
-    queue->count--;
-
-    NRF_LOG_DEBUG("[EPD]: Command 0x%02x popped from index %d (remaining=%d)\n",
-                  item->cmd, (queue->head - 1 + EPD_CMD_QUEUE_SIZE) % EPD_CMD_QUEUE_SIZE, queue->count);
-    return true;
-}
 
 /**@brief 检查命令是否紧急(需要立即执行)
  *
@@ -386,7 +314,7 @@ static battery_guard_result_t epd_battery_guard(ble_epd_t *p_epd) {
 }
 
 /* 全刷：init → 绘整屏 → refresh。中途传图则让出。 */
-static bool epd_perform_full_refresh(ble_epd_t *p_epd, epd_model_t *epd,
+static bool epd_perform_full_refresh(ble_epd_t *p_epd, const epd_model_t *epd,
                                      gui_data_t *data) {
     uint32_t phase_start;
 
@@ -425,7 +353,7 @@ static bool epd_perform_full_refresh(ble_epd_t *p_epd, epd_model_t *epd,
         return false;
     }
     phase_start = app_timer_cnt_get();
-    DrawGUI(data, (buffer_callback)epd->drv->write_image, epd);
+    DrawGUI(data, (buffer_callback)epd->drv->write_image, (void *)epd);
     NRF_LOG_INFO("[EPD]: GUI draw phase %u ms\n", epd_elapsed_ms(phase_start));
     ble_log("[EPD]:draw=%ums", epd_elapsed_ms(phase_start));
     app_feed_wdt();
@@ -475,45 +403,53 @@ static void epd_fill_device_name(gui_data_t *data) {
  * 3. GUI渲染
  * 4. 显示刷新
  *
- * @param[in] p_event_data  epd_gui_update_event_t 结构指针
+ * @param[in] p_event_data  ble_epd_t 指针的调度器副本
  * @param[in] event_size    事件数据大小
  */
 static void epd_gui_update(void* p_event_data, uint16_t event_size) {
-    epd_gui_update_event_t* event = (epd_gui_update_event_t*)p_event_data;
-    ble_epd_t* p_epd = event->p_epd;
+    ble_epd_t* p_epd = *((ble_epd_t**)p_event_data);
+    uint32_t requested_timestamp;
     uint16_t refresh_voltage_mv = 3300;  /* 由电量保护更新，结束刷新时可读 */
     bool critical_battery = false;
     bool low_battery = false;
     gui_data_t data;
-    display_mode_t mode = (display_mode_t)p_epd->config.display_mode;
+    display_mode_t mode;
+
+    (void)event_size;
+    if (p_epd == NULL ||
+        !epd_display_queue_begin(&p_epd->display_queue, &requested_timestamp)) return;
+    mode = (display_mode_t)p_epd->config.display_mode;
 
     /* A refresh event may already be in app_scheduler when the first font
      * packet arrives.  Checking only in ble_epd_on_timer() is too late: that
      * queued event would still enter DrawGUI and contend with the external
      * Flash transaction.  Drop the stale event and let the normal timer (or
      * the delayed font refresh) schedule a new one later. */
-    if (p_epd->font.operation_pending || font_store_update_active()) {
+    if (p_epd->init_pending || p_epd->init_ack_pending || p_epd->disconnect_pending ||
+        p_epd->font.operation_pending || font_store_update_active()) {
+        epd_display_complete(p_epd);
         return;
     }
     if (p_epd->font.refresh_pending &&
-        (int32_t)(event->timestamp - p_epd->font.refresh_due) < 0) {
+        (int32_t)(app_uptime_seconds() - p_epd->font.refresh_due) < 0) {
+        epd_display_complete(p_epd);
         return;
     }
 
     if (epd_clock_refresh_must_yield(mode, p_epd->transfer_ctx.transfer_active)) {
+        epd_display_complete(p_epd);
         return;
     }
 
-    // 设置刷新标志,防止BLE断开中断刷新过程
-    // 当BLE断开时,on_disconnect会检查此标志,如果正在刷新则跳过sleep操作
+    // 设置刷新标志，阻止中断中的 WRITE_BLOCK 重入面板操作。
     p_epd->is_refreshing = true;
-    p_epd->last_refresh_start = event->timestamp;
+    p_epd->last_refresh_start = requested_timestamp;
 
     app_feed_wdt();  // 开始时喂狗
     EPD_GPIO_Init();
     EPD_ClearBusyAbort();
     UC8179_ClearBusyTimeout();  // 每个刷新周期前清除忙超时标志
-    epd_model_t* epd = p_epd->epd;
+    const epd_model_t * epd = p_epd->epd;
     if (epd == NULL) {
         epd = epd_get_model((epd_model_id_t)p_epd->config.model_id);
         p_epd->epd = epd;
@@ -540,7 +476,7 @@ static void epd_gui_update(void* p_event_data, uint16_t event_size) {
         .color       = epd->color,
         .width       = epd->width,
         .height      = epd->height,
-        .timestamp   = event->timestamp,
+        .timestamp   = requested_timestamp,
         .week_start  = p_epd->config.week_start,
         .temperature = 0,
         .voltage_mv  = refresh_voltage_mv,
@@ -555,10 +491,10 @@ static void epd_gui_update(void* p_event_data, uint16_t event_size) {
         epd_refresh_kind_in_t kind_in;
         epd_refresh_kind_t kind;
 
-        transformTime(event->timestamp, &tm_now);
+        transformTime(requested_timestamp, &tm_now);
         kind_in = (epd_refresh_kind_in_t){
             .mode = mode,
-            .timestamp = event->timestamp,
+            .timestamp = requested_timestamp,
             .force_full_refresh = p_epd->force_full_refresh,
             .last_full_clear = p_epd->last_full_clear,
             .clock_state_valid = epd_clock_refresh_is_valid(),
@@ -609,7 +545,7 @@ static void epd_gui_update(void* p_event_data, uint16_t event_size) {
         epd_clock_refresh_invalidate();
     } else if (epd_is_clock_mode(mode) && !low_battery) {
         NRF_LOG_INFO("[EPD]: Performing clock maintenance full refresh\n");
-        ble_log("[EPD]:full ts=%u %s", event->timestamp,
+        ble_log("[EPD]:full ts=%u %s", requested_timestamp,
                 p_epd->force_full_refresh ? "force" :
                 (p_epd->last_full_clear == 0U ? "first" : "period"));
     }
@@ -629,9 +565,9 @@ finish_refresh:
     app_feed_wdt();
 
     if (epd_clock_refresh_must_yield((display_mode_t)p_epd->config.display_mode,
-                                     p_epd->transfer_ctx.transfer_active)) {
-        p_epd->is_refreshing = false;
-        return;
+                                     p_epd->transfer_ctx.transfer_active) &&
+        p_epd->gpio_connection_ref) {
+        goto release_gpio;
     }
 
     // ========================================================================
@@ -649,7 +585,8 @@ finish_refresh:
     }
 
     bool clock_mode = epd_is_clock_mode(mode);
-    bool power_down_display = clock_mode || ble_disconnected || critical_battery;
+    bool power_down_display = clock_mode || ble_disconnected || critical_battery ||
+                              !p_epd->gpio_connection_ref;
     if (power_down_display && epd->drv->sleep) {
         NRF_LOG_INFO("[EPD]: Powering down display until next refresh\n");
         epd->drv->sleep(epd);
@@ -666,37 +603,36 @@ finish_refresh:
         sleep_mode_enter();
     }
 
-    EPD_GPIO_Uninit();  // 释放GPIO
+release_gpio:
+    EPD_GPIO_Uninit();  // 所有刷新退出路径释放本次持有的引用
 
     // 刷新完成后清除刷新标志
     p_epd->is_refreshing = false;
 
     app_feed_wdt();  // 最后喂狗
+    epd_display_complete(p_epd);
 }
 
 /**@brief BLE连接事件处理函数
  *
  * @details 处理BLE连接事件:
  * 1. 保存连接句柄
- * 2. 初始化GPIO
- * 3. 闪烁LED一次表示连接成功
+ * 2. 主循环取得 GPIO 引用并闪烁 LED
  *
  * @param[in] p_epd  EPD服务结构
  * @param[in] p_ble_evt 从BLE协议栈接收的事件指针
  */
 static void on_connect(ble_epd_t* p_epd, ble_evt_t* p_ble_evt) {
     p_epd->conn_handle = p_ble_evt->evt.gap_evt.conn_handle;
-    EPD_GPIO_Init();
-    // BLE连接时闪烁LED一次
-    EPD_LED_BLINK();
+    /* Main acquires GPIO before accepting display writes. */
 }
 
 /**@brief BLE断开事件处理函数
  *
  * @details 处理BLE断开事件:
  * 1. 重置连接句柄
- * 2. 如果正在刷新,跳过sleep和GPIO_Uninit(由epd_gui_update处理)
- * 3. 否则将EPD置于睡眠状态并释放GPIO
+ * 2. 取消连接所属请求，丢弃尚未执行的旧命令
+ * 3. 主循环在当前面板操作返回后，清理传图状态、休眠并释放 GPIO
  *
  * @param[in] p_epd  EPD服务结构
  * @param[in] p_ble_evt 从BLE协议栈接收的事件指针
@@ -705,6 +641,19 @@ static void on_disconnect(ble_epd_t* p_epd, ble_evt_t* p_ble_evt) {
     UNUSED_PARAMETER(p_ble_evt);
     p_epd->conn_handle = BLE_CONN_HANDLE_INVALID;
     p_epd->is_notification_enabled = false;
+    p_epd->connection_generation++;
+    p_epd->disconnect_pending = true;
+    p_epd->init_pending = false;
+    p_epd->init_ack_pending = false;
+    CRITICAL_REGION_ENTER();
+    p_epd->cmd_queue.head = 0;
+    p_epd->cmd_queue.tail = 0;
+    p_epd->cmd_queue.count = 0;
+    CRITICAL_REGION_EXIT();
+    calendar_annotations_tx_cancel(&p_epd->annotations_tx);
+    if (calendar_annotations_rx_active()) {
+        p_epd->annotations_rx_abort_requested = true;
+    }
 
     /* Do not reset FIFO/command state from the BLE event context.  A font
      * worker may already be running from app_scheduler; let that worker
@@ -717,34 +666,8 @@ static void on_disconnect(ble_epd_t* p_epd, ble_evt_t* p_ble_evt) {
     }
     NRF_LOG_WARNING("[FONT]: upload abort deferred after BLE disconnect\n");
 
-    bool clock_mode = epd_is_clock_mode((display_mode_t)p_epd->config.display_mode);
+    /* GPIO, panel sleep and image-session cancellation run in main. */
 
-    // BLE断开时闪烁LED一次, 即使屏幕正在刷新。
-    EPD_LED_BLINK();
-
-    // 如果屏幕刷新正在进行,跳过sleep/GPIO_Uninit以避免中断刷新
-    // epd_gui_update函数将在刷新完成后处理GPIO_Uninit
-    if (p_epd->is_refreshing) {
-        NRF_LOG_INFO("[EPD]: BLE disconnected during refresh, skipping sleep/GPIO_Uninit\n");
-        app_feed_wdt();
-        return;
-    }
-
-    // 只有在EPD已初始化时才将其置于睡眠状态
-    if (p_epd->epd != NULL) {
-        p_epd->epd->drv->sleep(p_epd->epd);
-        nrf_delay_ms(200);  // 等待睡眠生效
-        EPD_GPIO_Uninit();
-        p_epd->epd = NULL;
-        if (!clock_mode) {
-            p_epd->force_full_refresh = true;
-        }
-    }
-    if (!clock_mode) {
-        epd_clock_refresh_invalidate();
-    }
-
-    app_feed_wdt();  // 断开处理后喂狗
 }
 
 /**@brief 更新显示模式(内部函数)
@@ -829,25 +752,26 @@ static size_t epd_make_prefixed_uint(char* out, size_t out_size, const char* pre
     return (pos < out_size) ? pos : (out_size - 1);
 }
 
+static void epd_send_prefixed_uint(ble_epd_t *p_epd, const char *prefix, uint32_t value)
+{
+    /* Longest prefix (mtu=), uint32 decimal and terminator fit in 15 bytes. */
+    char buf[16];
+    size_t len = epd_make_prefixed_uint(buf, sizeof(buf), prefix, value);
+    ble_epd_string_send(p_epd, (uint8_t *)buf, len);
+}
+
 /**@brief 发送当前时间到BLE对端
  *
  * @param[in] p_epd  EPD服务结构指针
  */
+
 static void epd_send_time(ble_epd_t* p_epd) {
-    char buf[20] = {0};
-    size_t len = epd_make_prefixed_uint(buf, sizeof(buf), "t=", timestamp());
-    ble_epd_string_send(p_epd, (uint8_t*)buf, len);
+    epd_send_prefixed_uint(p_epd, "t=", timestamp());
 }
 
-/**@brief 发送当前电池电压到BLE对端
- *
- * @param[in] p_epd  EPD服务结构指针
- */
+/**@brief 发送当前电池电压到BLE对端 */
 static void epd_send_voltage(ble_epd_t* p_epd) {
-    char buf[16] = {0};
-    uint16_t voltage_mv = EPD_ReadVoltageAndCache();
-    size_t len = epd_make_prefixed_uint(buf, sizeof(buf), "v=", voltage_mv);
-    ble_epd_string_send(p_epd, (uint8_t*)buf, len);
+    epd_send_prefixed_uint(p_epd, "v=", EPD_ReadVoltageAndCache());
 }
 
 /**@brief 发送MTU大小到BLE对端
@@ -855,9 +779,7 @@ static void epd_send_voltage(ble_epd_t* p_epd) {
  * @param[in] p_epd  EPD服务结构指针
  */
 static void epd_send_mtu(ble_epd_t* p_epd) {
-    char buf[10] = {0};
-    size_t len = epd_make_prefixed_uint(buf, sizeof(buf), "mtu=", p_epd->max_data_len);
-    ble_epd_string_send(p_epd, (uint8_t*)buf, len);
+    epd_send_prefixed_uint(p_epd, "mtu=", p_epd->max_data_len);
 }
 
 /**@brief 解析SET_TIME/SYNC_TIME_SILENT中的时间戳
@@ -880,6 +802,18 @@ static uint32_t epd_parse_time_payload(const uint8_t* p_data, uint16_t length) {
     return parsed_timestamp + (timezone_hours * 60 * 60);
 }
 
+static bool epd_config_pins_valid(const epd_config_t *cfg)
+{
+    const uint8_t pins[] = {cfg->mosi_pin, cfg->sclk_pin, cfg->cs_pin,
+        cfg->dc_pin, cfg->rst_pin, cfg->busy_pin, cfg->bs_pin,
+        cfg->en_pin, cfg->led_pin, cfg->wakeup_pin};
+    for (unsigned i = 0; i < sizeof(pins); i++) {
+        if (i >= 6U && pins[i] == 0xFFU) continue;
+        if (!nrf_gpio_pin_present_check(pins[i])) return false;
+    }
+    return true;
+}
+
 static void cmd_set_pins(ble_epd_t *p_epd, uint8_t *p_data, uint16_t length) /* 改引脚映射并重开 GPIO */
 {
     if (length < 8) return;
@@ -892,6 +826,7 @@ static void cmd_set_pins(ble_epd_t *p_epd, uint8_t *p_data, uint16_t length) /* 
     candidate.busy_pin = p_data[6];
     candidate.bs_pin   = p_data[7];
     if (length > 8) candidate.en_pin = p_data[8];
+    if (!epd_config_pins_valid(&candidate)) return;
     p_epd->config = candidate;
     epd_config_write(&p_epd->config);
     EPD_GPIO_Uninit();
@@ -902,18 +837,108 @@ static void cmd_set_pins(ble_epd_t *p_epd, uint8_t *p_data, uint16_t length) /* 
 
 static void cmd_init(ble_epd_t *p_epd, uint8_t *p_data, uint16_t length) /* 初始化驱动，回 MTU/时间/电压 */
 {
-    EPD_GPIO_Ensure();
-    p_epd->epd = epd_init((epd_model_id_t)(length > 1 ? p_data[1] : p_epd->config.model_id));
-    p_epd->force_full_refresh = true;
-    epd_clock_refresh_invalidate();
-    if (p_epd->epd->id != p_epd->config.model_id) {
-        p_epd->config.model_id = p_epd->epd->id;
-        epd_config_write(&p_epd->config);
+    if (p_epd->init_pending || p_epd->init_ack_pending) return;
+    p_epd->init_model = length > 1U ? p_data[1] : p_epd->config.model_id;
+    p_epd->init_token = length > 2U ? p_data[2] : 0U;
+    p_epd->init_prior_commands = p_epd->cmd_queue.count;
+    p_epd->init_pending = true;
+}
+
+/* The sole INIT worker runs in main, after a refresh returns. */
+static void epd_init_process(ble_epd_t *p_epd)
+{
+    if (p_epd->disconnect_pending || !p_epd->gpio_connection_ref ||
+        p_epd->conn_handle == BLE_CONN_HANDLE_INVALID) return;
+    if (p_epd->init_pending && p_epd->init_prior_commands == 0U &&
+        !p_epd->init_ack_pending && !p_epd->is_refreshing &&
+        !p_epd->font.operation_pending && !font_store_update_active()) {
+        uint32_t generation;
+        bool connected;
+        uint8_t model, token;
+        CRITICAL_REGION_ENTER();
+        generation = p_epd->connection_generation;
+        connected = !p_epd->disconnect_pending && p_epd->conn_handle != BLE_CONN_HANDLE_INVALID;
+        model = p_epd->init_model;
+        token = p_epd->init_token;
+        p_epd->init_running = true;
+        p_epd->init_pending = false;
+        p_epd->is_refreshing = true;
+        CRITICAL_REGION_EXIT();
+        if (!connected) {
+            p_epd->init_running = false;
+            p_epd->is_refreshing = false;
+            return;
+        }
+        EPD_ClearBusyAbort();
+        UC8179_ClearBusyTimeout();
+        p_epd->epd = epd_init((epd_model_id_t)model);
+        p_epd->init_status = UC8179_HadBusyTimeout() ? 1U : 0U;
+        p_epd->force_full_refresh = true;
+        epd_clock_refresh_invalidate();
+        if (p_epd->epd->id != p_epd->config.model_id) {
+            p_epd->config.model_id = p_epd->epd->id;
+            epd_config_write(&p_epd->config);
+        }
+        p_epd->is_refreshing = false;
+        p_epd->init_running = false;
+        CRITICAL_REGION_ENTER();
+        if (generation == p_epd->connection_generation) {
+            p_epd->init_ack_token = token;
+            p_epd->init_ack_pending = true;
+        }
+        CRITICAL_REGION_EXIT();
+        if (generation == p_epd->connection_generation) {
+            epd_send_mtu(p_epd);
+            epd_send_time(p_epd);
+            epd_send_voltage(p_epd);
+        }
     }
-    epd_send_mtu(p_epd);
-    epd_send_time(p_epd);
-    epd_send_voltage(p_epd);
-    app_feed_wdt();
+    if (p_epd->init_ack_pending) {
+        uint8_t response[] = {EPD_RSP_INIT, p_epd->init_ack_token, p_epd->init_status,
+                             (uint8_t)p_epd->max_data_len, (uint8_t)(p_epd->max_data_len >> 8)};
+        uint32_t err = ble_epd_notification_try_send(p_epd, response, sizeof(response));
+        if (err != NRF_ERROR_RESOURCES) p_epd->init_ack_pending = false;
+    }
+}
+
+/* Connection-owned GPIO and abandoned transfers are retired in main only. */
+static void epd_connection_process(ble_epd_t *p_epd)
+{
+    bool refresh = false;
+    if (p_epd->disconnect_pending) {
+        if (p_epd->epd != NULL) {
+            EPD_ClearBusyAbort();
+            p_epd->epd->drv->sleep(p_epd->epd);
+            p_epd->epd = NULL;
+        }
+        if (p_epd->gpio_connection_ref) {
+            EPD_GPIO_Uninit();
+            p_epd->gpio_connection_ref = false;
+        }
+        CRITICAL_REGION_ENTER();
+        refresh = p_epd->transfer_ctx.transfer_active;
+        memset(&p_epd->transfer_ctx, 0, sizeof(p_epd->transfer_ctx));
+        p_epd->disconnect_pending = false;
+        CRITICAL_REGION_EXIT();
+    }
+    CRITICAL_REGION_ENTER();
+    if (p_epd->transfer_ctx.transfer_active &&
+        (uint32_t)(app_uptime_seconds() - p_epd->image_last_activity) >= EPD_IMAGE_RX_TIMEOUT_S) {
+        memset(&p_epd->transfer_ctx, 0, sizeof(p_epd->transfer_ctx));
+        refresh = true;
+    }
+    CRITICAL_REGION_EXIT();
+    if (refresh) {
+        EPD_ClearBusyAbort();
+        epd_clock_refresh_invalidate();
+        p_epd->force_full_refresh = true;
+        if (p_epd->config.display_mode != MODE_PICTURE) epd_display_request(p_epd, timestamp());
+    }
+    if (p_epd->conn_handle != BLE_CONN_HANDLE_INVALID && !p_epd->gpio_connection_ref) {
+        EPD_GPIO_Init();
+        p_epd->gpio_connection_ref = true;
+        EPD_LED_BLINK();
+    }
 }
 
 static void cmd_clear(ble_epd_t *p_epd, uint8_t *p_data, uint16_t length) /* 清屏并进图片模式 */
@@ -981,7 +1006,7 @@ static void cmd_set_time(ble_epd_t *p_epd, uint8_t *p_data, uint16_t length) /* 
 
     if (length < 5) return;
 
-    now = timestamp();
+    now = app_uptime_seconds();
     rate_limited = (p_epd->last_set_time_ts != 0 &&
                     (now - p_epd->last_set_time_ts) < EPD_SET_TIME_RATE_LIMIT_S);
     action = epd_set_time_action(rate_limited, length > 6, (length > 6) ? p_data[6] : 0);
@@ -1048,7 +1073,7 @@ void epd_refresh_fonts(ble_epd_t *p_epd)
         return;
     }
     p_epd->font.refresh_pending = true;
-    p_epd->font.refresh_due = timestamp() + EPD_FONT_REFRESH_DELAY_S;
+    p_epd->font.refresh_due = app_uptime_seconds() + EPD_FONT_REFRESH_DELAY_S;
 }
 
 static void annotations_store_applied(void)
@@ -1056,29 +1081,14 @@ static void annotations_store_applied(void)
     epd_refresh_annotations(s_anno_epd);
 }
 
-static void cmd_send_annotations(ble_epd_t *p_epd)
+static calendar_annotations_tx_result_t annotations_tx_send(void *context,
+                                                            uint8_t *data,
+                                                            uint16_t length)
 {
-    uint8_t buf[BLE_EPD_MAX_DATA_LEN];
-    uint16_t offset = 0;
-    uint16_t max_len = p_epd->max_data_len;
-
-    if (max_len > sizeof(buf)) {
-        max_len = (uint16_t)sizeof(buf);
-    }
-    if (max_len <= CALENDAR_ANNO_NOTIFY_HDR) {
-        return;
-    }
-    for (;;) {
-        uint16_t n = calendar_annotations_notify_chunk(offset, buf, max_len);
-        if (n <= CALENDAR_ANNO_NOTIFY_HDR) {
-            break;
-        }
-        if (ble_epd_string_send(p_epd, buf, n) != NRF_SUCCESS) {
-            break;
-        }
-        offset = (uint16_t)(offset + (n - CALENDAR_ANNO_NOTIFY_HDR));
-        app_feed_wdt();
-    }
+    uint32_t err = ble_epd_notification_try_send((ble_epd_t *)context, data, length);
+    if (err == NRF_SUCCESS) return CALENDAR_ANNO_TX_SENT;
+    if (err == NRF_ERROR_RESOURCES) return CALENDAR_ANNO_TX_BLOCKED;
+    return CALENDAR_ANNO_TX_FAILED;
 }
 
 static void cmd_set_annotations(ble_epd_t *p_epd, uint8_t *p_data, uint16_t length)
@@ -1088,9 +1098,14 @@ static void cmd_set_annotations(ble_epd_t *p_epd, uint8_t *p_data, uint16_t leng
     uint16_t total;
 
     if (length < 2) return;
+    if (p_epd->annotations_rx_abort_requested) return;
     if (p_data[1] == CALENDAR_ANNO_OP_GET) {
-        cmd_send_annotations(p_epd);
+        calendar_annotations_tx_start(&p_epd->annotations_tx);
         app_feed_wdt();
+        return;
+    }
+    if (p_epd->annotations_tx.active) {
+        NRF_LOG_WARNING("anno: mutation rejected during readback\n");
         return;
     }
     if (p_data[1] == CALENDAR_ANNO_OP_CLEAR) {
@@ -1108,10 +1123,15 @@ static void cmd_set_annotations(ble_epd_t *p_epd, uint8_t *p_data, uint16_t leng
         return;
     }
     rx = calendar_annotations_rx_write(offset, total, &p_data[6], (uint16_t)(length - 6U));
+    if (rx == CALENDAR_ANNO_RX_MORE) {
+        p_epd->annotations_rx_last_activity = app_uptime_seconds();
+    }
     if (rx == CALENDAR_ANNO_RX_DONE) {
+        p_epd->annotations_rx_last_activity = 0U;
         calendar_annotations_store_save();
         epd_refresh_annotations(p_epd);
     } else if (rx == CALENDAR_ANNO_RX_RECOVERED) {
+        p_epd->annotations_rx_last_activity = 0U;
         epd_refresh_annotations(p_epd);
     }
     app_feed_wdt();
@@ -1154,7 +1174,9 @@ static void cmd_write_block(ble_epd_t *p_epd, uint8_t *p_data, uint16_t length) 
     uint16_t block_id;
 
     if (length < 8) return;
-    if (epd_picture_write_blocked(p_epd->is_refreshing)) {
+    if (epd_picture_write_blocked(p_epd->is_refreshing) ||
+        p_epd->disconnect_pending || !p_epd->gpio_connection_ref || p_epd->cmd_queue.is_processing ||
+        p_epd->init_pending || p_epd->init_running || p_epd->init_ack_pending) {
         block_id = p_data[1] | (p_data[2] << 8);
         send_block_response(p_epd, block_id, EPD_BLOCK_STATUS_RESTART);
         app_feed_wdt();
@@ -1170,6 +1192,7 @@ static void cmd_write_block(ble_epd_t *p_epd, uint8_t *p_data, uint16_t length) 
     uint16_t calc_crc    = crc16_compute(payload, payload_len);
 
     if (calc_crc == recv_crc) {
+        p_epd->image_last_activity = app_uptime_seconds();
         if (block_id >= EPD_MAX_BLOCKS || block_id >= total_blocks) {
             NRF_LOG_WARNING("[EPD]: Block %d invalid (max=%d, total=%d)\n",
                             block_id, EPD_MAX_BLOCKS, total_blocks);
@@ -1248,6 +1271,8 @@ static void cmd_query_status(ble_epd_t *p_epd, uint8_t *p_data, uint16_t length)
 
 static void cmd_reset_transfer(ble_epd_t *p_epd, uint8_t *p_data, uint16_t length) /* 清传输状态并打断时钟忙等 */
 {
+    if (p_epd->disconnect_pending) return;
+    p_epd->image_last_activity = app_uptime_seconds();
     memset(&p_epd->transfer_ctx, 0, sizeof(image_transfer_ctx_t));
     if (length > 1) {
         p_epd->transfer_ctx.session_id = p_data[1];
@@ -1263,7 +1288,10 @@ static void cmd_reset_transfer(ble_epd_t *p_epd, uint8_t *p_data, uint16_t lengt
 static void cmd_set_config(ble_epd_t *p_epd, uint8_t *p_data, uint16_t length) /* 整包配置写入并全刷 */
 {
     if (length < 2) return;
-    memcpy(&p_epd->config, &p_data[1], (length - 1 > EPD_CONFIG_SIZE) ? EPD_CONFIG_SIZE : length - 1);
+    epd_config_t candidate = p_epd->config;
+    memcpy(&candidate, &p_data[1], (length - 1 > EPD_CONFIG_SIZE) ? EPD_CONFIG_SIZE : length - 1);
+    if (!epd_config_pins_valid(&candidate)) return;
+    p_epd->config = candidate;
     epd_config_write(&p_epd->config);
 
     // 配置更新后强制全刷并立刻刷新，使模式、周起始日等马上可见。
@@ -1290,8 +1318,7 @@ static void cmd_cfg_erase(ble_epd_t *p_epd, uint8_t *p_data, uint16_t length) /*
 {
     (void)p_data; (void)length;
     epd_config_clear(&p_epd->config);
-    nrf_delay_ms(100);
-    NVIC_SystemReset();
+    /* Reset is deferred until FDS confirms deletion, in ble_epd_process. */
 }
 
 /**@brief 执行单个命令(由队列处理器调用)
@@ -1385,38 +1412,54 @@ static void epd_execute_command(ble_epd_t* p_epd, uint8_t* p_data, uint16_t leng
  * @param[in] event_size  事件数据大小
  */
 static void epd_process_next_command(void* p_event_data, uint16_t event_size) {
-    // 从复制的数据中提取指针
+    (void)event_size;
     ble_epd_t* p_epd = *((ble_epd_t**)p_event_data);
     epd_cmd_queue_item_t cmd_item;
-
-    // 标记正在处理
-    p_epd->cmd_queue.is_processing = true;
-
-    // 从队列中弹出一个命令
-    if (epd_cmd_queue_pop(&p_epd->cmd_queue, &cmd_item)) {
-        NRF_LOG_INFO("[EPD]: Processing queued command 0x%02x (remaining=%d)\n",
-                     cmd_item.cmd, p_epd->cmd_queue.count);
-
-        // 执行命令
-        epd_execute_command(p_epd, cmd_item.data, cmd_item.length);
-
-        // 命令间喂狗
-        app_feed_wdt();
-
-        // 如果队列还有命令,调度下一个
-        if (p_epd->cmd_queue.count > 0) {
-            NRF_LOG_DEBUG("[EPD]: Scheduling next command (queue count=%d)\n", p_epd->cmd_queue.count);
-            app_sched_event_put(&p_epd, sizeof(ble_epd_t*), epd_process_next_command);
-        } else {
-            // 队列为空,标记处理完成
-            p_epd->cmd_queue.is_processing = false;
-            NRF_LOG_INFO("[EPD]: Command queue empty, all commands processed\n");
-        }
-    } else {
-        // 队列为空
-        p_epd->cmd_queue.is_processing = false;
-        NRF_LOG_DEBUG("[EPD]: Queue empty in process_next_command\n");
+    bool available = false;
+    CRITICAL_REGION_ENTER();
+    p_epd->cmd_queue.is_scheduled = false;
+    p_epd->cmd_queue.is_processing = (!p_epd->init_pending || p_epd->init_prior_commands != 0U) &&
+                                    !p_epd->disconnect_pending &&
+                                    p_epd->gpio_connection_ref && p_epd->conn_handle != BLE_CONN_HANDLE_INVALID;
+    if (p_epd->cmd_queue.is_processing) {
+        available = epd_cmd_queue_pop(&p_epd->cmd_queue, &cmd_item);
+        if (available && p_epd->init_pending && p_epd->init_prior_commands != 0U)
+            p_epd->init_prior_commands--;
     }
+    CRITICAL_REGION_EXIT();
+    if (!p_epd->cmd_queue.is_processing) return;
+    if (available) {
+        epd_execute_command(p_epd, cmd_item.data, cmd_item.length);
+        app_feed_wdt();
+    }
+    CRITICAL_REGION_ENTER();
+    p_epd->cmd_queue.is_processing = false;
+    CRITICAL_REGION_EXIT();
+    epd_cmd_queue_schedule(&p_epd->cmd_queue, p_epd, epd_process_next_command);
+}
+
+/* Called only from the main loop. FDS and failed scheduler submissions must
+ * make progress even when no further BLE commands arrive. */
+void ble_epd_process(ble_epd_t* p_epd) {
+    epd_connection_process(p_epd);
+    epd_init_process(p_epd);
+    if (p_epd->annotations_rx_abort_requested) {
+        bool restored = calendar_annotations_rx_cancel();
+        CRITICAL_REGION_ENTER();
+        p_epd->annotations_rx_abort_requested = false;
+        p_epd->annotations_rx_last_activity = 0U;
+        CRITICAL_REGION_EXIT();
+        if (restored) epd_refresh_annotations(p_epd);
+    }
+    epd_storage_process();
+    epd_config_process();
+    calendar_annotations_store_process();
+    calendar_annotations_tx_process(&p_epd->annotations_tx, p_epd->max_data_len,
+                                    annotations_tx_send, p_epd);
+    if (epd_config_clear_complete()) NVIC_SystemReset();
+    epd_cmd_queue_schedule(&p_epd->cmd_queue, p_epd, epd_process_next_command);
+    epd_display_queue_schedule(&p_epd->display_queue, p_epd, epd_gui_update);
+    font_task_retry(p_epd);
 }
 
 /**@brief 服务写入处理包装函数(将命令入队或执行)
@@ -1510,21 +1553,8 @@ static void epd_service_on_write(ble_epd_t* p_epd, uint8_t* p_data, uint16_t len
         return;
     }
 
-    // 普通命令:添加到队列
     if (epd_cmd_queue_push(&p_epd->cmd_queue, p_data, length)) {
-        NRF_LOG_DEBUG("[EPD]: Command 0x%02x added to queue (count=%d, processing=%d)\n",
-                      p_data[0], p_epd->cmd_queue.count, p_epd->cmd_queue.is_processing);
-
-        // 如果当前没有命令正在处理,开始处理
-        if (!p_epd->cmd_queue.is_processing) {
-            NRF_LOG_DEBUG("[EPD]: Starting command queue processing\n");
-            app_sched_event_put(&p_epd, sizeof(ble_epd_t*), epd_process_next_command);
-        }
-    } else {
-        NRF_LOG_ERROR("[EPD]: Failed to queue command 0x%02x (queue full)\n", p_data[0]);
-        if (font_guard && !font_store_update_active()) {
-            p_epd->font.operation_pending = false;
-        }
+        epd_cmd_queue_schedule(&p_epd->cmd_queue, p_epd, epd_process_next_command);
     }
 }
 
@@ -1614,6 +1644,7 @@ void ble_epd_on_ble_evt(ble_epd_t* p_epd, ble_evt_t* p_ble_evt) {
             font_task_wake_tx(p_epd, FONT_TASK_LIST |
                                        FONT_TASK_OPERATION_ACK |
                                        FONT_TASK_STREAM_ACK);
+            calendar_annotations_tx_wake(&p_epd->annotations_tx);
             break;
 
         default:
@@ -1724,7 +1755,19 @@ uint32_t ble_epd_init(ble_epd_t* p_epd) {
     p_epd->last_full_clear    = 0;  // 尚未全刷
     p_epd->is_refreshing = false;
     p_epd->low_battery_screen_active = false;
+    p_epd->gpio_connection_ref = false;
+    p_epd->disconnect_pending = false;
+    p_epd->connection_generation = 0U;
+    p_epd->init_pending = false;
+    p_epd->init_running = false;
+    p_epd->init_ack_pending = false;
+    p_epd->image_last_activity = 0U;
+    p_epd->annotations_tx = (calendar_annotations_tx_t){0};
     memset(&p_epd->font, 0, sizeof(p_epd->font));
+    epd_display_queue_init(&p_epd->display_queue);
+    calendar_annotations_tx_cancel(&p_epd->annotations_tx);
+    p_epd->annotations_rx_last_activity = 0U;
+    p_epd->annotations_rx_abort_requested = false;
     p_epd->last_refresh_start = 0;
     p_epd->last_set_time_ts = 0;
 
@@ -1732,14 +1775,15 @@ uint32_t ble_epd_init(ble_epd_t* p_epd) {
     epd_cmd_queue_init(&p_epd->cmd_queue);
 
     // 初始化并读取配置
-    epd_config_init(&p_epd->config);
+    uint32_t config_err = epd_config_init(&p_epd->config);
+    if (config_err != NRF_SUCCESS) return config_err;
     epd_config_read(&p_epd->config);
     s_anno_epd = p_epd;
     calendar_annotations_store_init();
     calendar_annotations_store_on_applied(annotations_store_applied);
 
-    // 如果配置为空,写入默认配置
-    if (epd_config_empty(&p_epd->config)) {
+    // 空配置或非法引脚映射恢复为板级默认值，避免直接索引无效寄存器。
+    if (epd_config_empty(&p_epd->config) || !epd_config_pins_valid(&p_epd->config)) {
         uint8_t cfg[] = EPD_CFG_52811;
         memcpy(&p_epd->config, cfg, sizeof(cfg));
         // 设置默认值
@@ -1814,6 +1858,12 @@ uint32_t ble_epd_string_send(ble_epd_t* p_epd, uint8_t* p_string, uint16_t lengt
  * @param[in] force_update  为true时强制更新
  */
 void ble_epd_on_timer(ble_epd_t* p_epd, uint32_t timestamp, bool force_update) {
+    if (calendar_annotations_rx_active() &&
+        (uint32_t)(app_uptime_seconds() - p_epd->annotations_rx_last_activity) >=
+            EPD_ANNOTATIONS_RX_TIMEOUT_S) {
+        p_epd->annotations_rx_abort_requested = true;
+    }
+
     /* Retry deferred font tasks from the timer path.  This path only posts a
      * scheduler event; Flash/SPI work remains in font_task_worker(). */
     font_task_retry(p_epd);
@@ -1839,7 +1889,7 @@ void ble_epd_on_timer(ble_epd_t* p_epd, uint32_t timestamp, bool force_update) {
      * timed out even though the Flash transaction had already succeeded.
      * Defer and coalesce the refresh; an active upload or queued command wins. */
     if (p_epd->font.refresh_pending &&
-        (int32_t)(timestamp - p_epd->font.refresh_due) >= 0 &&
+        (int32_t)(app_uptime_seconds() - p_epd->font.refresh_due) >= 0 &&
         !p_epd->is_refreshing &&
         !font_store_update_active() &&
         p_epd->cmd_queue.count == 0U &&
@@ -1856,13 +1906,7 @@ void ble_epd_on_timer(ble_epd_t* p_epd, uint32_t timestamp, bool force_update) {
             uint16_t voltage_mv = EPD_ReadVoltageAndCache();
 
             if (epd_battery_is_critical(voltage_mv)) {
-                epd_gui_update_event_t event = {p_epd, timestamp};
-                uint32_t err_code =
-                    app_sched_event_put(&event, sizeof(epd_gui_update_event_t), epd_gui_update);
-                if (err_code != NRF_SUCCESS) {
-                    // NRF_LOG_ERROR("[EPD]: Failed to schedule critical battery power-off screen: 0x%08x\n", err_code);
-                    sleep_mode_enter();
-                }
+                epd_display_request(p_epd, timestamp);
                 return;
             }
 
@@ -1871,11 +1915,7 @@ void ble_epd_on_timer(ble_epd_t* p_epd, uint32_t timestamp, bool force_update) {
                 p_epd->low_battery_screen_active = false;
                 p_epd->force_full_refresh = true;
                 // 立刻调度 GUI 更新，全刷恢复正常界面
-                epd_gui_update_event_t event = {p_epd, timestamp};
-                uint32_t err_code = app_sched_event_put(&event, sizeof(epd_gui_update_event_t), epd_gui_update);
-                if (err_code != NRF_SUCCESS) {
-                    NRF_LOG_ERROR("[EPD]: Failed to schedule recovery screen update: 0x%08x\n", err_code);
-                }
+                epd_display_request(p_epd, timestamp);
                 return;
             }
         }
@@ -1928,8 +1968,5 @@ void ble_epd_on_timer(ble_epd_t* p_epd, uint32_t timestamp, bool force_update) {
     if (decision.force_full) {
         p_epd->force_full_refresh = true;
     }
-    {
-        epd_gui_update_event_t event = {p_epd, timestamp};
-        app_sched_event_put(&event, sizeof(epd_gui_update_event_t), epd_gui_update);
-    }
+    epd_display_request(p_epd, timestamp);
 }

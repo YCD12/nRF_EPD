@@ -30,6 +30,58 @@ function setup() {
   return { context, elements, logs, store: context.window.FontStore, run: code => vm.runInContext(code, context) };
 }
 
+test('INIT waits for matching device completion before the next GATT write', async () => {
+  const { run, context, elements } = setup();
+  const writes = [];
+  context.capture = data => { writes.push(Array.from(data)); };
+  run('appVersion = 0x32; epdCharacteristic = {writeValueWithResponse: async data => capture(data)};');
+  let completed = false;
+  const init = run('write(EpdCmd.INIT, [9])').then(ok => { completed = true; return ok; });
+  const next = run('write(EpdCmd.SET_TIME, [1])');
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(completed, false);
+  assert.equal(writes.length, 1);
+  assert.deepEqual(writes[0].slice(0, 2), [1, 9]);
+  const token = writes[0][2];
+  run(`handleNotify(new DataView(Uint8Array.of(0xa6, ${(token + 1) & 255}, 0, 244, 0).buffer))`);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(completed, false);
+  run(`handleNotify(new DataView(Uint8Array.of(0xa6, ${token}, 0, 244, 0).buffer))`);
+  assert.equal(await init, true);
+  assert.equal(await next, true);
+  assert.equal(writes.length, 2);
+  assert.equal(elements.get('mtusize').value, 244);
+  assert.equal(run('initWaiter'), null);
+});
+
+test('INIT handles an early completion, device failure, and disconnect', async () => {
+  const { run } = setup();
+  run(`appVersion = 0x32;
+    epdCharacteristic = {writeValueWithResponse: async data => {
+      handleNotify(new DataView(Uint8Array.of(0xa6, data[2], 0, 244, 0).buffer));
+    }};`);
+  assert.equal(await run('write(EpdCmd.INIT)'), true);
+  run(`epdCharacteristic.writeValueWithResponse = async data => {
+    handleNotify(new DataView(Uint8Array.of(0xa6, data[2], 1, 244, 0).buffer));
+  };`);
+  assert.equal(await run('write(EpdCmd.INIT)'), false);
+  run('epdCharacteristic.writeValueWithResponse = async () => {};');
+  const pending = run('write(EpdCmd.INIT)');
+  await new Promise(resolve => setImmediate(resolve));
+  run('resetVariables()');
+  assert.equal(await pending, false);
+  assert.equal(run('initWaiter'), null);
+});
+
+test('driver setup does not report success after a failed INIT', async () => {
+  const { run, context, logs } = setup();
+  context.confirm = () => true;
+  run('write = async cmd => cmd !== EpdCmd.INIT;');
+  await run('setDriver()');
+  assert.equal(logs.some(message => message.includes('驱动配置已设置')), false);
+  assert.equal(logs.some(message => message.includes('驱动初始化失败')), true);
+});
+
 test('INIT disconnect stops all subsequent initialization and success UI', async () => {
   const { run, context, elements, logs } = setup();
   const writes = [];

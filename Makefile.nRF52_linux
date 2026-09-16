@@ -99,11 +99,14 @@ SRC_FILES += \
   $(PROJ_DIR)/main.c \
   $(PROJ_DIR)/gcc_sbrk.c \
   $(PROJ_DIR)/EPD/EPD_config.c \
+  $(PROJ_DIR)/EPD/storage_retry.c \
+  $(PROJ_DIR)/EPD/epd_advertising.c \
   $(PROJ_DIR)/EPD/fm25q04b.c \
   $(PROJ_DIR)/EPD/EPD_driver.c \
   $(PROJ_DIR)/EPD/EPD_service.c \
   $(PROJ_DIR)/EPD/epd_refresh_policy.c \
   $(PROJ_DIR)/EPD/epd_clock_refresh.c \
+  $(PROJ_DIR)/EPD/calendar_annotations_tx.c \
   $(PROJ_DIR)/EPD/calendar_annotations_store.c \
   $(PROJ_DIR)/EPD/font_store.c \
   $(PROJ_DIR)/EPD/font_transfer.c \
@@ -197,20 +200,26 @@ LIB_FILES += \
 
 # =============================================================================
 # 编译选项
-# 注意: __HEAP_SIZE/__STACK_SIZE 与 Keil 工程保持一致(HEAP=8192, STACK=2048)。
-#   GUI 帧缓冲按 ph=(__HEAP_SIZE-512)/(width/8) 几乎吃满整个堆(见 GUI.c)。
-#   GCC(-lnosys) 默认的 _sbrk 不检查栈、堆会越界长进栈区 -> 内存踩踏 -> 不停重启；
-#   已由 gcc_sbrk.c 的带边界 _sbrk 把堆限制在链接器保留区 [__HeapBase,__HeapLimit)
-#   内(超出返回 ENOMEM)，行为对齐 Keil/armcc 的"堆/栈各自固定区"，因此可安全用 8192。
+# 发布构建不预留堆，GUI 使用静态分页缓冲；保留 2 KiB 栈。
+# gcc_sbrk.c 仍拒绝超出链接器预留区的分配，避免意外引入动态分配后踩栈。
 # =============================================================================
 OPT = -Os -g3 -flto
 
 GUI_USE_EXTERNAL_FONTS ?= 1
 GUI_INCLUDE_INTERNAL_FONTS ?= 0
+GFX_FIXED_BWR_PANEL ?= 1
+GFX_FIXED_FONT_DIRECTION_0 ?= 1
+GUI_FIXED_PANEL_WIDTH ?= 800
+GUI_FIXED_PANEL_HEIGHT ?= 480
 
 CFLAGS += $(OPT)
 CFLAGS += -DGUI_USE_EXTERNAL_FONTS=$(GUI_USE_EXTERNAL_FONTS)
 CFLAGS += -DGUI_INCLUDE_INTERNAL_FONTS=$(GUI_INCLUDE_INTERNAL_FONTS)
+CFLAGS += -DGFX_FIXED_BWR_PANEL=$(GFX_FIXED_BWR_PANEL)
+CFLAGS += -DGFX_FIXED_FONT_DIRECTION_0=$(GFX_FIXED_FONT_DIRECTION_0)
+CFLAGS += -DGUI_FIXED_PANEL_WIDTH=$(GUI_FIXED_PANEL_WIDTH)
+CFLAGS += -DGUI_FIXED_PANEL_HEIGHT=$(GUI_FIXED_PANEL_HEIGHT)
+CFLAGS += -DCALENDAR_ANNOTATIONS_USE_NRF_CRITICAL=1
 ifeq ($(USE_SYSVIEW),1)
 CFLAGS += -DUSE_SYSVIEW
 endif
@@ -312,6 +321,19 @@ TEMPLATE_PATH := $(SDK_ROOT)/components/toolchain/gcc
 include $(TEMPLATE_PATH)/Makefile.common
 
 $(foreach target, $(TARGETS), $(call define_target, $(target)))
+
+# Run even for an incremental build. Debug images use a different partition.
+ifeq ($(OS),Windows_NT)
+BUILD_PYTHON ?= python
+else
+BUILD_PYTHON ?= python3
+endif
+ifeq ($(DEBUG_LAYOUT),0)
+.PHONY: flash_budget
+nrf52811_xxaa: flash_budget
+flash_budget: $(OUTPUT_DIRECTORY)/nrf52811_xxaa.bin
+	$(BUILD_PYTHON) tools/check_flash_budget.py $<
+endif
 
 # =============================================================================
 # 便捷目标

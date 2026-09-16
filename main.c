@@ -22,6 +22,7 @@
 #include "ble.h"
 #include "ble_advdata.h"
 #include "ble_advertising.h"
+#include "epd_advertising.h"
 #include "ble_conn_params.h"
 #include "ble_dfu.h"
 #include "ble_hci.h"
@@ -110,8 +111,7 @@ BLE_ADVERTISING_DEF(m_advertising);                                             
                                                                                         /**< 广播模块实例 */
 static uint16_t                          m_conn_handle = BLE_CONN_HANDLE_INVALID;       /**< Handle of the current connection. */
                                                                                         /**< 当前连接的句柄 */
-static ble_uuid_t                        m_adv_uuids[] = {{BLE_UUID_EPD_SVC, \
-                                                           EPD_SVC_UUID_TYPE}};         /**< Universally unique service identifier. */
+static const ble_uuid_t m_adv_uuid = {BLE_UUID_EPD_SVC, EPD_SVC_UUID_TYPE};         /**< Universally unique service identifier. */
                                                                                         /**< 通用唯一服务标识符 */
 
 BLE_EPD_DEF(m_epd);                                                                     /**< Structure to identify the EPD Service. */
@@ -829,28 +829,10 @@ void gatt_init(void) {
  * @details 配置广播数据包，包括设备名称、服务UUID和广播参数
  */
 static void advertising_init(void) {
-    // 使用新的广播接口
-    ble_advertising_init_t init;
-
-    memset(&init, 0, sizeof(init));
-
-    init.advdata.name_type = BLE_ADVDATA_FULL_NAME;  // 包含完整设备名称
-    init.advdata.include_appearance = false;         // 不包含外观
-    init.advdata.flags = BLE_GAP_ADV_FLAGS_LE_ONLY_LIMITED_DISC_MODE;  // 仅LE有限可发现模式
-
-    // 扫描响应数据：包含服务UUID
-    init.srdata.uuids_complete.uuid_cnt = sizeof(m_adv_uuids) / sizeof(m_adv_uuids[0]);
-    init.srdata.uuids_complete.p_uuids = m_adv_uuids;
-
-    // 广播配置
-    init.config.ble_adv_fast_enabled = true;                         // 启用快速广播
-    init.config.ble_adv_fast_interval = APP_ADV_INTERVAL;            // 广播间隔1秒
-    init.config.ble_adv_fast_timeout = APP_ADV_TIMEOUT_IN_SECONDS * 100;  // 广播超时120秒
-    init.evt_handler = on_adv_evt;  // 设置广播事件处理函数
-
-    APP_ERROR_CHECK(ble_advertising_init(&m_advertising, &init));
-
-    ble_advertising_conn_cfg_tag_set(&m_advertising, APP_BLE_CONN_CFG_TAG);  // 设置连接配置标签
+    APP_ERROR_CHECK(epd_advertising_init(&m_advertising, &m_adv_uuid,
+                                          APP_ADV_INTERVAL,
+                                          APP_ADV_TIMEOUT_IN_SECONDS * 100,
+                                          APP_BLE_CONN_CFG_TAG, on_adv_evt));
 }
 
 /**@brief Function for initializing the nrf log module.
@@ -1022,6 +1004,7 @@ int main(void) {
 
     // 主循环：永久执行事件调度和空闲处理
     for (;;) {
+        ble_epd_process(&m_epd);
         app_sched_execute();  // 执行调度队列中的事件
         idle_state_handle();  // 处理空闲状态（喂狗、日志处理、进入低功耗）
     }

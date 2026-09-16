@@ -40,6 +40,10 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#ifndef GFX_FIXED_FONT_DIRECTION_0
+#define GFX_FIXED_FONT_DIRECTION_0 0
+#endif
+
 #ifdef __GNUC__
 #define U8X8_NOINLINE __attribute__((noinline))
 #define U8X8_SECTION(name) __attribute__((section(name)))

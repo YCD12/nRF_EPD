@@ -50,6 +50,21 @@ static void font_task_retry_timer(ble_epd_t* p_epd, uint8_t task)
     CRITICAL_REGION_EXIT();
 }
 
+/* Only scheduler workers send notifications. Arm before HVX so an IRQ-side
+ * TX_COMPLETE cannot be lost; other errors use the existing timer retry.
+ * On failure the caller restores its owned reply before yielding to main. */
+static uint32_t font_notification_send(ble_epd_t *p_epd, uint8_t task,
+                                        uint8_t *response, uint16_t length)
+{
+    font_task_wait_tx(p_epd, task);
+    uint32_t err = ble_epd_notification_try_send(p_epd, response, length);
+    if (err != NRF_SUCCESS && err != NRF_ERROR_RESOURCES) {
+        font_task_retry_timer(p_epd, task);
+        NRF_LOG_WARNING("[FONT]: notification failed: 0x%08x\n", err);
+    }
+    return err;
+}
+
 static bool font_task_post(ble_epd_t* p_epd)
 {
     bool post = false;
@@ -189,11 +204,8 @@ static void font_store_ack_worker(void* p_event_data, uint16_t event_size)
         if (!p_epd->font.ack_inflight_valid) return;
         font_store_ack_item_t* item = &p_epd->font.ack_inflight;
         uint8_t response[4] = {EPD_RSP_FONT_ACK, item->operation, item->status, item->slot};
-        /* Arm before HVX: TX_COMPLETE may interrupt the call itself. */
-        font_task_wait_tx(p_epd, FONT_TASK_OPERATION_ACK);
-        uint32_t err = ble_epd_notification_try_send(p_epd, response, sizeof(response));
-        if (err == NRF_ERROR_RESOURCES) return;
-        if (err != NRF_SUCCESS) { font_task_retry_timer(p_epd, FONT_TASK_OPERATION_ACK); return; }
+        if (font_notification_send(p_epd, FONT_TASK_OPERATION_ACK,
+                                   response, sizeof(response)) != NRF_SUCCESS) return;
         p_epd->font.ack_inflight_valid = false;
         font_task_wake_tx(p_epd, FONT_TASK_OPERATION_ACK);
         app_feed_wdt();
@@ -332,14 +344,8 @@ static void font_store_list_worker(void* p_event_data, uint16_t event_size)
         /* This worker runs from the scheduler, never from the BLE write
          * observer.  A full notification queue is retried after
          * BLE_GATTS_EVT_HVN_TX_COMPLETE instead of busy-waiting here. */
-        font_task_wait_tx(p_epd, FONT_TASK_LIST);
-        err_code = ble_epd_notification_try_send(p_epd, response, sizeof(response));
-        if (err_code == NRF_ERROR_RESOURCES) {
-            return;
-        }
+        err_code = font_notification_send(p_epd, FONT_TASK_LIST, response, sizeof(response));
         if (err_code != NRF_SUCCESS) {
-            font_task_retry_timer(p_epd, FONT_TASK_LIST);
-            NRF_LOG_WARNING("[FONT]: list notification failed: 0x%08x\n", err_code);
             return;
         }
 
@@ -426,21 +432,14 @@ static void font_stream_ack_worker(void* p_event_data, uint16_t event_size)
     stream->ack_pending = false;
     stream->ack_status = 0U;
     CRITICAL_REGION_EXIT();
-    font_task_wait_tx(p_epd, FONT_TASK_STREAM_ACK);
-
-    err_code = ble_epd_notification_try_send(p_epd, response, sizeof(response));
+    err_code = font_notification_send(p_epd, FONT_TASK_STREAM_ACK, response, sizeof(response));
     if (err_code != NRF_SUCCESS) {
         CRITICAL_REGION_ENTER();
         stream->ack_pending = true;
         if (stream->ack_status == 0U) stream->ack_status = response[8];
         CRITICAL_REGION_EXIT();
     }
-    if (err_code == NRF_ERROR_RESOURCES) {
-        return;
-    }
     if (err_code != NRF_SUCCESS) {
-        font_task_retry_timer(p_epd, FONT_TASK_STREAM_ACK);
-        NRF_LOG_WARNING("[FONT]: stream ACK failed: 0x%08x\n", err_code);
         return;
     }
 

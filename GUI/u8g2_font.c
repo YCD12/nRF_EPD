@@ -299,6 +299,11 @@ static int8_t u8g2_font_decode_get_signed_bits(u8g2_font_t* u8g2, uint8_t cnt) {
 // 根据方向添加Y向量
 static int16_t u8g2_add_vector_y(int16_t dy, int8_t x, int8_t y, uint8_t dir) U8X8_NOINLINE;
 static int16_t u8g2_add_vector_y(int16_t dy, int8_t x, int8_t y, uint8_t dir) {
+#if GFX_FIXED_FONT_DIRECTION_0
+    (void)x;
+    (void)dir;
+    return dy + y;
+#else
     switch (dir) {
         case 0:
             dy += y;
@@ -314,11 +319,17 @@ static int16_t u8g2_add_vector_y(int16_t dy, int8_t x, int8_t y, uint8_t dir) {
             break;
     }
     return dy;
+#endif
 }
 
 // 根据方向添加X向量
 static int16_t u8g2_add_vector_x(int16_t dx, int8_t x, int8_t y, uint8_t dir) U8X8_NOINLINE;
 static int16_t u8g2_add_vector_x(int16_t dx, int8_t x, int8_t y, uint8_t dir) {
+#if GFX_FIXED_FONT_DIRECTION_0
+    (void)y;
+    (void)dir;
+    return dx + x;
+#else
     switch (dir) {
         case 0:
             dx += x;
@@ -334,6 +345,7 @@ static int16_t u8g2_add_vector_x(int16_t dx, int8_t x, int8_t y, uint8_t dir) {
             break;
     }
     return dx;
+#endif
 }
 
 /*
@@ -399,16 +411,22 @@ static void u8g2_font_decode_len(u8g2_font_t* u8g2, uint8_t len, uint8_t is_fore
         y = decode->target_y;
 
         /* apply rotation */
-        x = u8g2_add_vector_x(x, lx, ly, decode->dir);
-        y = u8g2_add_vector_y(y, lx, ly, decode->dir);
+        x = u8g2_add_vector_x(x, lx, ly,
+                              GFX_FIXED_FONT_DIRECTION_0 ? 0U : decode->dir);
+        y = u8g2_add_vector_y(y, lx, ly,
+                              GFX_FIXED_FONT_DIRECTION_0 ? 0U : decode->dir);
 
         /* draw foreground and background (if required) */
         if (current > 0) /* avoid drawing zero length lines, issue #4 */
         {
             if (is_foreground) {
-                u8g2->draw_hv_line(u8g2, x, y, current, decode->dir, decode->fg_color);
+                u8g2->draw_hv_line(u8g2, x, y, current,
+                                   GFX_FIXED_FONT_DIRECTION_0 ? 0U : decode->dir,
+                                   decode->fg_color);
             } else if (decode->is_transparent == 0) {
-                u8g2->draw_hv_line(u8g2, x, y, current, decode->dir, decode->bg_color);
+                u8g2->draw_hv_line(u8g2, x, y, current,
+                                   GFX_FIXED_FONT_DIRECTION_0 ? 0U : decode->dir,
+                                   decode->bg_color);
             }
         }
 
@@ -480,8 +498,10 @@ static int8_t u8g2_font_decode_glyph(u8g2_font_t* u8g2, uint32_t glyph_offset) {
     d = u8g2_font_decode_get_signed_bits(u8g2, u8g2->font_info.bits_per_delta_x);
 
     if (decode->glyph_width > 0) {
-        decode->target_x = u8g2_add_vector_x(decode->target_x, x, -(h + y), decode->dir);
-        decode->target_y = u8g2_add_vector_y(decode->target_y, x, -(h + y), decode->dir);
+        decode->target_x = u8g2_add_vector_x(
+            decode->target_x, x, -(h + y), GFX_FIXED_FONT_DIRECTION_0 ? 0U : decode->dir);
+        decode->target_y = u8g2_add_vector_y(
+            decode->target_y, x, -(h + y), GFX_FIXED_FONT_DIRECTION_0 ? 0U : decode->dir);
         // u8g2_add_vector(&(decode->target_x), &(decode->target_y), x, -(h+y), decode->dir);
 
         /* reset local x/y position */
@@ -734,7 +754,14 @@ void u8g2_SetFontMode(u8g2_font_t* u8g2, uint8_t is_transparent) {
 }
 
 // 设置字体方向（0/1/2/3 对应 0°/90°/180°/270°）
-void u8g2_SetFontDirection(u8g2_font_t* u8g2, uint8_t dir) { u8g2->font_decode.dir = dir; }
+void u8g2_SetFontDirection(u8g2_font_t* u8g2, uint8_t dir) {
+#if GFX_FIXED_FONT_DIRECTION_0
+    (void)u8g2;
+    (void)dir;
+#else
+    u8g2->font_decode.dir = dir;
+#endif
+}
 
 // 绘制单个字形（公共接口）
 int16_t u8g2_DrawGlyph(u8g2_font_t* u8g2, int16_t x, int16_t y, uint16_t encoding) {
@@ -766,6 +793,9 @@ int16_t u8g2_DrawStr(u8g2_font_t* u8g2, int16_t x, int16_t y, const char* s) {
 
     while (*s != '\0') {
         int16_t delta = u8g2_DrawGlyph(u8g2, x, y, *s);
+#if GFX_FIXED_FONT_DIRECTION_0
+        x += delta;
+#else
         switch (u8g2->font_decode.dir) {
             case 0:
                 x += delta;
@@ -780,6 +810,7 @@ int16_t u8g2_DrawStr(u8g2_font_t* u8g2, int16_t x, int16_t y, const char* s) {
                 y -= delta;
                 break;
         }
+#endif
         sum += delta;
         s++;
     }
@@ -803,6 +834,7 @@ void u8g2_SetFont(u8g2_font_t* u8g2, const uint8_t* font) {
     }
 }
 
+void u8g2_SetExternalFont(u8g2_font_t* u8g2, const u8g2_font_source_t* source) U8X8_NOINLINE;
 void u8g2_SetExternalFont(u8g2_font_t* u8g2, const u8g2_font_source_t* source) {
     if (u8g2 == NULL || source == NULL || source->read == NULL || source->length < 23U) {
         return;
@@ -842,6 +874,7 @@ void u8g2_SetPlaceholder(u8g2_font_t* u8g2, const u8g2_font_placeholder_t* place
     }
 }
 
+void u8g2_SetMissingFont(u8g2_font_t* u8g2, const u8g2_font_placeholder_t* placeholder) U8X8_NOINLINE;
 void u8g2_SetMissingFont(u8g2_font_t* u8g2, const u8g2_font_placeholder_t* placeholder) {
     if (u8g2 == NULL || placeholder == NULL || placeholder->advance <= 0) {
         return;

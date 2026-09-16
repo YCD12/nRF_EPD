@@ -33,6 +33,7 @@
 #include "EPD_driver.h"
 #include "GUI.h"
 #include "sdk_config.h"
+#include "epd_protocol.h"
 
 /**@brief SoftDevice 观察者入口，转给 ble_epd_on_ble_evt。 */
 void ble_epd_evt_handler(ble_evt_t const* p_ble_evt, void* p_context);
@@ -47,7 +48,7 @@ void ble_epd_evt_handler(ble_evt_t const* p_ble_evt, void* p_context);
     static ble_epd_t _name; \
     NRF_SDH_BLE_OBSERVER(_name##_obs, BLE_EPD_BLE_OBSERVER_PRIO, ble_epd_evt_handler, &_name)
 
-#define APP_VERSION 0x2F  // FST3 双目录外置字库 + 滑动窗口传输
+#define APP_VERSION 0x32  // Deferred INIT completion and complete session cleanup
 
 // EPD 服务的 128 位基础 UUID（自定义服务）
 #define BLE_UUID_EPD_SVC_BASE \
@@ -59,49 +60,6 @@ void ble_epd_evt_handler(ble_evt_t const* p_ble_evt, void* p_context);
 #define EPD_SVC_UUID_TYPE BLE_UUID_TYPE_VENDOR_BEGIN  // 自定义 UUID 类型
 
 #define BLE_EPD_MAX_DATA_LEN (NRF_SDH_BLE_GATT_MAX_MTU_SIZE - 3)
-
-/** EPD 服务命令 ID */
-enum EPD_CMDS {
-    // 基础硬件控制 (0x00-0x0F)
-    EPD_CMD_SET_PINS = 0x00,     /**< 设置 EPD 引脚映射 */
-    EPD_CMD_INIT = 0x01,         /**< 初始化 EPD 显示驱动 */
-    EPD_CMD_CLEAR = 0x02,        /**< 清除屏幕 */
-    EPD_CMD_SEND_COMMAND = 0x03, /**< 向 EPD 发送命令 */
-    EPD_CMD_SEND_DATA = 0x04,    /**< 向 EPD 发送数据 */
-    EPD_CMD_REFRESH = 0x05,      /**< 将显存刷新到屏幕 */
-    EPD_CMD_SLEEP = 0x06,        /**< EPD 进入睡眠 */
-
-    // 时间和显示模式 (0x20-0x2F)
-    EPD_CMD_SET_TIME = 0x20,         /**< 用 Unix 时间戳设置时间 */
-    EPD_CMD_SET_WEEK_START = 0x21,   /**< 设置周起始日（0:周日, 1:周一...） */
-    EPD_CMD_SET_MODE = 0x22,         /**< 设置显示模式（0:图片, 1:日历, 2:时钟+日历, 3:全屏时钟） */
-    EPD_CMD_SYNC_TIME_SILENT = 0x23, /**< 静默校时（不立即刷新） */
-    EPD_CMD_SET_ANNOTATIONS = 0x24,  /**< 写入/清除日历日期短标签 */
-    EPD_CMD_FONT_STORE = 0x25,       /**< 外置字库列表/全量字库包上传 */
-
-    // 图像写入 (0x30-0x3F)
-    EPD_CMD_WRITE_IMAGE = 0x30,    /**< 写入图像到 RAM（旧版，无 CRC） */
-    EPD_CMD_WRITE_BLOCK = 0x31,    /**< 带 CRC16 的分块写入 */
-    EPD_CMD_QUERY_STATUS = 0x32,   /**< 查询传输状态，用于断点续传 */
-    EPD_CMD_RESET_TRANSFER = 0x33, /**< 重置传输状态 */
-
-    // 系统配置和控制 (0x90-0x9F)
-    // SYS_RESET / SYS_SLEEP / CFG_ERASE 为紧急命令；INIT / WRITE_BLOCK 同样紧急
-    EPD_CMD_SET_CONFIG = 0x90, /**< 设置完整 EPD 配置 */
-    EPD_CMD_SYS_RESET = 0x91,  /**< MCU 复位（紧急） */
-    EPD_CMD_SYS_SLEEP = 0x92,  /**< MCU 进入睡眠（紧急） */
-    EPD_CMD_CFG_ERASE = 0x99,  /**< 擦除配置并复位（紧急） */
-};
-
-/**
- * 响应类型（MCU -> APP）
- */
-#define EPD_RSP_BLOCK_ACK    0xA0  /**< 块 ACK/NACK */
-#define EPD_RSP_STATUS       0xA1  /**< 传输状态 */
-#define EPD_RSP_ANNOTATIONS  0xA2  /**< 日历短标签分片 */
-#define EPD_RSP_FONT_LIST    0xA3  /**< 外置字库槽信息 */
-#define EPD_RSP_FONT_ACK     0xA4  /**< 外置字库操作结果 */
-#define EPD_RSP_FONT_STREAM_ACK 0xA5 /**< 外置字库滑动窗口累计 ACK */
 
 /**
  * 传输配置
@@ -122,20 +80,9 @@ enum EPD_CMDS {
 
 #include "font_transfer_state.h"
 
-/**@brief 命令队列（环形缓冲）
- *
- * - head：下一个取出位置
- * - tail：下一个插入位置
- * - count：当前条数
- * - is_processing：防止重复启动处理
- */
-typedef struct {
-    epd_cmd_queue_item_t items[EPD_CMD_QUEUE_SIZE]; /**< 队列项 */
-    uint8_t head;                                   /**< 头索引（取出） */
-    uint8_t tail;                                   /**< 尾索引（插入） */
-    uint8_t count;                                  /**< 当前项数 */
-    bool is_processing;                             /**< 是否正在处理 */
-} epd_cmd_queue_t;
+#include "epd_command_queue.h"
+#include "epd_display_queue.h"
+#include "calendar_annotations_tx.h"
 
 /**@brief 图像传输上下文（断点续传）
  *
@@ -146,7 +93,7 @@ typedef struct {
     uint8_t  session_id;      /**< 会话 ID */
     uint16_t total_blocks;    /**< 总块数 */
     uint16_t received_blocks; /**< 已成功接收块数 */
-    bool     transfer_active; /**< 是否有进行中的传输 */
+    volatile bool transfer_active; /**< 是否有进行中的传输 */
 } image_transfer_ctx_t;
 
 /**@brief EPD 服务状态 */
@@ -157,24 +104,41 @@ typedef struct {
     ble_gatts_char_handles_t app_ver_handles;  /**< APP 版本特性句柄 */
 
     // BLE 连接
-    uint16_t conn_handle; /**< 当前连接句柄；未连接为 BLE_CONN_HANDLE_INVALID */
+    volatile uint16_t conn_handle; /**< 当前连接句柄；未连接为 BLE_CONN_HANDLE_INVALID */
     uint16_t max_data_len;        /**< 可发给对端的最大数据长度（字节） */
     bool is_notification_enabled; /**< 对端是否已开启 RX 特性通知 */
 
     // EPD 硬件与配置
-    epd_model_t* epd;    /**< 当前 EPD 型号 */
+    const epd_model_t * epd;    /**< 当前 EPD 型号 */
     epd_config_t config; /**< EPD 配置 */
 
     // 刷新控制
     bool force_full_refresh;        /**< 下次 GUI 更新强制全刷（模式切换，避免残影） */
     uint32_t last_full_clear;       /**< 上次全屏清除/刷新时间戳（秒）。0 表示从未全刷 */
-    bool is_refreshing;             /**< 屏幕刷新进行中（防止 BLE 断开时中断刷新） */
+    volatile bool is_refreshing;    /**< 面板操作进行中；中断不得重入 */
     bool low_battery_screen_active; /**< 低电量保持：暂停周期刷新，仍显示月历/时钟 */
+    volatile bool gpio_connection_ref;
+    volatile bool disconnect_pending;
+    volatile uint32_t connection_generation;
+    volatile bool init_pending;
+    volatile bool init_running;
+    volatile bool init_ack_pending;
+    volatile uint8_t init_model;
+    volatile uint8_t init_token;
+    volatile uint8_t init_prior_commands; /**< INIT 前已排队的命令必须先完成 */
+    uint8_t init_ack_token;
+    uint8_t init_status;
+    volatile uint32_t image_last_activity;
     font_transfer_state_t font;
+
+    epd_display_queue_t display_queue;
+    calendar_annotations_tx_t annotations_tx;
+    volatile uint32_t annotations_rx_last_activity;
+    volatile bool annotations_rx_abort_requested;
 
     // 刷新消抖与校时保护
     uint32_t last_refresh_start; /**< 上一次物理刷新开始时间戳（秒），用于消抖 */
-    uint32_t last_set_time_ts;   /**< 上一次接受 SET_TIME 的时间戳（秒），用于频率限制 */
+    uint32_t last_set_time_ts;   /**< 上一次接受 SET_TIME 的 uptime 秒数，用于频率限制 */
 
     // 命令队列
     epd_cmd_queue_t cmd_queue; /**< 顺序执行命令队列 */
@@ -185,18 +149,14 @@ typedef struct {
 } ble_epd_t;
 
 /**@brief GUI 更新事件（经 app_scheduler 传递实例和时间戳） */
-typedef struct {
-    ble_epd_t* p_epd;   /**< EPD 服务指针 */
-    uint32_t timestamp; /**< Unix 时间戳 */
-} epd_gui_update_event_t;
-
-#define EPD_GUI_SCHD_EVENT_DATA_SIZE sizeof(epd_gui_update_event_t)  /**< 调度器事件数据大小 */
+#define EPD_GUI_SCHD_EVENT_DATA_SIZE sizeof(void *)
 
 /**@brief 进入睡眠前准备：关 LED、配置唤醒脚
  *
  * @param[in] p_epd  EPD 服务结构
  */
 void ble_epd_sleep_prepare(ble_epd_t* p_epd);
+void ble_epd_process(ble_epd_t* p_epd);
 
 /**@brief 初始化 EPD 服务（BLE、配置、驱动）
  *

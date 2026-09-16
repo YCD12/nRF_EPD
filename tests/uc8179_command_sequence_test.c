@@ -20,7 +20,7 @@ static size_t event_count;
 static unsigned int reset_count;
 static bool busy_ready = true;
 
-extern epd_model_t epd_uc8179_750_Partial_bwr;
+extern const epd_model_t epd_uc8179_750_Partial_bwr;
 
 static void clear_events(void)
 {
@@ -317,7 +317,7 @@ static void test_edge_window_is_accepted(void)
                                     old_bitmap, new_bitmap));
 }
 
-static void expect_window_rejected(epd_model_t *model,
+static void expect_window_rejected(const epd_model_t *model,
                                    uint16_t x,
                                    uint16_t y,
                                    uint16_t w,

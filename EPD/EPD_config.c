@@ -1,145 +1,153 @@
 #include "EPD_config.h"
-
+#include "storage_retry.h"
+#include "app_util_platform.h"
+#include "fds.h"
+#include "main.h"
+#include "nrf_soc.h"
 #include <string.h>
 
-#include "app_scheduler.h"
-#include "fds.h"
-#include "nordic_common.h"
-#include "nrf_log.h"
-
-// Flash数据存储(FDS)配置文件ID
 #define CONFIG_FILE_ID 0x0000
-
-// FDS配置记录键值
 #define CONFIG_REC_KEY 0x0001
+#define CONFIG_WORDS ((sizeof(epd_config_t) + 3U) / 4U)
 
-// FDS事件处理器，用于处理Flash操作事件
-static void fds_evt_handler(fds_evt_t const* const p_fds_evt) {
-    // 记录FDS事件ID和结果
-    NRF_LOG_DEBUG("fds evt: id=%d result=%d\n", p_fds_evt->id, p_fds_evt->result);
-}
+/* Requested values may change in BLE IRQs. The aligned snapshot remains
+ * immutable until the matching FDS completion has been consumed in main. */
+static uint32_t m_requested[CONFIG_WORDS];
+static uint32_t m_snapshot[CONFIG_WORDS];
+static volatile bool m_pending, m_busy, m_done, m_clear, m_clear_done;
+static volatile bool m_deleting, m_clear_failed;
+static volatile uint32_t m_result;
+static volatile bool m_initialized;
+static volatile uint32_t m_init_result;
+static uint8_t m_attempts;
+static uint32_t m_due;
 
-// 运行FDS垃圾回收以回收Flash空间
-static void run_fds_gc(void* p_event_data, uint16_t event_size) {
-    // 执行垃圾回收以释放已删除记录的空间
-    NRF_LOG_DEBUG("run garbage collection (fds_gc)\n");
-    fds_gc();
-}
-
-// 初始化EPD配置和Flash数据存储(FDS)
-void epd_config_init(epd_config_t* cfg) {
-    ret_code_t ret;
-
-    // 注册FDS事件处理器用于Flash操作
-    ret = fds_register(fds_evt_handler);
-    if (ret != NRF_SUCCESS) {
-        NRF_LOG_ERROR("fds_register failed, code=%d\n", ret);
-        return;
-    }
-
-    // 初始化Flash数据存储模块
-    ret = fds_init();
-    if (ret != NRF_SUCCESS) {
-        NRF_LOG_ERROR("fds_init failed, code=%d\n", ret);
-        return;
-    }
-
-    // 运行垃圾回收以清理Flash空间
-    run_fds_gc(NULL, 0);
-}
-
-// 从Flash存储器读取EPD配置
-void epd_config_read(epd_config_t* cfg) {
-    fds_flash_record_t flash_record;  // Flash记录结构
-    fds_record_desc_t record_desc;  // 记录描述符
-    fds_find_token_t ftok;  // 搜索令牌
-
-    // 将配置初始化为0xFF（空Flash状态）
-    memset(cfg, 0xFF, sizeof(epd_config_t));
-    memset(&ftok, 0x00, sizeof(fds_find_token_t));
-
-    // 在Flash中搜索配置记录
-    if (fds_record_find(CONFIG_FILE_ID, CONFIG_REC_KEY, &record_desc, &ftok) != NRF_SUCCESS) {
-        NRF_LOG_DEBUG("epd_config_load: record not found\n");
-        return;
-    }
-
-    // 打开找到的记录以便读取
-    if (fds_record_open(&record_desc, &flash_record) != NRF_SUCCESS) {
-        NRF_LOG_ERROR("epd_config_load: record open failed!");
-        return;
-    }
-
-    // S112 的 FDS 记录长度直接存放在记录头中。
-    uint32_t record_len = flash_record.p_header->length_words * sizeof(uint32_t);
-
-    // 从Flash复制数据到配置结构体
-    memcpy(cfg, flash_record.p_data, MIN(sizeof(epd_config_t), record_len));
-
-    // 读取完成后关闭记录
-    fds_record_close(&record_desc);
-}
-
-// 将EPD配置写入Flash存储器
-void epd_config_write(epd_config_t* cfg) {
-    ret_code_t ret;
-    fds_record_t record;  // 要写入的记录
-    fds_record_desc_t record_desc;  // 记录描述符
-    fds_find_token_t ftok;  // 搜索令牌
-
-    // 设置记录文件ID和键值
-    record.file_id = CONFIG_FILE_ID;
-    record.key = CONFIG_REC_KEY;
-
-    // S112 的 FDS 记录使用直接数据指针。
-    record.data.p_data = cfg;
-    record.data.length_words = BYTES_TO_WORDS(sizeof(epd_config_t));
-
-    // 检查记录是否已存在于Flash中
-    memset(&ftok, 0x00, sizeof(fds_find_token_t));
-    ret = fds_record_find(CONFIG_FILE_ID, CONFIG_REC_KEY, &record_desc, &ftok);
-
-    // 更新已存在的记录或写入新记录
-    if (ret == NRF_SUCCESS)
-        ret = fds_record_update(&record_desc, &record);  // 更新已存在的记录
-    else
-        ret = fds_record_write(&record_desc, &record);  // 写入新记录
-
-    // 处理写入/更新错误
-    if (ret != NRF_SUCCESS) {
-        NRF_LOG_ERROR("epd_config_save: record write/update failed, code=%d\n", ret);
-        // 如果Flash已满，则安排垃圾回收
-        if (ret == FDS_ERR_NO_SPACE_IN_FLASH) app_sched_event_put(NULL, 0, run_fds_gc);
+static void fds_evt_handler(fds_evt_t const *evt)
+{
+    if (evt->id == FDS_EVT_INIT) {
+        m_init_result = evt->result;
+        m_initialized = true;
+    } else if (m_busy &&
+               ((!m_deleting && (evt->id == FDS_EVT_WRITE || evt->id == FDS_EVT_UPDATE) &&
+                 evt->write.file_id == CONFIG_FILE_ID && evt->write.record_key == CONFIG_REC_KEY) ||
+                (m_deleting && evt->id == FDS_EVT_DEL_RECORD &&
+                 evt->del.file_id == CONFIG_FILE_ID && evt->del.record_key == CONFIG_REC_KEY))) {
+        m_result = evt->result;
+        m_done = true;
     }
 }
 
-// 从Flash存储器清除EPD配置
-void epd_config_clear(epd_config_t* cfg) {
-    ret_code_t ret;
-    fds_record_desc_t record_desc;  // 记录描述符
-    fds_find_token_t ftok;  // 搜索令牌
-
-    // 在Flash中搜索配置记录
-    memset(&ftok, 0x00, sizeof(fds_find_token_t));
-    if (fds_record_find(CONFIG_FILE_ID, CONFIG_REC_KEY, &record_desc, &ftok) != NRF_SUCCESS) {
-        NRF_LOG_DEBUG("epd_config_clear: record not found\n");
-        return;
+uint32_t epd_config_init(epd_config_t *cfg)
+{
+    (void)cfg;
+    uint32_t err = epd_storage_init();
+    if (err != 0U) return err;
+    err = fds_register(fds_evt_handler);
+    if (err != 0U) return err;
+    m_initialized = false;
+    err = fds_init();
+    if (err != 0U) return err;
+    /* Main-context startup, before advertising. SoftDevice IRQs stay enabled
+     * so fresh-install and recovery writes can complete. */
+    app_feed_wdt();
+    while (!m_initialized) {
+        (void)sd_app_evt_wait();
     }
+    return m_init_result;
+}
 
-    // 从Flash删除配置记录
-    ret = fds_record_delete(&record_desc);
-    if (ret != NRF_SUCCESS) {
-        NRF_LOG_ERROR("fds_record_delete failed, code=%d\n", ret);
+void epd_config_read(epd_config_t *cfg)
+{
+    fds_record_desc_t desc;
+    fds_find_token_t token = {0};
+    fds_flash_record_t record;
+    memset(cfg, 0xFF, sizeof(*cfg));
+    if (fds_record_find(CONFIG_FILE_ID, CONFIG_REC_KEY, &desc, &token) != 0U ||
+        fds_record_open(&desc, &record) != 0U) return;
+    uint32_t length = record.p_header->length_words * 4U;
+    if (length > sizeof(*cfg)) length = sizeof(*cfg);
+    memcpy(cfg, record.p_data, length);
+    (void)fds_record_close(&desc);
+}
+
+void epd_config_write(epd_config_t *cfg)
+{
+    CRITICAL_REGION_ENTER();
+    if (!m_clear) {
+        memset(m_requested, 0, sizeof(m_requested));
+        memcpy(m_requested, cfg, sizeof(*cfg));
+        m_pending = true;
+    }
+    CRITICAL_REGION_EXIT();
+}
+
+void epd_config_clear(epd_config_t *cfg)
+{
+    (void)cfg;
+    CRITICAL_REGION_ENTER();
+    m_clear = true;
+    m_clear_failed = false;
+    m_pending = false;
+    CRITICAL_REGION_EXIT();
+}
+
+bool epd_config_clear_complete(void) { return m_clear_done; }
+
+void epd_config_process(void)
+{
+    uint32_t now = app_uptime_seconds();
+    if (m_done) {
+        uint32_t result = m_result;
+        m_done = false;
+        m_busy = false;
+        if (result == 0U || (m_clear && !m_deleting)) {
+            m_attempts = 0U;
+        } else if (epd_storage_retry(result, &m_attempts, &m_due)) {
+            if (!m_clear) m_pending = true;
+        } else if (m_clear) {
+            m_clear_failed = true; /* Never reset after a failed deletion. */
+        }
+    }
+    if (m_busy || epd_storage_gc_pending() || m_clear_done ||
+        (int32_t)(now - m_due) < 0 || (m_clear && m_clear_failed)) return;
+
+    bool start = false;
+    CRITICAL_REGION_ENTER();
+    if (m_clear || m_pending) {
+        m_deleting = m_clear;
+        memcpy(m_snapshot, m_requested, sizeof(m_snapshot));
+        m_pending = false;
+        m_busy = true;
+        start = true;
+    }
+    CRITICAL_REGION_EXIT();
+    if (!start) return;
+
+    fds_record_desc_t desc;
+    fds_find_token_t token = {0};
+    uint32_t err = fds_record_find(CONFIG_FILE_ID, CONFIG_REC_KEY, &desc, &token);
+    if (m_deleting) {
+        if (err == FDS_ERR_NOT_FOUND) {
+            m_busy = false;
+            m_clear_done = true;
+            return;
+        }
+        if (err == 0U) err = fds_record_delete(&desc);
+    } else {
+        fds_record_t record = {.file_id = CONFIG_FILE_ID, .key = CONFIG_REC_KEY,
+            .data = {.p_data = m_snapshot, .length_words = CONFIG_WORDS}};
+        if (err == 0U) err = fds_record_update(&desc, &record);
+        else if (err == FDS_ERR_NOT_FOUND) err = fds_record_write(&desc, &record);
+    }
+    if (err != 0U) {
+        m_result = err;
+        m_done = true;
     }
 }
 
-// 检查EPD配置是否为空（所有字节都是0xFF）
-bool epd_config_empty(epd_config_t* cfg) {
-    // 遍历配置中的所有字节
-    for (uint8_t i = 0; i < EPD_CONFIG_SIZE; i++) {
-        // 如果有任何字节不是0xFF，则配置不为空
-        if (((uint8_t*)cfg)[i] != 0xFF) return false;
-    }
-    // 所有字节都是0xFF，配置为空
+bool epd_config_empty(epd_config_t *cfg)
+{
+    for (size_t i = 0; i < sizeof(*cfg); i++)
+        if (((uint8_t *)cfg)[i] != 0xFFU) return false;
     return true;
 }

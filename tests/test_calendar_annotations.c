@@ -295,6 +295,30 @@ static void test_rx_offset0_rejected_when_locked(void)
            CALENDAR_ANNO_RX_DONE);
 }
 
+static void test_rx_cancel_restores_saved_snapshot(void)
+{
+    calendar_annotation_t annotation;
+    uint8_t first[16];
+
+    g_reload_len = make_blob(g_reload_blob, 1);
+    set_record(g_reload_blob + CALENDAR_ANNOTATIONS_HEADER_SIZE, 0,
+               2026, 2, 2, 0x01, "元旦节");
+    calendar_annotations_reset();
+    calendar_annotations_set_reload(test_reload_from_snapshot);
+    assert(calendar_annotations_load(g_reload_blob, g_reload_len));
+
+    memcpy(first, g_reload_blob, sizeof(first));
+    assert(calendar_annotations_rx_write(0, (uint16_t)g_reload_len,
+                                         first, sizeof(first)) == CALENDAR_ANNO_RX_MORE);
+    assert(calendar_annotations_rx_active());
+    assert(calendar_annotations_rx_cancel());
+    assert(!calendar_annotations_rx_active());
+    assert(calendar_annotations_get(2026, 2, 2, &annotation));
+    assert(strcmp(annotation.label, "元旦节") == 0);
+    assert(!calendar_annotations_rx_cancel());
+    calendar_annotations_set_reload(NULL);
+}
+
 int main(void)
 {
     test_lookup_replaces_festival_and_empty_label_is_mark_only();
@@ -307,6 +331,7 @@ int main(void)
     test_rx_rejects_gap_and_keeps_previous();
     test_rx_failed_after_start_reloads_previous();
     test_rx_offset0_rejected_when_locked();
+    test_rx_cancel_restores_saved_snapshot();
     puts("PASS: calendar annotations");
     return 0;
 }

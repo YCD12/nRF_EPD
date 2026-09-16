@@ -71,6 +71,8 @@ bool calendar_annotations_get(uint16_t year, uint8_t month, uint8_t day,
                               calendar_annotation_t* annotation);
 calendar_anno_rx_t calendar_annotations_rx_write(uint16_t offset, uint16_t total,
                                                  const uint8_t* data, uint16_t length);
+bool calendar_annotations_rx_active(void);
+bool calendar_annotations_rx_cancel(void);
 uint16_t calendar_annotations_count(void);
 uint16_t calendar_annotations_blob(const uint8_t** data);
 uint16_t calendar_annotations_notify_chunk(uint16_t offset, uint8_t* out, uint16_t out_size);

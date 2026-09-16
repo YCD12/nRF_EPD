@@ -7,13 +7,18 @@
 
 #include "u8g2_font.h"
 
+/* Firmware targets the unrotated UC8179 BWR panel. Host tools retain the
+ * general renderer unless they explicitly select the same specialization. */
+#ifndef GFX_FIXED_BWR_PANEL
+#define GFX_FIXED_BWR_PANEL 0
+#endif
+
 /* Shared page buffer for the streamed EPD renderer.
  *
- * 2,560 B supports a 25-row mono page (or 12-row three-colour page) on the
- * 800-pixel panel and the two 68x140 clock-digit bitmaps used by the
- * clock/calendar differential-refresh path (2 * 1,260 B).
+ * 1,536 B supports a 15-row mono page or a 7-row three-colour page on
+ * the 800-pixel panel. Clock OLD data has its own small strip buffer.
  */
-#define GFX_PAGE_BUFFER_SIZE 2560U
+#define GFX_PAGE_BUFFER_SIZE 1536U
 
 // 颜色定义 - RGB565 格式 (16位：5位红色，6位绿色，5位蓝色)
 // Color definitions - RGB565 format (16-bit: 5-bit red, 6-bit green, 5-bit blue)
@@ -211,6 +216,7 @@ size_t GFX_print(Adafruit_GFX* gfx, const char c);
 size_t GFX_write(Adafruit_GFX* gfx, const char* buffer, size_t size);
 // 格式化打印（类似printf）| Formatted print (similar to printf)
 size_t GFX_printf(Adafruit_GFX* gfx, const char* format, ...);
+size_t GFX_puts(Adafruit_GFX* gfx, const char* text);
 
 /* Returns the shared page buffer and its size in bytes.
  * Use instead of declaring extern s_gfx_buffer[] in other translation units. */

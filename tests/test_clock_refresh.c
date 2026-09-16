@@ -71,7 +71,7 @@ static void test_try_rejects_null_and_invalid_state(void)
     assert(!epd_clock_refresh_try(&model, &data));
 }
 
-static bool dummy_diff_push(epd_model_t *epd, uint16_t x, uint16_t y,
+static bool dummy_diff_push(const epd_model_t *epd, uint16_t x, uint16_t y,
                             uint16_t w, uint16_t h,
                             const uint8_t *old_bm, const uint8_t *new_bm)
 {
@@ -79,7 +79,7 @@ static bool dummy_diff_push(epd_model_t *epd, uint16_t x, uint16_t y,
     return false;
 }
 
-static bool dummy_refresh_partial(epd_model_t *epd, uint16_t x, uint16_t y,
+static bool dummy_refresh_partial(const epd_model_t *epd, uint16_t x, uint16_t y,
                                   uint16_t w, uint16_t h)
 {
     (void)epd; (void)x; (void)y; (void)w; (void)h;
