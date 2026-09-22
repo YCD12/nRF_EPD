@@ -6,6 +6,8 @@
 
 #include "epd_clock_refresh.h"
 
+void ui_resources_stub_set_revision(uint32_t value);
+
 void DrawGUI_ClockOnly(const gui_data_t *data, buffer_callback callback, void *callback_data)
 {
     (void)data;
@@ -43,6 +45,10 @@ bool UC8179_HadBusyTimeout(void)
 static void test_invalidate_then_mark_valid(void)
 {
     epd_clock_refresh_invalidate();
+    assert(!epd_clock_refresh_is_valid());
+    epd_clock_refresh_mark_valid(100);
+    assert(epd_clock_refresh_is_valid());
+    ui_resources_stub_set_revision(2);
     assert(!epd_clock_refresh_is_valid());
     epd_clock_refresh_mark_valid(100);
     assert(epd_clock_refresh_is_valid());

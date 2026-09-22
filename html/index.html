@@ -112,9 +112,10 @@
 					<button type="button" class="primary" onclick="CalendarAnnotations.save()">保存到设备</button>
 					<button type="button" class="secondary" onclick="CalendarAnnotations.loadFromDevice()">从设备读取</button>
 					<button type="button" class="secondary" onclick="CalendarAnnotations.clearDevice()">清除设备标注</button>
+					<button type="button" class="secondary" onclick="exportMigrationBundle()">导出配置/标注迁移备份</button>
 				</div>
 			</div>
-			<div class="dfu-hint">位置可选日期下方或右上角。两种位置的字数限制相同：最多 9 个 UTF-8 字节（中文最多 3 个）。下方会盖过节日/农历，并在右上角打红点；右上角则节日/农历仍保留。留空则只打红点。汉字须在机内日历字库。英文字母用已有的 wqy9，不另加字库、不额外占 Flash（大号格子含字母时也会改用 wqy9）。连接后会自动从设备读回；保存会覆盖设备上的全部标注。</div>
+			<div class="dfu-hint">位置可选日期下方或右上角。两种位置的字数限制相同：最多 9 个 UTF-8 字节（中文最多 3 个）。下方会盖过节日/农历，并在右上角打红点；右上角则节日/农历仍保留。留空则只打红点。汉字须在机内日历字库。英文字母用已有的 wqy9，不另加字库、不额外占 Flash（大号格子含字母时也会改用 wqy9）。连接后会自动从设备读回；0x33 及以上固件只有在外置 Flash 提交确认后才显示保存成功。升级旧设备前可导出 MIG1 迁移备份。</div>
 			<div class="flex-container">
 				<table class="anno-table"><thead><tr><th>日期</th><th>短标签</th><th>位置</th><th>字号</th><th>颜色</th><th>操作</th></tr></thead><tbody id="calendarAnnotationsList"></tbody></table>
 			</div>
@@ -432,10 +433,10 @@
 	<script type="text/javascript" src="js/dithering.js?v=20260402b"></script>
 	<script type="text/javascript" src="js/paint.js?v=20260402b"></script>
 	<script type="text/javascript" src="js/crop.js?v=20260402b"></script>
-	<script type="text/javascript" src="js/ble_transfer.js?v=20260908a"></script>
-	<script type="text/javascript" src="js/calendar_annotations.js?v=20260909a"></script>
+	<script type="text/javascript" src="js/ble_transfer.js?v=20260922a"></script>
+	<script type="text/javascript" src="js/calendar_annotations.js?v=20260916b"></script>
 	<script type="text/javascript" src="js/font_store.js?v=20260914a"></script>
-	<script type="text/javascript" src="js/main.js?v=20260914a"></script>
+	<script type="text/javascript" src="js/main.js?v=20260922a"></script>
 </body>
 
 </html>

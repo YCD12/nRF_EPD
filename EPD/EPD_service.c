@@ -85,7 +85,9 @@
 #include "calendar_annotations_store.h"
 #include "font_store.h"
 #include "font_transfer.h"
-#include "storage_retry.h"
+#include "resource_transfer.h"
+#include "resource_store.h"
+#include "resource_layout.h"
 
 static void epd_enter_picture_mode(ble_epd_t *p_epd); /* 切图片模式 */
 static void epd_gui_update(void* p_event_data, uint16_t event_size);
@@ -214,6 +216,7 @@ static bool is_urgent_command(uint8_t cmd) {
     return epd_cmd_is_urgent(cmd);
 }
 
+#if FONT_STORE_MUTABLE || RESOURCE_STORE_MAINTENANCE
 static bool font_blocks_display_command(uint8_t cmd)
 {
     return epd_cmd_needs_display(cmd) ||
@@ -224,6 +227,7 @@ static bool font_blocks_display_command(uint8_t cmd)
            cmd == EPD_CMD_SET_ANNOTATIONS;
 }
 
+#if FONT_STORE_MUTABLE
 static void epd_report_font_busy(ble_epd_t* p_epd,
                                   const uint8_t* p_data,
                                   uint16_t length)
@@ -239,7 +243,8 @@ static void epd_report_font_busy(ble_epd_t* p_epd,
         send_block_response(p_epd, block_id, EPD_BLOCK_STATUS_RESTART);
     }
 }
-
+#endif
+#endif
 
 
 /* 时钟刷新会睡眠面板并可能清空 p_epd->epd。
@@ -425,16 +430,23 @@ static void epd_gui_update(void* p_event_data, uint16_t event_size) {
      * queued event would still enter DrawGUI and contend with the external
      * Flash transaction.  Drop the stale event and let the normal timer (or
      * the delayed font refresh) schedule a new one later. */
-    if (p_epd->init_pending || p_epd->init_ack_pending || p_epd->disconnect_pending ||
-        p_epd->font.operation_pending || font_store_update_active()) {
+    if (RESOURCE_STORE_MAINTENANCE || p_epd->init_pending || p_epd->init_ack_pending || p_epd->disconnect_pending ||
+#if FONT_STORE_MUTABLE
+        p_epd->font.operation_pending || font_store_update_active()
+#else
+        false
+#endif
+        ) {
         epd_display_complete(p_epd);
         return;
     }
+#if FONT_STORE_MUTABLE
     if (p_epd->font.refresh_pending &&
         (int32_t)(app_uptime_seconds() - p_epd->font.refresh_due) < 0) {
         epd_display_complete(p_epd);
         return;
     }
+#endif
 
     if (epd_clock_refresh_must_yield(mode, p_epd->transfer_ctx.transfer_active)) {
         epd_display_complete(p_epd);
@@ -642,6 +654,7 @@ static void on_disconnect(ble_epd_t* p_epd, ble_evt_t* p_ble_evt) {
     p_epd->conn_handle = BLE_CONN_HANDLE_INVALID;
     p_epd->is_notification_enabled = false;
     p_epd->connection_generation++;
+    p_epd->config_read_pending = false;
     p_epd->disconnect_pending = true;
     p_epd->init_pending = false;
     p_epd->init_ack_pending = false;
@@ -655,6 +668,7 @@ static void on_disconnect(ble_epd_t* p_epd, ble_evt_t* p_ble_evt) {
         p_epd->annotations_rx_abort_requested = true;
     }
 
+#if FONT_STORE_MUTABLE
     /* Do not reset FIFO/command state from the BLE event context.  A font
      * worker may already be running from app_scheduler; let that worker
      * serialize the cancellation and discard stale work in one place. */
@@ -665,6 +679,7 @@ static void on_disconnect(ble_epd_t* p_epd, ble_evt_t* p_ble_evt) {
         (void)font_task_schedule(p_epd, FONT_TASK_TIMEOUT_ABORT);
     }
     NRF_LOG_WARNING("[FONT]: upload abort deferred after BLE disconnect\n");
+#endif
 
     /* GPIO, panel sleep and image-session cancellation run in main. */
 
@@ -851,7 +866,12 @@ static void epd_init_process(ble_epd_t *p_epd)
         p_epd->conn_handle == BLE_CONN_HANDLE_INVALID) return;
     if (p_epd->init_pending && p_epd->init_prior_commands == 0U &&
         !p_epd->init_ack_pending && !p_epd->is_refreshing &&
-        !p_epd->font.operation_pending && !font_store_update_active()) {
+#if FONT_STORE_MUTABLE
+        !p_epd->font.operation_pending && !font_store_update_active()
+#else
+        true
+#endif
+        ) {
         uint32_t generation;
         bool connected;
         uint8_t model, token;
@@ -1067,6 +1087,7 @@ static void epd_refresh_annotations(ble_epd_t *p_epd)
     ble_epd_on_timer(p_epd, timestamp(), true);
 }
 
+#if FONT_STORE_MUTABLE
 void epd_refresh_fonts(ble_epd_t *p_epd)
 {
     if (p_epd == NULL || p_epd->config.display_mode == MODE_PICTURE) {
@@ -1075,6 +1096,7 @@ void epd_refresh_fonts(ble_epd_t *p_epd)
     p_epd->font.refresh_pending = true;
     p_epd->font.refresh_due = app_uptime_seconds() + EPD_FONT_REFRESH_DELAY_S;
 }
+#endif
 
 static void annotations_store_applied(void)
 {
@@ -1119,7 +1141,7 @@ static void cmd_set_annotations(ble_epd_t *p_epd, uint8_t *p_data, uint16_t leng
     offset = (uint16_t)p_data[2] | ((uint16_t)p_data[3] << 8);
     total = (uint16_t)p_data[4] | ((uint16_t)p_data[5] << 8);
     if (offset == 0U && calendar_annotations_store_busy()) {
-        NRF_LOG_WARNING("anno: drop write, fds busy\n");
+        NRF_LOG_WARNING("anno: drop write, external store busy\n");
         return;
     }
     rx = calendar_annotations_rx_write(offset, total, &p_data[6], (uint16_t)(length - 6U));
@@ -1132,7 +1154,6 @@ static void cmd_set_annotations(ble_epd_t *p_epd, uint8_t *p_data, uint16_t leng
         epd_refresh_annotations(p_epd);
     } else if (rx == CALENDAR_ANNO_RX_RECOVERED) {
         p_epd->annotations_rx_last_activity = 0U;
-        epd_refresh_annotations(p_epd);
     }
     app_feed_wdt();
 }
@@ -1318,7 +1339,7 @@ static void cmd_cfg_erase(ble_epd_t *p_epd, uint8_t *p_data, uint16_t length) /*
 {
     (void)p_data; (void)length;
     epd_config_clear(&p_epd->config);
-    /* Reset is deferred until FDS confirms deletion, in ble_epd_process. */
+    /* Reset is deferred until the external tombstone commit is confirmed. */
 }
 
 /**@brief 执行单个命令(由队列处理器调用)
@@ -1343,6 +1364,7 @@ static void cmd_cfg_erase(ble_epd_t *p_epd, uint8_t *p_data, uint16_t length) /*
 static void epd_execute_command(ble_epd_t* p_epd, uint8_t* p_data, uint16_t length) {
     if (p_data == NULL || length == 0) return;
 
+#if FONT_STORE_MUTABLE
     /* A queued display command may have been accepted just before the font
      * transaction set its guard.  Drop it here as a second line of defense;
      * otherwise it can start a panel refresh while the external Flash is
@@ -1356,6 +1378,7 @@ static void epd_execute_command(ble_epd_t* p_epd, uint8_t* p_data, uint16_t leng
             return;
         }
     }
+#endif
 
     if (!is_bulk_data_command(p_data[0])) {
         NRF_LOG_DEBUG("[EPD]: Executing command 0x%02x, LEN=%d\n", p_data[0], length);
@@ -1379,7 +1402,9 @@ static void epd_execute_command(ble_epd_t* p_epd, uint8_t* p_data, uint16_t leng
         case EPD_CMD_SYNC_TIME_SILENT: cmd_sync_time_silent(p_epd, p_data, length); break;
         case EPD_CMD_SET_WEEK_START:  cmd_set_week_start(p_epd, p_data, length);  break;
         case EPD_CMD_SET_ANNOTATIONS: cmd_set_annotations(p_epd, p_data, length); break;
+#if FONT_STORE_MUTABLE
         case EPD_CMD_FONT_STORE:      cmd_font_store(p_epd, p_data, length);      break;
+#endif
         case EPD_CMD_SET_MODE:        cmd_set_mode(p_epd, p_data, length);        break;
         case EPD_CMD_WRITE_IMAGE:     cmd_write_image(p_epd, p_data, length);     break;
         case EPD_CMD_WRITE_BLOCK:     cmd_write_block(p_epd, p_data, length);     break;
@@ -1438,28 +1463,97 @@ static void epd_process_next_command(void* p_event_data, uint16_t event_size) {
     epd_cmd_queue_schedule(&p_epd->cmd_queue, p_epd, epd_process_next_command);
 }
 
-/* Called only from the main loop. FDS and failed scheduler submissions must
- * make progress even when no further BLE commands arrive. */
+/* Called only from the main loop. Persistent writes and failed scheduler
+ * submissions must make progress even when no further BLE commands arrive. */
+static uint32_t resource_notification_send(void *context, uint32_t generation,
+                                           uint8_t *data, uint16_t length)
+{
+    ble_epd_t *p_epd = context;
+    if (p_epd->connection_generation != generation || p_epd->disconnect_pending)
+        return NRF_ERROR_INVALID_STATE;
+    return ble_epd_notification_try_send(p_epd, data, length);
+}
+
+static void epd_record_ack_process(ble_epd_t *p_epd)
+{
+    uint8_t result;
+    uint32_t revision, crc;
+    if (p_epd->conn_handle == BLE_CONN_HANDLE_INVALID || p_epd->disconnect_pending ||
+        !p_epd->is_notification_enabled) {
+        p_epd->record_ack_pending = false;
+        (void)epd_config_take_save_result(&result, &revision, &crc);
+        (void)calendar_annotations_store_take_save_result(&result, &revision, &crc);
+        return;
+    }
+    if (!p_epd->record_ack_pending) {
+        uint8_t partition = 0U;
+        if (epd_config_take_save_result(&result, &revision, &crc))
+            partition = RS_PART_EPD_CONFIG;
+        else if (calendar_annotations_store_take_save_result(&result, &revision, &crc))
+            partition = RS_PART_CALENDAR_ANNOTATIONS;
+        if (partition != 0U) {
+            p_epd->record_ack[0] = EPD_RSP_RECORD_COMMIT;
+            p_epd->record_ack[1] = partition;
+            p_epd->record_ack[2] = result;
+            p_epd->record_ack[3] = 0U;
+            resource_put_u32(p_epd->record_ack + 4, revision);
+            resource_put_u32(p_epd->record_ack + 8, crc);
+            p_epd->record_ack_pending = true;
+        }
+    }
+    if (p_epd->record_ack_pending &&
+        ble_epd_notification_try_send(p_epd, p_epd->record_ack,
+                                      sizeof(p_epd->record_ack)) == NRF_SUCCESS)
+        p_epd->record_ack_pending = false;
+}
+
+static void epd_config_readback_process(ble_epd_t *p_epd)
+{
+    if (!p_epd->config_read_pending) return;
+    if (p_epd->conn_handle == BLE_CONN_HANDLE_INVALID || p_epd->disconnect_pending ||
+        !p_epd->is_notification_enabled) {
+        p_epd->config_read_pending = false;
+        return;
+    }
+    if (p_epd->cmd_queue.count || p_epd->cmd_queue.is_processing ||
+        p_epd->init_pending || p_epd->init_running || epd_config_busy()) return;
+    uint8_t reply[3U + sizeof(epd_config_t)] = {EPD_RSP_CONFIG, p_epd->config_read_token};
+    reply[2] = epd_config_is_saved(&p_epd->config) ? RS_OK : RS_IO;
+    memcpy(reply + 3, &p_epd->config, sizeof(p_epd->config));
+    if (ble_epd_notification_try_send(p_epd, reply, sizeof(reply)) == NRF_SUCCESS)
+        p_epd->config_read_pending = false;
+}
+
 void ble_epd_process(ble_epd_t* p_epd) {
     epd_connection_process(p_epd);
     epd_init_process(p_epd);
+    resource_transfer_process(p_epd, p_epd->connection_generation,
+        p_epd->conn_handle != BLE_CONN_HANDLE_INVALID && !p_epd->disconnect_pending,
+        !p_epd->is_refreshing
+#if FONT_STORE_MUTABLE
+            && !p_epd->font.operation_pending && !font_store_update_active()
+#endif
+        ,
+        app_uptime_seconds(), resource_notification_send);
     if (p_epd->annotations_rx_abort_requested) {
-        bool restored = calendar_annotations_rx_cancel();
+        (void)calendar_annotations_rx_cancel();
         CRITICAL_REGION_ENTER();
         p_epd->annotations_rx_abort_requested = false;
         p_epd->annotations_rx_last_activity = 0U;
         CRITICAL_REGION_EXIT();
-        if (restored) epd_refresh_annotations(p_epd);
     }
-    epd_storage_process();
     epd_config_process();
     calendar_annotations_store_process();
+    epd_record_ack_process(p_epd);
+    epd_config_readback_process(p_epd);
     calendar_annotations_tx_process(&p_epd->annotations_tx, p_epd->max_data_len,
                                     annotations_tx_send, p_epd);
     if (epd_config_clear_complete()) NVIC_SystemReset();
     epd_cmd_queue_schedule(&p_epd->cmd_queue, p_epd, epd_process_next_command);
     epd_display_queue_schedule(&p_epd->display_queue, p_epd, epd_gui_update);
+#if FONT_STORE_MUTABLE
     font_task_retry(p_epd);
+#endif
 }
 
 /**@brief 服务写入处理包装函数(将命令入队或执行)
@@ -1476,6 +1570,22 @@ void ble_epd_process(ble_epd_t* p_epd) {
  */
 static void epd_service_on_write(ble_epd_t* p_epd, uint8_t* p_data, uint16_t length) {
     if (p_data == NULL || length == 0) return;
+    if (p_data[0] == EPD_CMD_GET_CONFIG) {
+        if (length == 2U && !p_epd->config_read_pending) {
+            p_epd->config_read_token = p_data[1];
+            p_epd->config_read_pending = true;
+        }
+        return;
+    }
+    if (p_data[0] == EPD_CMD_RESOURCE) {
+        resource_transfer_receive(p_data, length, p_epd->connection_generation);
+        return;
+    }
+#if RESOURCE_STORE_MAINTENANCE
+    /* The maintenance build keeps BLE/DFU/config recovery, but never starts
+     * the old font allocator or a panel operation while repartitioning. */
+    if (p_data[0] == EPD_CMD_FONT_STORE || font_blocks_display_command(p_data[0])) return;
+#endif
     if (!is_bulk_data_command(p_data[0])) {
         NRF_LOG_DEBUG("[EPD]: on_write received command 0x%02x, LEN=%d\n", p_data[0], length);
     }
@@ -1484,6 +1594,7 @@ static void epd_service_on_write(ble_epd_t* p_epd, uint8_t* p_data, uint16_t len
         ble_log("[CMD]:%02x/%d", p_data[0], length);
     }
 
+#if FONT_STORE_MUTABLE
     /* GET is read-only and must never enter the two-entry display queue.
      * During a busy notification window, restart the dedicated list worker
      * from slot zero; duplicate A3 records are harmless and this prevents a
@@ -1543,6 +1654,7 @@ static void epd_service_on_write(ble_epd_t* p_epd, uint8_t* p_data, uint16_t len
         epd_report_font_busy(p_epd, p_data, length);
         return;
     }
+#endif
 
     // 紧急命令绕过队列立即执行
     if (is_urgent_command(p_data[0]) || epd_cmd_is_immediate(p_data[0])) {
@@ -1641,9 +1753,11 @@ void ble_epd_on_ble_evt(ble_epd_t* p_epd, ble_evt_t* p_ble_evt) {
             /* Notification workers use a single non-blocking HVX attempt.
              * Retry only after SoftDevice reports that TX queue space was
              * released, so BLE event handling never sleeps on resources. */
+#if FONT_STORE_MUTABLE
             font_task_wake_tx(p_epd, FONT_TASK_LIST |
                                        FONT_TASK_OPERATION_ACK |
                                        FONT_TASK_STREAM_ACK);
+#endif
             calendar_annotations_tx_wake(&p_epd->annotations_tx);
             break;
 
@@ -1768,6 +1882,8 @@ uint32_t ble_epd_init(ble_epd_t* p_epd) {
     calendar_annotations_tx_cancel(&p_epd->annotations_tx);
     p_epd->annotations_rx_last_activity = 0U;
     p_epd->annotations_rx_abort_requested = false;
+    p_epd->record_ack_pending = false;
+    p_epd->config_read_pending = false;
     p_epd->last_refresh_start = 0;
     p_epd->last_set_time_ts = 0;
 
@@ -1858,12 +1974,16 @@ uint32_t ble_epd_string_send(ble_epd_t* p_epd, uint8_t* p_string, uint16_t lengt
  * @param[in] force_update  为true时强制更新
  */
 void ble_epd_on_timer(ble_epd_t* p_epd, uint32_t timestamp, bool force_update) {
+#if RESOURCE_STORE_MAINTENANCE
+    return;
+#endif
     if (calendar_annotations_rx_active() &&
         (uint32_t)(app_uptime_seconds() - p_epd->annotations_rx_last_activity) >=
             EPD_ANNOTATIONS_RX_TIMEOUT_S) {
         p_epd->annotations_rx_abort_requested = true;
     }
 
+#if FONT_STORE_MUTABLE
     /* Retry deferred font tasks from the timer path.  This path only posts a
      * scheduler event; Flash/SPI work remains in font_task_worker(). */
     font_task_retry(p_epd);
@@ -1901,6 +2021,7 @@ void ble_epd_on_timer(ble_epd_t* p_epd, uint32_t timestamp, bool force_update) {
 
     // 低电量保持：停周期刷新，仍显示月历/时钟。每 LOW_BATTERY_POLL_INTERVAL_S
     // 采样：临界则再刷一帧正常画面后关机，恢复则强制全刷。
+#endif
     if (p_epd->low_battery_screen_active && !force_update) {
         if (timestamp % LOW_BATTERY_POLL_INTERVAL_S == 0) {
             uint16_t voltage_mv = EPD_ReadVoltageAndCache();

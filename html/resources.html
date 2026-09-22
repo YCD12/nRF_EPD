@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="zh-CN">
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>外置资源维护</title>
+<style>body{font:16px system-ui;max-width:800px;margin:40px auto;padding:0 20px}button,input{margin:8px;padding:8px}pre{white-space:pre-wrap;background:#f3f5f7;padding:16px}progress{width:100%}</style>
+<h1>外置资源维护</h1>
+<p>正常版本支持查看和导出；维护版本支持写入。资源只保存一份，更新中断后需重新上传。</p>
+<p>维护固件可导入分区表、日历、UI、字体以及 MIG1 备份转换出的配置和标注资源包。普通固件保持只读维护入口。</p>
+<button id="connect">连接设备</button><button id="status" disabled>读取状态</button><button id="export" disabled>导出完整外置 Flash</button>
+<hr><input id="file" type="file" accept=".ers">
+<label><input id="confirm" type="checkbox">已保存旧数据，允许覆盖所选资源分区</label>
+<button id="upload" disabled>上传资源包</button>
+<progress id="progress" value="0" max="1"></progress><pre id="log">尚未连接</pre>
+<script src="js/resource_store.js"></script>
+<script>
+'use strict';
+const $ = id => document.getElementById(id);
+let client, device, running = false;
+function controls() {
+  for (const id of ['status', 'export', 'upload']) $(id).disabled = running || !client;
+  $('connect').disabled = running || !!client;
+}
+async function run(action) {
+  running = true; controls();
+  try { await action(); } catch (e) { $('log').textContent = e.message; }
+  finally { running = false; controls(); }
+}
+function progress(n, total) { $('progress').value = n / total; $('log').textContent = `${n} / ${total} 字节`; }
+$('connect').onclick = () => run(async () => {
+  device = await navigator.bluetooth.requestDevice({acceptAllDevices:true, optionalServices:['62750001-d828-918d-fb46-b6c11c675aec']});
+  device.addEventListener('gattserverdisconnected', () => {
+    if (client) client.disconnect(); client = null; controls(); $('log').textContent = '连接已断开';
+  });
+  try {
+    const server = await device.gatt.connect();
+    const service = await server.getPrimaryService('62750001-d828-918d-fb46-b6c11c675aec');
+    const characteristic = await service.getCharacteristic('62750002-d828-918d-fb46-b6c11c675aec');
+    client = new EPDResourceStore.ResourceClient(bytes => characteristic.writeValueWithResponse(bytes));
+    characteristic.addEventListener('characteristicvaluechanged', e => {
+      if (client) client.receive(new Uint8Array(e.target.value.buffer, e.target.value.byteOffset, e.target.value.byteLength));
+    });
+    await characteristic.startNotifications(); $('log').textContent = '已连接';
+  } catch (e) { if (client) client.disconnect(); client = null; device.gatt.disconnect(); throw e; }
+});
+$('status').onclick = () => run(async () => {
+  const r = await client.status();
+  const states = ['有效', '格式错误', '正在更新', '校验失败', '未安装分区表', '读写失败', '版本不兼容', '只读'];
+  $('log').textContent = `分区表：${states[r[3]] || r[3]}\n固件：${r[4] ? '维护版本，可写入' : '正常版本，只读'}\n资源格式：${r[5]}`;
+});
+$('export').onclick = () => run(async () => {
+  const bytes = await client.exportFlash(progress);
+  const url = URL.createObjectURL(new Blob([bytes], {type:'application/octet-stream'}));
+  const link = document.createElement('a'); link.href = url;
+  link.download = `external-flash-${Date.now()}.bin`; link.click();
+  setTimeout(() => URL.revokeObjectURL(url), 60000);
+  $('log').textContent = `导出完成，CRC32：${EPDResourceStore.crc32(bytes).toString(16).padStart(8,'0')}。导出期间请勿从其他页面更新设备数据。`;
+});
+$('upload').onclick = () => run(async () => {
+  if (!$('confirm').checked || !$('file').files[0]) throw new Error('请选择资源包并确认已保存旧数据');
+  await client.upload(new Uint8Array(await $('file').files[0].arrayBuffer()), progress);
+  $('log').textContent = '写入及设备读回校验完成';
+});
+</script>
+</html>

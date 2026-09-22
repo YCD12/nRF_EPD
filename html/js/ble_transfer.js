@@ -267,11 +267,11 @@ const BleTransfer = {
         packet[7 + payload.length] = crc >> 8;
 
         try {
-            if (withResponse) {
-                await epdCharacteristic.writeValueWithResponse(packet);
-            } else {
-                await epdCharacteristic.writeValueWithoutResponse(packet);
-            }
+            // Share ordering, connection checks and the migration-export lock
+            // with every other GATT write.
+            const sent = await write(EpdCmd.WRITE_BLOCK, packet.subarray(1),
+                                     withResponse, false, true);
+            if (!sent) throw new Error('BLE write rejected');
 
             // Update statistics
             this.transferStats.bytesSent += payload.length;

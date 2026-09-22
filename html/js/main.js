@@ -7,10 +7,15 @@ let gattWriteTail = Promise.resolve();
 let connectionGeneration = 0;
 let initWaiter = null;
 let initToken = 0;
+let lastDeviceConfig = null;
+let legacyConfigDirty = false;
+let configReadWaiter = null;
+let configReadToken = 0;
+let migrationExport = null;
 
 // APP版本号 (便于调试)
-const APP_VERSION = '2.0.15';
-const APP_BUILD_DATE = '2026-09-15';
+const APP_VERSION = '2.0.17';
+const APP_BUILD_DATE = '2026-09-22';
 const EPD_DEVICE_NAME_PREFIX = 'NRF_EPD';
 const SCAN_DURATION_MS = 5000;
 const LOG_CONSOLE_STORAGE_KEY = 'epd_log_to_console';
@@ -26,6 +31,12 @@ let lastWeekStartSent = null;
 let internalDisconnectInProgress = false;
 let internalDisconnectSuppressUntil = 0;
 const DFU_PAGE_HANDOFF_KEY = 'epd_dfu_page_handoff';
+/* Minimum device protocol version handled by the new web application.新旧版本区分 */
+const NEW_WEB_MIN_FIRMWARE_VERSION = 0x34;
+/* GET_CONFIG is a protocol capability; keep it independent from page routing. */
+const CONFIG_READBACK_MIN_FIRMWARE_VERSION = 0x34;
+const LEGACY_WEB_PATH = 'legacy/index.html';
+const LEGACY_WEB_MANIFEST_PATH = 'legacy/manifest.json';
 
 const EpdCmd = {
   SET_PINS: 0x00,
@@ -53,6 +64,7 @@ const EpdCmd = {
   SET_CONFIG: 0x90,
   SYS_RESET: 0x91,
   SYS_SLEEP: 0x92,
+  GET_CONFIG: 0x93,
   CFG_ERASE: 0x99,
 };
 
@@ -94,6 +106,68 @@ function bytes2hex(data) {
     }, "");
 }
 
+async function readMigrationConfig() {
+  if (appVersion < CONFIG_READBACK_MIN_FIRMWARE_VERSION) {
+    if (legacyConfigDirty) throw new Error('旧固件配置已修改，请等待保存完成后断开重连，再导出备份');
+    return Uint8Array.from(lastDeviceConfig);
+  }
+  const waiter = {token: (++configReadToken & 255), generation: connectionGeneration};
+  waiter.promise = new Promise(resolve => { waiter.resolve = resolve; });
+  configReadWaiter = waiter;
+  try {
+    if (!await write(EpdCmd.GET_CONFIG, [waiter.token])) throw new Error('配置读取请求失败');
+    const config = await withTimeout(waiter.promise, 30000, '配置读取确认超时');
+    if (!config) throw new Error('配置尚未成功保存，未生成迁移备份');
+    return config;
+  } finally {
+    if (configReadWaiter === waiter) configReadWaiter = null;
+  }
+}
+
+async function exportMigrationBundle() {
+  if (migrationExport) return false;
+  if (!epdCharacteristic || !gattServer || !gattServer.connected || !lastDeviceConfig) {
+    addLog('请先连接设备并等待配置读取完成');
+    return;
+  }
+  const operation = {generation: connectionGeneration, characteristic: epdCharacteristic};
+  migrationExport = operation;
+  const checkConnection = () => {
+    if (operation.generation !== connectionGeneration || operation.characteristic !== epdCharacteristic ||
+        !gattServer || !gattServer.connected) throw new Error('连接已变化，未生成迁移备份');
+  };
+  try {
+    await gattWriteTail;
+    checkConnection();
+    const config = await readMigrationConfig();
+    checkConnection();
+    if (!window.CalendarAnnotations || !await window.CalendarAnnotations.loadFromDevice())
+      throw new Error('标注读取失败，未生成迁移备份');
+    checkConnection();
+    const annotations = window.CalendarAnnotations.pack();
+    const bundle = {
+      format: 'EPD-MIG1',
+      exported_at: new Date().toISOString(),
+      epd_config_hex: bytes2hex(config),
+      calendar_annotations_hex: bytes2hex(annotations),
+    };
+    const url = URL.createObjectURL(new Blob([JSON.stringify(bundle, null, 2) + '\n'],
+                                              {type: 'application/json'}));
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `epd-migration-${Date.now()}.json`;
+    link.click();
+    setTimeout(() => URL.revokeObjectURL(url), 60000);
+    addLog(`已导出迁移备份：配置 ${config.length} B，标注 ${annotations.length} B`);
+    return true;
+  } catch (error) {
+    addLog(error.message);
+    return false;
+  } finally {
+    if (migrationExport === operation) migrationExport = null;
+  }
+}
+
 function intToHex(intIn) {
   let stringOut = ("0000" + intIn.toString(16)).substr(-4)
   return stringOut.substring(2, 4) + stringOut.substring(0, 2);
@@ -111,15 +185,63 @@ async function withTimeout(promise, timeoutMs, timeoutMessage) {
   }
 }
 
+/* Firmware version is only known after connecting. Probe the optional legacy
+ * page before leaving this one; deployments without it retain compatibility
+ * mode. ?web=current disables routing and ?web=legacy forces local routing. */
+async function routeWebForFirmware(version, connectedDevice = bleDevice) {
+  if (version >= NEW_WEB_MIN_FIRMWARE_VERSION || !window.location || typeof URL !== 'function') {
+    return false;
+  }
+  const selection = new URLSearchParams(window.location.search || '').get('web');
+  if (selection === 'current') return false;
+  const target = new URL(LEGACY_WEB_PATH, window.location.href);
+  const manifestUrl = new URL(LEGACY_WEB_MANIFEST_PATH, window.location.href);
+  target.searchParams.set('firmware', `0x${version.toString(16)}`);
+  if (selection !== 'legacy') {
+    if (typeof fetch !== 'function' || window.location.protocol === 'file:') {
+      addLog('未自动检测旧版网页，继续使用当前兼容页面；可用 ?web=legacy 强制切换');
+      return false;
+    }
+    try {
+      const response = await fetch(manifestUrl.href, {cache: 'no-store'});
+      if (!response.ok) {
+        addLog(`旧版网页尚未安装，继续使用当前兼容页面（${LEGACY_WEB_MANIFEST_PATH}）`);
+        return false;
+      }
+      const manifest = await response.json();
+      if (!manifest || manifest.format !== 'EPD-WEB-ROUTE' || manifest.enabled !== true ||
+          manifest.entry !== 'index.html') {
+        addLog('旧版网页尚未启用，继续使用当前兼容页面');
+        return false;
+      }
+    } catch (error) {
+      addLog(`旧版网页检测失败，继续使用当前兼容页面：${error.message || error}`);
+      return false;
+    }
+  }
+  addLog(`固件 0x${version.toString(16)} 使用旧版网页，正在切换...`);
+  if (connectedDevice && connectedDevice.gatt && connectedDevice.gatt.connected) {
+    internalDisconnectInProgress = true;
+    connectedDevice.gatt.disconnect();
+  }
+  window.location.assign(target.href);
+  return true;
+}
+
 function resetVariables() {
+  if (configReadWaiter) configReadWaiter.resolve(null);
+  configReadWaiter = null;
   if (initWaiter) initWaiter.resolve(false);
   initWaiter = null;
+  if (window.CalendarAnnotations) window.CalendarAnnotations.cancelCommitWait();
   connectionGeneration++;
   gattWriteTail = Promise.resolve();
   gattServer = null;
   epdService = null;
   epdCharacteristic = null;
   appVersion = null;
+  lastDeviceConfig = null;
+  legacyConfigDirty = false;
   document.getElementById('mtusize').value = 20;
 }
 
@@ -155,6 +277,11 @@ function updateBatteryVoltageDisplay(voltageMv = null, fallbackText = '未连接
 }
 
 async function write(cmd, data, withResponse = true, logPayload = true, serialize = true) {
+  if (migrationExport && cmd !== EpdCmd.GET_CONFIG &&
+      !(cmd === EpdCmd.SET_ANNOTATIONS && data && data[0] === 2)) {
+    addLog('正在导出迁移备份，请完成后再修改设备');
+    return false;
+  }
   if (!epdCharacteristic || !gattServer || !gattServer.connected) {
     addLog("服务不可用，请检查蓝牙连接");
     return false;
@@ -182,6 +309,22 @@ async function write(cmd, data, withResponse = true, logPayload = true, serializ
       payload = [cmd, payload.length > 1 ? payload[1] : 0xff, waiter.token];
     }
     if (logPayload) addLog(bytes2hex(payload), '⇑');
+    // Legacy firmware has no confirmed readback. Do not export a stale cache
+    // after any command that may change it, even if its GATT result is lost.
+    const cachedMode = lastDeviceConfig ? lastDeviceConfig[11] : 0xff;
+    const entersPictureMode =
+      cmd === EpdCmd.CLEAR || cmd === EpdCmd.REFRESH ||
+      cmd === EpdCmd.WRITE_IMG || cmd === EpdCmd.WRITE_BLOCK ||
+      ((cmd === EpdCmd.SEND_CMD || cmd === EpdCmd.SEND_DATA) &&
+       (cachedMode === 2 || cachedMode === 3));
+    if (appVersion < CONFIG_READBACK_MIN_FIRMWARE_VERSION && lastDeviceConfig && (
+        cmd === EpdCmd.SET_CONFIG || cmd === EpdCmd.SET_PINS || cmd === EpdCmd.CFG_ERASE ||
+        (entersPictureMode && cachedMode !== 0) ||
+        (cmd === EpdCmd.INIT && payload.length > 1 && payload[1] !== 0xff && payload[1] !== lastDeviceConfig[7]) ||
+        (cmd === EpdCmd.SET_WEEK_START && payload[1] !== lastDeviceConfig[12]) ||
+        (cmd === EpdCmd.SET_MODE && payload[1] !== lastDeviceConfig[11]) ||
+        (cmd === EpdCmd.SET_TIME && payload.length > 6 && payload[6] !== lastDeviceConfig[11])))
+      legacyConfigDirty = true;
     try {
       if (withResponse)
         await characteristic.writeValueWithResponse(Uint8Array.from(payload));
@@ -962,6 +1105,16 @@ async function reConnect() {
 function handleNotify(value) {
   const data = new Uint8Array(value.buffer, value.byteOffset, value.byteLength);
 
+  if (data.length === 17 && data[0] === 0xA9) {
+    if (configReadWaiter && configReadWaiter.generation === connectionGeneration &&
+        configReadWaiter.token === data[1]) {
+      const config = data[2] === 0 ? Uint8Array.from(data.slice(3)) : null;
+      if (config) lastDeviceConfig = Uint8Array.from(config);
+      configReadWaiter.resolve(config);
+    }
+    return;
+  }
+
   if (data.length >= 5 && data[0] === 0xA6) {
     if (initWaiter && initWaiter.generation === connectionGeneration &&
         initWaiter.token === data[1]) {
@@ -980,6 +1133,16 @@ function handleNotify(value) {
   }
   if (data.length >= 1 && data[0] === 0xA2 && window.CalendarAnnotations) {
     window.CalendarAnnotations.handleNotification(value);
+    return;
+  }
+  if (data.length === 12 && data[0] === 0xA8) {
+    if (data[1] === 3 && window.CalendarAnnotations) {
+      window.CalendarAnnotations.handleNotification(value);
+    } else if (data[1] === 2) {
+      const revision = new DataView(data.buffer, data.byteOffset, data.byteLength).getUint32(4, true);
+      addLog(data[2] === 0 ? `配置已写入外置 Flash（revision ${revision}）` :
+             `配置写入外置 Flash 失败（状态 ${data[2]}）`);
+    }
     return;
   }
   if (data.length >= 1 &&
@@ -1022,6 +1185,7 @@ function handleNotify(value) {
 
   // 当前固件配置包固定为 epd_config_t 的 14 字节二进制数据。
   if (data.length === 14) {
+    lastDeviceConfig = Uint8Array.from(data);
     addLog(`收到配置：${bytes2hex(data)}`);
     const epdpins = document.getElementById("epdpins");
     const epddriver = document.getElementById("epddriver");
@@ -1225,6 +1389,7 @@ async function connect() {
       console.error(e);
       appVersion = 0x15;
     }
+    if (await routeWebForFirmware(appVersion, targetDevice)) return;
     ensureConnected();
 
     if (appVersion < 0x16) {

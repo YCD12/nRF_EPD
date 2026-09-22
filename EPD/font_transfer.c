@@ -6,6 +6,8 @@
 #include <string.h>
 #include <stddef.h>
 
+#if FONT_STORE_MUTABLE
+
 void cmd_font_store(ble_epd_t* p_epd, uint8_t* p_data, uint16_t length);
 static void font_stream_worker(void* p_event_data, uint16_t event_size);
 static void font_stream_ack_worker(void* p_event_data, uint16_t event_size);
@@ -699,3 +701,5 @@ void cmd_font_store(ble_epd_t* p_epd, uint8_t* p_data, uint16_t length)
     }
     app_feed_wdt();
 }
+
+#endif /* FONT_STORE_MUTABLE */

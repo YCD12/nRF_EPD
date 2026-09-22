@@ -8,6 +8,7 @@
 
 #include "fm25q04b.h"
 #include "font_store.h"
+#include "resource_store.h"
 
 #define MOCK_FLASH_SIZE FM25Q04B_SIZE_BYTES
 
@@ -21,6 +22,36 @@ static unsigned flash_read_count;
 static int power_cut_after = -1;
 static size_t power_cut_bytes;
 static jmp_buf power_cut_jump;
+static bool use_resource_layout;
+static uint32_t resource_payload_length;
+
+rs_result_t resource_store_mount(void) { return use_resource_layout ? RS_OK : RS_NOT_FOUND; }
+rs_result_t resource_store_find(uint16_t id, rs_partition_t *p)
+{
+    if (!use_resource_layout || id != 7U || p == NULL) return RS_NOT_FOUND;
+    *p = (rs_partition_t){7U, 7U, 1U, 0U, 0x18000U, 0x40000U};
+    return RS_OK;
+}
+rs_result_t resource_store_info(uint16_t id, rs_package_info_t *p)
+{
+    if (!use_resource_layout || id != 7U || p == NULL) return RS_NOT_FOUND;
+    *p = (rs_package_info_t){42U, resource_payload_length, 0U};
+    return RS_OK;
+}
+rs_result_t resource_store_open(uint16_t id, uint32_t *length)
+{
+    if (!use_resource_layout || id != 7U || length == NULL) return RS_NOT_FOUND;
+    *length = resource_payload_length;
+    return RS_OK;
+}
+rs_result_t resource_store_read(uint16_t id, uint32_t offset, void *data, size_t length)
+{
+    if (!use_resource_layout || id != 7U || data == NULL ||
+        offset > resource_payload_length || length > resource_payload_length - offset)
+        return RS_NOT_FOUND;
+    memcpy(data, &mock_flash[0x18000U + RS_HEADER_SIZE + offset], length);
+    return RS_OK;
+}
 
 void app_feed_wdt(void)
 {
@@ -121,6 +152,11 @@ static void write_u16_be(uint8_t* p, uint16_t value)
 {
     p[0] = (uint8_t)(value >> 8);
     p[1] = (uint8_t)value;
+}
+
+static void write_u32_le(uint8_t* p, uint32_t value)
+{
+    for (unsigned i = 0U; i < 4U; i++) p[i] = (uint8_t)(value >> (i * 8U));
 }
 
 static void make_font(uint8_t* data, size_t length, font_store_slot_t slot)
@@ -259,7 +295,7 @@ int main(void)
     flash_read_count = 0U;
     font_store_host_reset();
     assert(font_store_init() == NRF_SUCCESS);
-    assert(flash_read_count == 67U); /* bounded directory scan + three headers */
+    assert(flash_read_count == 68U); /* layout guard + directory scan + three headers */
 
     source = font_store_get_source(FONT_STORE_SLOT_WQY12);
     assert(source != NULL);
@@ -414,6 +450,41 @@ int main(void)
         assert(font_store_init() == NRF_SUCCESS);
         assert_present(FONT_STORE_SLOT_WQY9, sizeof(wqy9), FONT_STORE_DATA_BASE + 0x6000U);
     }
+
+    /* A committed ERS font partition supersedes FST2/FST3. Its directory and
+     * every u8g2 stream are checked before any slot becomes visible. */
+    memset(mock_flash, 0xFF, sizeof(mock_flash));
+    use_resource_layout = true;
+    resource_payload_length = 56U + 3U * 96U;
+    uint8_t *payload = &mock_flash[0x18000U + RS_HEADER_SIZE];
+    memset(payload, 0, 56U);
+    write_u32_le(payload, 0x314B5046UL);
+    payload[4] = 1U;
+    payload[6] = 3U;
+    const uint8_t *font_data[] = {wqy9, wqy12, helvb18};
+    for (unsigned slot = 0U; slot < 3U; slot++) {
+        uint32_t record = 8U + slot * 16U;
+        uint32_t offset = 56U + slot * 96U;
+        write_u32_le(payload + record, offset);
+        write_u32_le(payload + record + 4U, 96U);
+        write_u32_le(payload + record + 8U, font_store_crc32(font_data[slot], 96U));
+        memcpy(payload + offset, font_data[slot], 96U);
+    }
+    font_store_host_reset();
+    assert(font_store_init() == NRF_SUCCESS);
+    assert_present(FONT_STORE_SLOT_WQY9, 96U, 0x18000U + RS_HEADER_SIZE + 56U);
+    assert_present(FONT_STORE_SLOT_WQY12, 96U, 0x18000U + RS_HEADER_SIZE + 152U);
+    font_store_info_t resource_info;
+    assert(font_store_get_info(FONT_STORE_SLOT_HELVB18, &resource_info));
+    assert(resource_info.revision == 42U);
+    font_store_pack_slot_t read_only_slots[3] = {{96U, 0U}, {96U, 0U}, {96U, 0U}};
+    assert(font_store_begin_pack(288U, 0U, read_only_slots) == FONT_STORE_INVALID);
+    payload[8U + 8U] ^= 1U;
+    font_store_host_reset();
+    assert(font_store_init() == NRF_SUCCESS);
+    assert_missing(FONT_STORE_SLOT_WQY9);
+    assert_missing(FONT_STORE_SLOT_WQY12);
+    assert_missing(FONT_STORE_SLOT_HELVB18);
 
     puts("PASS: dynamic font package transaction and power-loss behavior");
     return 0;

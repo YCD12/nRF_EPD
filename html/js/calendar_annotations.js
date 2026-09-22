@@ -7,6 +7,8 @@ const CalendarAnnotations = {
   MAX_LABEL_BYTES: 9,
   NOTIFY: 0xA2,
   NOTIFY_HDR: 5,
+  COMMIT_NOTIFY: 0xA8,
+  PARTITION_ID: 3,
   STORAGE_KEY: 'epd_calendar_annotations_v1',
   FONT_FOLLOW: 0,
   FONT_SMALL: 9,
@@ -33,6 +35,37 @@ const CalendarAnnotations = {
     '休班',
 
   annotations: [],
+  _commitWaiter: null,
+
+  crc32(bytes) {
+    let crc = 0xffffffff;
+    for (const byte of bytes) {
+      crc ^= byte;
+      for (let i = 0; i < 8; ++i) crc = (crc >>> 1) ^ ((crc & 1) ? 0xedb88320 : 0);
+    }
+    return (crc ^ 0xffffffff) >>> 0;
+  },
+
+  waitForCommit(bytes) {
+    this.cancelCommitWait();
+    const expectedCrc = this.crc32(bytes);
+    return new Promise(resolve => {
+      const timer = setTimeout(() => {
+        if (this._commitWaiter && this._commitWaiter.expectedCrc === expectedCrc) {
+          this._commitWaiter = null;
+          resolve(false);
+        }
+      }, 30000);
+      this._commitWaiter = { expectedCrc, resolve, timer };
+    });
+  },
+
+  cancelCommitWait() {
+    if (!this._commitWaiter) return;
+    clearTimeout(this._commitWaiter.timer);
+    this._commitWaiter.resolve(false);
+    this._commitWaiter = null;
+  },
 
   labelByteLength(text) {
     return new TextEncoder().encode(text || '').length;
@@ -305,6 +338,16 @@ const CalendarAnnotations = {
 
   handleNotification(value) {
     const data = new Uint8Array(value.buffer, value.byteOffset, value.byteLength);
+    if (data.length === 12 && data[0] === this.COMMIT_NOTIFY && data[1] === this.PARTITION_ID) {
+      const crc = new DataView(data.buffer, data.byteOffset, data.byteLength).getUint32(8, true);
+      if (this._commitWaiter && crc === this._commitWaiter.expectedCrc) {
+        const waiter = this._commitWaiter;
+        this._commitWaiter = null;
+        clearTimeout(waiter.timer);
+        waiter.resolve(data[2] === 0);
+      }
+      return true;
+    }
     if (data.length < this.NOTIFY_HDR || data[0] !== this.NOTIFY) return false;
     const offset = data[1] | (data[2] << 8);
     const total = data[3] | (data[4] << 8);
@@ -395,6 +438,8 @@ const CalendarAnnotations = {
       addLog(e.message);
       return;
     }
+    const durable = typeof appVersion === 'number' && appVersion >= 0x33;
+    const committed = durable ? this.waitForCommit(bytes) : null;
     const mtu = Number((document.getElementById('mtusize') || {}).value) || 20;
     const chunk = Math.max(1, mtu - 6);
     for (let offset = 0; offset < bytes.length; offset += chunk) {
@@ -408,12 +453,21 @@ const CalendarAnnotations = {
       payload.set(slice, 5);
       const ok = await write(EpdCmd.SET_ANNOTATIONS, payload);
       if (!ok) {
+        this.cancelCommitWait();
         addLog('标注分片发送失败');
         return;
       }
     }
-    addLog(`已下发 ${this.annotations.length} 条日期标注`);
-    if (typeof appVersion === 'number' && appVersion >= 0x29) {
+    if (durable) {
+      if (!await committed) {
+        addLog('设备未确认标注已写入外置 Flash，请重试');
+        return;
+      }
+      addLog(`已保存 ${this.annotations.length} 条日期标注到外置 Flash`);
+    } else {
+      addLog(`已下发 ${this.annotations.length} 条日期标注`);
+    }
+    if (!durable && typeof appVersion === 'number' && appVersion >= 0x29) {
       const verified = await this.loadFromDevice();
       if (!verified) addLog('保存后回读失败，请再读一次核对');
     }
@@ -421,13 +475,24 @@ const CalendarAnnotations = {
 
   async clearDevice() {
     if (!this.requireDevice()) return;
+    const empty = new Uint8Array(this.HEADER_SIZE);
+    const view = new DataView(empty.buffer);
+    view.setUint32(0, this.MAGIC, true);
+    empty[4] = this.VERSION;
+    empty[5] = this.RECORD_SIZE;
+    const durable = typeof appVersion === 'number' && appVersion >= 0x33;
+    const committed = durable ? this.waitForCommit(empty) : null;
     const ok = await write(EpdCmd.SET_ANNOTATIONS, new Uint8Array([1]));
     if (ok) {
+      if (durable && !await committed) {
+        addLog('设备未确认清除结果已写入外置 Flash，请重试');
+        return;
+      }
       this.annotations = [];
       this.persist();
       this.render();
-      addLog('已清除设备标注');
-    }
+      addLog(durable ? '已清除设备标注并写入外置 Flash' : '已清除设备标注');
+    } else this.cancelCommitWait();
   },
 
   init() {

@@ -8,6 +8,10 @@
 #endif
 #include "font_store.h"
 
+#ifndef FONT_STORE_MUTABLE
+#define FONT_STORE_MUTABLE 0
+#endif
+
 #define FONT_STORE_OP_GET          0x00U
 #define FONT_STORE_OP_PACK_BEGIN   0x06U
 #define FONT_STORE_OP_PACK_DATA    0x07U

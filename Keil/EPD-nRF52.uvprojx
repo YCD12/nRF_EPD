@@ -80,9 +80,9 @@
             <nStopB2X>0</nStopB2X>
           </BeforeMake>
           <AfterMake>
-            <RunUserProg1>1</RunUserProg1>
+            <RunUserProg1>0</RunUserProg1>
             <RunUserProg2>1</RunUserProg2>
-            <UserProg1Name>..\tools\make-ota-nrf52.bat $L @L</UserProg1Name>
+            <UserProg1Name></UserProg1Name>
             <UserProg2Name>..\keil5_disp_size_bar.exe</UserProg2Name>
             <UserProg1Dos16Mode>0</UserProg1Dos16Mode>
             <UserProg2Dos16Mode>0</UserProg2Dos16Mode>
@@ -405,11 +405,6 @@
               <FilePath>..\EPD\EPD_config.c</FilePath>
             </File>
             <File>
-              <FileName>storage_retry.c</FileName>
-              <FileType>1</FileType>
-              <FilePath>..\EPD\storage_retry.c</FilePath>
-            </File>
-            <File>
               <FileName>epd_advertising.c</FileName>
               <FileType>1</FileType>
               <FilePath>..\EPD\epd_advertising.c</FilePath>
@@ -455,6 +450,26 @@
               <FilePath>..\EPD\calendar_annotations_store.c</FilePath>
             </File>
             <File>
+              <FileName>resource_store.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\EPD\resource_store.c</FilePath>
+            </File>
+            <File>
+              <FileName>persistent_record.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\EPD\persistent_record.c</FilePath>
+            </File>
+            <File>
+              <FileName>resource_protocol.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\EPD\resource_protocol.c</FilePath>
+            </File>
+            <File>
+              <FileName>resource_transfer.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\EPD\resource_transfer.c</FilePath>
+            </File>
+            <File>
               <FileName>font_store.c</FileName>
               <FileType>1</FileType>
               <FilePath>..\EPD\font_store.c</FilePath>
@@ -477,6 +492,16 @@
               <FileName>GUI.c</FileName>
               <FileType>1</FileType>
               <FilePath>..\GUI\GUI.c</FilePath>
+            </File>
+            <File>
+              <FileName>calendar_resources.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\GUI\calendar_resources.c</FilePath>
+            </File>
+            <File>
+              <FileName>ui_resources.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\GUI\ui_resources.c</FilePath>
             </File>
             <File>
               <FileName>calendar_annotations.c</FileName>
@@ -642,11 +667,6 @@
               <FilePath>..\SDK\17.1.0_ddde560\components\libraries\timer\drv_rtc.c</FilePath>
             </File>
             <File>
-              <FileName>fds.c</FileName>
-              <FileType>1</FileType>
-              <FilePath>..\SDK\17.1.0_ddde560\components\libraries\fds\fds.c</FilePath>
-            </File>
-            <File>
               <FileName>nrf_assert.c</FileName>
               <FileType>1</FileType>
               <FilePath>..\SDK\17.1.0_ddde560\components\libraries\util\nrf_assert.c</FilePath>
@@ -685,16 +705,6 @@
               <FileName>nrf_fprintf_format.c</FileName>
               <FileType>1</FileType>
               <FilePath>..\SDK\17.1.0_ddde560\external\fprintf\nrf_fprintf_format.c</FilePath>
-            </File>
-            <File>
-              <FileName>nrf_fstorage.c</FileName>
-              <FileType>1</FileType>
-              <FilePath>..\SDK\17.1.0_ddde560\components\libraries\fstorage\nrf_fstorage.c</FilePath>
-            </File>
-            <File>
-              <FileName>nrf_fstorage_sd.c</FileName>
-              <FileType>1</FileType>
-              <FilePath>..\SDK\17.1.0_ddde560\components\libraries\fstorage\nrf_fstorage_sd.c</FilePath>
             </File>
             <File>
               <FileName>nrf_memobj.c</FileName>
@@ -1264,6 +1274,26 @@
               <FilePath>..\EPD\calendar_annotations_store.c</FilePath>
             </File>
             <File>
+              <FileName>resource_store.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\EPD\resource_store.c</FilePath>
+            </File>
+            <File>
+              <FileName>persistent_record.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\EPD\persistent_record.c</FilePath>
+            </File>
+            <File>
+              <FileName>resource_protocol.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\EPD\resource_protocol.c</FilePath>
+            </File>
+            <File>
+              <FileName>resource_transfer.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\EPD\resource_transfer.c</FilePath>
+            </File>
+            <File>
               <FileName>font_store.c</FileName>
               <FileType>1</FileType>
               <FilePath>..\EPD\font_store.c</FilePath>
@@ -1273,11 +1303,6 @@
               <FileName>font_transfer.c</FileName>
               <FileType>1</FileType>
               <FilePath>..\EPD\font_transfer.c</FilePath>
-            </File>
-            <File>
-              <FileName>storage_retry.c</FileName>
-              <FileType>1</FileType>
-              <FilePath>..\EPD\storage_retry.c</FilePath>
             </File>
             <File>
               <FileName>epd_advertising.c</FileName>
@@ -1302,6 +1327,16 @@
               <FileName>GUI.c</FileName>
               <FileType>1</FileType>
               <FilePath>..\GUI\GUI.c</FilePath>
+            </File>
+            <File>
+              <FileName>calendar_resources.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\GUI\calendar_resources.c</FilePath>
+            </File>
+            <File>
+              <FileName>ui_resources.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\GUI\ui_resources.c</FilePath>
             </File>
             <File>
               <FileName>calendar_annotations.c</FileName>
@@ -1467,11 +1502,6 @@
               <FilePath>..\SDK\17.1.0_ddde560\components\libraries\timer\drv_rtc.c</FilePath>
             </File>
             <File>
-              <FileName>fds.c</FileName>
-              <FileType>1</FileType>
-              <FilePath>..\SDK\17.1.0_ddde560\components\libraries\fds\fds.c</FilePath>
-            </File>
-            <File>
               <FileName>nrf_assert.c</FileName>
               <FileType>1</FileType>
               <FilePath>..\SDK\17.1.0_ddde560\components\libraries\util\nrf_assert.c</FilePath>
@@ -1510,16 +1540,6 @@
               <FileName>nrf_fprintf_format.c</FileName>
               <FileType>1</FileType>
               <FilePath>..\SDK\17.1.0_ddde560\external\fprintf\nrf_fprintf_format.c</FilePath>
-            </File>
-            <File>
-              <FileName>nrf_fstorage.c</FileName>
-              <FileType>1</FileType>
-              <FilePath>..\SDK\17.1.0_ddde560\components\libraries\fstorage\nrf_fstorage.c</FilePath>
-            </File>
-            <File>
-              <FileName>nrf_fstorage_sd.c</FileName>
-              <FileType>1</FileType>
-              <FilePath>..\SDK\17.1.0_ddde560\components\libraries\fstorage\nrf_fstorage_sd.c</FilePath>
             </File>
             <File>
               <FileName>nrf_memobj.c</FileName>

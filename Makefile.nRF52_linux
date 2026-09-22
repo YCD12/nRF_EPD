@@ -31,6 +31,9 @@ USE_RTT ?= 0
 USE_SYSVIEW ?= 0
 DEBUG_LAYOUT ?= 0
 USE_BLE_LOG ?= 0
+RESOURCE_STORE_MAINTENANCE ?= 0
+CFLAGS += -DRESOURCE_STORE_MAINTENANCE=$(RESOURCE_STORE_MAINTENANCE)
+CFLAGS += -DFONT_STORE_MUTABLE=0
 
 # 调试布局默认强制开启 RTT
 ifeq ($(DEBUG_LAYOUT),1)
@@ -66,9 +69,6 @@ SRC_FILES += \
   $(SDK_ROOT)/components/libraries/balloc/nrf_balloc.c \
   $(SDK_ROOT)/components/libraries/bootloader/dfu/nrf_dfu_svci.c \
   $(SDK_ROOT)/components/libraries/experimental_section_vars/nrf_section_iter.c \
-  $(SDK_ROOT)/components/libraries/fds/fds.c \
-  $(SDK_ROOT)/components/libraries/fstorage/nrf_fstorage.c \
-  $(SDK_ROOT)/components/libraries/fstorage/nrf_fstorage_sd.c \
   $(SDK_ROOT)/components/libraries/memobj/nrf_memobj.c \
   $(SDK_ROOT)/components/libraries/pwr_mgmt/nrf_pwr_mgmt.c \
   $(SDK_ROOT)/components/libraries/ringbuf/nrf_ringbuf.c \
@@ -99,9 +99,12 @@ SRC_FILES += \
   $(PROJ_DIR)/main.c \
   $(PROJ_DIR)/gcc_sbrk.c \
   $(PROJ_DIR)/EPD/EPD_config.c \
-  $(PROJ_DIR)/EPD/storage_retry.c \
   $(PROJ_DIR)/EPD/epd_advertising.c \
   $(PROJ_DIR)/EPD/fm25q04b.c \
+  $(PROJ_DIR)/EPD/resource_store.c \
+  $(PROJ_DIR)/EPD/persistent_record.c \
+  $(PROJ_DIR)/EPD/resource_protocol.c \
+  $(PROJ_DIR)/EPD/resource_transfer.c \
   $(PROJ_DIR)/EPD/EPD_driver.c \
   $(PROJ_DIR)/EPD/EPD_service.c \
   $(PROJ_DIR)/EPD/epd_refresh_policy.c \
@@ -112,6 +115,8 @@ SRC_FILES += \
   $(PROJ_DIR)/EPD/font_transfer.c \
   $(PROJ_DIR)/EPD/UC8179.c \
   $(PROJ_DIR)/GUI/GUI.c \
+  $(PROJ_DIR)/GUI/calendar_resources.c \
+  $(PROJ_DIR)/GUI/ui_resources.c \
   $(PROJ_DIR)/GUI/calendar_annotations.c \
   $(PROJ_DIR)/GUI/Lunar.c \
   $(PROJ_DIR)/GUI/fonts.c \

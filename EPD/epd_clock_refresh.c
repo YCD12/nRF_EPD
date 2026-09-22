@@ -6,6 +6,7 @@
 #include "clock_layout.h"
 #include "epd_clock_window.h"
 #include "epd_refresh_policy.h"
+#include "ui_resources.h"
 
 /* Preserve the established window geometry and submit it in bounded strips.
  * Minute carries use one MM window in split mode, two digits in full mode. */
@@ -16,6 +17,7 @@
  * time. OLD must survive while the shared GFX page buffer renders NEW. */
 static uint8_t s_clock_old_window[512];
 static uint32_t s_clock_last_timestamp;
+static uint32_t s_clock_layout_revision;
 static bool s_clock_last_valid;
 
 typedef struct {
@@ -45,13 +47,20 @@ void epd_clock_refresh_invalidate(void)
 
 void epd_clock_refresh_mark_valid(uint32_t timestamp)
 {
+    uint32_t revision = ui_resources_revision();
+    if (revision == 0U) {
+        s_clock_last_valid = false;
+        return;
+    }
     s_clock_last_timestamp = timestamp;
+    s_clock_layout_revision = revision;
     s_clock_last_valid = true;
 }
 
 bool epd_clock_refresh_is_valid(void)
 {
-    return s_clock_last_valid;
+    return s_clock_last_valid && s_clock_layout_revision != 0U &&
+           s_clock_layout_revision == ui_resources_revision();
 }
 
 /* 按行拷贝一页（stride 为字节）。 */
@@ -199,14 +208,14 @@ bool epd_clock_refresh_try(const epd_model_t *epd, const gui_data_t *data)
     uint8_t i;
 
     if (epd == NULL || epd->drv == NULL || data == NULL ||
-        !s_clock_last_valid || epd->drv->diff_push == NULL ||
+        !epd_clock_refresh_is_valid() || epd->drv->diff_push == NULL ||
         epd->drv->refresh_partial == NULL ||
         !epd_is_clock_mode(data->mode)) {
         return false;
     }
 
-    geom = clock_refresh_geom_sized(data->mode == MODE_CLOCK,
-                                    data->width, data->height);
+    if (!ui_resources_clock_geom(data->mode == MODE_CLOCK,
+                                 data->width, data->height, &geom)) return false;
     n = clock_refresh_local_windows(&geom, s_clock_last_timestamp, data->timestamp,
                                     wins, CLOCK_REFRESH_WINDOWS_MAX);
     if (n == 0U) {

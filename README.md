@@ -137,6 +137,13 @@ nRF_EPD/
 
 主页入口：`html/index.html`
 
+连接后网页按设备协议版本选择界面：`0x34` 及以上继续使用当前页面；
+`0x33` 及以下会检测 `html/legacy/manifest.json`。以后把旧网页放到
+`html/legacy/index.html`，再把清单中的 `enabled` 改为 `true`，页面就会在断开当前 BLE
+连接后自动切换。旧版页面尚未启用时会留在当前兼容页面。本地以 `file://` 打开时不能自动探测文件，
+可在地址后添加 `?web=legacy` 强制切换，或添加 `?web=current` 始终留在当前页面。
+分流版本统一由 `html/js/main.js` 中的 `NEW_WEB_MIN_FIRMWARE_VERSION` 配置。
+
 - 蓝牙连接、重连、设备过滤、日志查看
 - 屏幕驱动选择与引脚配置下发
 - 日历模式 / 时钟模式切换
@@ -278,7 +285,7 @@ nRF_EPD/
 
 Keil 工程配套说明：
 
-- `Keil/EPD-nRF52.uvprojx` 在编译完成后会自动调用 `tools/make-ota-nrf52.bat` 生成 OTA 相关产物
+- `build.bat` 默认编译应用并生成 OTA；正式发布前必须显式指定新旧 DFU 版本，避免开发构建重复产生同版本升级包
 - 同时会自动调用 `keil5_disp_size_bar.exe`，辅助查看当前构建结果的 Flash / RAM 占用
 - `Keil/DFU-nRF52.uvprojx` 用于单独编译 BLE Secure DFU Bootloader，适合需要完整升级链路的场景
 
@@ -315,6 +322,10 @@ make -f Makefile.nRF52 flash_softdevice
 make -f Makefile.nRF52 erase
 ```
 
+Windows 下 `build.bat build` 会先清理，再执行完整测试和编译；日常开发可用
+`build.bat incremental` 保留已有目标文件，只重编译发生变化的文件。两者默认都按
+CPU 逻辑核心数并行，可通过 `BUILD_JOBS` 覆盖。
+
 说明：
 
 - 默认编译目标是 `nrf52811_xxaa`
@@ -325,7 +336,15 @@ make -f Makefile.nRF52 erase
 
 ### 方式三：生成 DFU/OTA 包
 
-工具脚本：`tools/make-ota-nrf52.bat`
+工具脚本：`tools/dfu_release.py`，或其封装 `tools/make-ota-nrf52.bat`
+
+发布时必须指定单调递增的 Nordic DFU 版本。例如当前 P4 发布包从 `0x19` 升到 `0x1A`：
+
+```bat
+set DFU_APPLICATION_VERSION=0x1A
+set DFU_PREVIOUS_APPLICATION_VERSION=0x19
+build.bat ota
+```
 
 脚本能力：
 
@@ -339,7 +358,29 @@ make -f Makefile.nRF52 erase
 - Bootloader：`tools/bootloader/bl_nrf52811_xxaa_s112.hex`
 - `nrfutil`、`mergehex`：`tools/bin/`
 
-如果你直接在 `Keil/EPD-nRF52.uvprojx` 中执行编译，工程的 After Build 步骤也会自动调用该脚本生成 OTA 相关产物。
+`build.bat` 的默认动作会生成 OTA；直接在 `Keil/EPD-nRF52.uvprojx` 中编译时只生成应用 HEX，需要再运行上述脚本。
+
+### 方式四：生成全部外置 Flash 资源包
+
+在项目根目录执行以下命令，生成分区表、日历、UI、字体、默认 EPD 配置和空用户标注包：
+
+```bat
+build-external-resources.bat
+```
+
+可指定资源 revision、输出目录和从旧设备导出的 `EPD-MIG1` 迁移备份：
+
+```bat
+build-external-resources.bat 2 output\resources-r2 epd-migration.json
+```
+
+第 4 个参数可传入年度日历 JSON，用于更新放假调休表，或同时扩展农历、春节和节气计算年份。没有迁移文件时，第 3 个参数传空字符串：
+
+```bat
+build-external-resources.bat 3 output\resources-r3 "" calendar-2027.json
+```
+
+脚本只生成并校验 `.ers` 文件，不会写入设备。上传顺序和迁移说明见 [外置资源生成说明](docs/external-resources-p4-20260916.md)。
 
 ## 典型刷机流程图
 
@@ -360,8 +401,8 @@ flowchart TD
 
 ```mermaid
 flowchart TD
-    A[编译应用固件] --> B[After Build 调用 tools/make-ota-nrf52.bat]
-    B --> C[生成 ota.zip / settings.hex / full.hex]
+    A[编译应用固件] --> B[显式指定新旧 DFU 版本]
+    B --> C[发布工具生成并审计 ota.zip / settings.hex / full.hex]
     C --> D[打开 html/dfu.html]
     D --> E[选择应用设备]
     E --> F[切换到 Bootloader]
@@ -461,6 +502,7 @@ BLE 协议详情见 [docs/ble-protocol.md](docs/ble-protocol.md)。
 - `EPD_CMD_SYNC_TIME_SILENT (0x23)`：静默校时，不立即刷新，仅固件 `>= 0x21` 支持
 - `EPD_CMD_WRITE_BLOCK (0x31)`：带 CRC16 的分块传图
 - `EPD_CMD_QUERY_STATUS (0x32)` / `EPD_CMD_RESET_TRANSFER (0x33)`：断点续传相关命令
+- `EPD_CMD_GET_CONFIG (0x93)`：固件 `>= 0x34` 的迁移配置确认回读
 
 低电量行为：
 

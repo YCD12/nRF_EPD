@@ -1,5 +1,7 @@
 ﻿#include "Lunar.h"
 
+#include "calendar_resources.h"
+
 /******************************************************************************
  * 农历字符串常量表
  * ----------------------------------------------------------------------------
@@ -11,14 +13,11 @@
  * 索引0为占位符，索引1-12对应正月到腊月
  * 注意：十一月称"冬月"，十二月称"腊月"
  */
-const char Lunar_MonthString[13][7] = {"----", "正月", "二月", "三月", "四月", "五月", "六月",
-                                       "七月", "八月", "九月", "十月", "冬月", "腊月"};
 
 /**
  * 闰月标识
  * 索引0: 空格（非闰月）, 索引1: "闰"（闰月）
  */
-const char Lunar_MonthLeapString[2][4] = {" ", "闰"};
 
 /**
  * 农历日期名称表
@@ -29,16 +28,11 @@ const char Lunar_MonthLeapString[2][4] = {" ", "闰"};
  * 21-29日: 廿一、廿二、...、廿九 (廿=二十)
  * 30日: 三十
  */
-const char Lunar_DateString[31][7] = {"----", "初一", "初二", "初三", "初四", "初五", "初六", "初七",
-                                      "初八", "初九", "初十", "十一", "十二", "十三", "十四", "十五",
-                                      "十六", "十七", "十八", "十九", "二十", "廿一", "廿二", "廿三",
-                                      "廿四", "廿五", "廿六", "廿七", "廿八", "廿九", "三十"};
 
 /**
  * 星期名称表
  * 索引0-6对应星期日到星期六
  */
-const char Lunar_DayString[7][4] = {"日", "一", "二", "三", "四", "五", "六"};
 
 /**
  * 十二生肖表
@@ -46,7 +40,6 @@ const char Lunar_DayString[7][4] = {"日", "一", "二", "三", "四", "五", "�
  * 0:猴, 1:鸡, 2:狗, 3:猪, 4:鼠, 5:牛, 6:虎, 7:兔, 8:龙, 9:蛇, 10:马, 11:羊
  * 例如: 2024年(甲辰龙年) % 12 = 8，对应数组索引8即"龙"
  */
-const char Lunar_ZodiacString[12][4] = {"猴", "鸡", "狗", "猪", "鼠", "牛", "虎", "兔", "龙", "蛇", "马", "羊"};
 
 /**
  * 十天干表
@@ -55,7 +48,6 @@ const char Lunar_ZodiacString[12][4] = {"猴", "鸡", "狗", "猪", "鼠", "牛"
  * 0:庚, 1:辛, 2:壬, 3:癸, 4:甲, 5:乙, 6:丙, 7:丁, 8:戊, 9:己
  * 例如: 2024年 % 10 = 4，对应数组索引4即"甲"
  */
-const char Lunar_StemStrig[10][4] = {"庚", "辛", "壬", "癸", "甲", "乙", "丙", "丁", "戊", "己"};
 
 /**
  * 十二地支表
@@ -68,7 +60,21 @@ const char Lunar_StemStrig[10][4] = {"庚", "辛", "壬", "癸", "甲", "乙", "
  * 天干配地支可得60种组合（六十甲子），循环使用用于纪年
  * 如: 甲子、乙丑、丙寅、...、癸亥，然后又从甲子开始
  */
-const char Lunar_BranchStrig[12][4] = {"申", "酉", "戌", "亥", "子", "丑", "寅", "卯", "辰", "巳", "午", "未"};
+#define TEXT_ACCESSOR(name, section, count, width, fallback) \
+const char* name(uint8_t index) { \
+    static char text[width]; \
+    if (index >= (count)) index = 0U; \
+    if (calendar_resource_text((section), index, text, sizeof(text))) return text; \
+    return (fallback); \
+}
+
+TEXT_ACCESSOR(LUNAR_MonthName, CAL_RES_MONTH_NAMES, 13U, 7U, "--")
+TEXT_ACCESSOR(LUNAR_LeapName, CAL_RES_LEAP_NAMES, 2U, 4U, " ")
+TEXT_ACCESSOR(LUNAR_DateName, CAL_RES_DATE_NAMES, 31U, 7U, "--")
+TEXT_ACCESSOR(LUNAR_WeekdayName, CAL_RES_WEEKDAY_NAMES, 7U, 4U, "-")
+TEXT_ACCESSOR(LUNAR_ZodiacName, CAL_RES_ZODIAC_NAMES, 12U, 4U, "-")
+TEXT_ACCESSOR(LUNAR_StemName, CAL_RES_STEM_NAMES, 10U, 4U, "-")
+TEXT_ACCESSOR(LUNAR_BranchName, CAL_RES_BRANCH_NAMES, 12U, 4U, "-")
 
 /******************************************************************************
  * 农历数据表
@@ -100,13 +106,6 @@ const char Lunar_BranchStrig[12][4] = {"申", "酉", "戌", "亥", "子", "丑",
  * 闰月是为了协调农历年与回归年的差异而设置的额外月份
  */
 /* 2024 ~ 2027；2024 仅服务 2025 春节前的公历日期 */
-const uint32_t lunar_month_days[] = {
-    2024,        /* 索引0: 基准年份标识 */
-    0x0000096C,  /* 2024: 农历甲辰年（龙年）月份数据 */
-    0x0000D4AE,  /* 2025: 农历乙巳年（蛇年）月份数据 */
-    0x0000149C,  /* 2026: 农历丙午年（马年）月份数据 */
-    0x00001A4C,  /* 2027: 农历丁未年（羊年）月份数据 */
-};
 
 /**
  * 农历正月初一对应的公历日期编码表
@@ -129,13 +128,6 @@ const uint32_t lunar_month_days[] = {
  * 通过查表获取春节日期，再结合月份天数表可推算任意农历日期
  */
 /* 2024 ~ 2027 */
-const uint32_t solar_1_1[] = {
-    2024,        /* 索引0: 基准年份标识 */
-    0x000FD04A,  /* 2024年春节: 公历2月10日 */
-    0x000FD23D,  /* 2025年春节: 公历1月29日 */
-    0x000FD451,  /* 2026年春节: 公历2月17日 */
-    0x000FD646,  /* 2027年春节: 公历2月6日 */
-};
 
 /******************************************************************************
  * 辅助函数
@@ -217,7 +209,8 @@ void LUNAR_SolarToLunar(struct Lunar_Date* lunar, uint16_t solar_year, uint8_t s
     uint32_t solar_data, solar11, lunar_days;
 
     /* 步骤1: 参数有效性检查 */
-    if (solar_month < 1 || solar_month > 12 || solar_date < 1 || solar_date > 31) {
+    if (solar_month < 1 || solar_month > 12 || solar_date < 1 || solar_date > 31 ||
+        !calendar_resources_ready()) {
         lunar->Year = 0;
         lunar->Month = 0;
         lunar->Date = 0;
@@ -226,10 +219,12 @@ void LUNAR_SolarToLunar(struct Lunar_Date* lunar, uint16_t solar_year, uint8_t s
     }
 
     /* 步骤2: 计算年份范围 */
-    uint16_t year_base = (uint16_t)solar_1_1[0];                                    /* 基准年份: 2024 */
-    uint16_t year_count = (uint16_t)(sizeof(solar_1_1) / sizeof(uint32_t) - 1);
-    uint16_t year_min = (uint16_t)LUNAR_DISPLAY_YEAR_MIN;
-    uint16_t year_max = (uint16_t)LUNAR_DISPLAY_YEAR_MAX;
+    uint32_t table_value;
+    if (!calendar_resource_u32(CAL_RES_SOLAR_NEW_YEAR, 0U, &table_value)) goto invalid;
+    uint16_t year_base = (uint16_t)table_value;
+    uint16_t year_min = calendar_resources_year_min();
+    uint16_t year_max = calendar_resources_year_max();
+    uint16_t year_count = (uint16_t)(year_max - year_base + 1U);
 
     /* 步骤3: 年份范围限制处理 */
     uint16_t calc_year = solar_year;
@@ -247,13 +242,14 @@ void LUNAR_SolarToLunar(struct Lunar_Date* lunar, uint16_t solar_year, uint8_t s
     /* 步骤5: 判断公历日期是否在当年春节之前 */
     /* 将公历日期编码为单一数值便于比较 */
     solar_data = ((uint32_t)calc_year << 9) | ((uint32_t)solar_month << 5) | ((uint32_t)solar_date);
-    if (solar_1_1[year_index] > solar_data && year_index > 1) {
+    if (!calendar_resource_u32(CAL_RES_SOLAR_NEW_YEAR, year_index, &table_value)) goto invalid;
+    if (table_value > solar_data && year_index > 1) {
         /* 如果公历日期在该年春节之前，则属于上一个农历年 */
         year_index -= 1;
     }
 
     /* 步骤6: 获取春节日期并解码 */
-    solar11 = solar_1_1[year_index];
+    if (!calendar_resource_u32(CAL_RES_SOLAR_NEW_YEAR, year_index, &solar11)) goto invalid;
     y = GetBitInt(solar11, 12, 9);    /* 提取春节所在公历年份 */
     m = GetBitInt(solar11, 4, 5);     /* 提取春节所在公历月份 */
     d = GetBitInt(solar11, 5, 0);     /* 提取春节所在公历日期 */
@@ -262,7 +258,7 @@ void LUNAR_SolarToLunar(struct Lunar_Date* lunar, uint16_t solar_year, uint8_t s
     offset = SolarToInt(calc_year, solar_month, solar_date) - SolarToInt(y, m, d);
 
     /* 步骤8: 获取该农历年的月份信息 */
-    lunar_days = lunar_month_days[year_index];
+    if (!calendar_resource_u32(CAL_RES_LUNAR_MONTH_DAYS, year_index, &lunar_days)) goto invalid;
     leap = GetBitInt(lunar_days, 4, 13);    /* 提取闰月月份 (0=无闰月, 1-12=闰几月) */
 
     /* 步骤9: 计算农历年份 */
@@ -302,6 +298,12 @@ void LUNAR_SolarToLunar(struct Lunar_Date* lunar, uint16_t solar_year, uint8_t s
     lunar->Month = lunarM;      /* 农历月份 */
     lunar->Date = offset;       /* 农历日期 */
     lunar->Year = lunarY;       /* 农历年份 */
+    return;
+invalid:
+    lunar->Year = 0;
+    lunar->Month = 0;
+    lunar->Date = 0;
+    lunar->IsLeap = 0;
 }
 
 /******************************************************************************
@@ -387,12 +389,6 @@ uint8_t LUNAR_GetBranch(const struct Lunar_Date* lunar) { return lunar->Year % 1
  * 有兴趣的朋友可按照上面给的原理添加其它年份的表格
  * 不是很清楚的朋友可给我发EMAIL
  */
-static const uint8_t YearMonthBit[(JIEQI_YEAR_MAX - JIEQI_YEAR_MIN + 1) * 3] = {
-    0x0F, 0xEF, 0xDB,  /* 2024年节气修正标志 */
-    0xBE, 0xA6, 0x99,  /* 2025年节气修正标志 */
-    0x9C, 0xA2, 0x98,  /* 2026年节气修正标志 */
-    0x80, 0x00, 0x18,  /* 2027年节气修正标志 */
-};
 
 /**
  * 节气基准日期表
@@ -409,12 +405,6 @@ static const uint8_t YearMonthBit[(JIEQI_YEAR_MAX - JIEQI_YEAR_MIN + 1) * 3] = {
  * 秋季: 立秋、处暑、白露、秋分、寒露、霜降
  * 冬季: 立冬、小雪、大雪、冬至、小寒、大寒
  */
-static const uint8_t days[24] = {
-    6, 20, 4, 19, 6, 21,  /* 一月到三月的节气基本日期: 小寒6日, 大寒20日, 立春4日, 雨水19日, 惊蛰6日, 春分21日 */
-    5, 20, 6, 21, 6, 21,  /* 四月到六月的节气基本日期: 清明5日, 谷雨20日, 立夏6日, 小满21日, 芒种6日, 夏至21日 */
-    7, 23, 8, 23, 8, 23,  /* 七月到九月的节气基本日期: 小暑7日, 大暑23日, 立秋8日, 处暑23日, 白露8日, 秋分23日 */
-    8, 24, 8, 22, 7, 22,  /* 十月到十二月的节气基本日期: 寒露8日, 霜降24日, 立冬8日, 小雪22日, 大雪7日, 冬至22日 */
-};
 
 /**
  * 二十四节气名称表
@@ -446,12 +436,7 @@ static const uint8_t days[24] = {
  * 大雪: 雪量增大
  * 冬至: 白昼最短，冬季中点
  */
-const char JieQiStr[24][7] = {
-    "小寒", "大寒", "立春", "雨水", "惊蛰", "春分",  /* 一月~三月 */
-    "清明", "谷雨", "立夏", "小满", "芒种", "夏至",  /* 四月~六月 */
-    "小暑", "大暑", "立秋", "处暑", "白露", "秋分",  /* 七月~九月 */
-    "寒露", "霜降", "立冬", "小雪", "大雪", "冬至",  /* 十月~十二月 */
-};
+TEXT_ACCESSOR(LUNAR_JieQiName, CAL_RES_JIEQI_NAMES, 24U, 7U, "--")
 
 /**
  * 每月最大天数表
@@ -491,12 +476,12 @@ uint8_t GetJieQi(uint16_t myear, uint8_t mmonth, uint8_t mday, uint8_t* JQdate) 
     uint8_t bak1, value, JQ;
 
     /* 参数检查 */
-    if ((mmonth == 0) || (mmonth > 12)) return 0;
+    if ((mmonth == 0) || (mmonth > 12) || !JQdate || !calendar_resources_ready()) return 0;
 
     /* 计算年份有效范围 */
-    uint16_t year_base = JIEQI_YEAR_MIN;
-    uint16_t year_min = (uint16_t)LUNAR_DISPLAY_YEAR_MIN;
-    uint16_t year_max = (uint16_t)LUNAR_DISPLAY_YEAR_MAX;
+    uint16_t year_base = (uint16_t)(calendar_resources_year_min() - 1U);
+    uint16_t year_min = calendar_resources_year_min();
+    uint16_t year_max = calendar_resources_year_max();
 
     /* 年份范围限制 */
     uint16_t calc_year = myear;
@@ -509,11 +494,12 @@ uint8_t GetJieQi(uint16_t myear, uint8_t mmonth, uint8_t mday, uint8_t* JQdate) 
     if (mday >= 15) JQ++;   /* 判断是否是下半月，下半月取第二个节气 */
 
     /* 获取修正标志 */
-    bak1 = YearMonthBit[(calc_year - year_base) * 3 + JQ / 8];  /* 获得节气日期修正值所在字节 */
+    uint16_t bit_index = (uint16_t)((calc_year - year_base) * 3 + JQ / 8);
+    if (!calendar_resource_u8(CAL_RES_JIEQI_YEAR_BITS, bit_index, &bak1)) return 0;
     value = ((bak1 << (JQ % 8)) & 0x80);                        /* 获得节气日期修正标志位 */
 
     /* 计算实际日期 */
-    *JQdate = days[JQ];    /* 获取基准日期 */
+    if (!calendar_resource_u8(CAL_RES_JIEQI_BASE_DAYS, JQ, JQdate)) return 0;
     if (value != 0) {
         /* 需要修正日期 */
         /* 判断年份,以决定节气相对值1代表+1,还是-1 */

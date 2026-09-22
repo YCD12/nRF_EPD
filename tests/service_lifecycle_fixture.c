@@ -5,6 +5,7 @@
 #include "epd_refresh_policy.h"
 #include "epd_protocol.h"
 #include "EPD_config.h"
+#define FONT_STORE_MUTABLE 1
 #define EPD_CMD_QUEUE_SIZE 2U
 #define EPD_CMD_MAX_DATA_LEN 16U
 typedef struct { uint8_t cmd; uint16_t length; uint8_t data[EPD_CMD_MAX_DATA_LEN]; } epd_cmd_queue_item_t;
@@ -42,6 +43,8 @@ typedef struct {
     image_transfer_ctx_t transfer_ctx;
     unsigned annotations_tx;
     bool annotations_rx_abort_requested;
+    bool config_read_pending;
+    uint8_t config_read_token;
 } ble_epd_t;
 typedef struct { struct { struct { unsigned conn_handle; } gap_evt; } evt; } ble_evt_t;
 static unsigned refs, init_calls, sleeps, requests, now, ack_error, ack_calls, gpio_calls;

@@ -4,6 +4,10 @@
 #include <stdint.h>
 #include <stdbool.h>
 
+#ifndef FONT_STORE_MUTABLE
+#define FONT_STORE_MUTABLE 0
+#endif
+
 /* Font stream packets bypass the general EPD command queue.  The BLE write
  * event only copies packets into this small FIFO; Flash programming runs from
  * the scheduler so a burst of writeWithoutResponse packets cannot block BLE. */
@@ -37,6 +41,8 @@ typedef struct {
     uint8_t data[EPD_CMD_MAX_DATA_LEN]; /**< 命令数据（含命令字节） */
     uint16_t length;                    /**< 数据长度 */
 } epd_cmd_queue_item_t;
+
+#if FONT_STORE_MUTABLE
 
 typedef struct {
     uint32_t offset;
@@ -96,5 +102,11 @@ typedef struct {
 
     font_stream_rx_t stream;
 } font_transfer_state_t;
+
+#else
+
+typedef struct { uint8_t unused; } font_transfer_state_t;
+
+#endif
 
 #endif

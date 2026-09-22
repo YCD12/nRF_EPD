@@ -4,6 +4,8 @@
 
 #include "main.h"
 #include "font_geometry.h"
+#include "resource_store.h"
+#include "resource_layout.h"
 
 #define FONT_STORE_MAGIC              0x33545346UL /* "FST3" */
 #define FONT_STORE_VERSION            3U
@@ -17,6 +19,11 @@
 #define FONT_STORE_MANIFEST_COMMIT_OFFSET 52U
 #define FONT_STORE_MANIFEST_STATE_OFFSET 56U
 #define FONT_STORE_MANIFEST_STATE_READY  0x5AA55AA5UL
+#define FONT_PACK_MAGIC              0x314B5046UL /* FPK1 */
+#define FONT_PACK_VERSION            1U
+#define FONT_PACK_HEADER_SIZE        8U
+#define FONT_PACK_RECORD_SIZE        16U
+#define FONT_PACK_DIRECTORY_SIZE     (FONT_PACK_HEADER_SIZE + FONT_STORE_SLOT_COUNT * FONT_PACK_RECORD_SIZE)
 typedef struct {
     uint32_t offset;
     uint32_t length;
@@ -63,6 +70,8 @@ static struct {
     volatile bool active;
 } m_update;
 static uint32_t m_manifest_address = FONT_STORE_NO_MANIFEST;
+static uint32_t m_data_base = FONT_STORE_DATA_BASE;
+static bool m_resource_layout;
 /* An I/O error while publishing may mean the commit reached Flash. Require
  * a reboot/reload before reusing data that either directory could reference. */
 static bool m_commit_uncertain;
@@ -149,7 +158,7 @@ static bool slot_valid(font_store_slot_t slot)
 
 static uint32_t record_address(const font_record_t* record)
 {
-    return FONT_STORE_DATA_BASE + record->offset;
+    return m_data_base + record->offset;
 }
 
 static bool record_valid(const font_record_t* record, uint32_t capacity)
@@ -222,7 +231,7 @@ static void font_store_update_sources(void)
     uint8_t slot;
 
     for (slot = 0U; slot < FONT_STORE_SLOT_COUNT; slot++) {
-        m_regions[slot].base_address = FONT_STORE_DATA_BASE + m_records[slot].offset;
+        m_regions[slot].base_address = m_data_base + m_records[slot].offset;
         m_regions[slot].length = m_records[slot].length;
         m_sources[slot].data = NULL;
         m_sources[slot].length = m_records[slot].length;
@@ -230,6 +239,58 @@ static void font_store_update_sources(void)
         m_sources[slot].context = &m_regions[slot];
         m_sources[slot].revision = m_revision;
     }
+}
+
+static bool resource_font_pack_load(void)
+{
+    uint8_t raw[FONT_PACK_DIRECTORY_SIZE];
+    rs_partition_t partition;
+    rs_package_info_t package;
+    uint32_t checked_length;
+
+    if (resource_store_find(RS_PART_FONTS, &partition) != RS_OK ||
+        resource_store_info(RS_PART_FONTS, &package) != RS_OK ||
+        resource_store_open(RS_PART_FONTS, &checked_length) != RS_OK ||
+        checked_length != package.length || package.length < sizeof(raw) ||
+        resource_store_read(RS_PART_FONTS, 0U, raw, sizeof(raw)) != RS_OK ||
+        get_u32(raw) != FONT_PACK_MAGIC || get_u16(&raw[4]) != FONT_PACK_VERSION ||
+        get_u16(&raw[6]) != FONT_STORE_SLOT_COUNT) return false;
+
+    memset(m_records, 0, sizeof(m_records));
+    for (uint8_t slot = 0U; slot < FONT_STORE_SLOT_COUNT; slot++) {
+        uint32_t base = FONT_PACK_HEADER_SIZE + slot * FONT_PACK_RECORD_SIZE;
+        font_record_t *record = &m_records[slot];
+        record->offset = get_u32(&raw[base]);
+        record->length = get_u32(&raw[base + 4U]);
+        record->crc32 = get_u32(&raw[base + 8U]);
+        if (get_u32(&raw[base + 12U]) != 0U ||
+            (record->length == 0U && (record->offset != 0U || record->crc32 != 0U)) ||
+            (record->length != 0U &&
+             (record->offset < sizeof(raw) || record->offset >= package.length ||
+              record->length > package.length - record->offset))) {
+            memset(m_records, 0, sizeof(m_records));
+            return false;
+        }
+    }
+    if (!records_non_overlapping(m_records)) {
+        memset(m_records, 0, sizeof(m_records));
+        return false;
+    }
+    m_data_base = partition.offset + RS_HEADER_SIZE;
+    for (uint8_t slot = 0U; slot < FONT_STORE_SLOT_COUNT; slot++) {
+        uint32_t crc;
+        font_record_t *record = &m_records[slot];
+        if (record->length == 0U) continue;
+        if (!font_store_crc32_flash(record_address(record), record->length, &crc) ||
+            crc != record->crc32 ||
+            !validate_font_structure((font_store_slot_t)slot,
+                                     record_address(record), record->length)) {
+            memset(m_records, 0, sizeof(m_records));
+            return false;
+        }
+    }
+    m_revision = package.revision;
+    return true;
 }
 
 static bool manifest_read_at(uint32_t address, font_record_t* records,
@@ -560,6 +621,9 @@ static font_store_result_t ensure_erased(uint32_t offset, size_t length)
 
 ret_code_t font_store_init(void)
 {
+#if RESOURCE_STORE_MAINTENANCE
+    return NRF_ERROR_NOT_FOUND;
+#endif
     fm25q04b_jedec_id_t id;
 
     if (m_ready) {
@@ -569,6 +633,18 @@ ret_code_t font_store_init(void)
         return NRF_ERROR_NOT_FOUND;
     }
     memset(m_records, 0, sizeof(m_records));
+    if (resource_store_mount() == RS_OK) {
+        m_resource_layout = true;
+        (void)resource_font_pack_load();
+        m_ready = 1U;
+        font_store_update_sources();
+        return NRF_SUCCESS;
+    }
+    uint8_t prefix[4];
+    if (fm25q04b_read(0, prefix, sizeof(prefix)) != NRF_SUCCESS ||
+        (get_u32(prefix) != UINT32_MAX && get_u32(prefix) != FONT_STORE_LEGACY_MAGIC))
+        return NRF_ERROR_NOT_FOUND;
+    m_data_base = FONT_STORE_DATA_BASE;
     manifest_load();
     m_ready = 1U;
     font_store_update_sources();
@@ -635,7 +711,8 @@ font_store_result_t font_store_begin_pack(uint32_t total_length, uint32_t pack_c
 {
     uint32_t sum = 0U;
     uint32_t storage_offset;
-    if (!m_ready || slots == NULL || total_length > FONT_STORE_DATA_CAPACITY) return FONT_STORE_INVALID;
+    if (!m_ready || m_resource_layout || slots == NULL || total_length > FONT_STORE_DATA_CAPACITY)
+        return FONT_STORE_INVALID;
     if (m_commit_uncertain) return FONT_STORE_IO;
     if (m_update.active) return FONT_STORE_BUSY;
     for (uint8_t slot = 0U; slot < FONT_STORE_SLOT_COUNT; slot++) {
@@ -716,6 +793,8 @@ void font_store_host_reset(void)
     m_generation = 0U;
     m_revision = 1U;
     m_manifest_address = FONT_STORE_NO_MANIFEST;
+    m_data_base = FONT_STORE_DATA_BASE;
+    m_resource_layout = false;
     m_commit_uncertain = false;
     memset(m_records, 0, sizeof(m_records));
     memset(&m_update, 0, sizeof(m_update));

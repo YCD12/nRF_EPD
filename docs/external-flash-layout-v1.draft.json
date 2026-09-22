@@ -1,0 +1,80 @@
+{
+  "status": "design-draft-not-for-flashing",
+  "layout_version": 1,
+  "draft_revision": 3,
+  "device": "FM25Q04B",
+  "capacity_bytes": 524288,
+  "erase_sector_bytes": 4096,
+  "program_page_bytes": 256,
+  "address_end_convention": "exclusive",
+  "firmware_update": "official-nordic-secure-dfu-internal-flash",
+  "external_firmware_slots": false,
+  "external_data_copies": 1,
+  "partitions": [
+    {
+      "id": 1,
+      "name": "partition_table",
+      "type": "partition_table",
+      "offset": "0x00000",
+      "size_bytes": 4096
+    },
+    {
+      "id": 2,
+      "name": "epd_config",
+      "type": "config_record",
+      "offset": "0x01000",
+      "size_bytes": 4096
+    },
+    {
+      "id": 3,
+      "name": "calendar_annotations",
+      "type": "annotation_record",
+      "offset": "0x02000",
+      "size_bytes": 4096
+    },
+    {
+      "id": 4,
+      "name": "resource_update_status",
+      "type": "update_status",
+      "offset": "0x03000",
+      "size_bytes": 4096
+    },
+    {
+      "id": 5,
+      "name": "calendar_resources",
+      "type": "calendar_package",
+      "offset": "0x04000",
+      "size_bytes": 16384
+    },
+    {
+      "id": 6,
+      "name": "ui_resources",
+      "type": "ui_package",
+      "offset": "0x08000",
+      "size_bytes": 65536
+    },
+    {
+      "id": 7,
+      "name": "fonts",
+      "type": "font_package",
+      "offset": "0x18000",
+      "size_bytes": 262144
+    },
+    {
+      "id": 8,
+      "name": "reserved",
+      "type": "reserved",
+      "offset": "0x58000",
+      "size_bytes": 163840
+    }
+  ],
+  "notes": [
+    "One copy per partition; no mirrored table, backup packages or firmware slots.",
+    "Package capacities include headers, indexes, checksums and commit records.",
+    "The 256 KiB font partition contains all three fonts together.",
+    "Invalidate the target before payload modification; mark valid only after complete readback verification.",
+    "Interrupted updates may require re-upload; update-status loss restarts the transfer.",
+    "Partition-table discovery and basic BLE recovery use minimal internal constants.",
+    "Reserved space may contain legacy FST2/FST3 data until migration has been verified."
+  ]
+}

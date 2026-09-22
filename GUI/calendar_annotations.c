@@ -24,6 +24,7 @@ static uint16_t m_live_len;
 static uint16_t m_rx_off;
 static uint16_t m_rx_total;
 static volatile bool m_rx_active;
+static volatile bool m_reload_pending;
 static bool m_live_locked;
 static calendar_annotations_reload_fn m_reload;
 
@@ -100,11 +101,22 @@ static void install_empty(void)
 static void restore_live(void)
 {
     abort_rx();
+    /* May run in a BLE IRQ: never invoke the external-store callback here. */
+    m_reload_pending = true;
+}
+
+bool calendar_annotations_reload_pending(void) { return m_reload_pending; }
+
+bool calendar_annotations_process_reload(void)
+{
+    if (!m_reload_pending || m_live_locked) return false;
     if (m_reload != NULL) {
-        m_reload();
-        return;
+        if (!m_reload()) return false;
+    } else {
+        install_empty();
     }
-    install_empty();
+    m_reload_pending = false;
+    return true;
 }
 
 static calendar_anno_rx_t fail_rx(bool started)
@@ -187,6 +199,7 @@ void calendar_annotations_reset(void)
 {
     abort_rx();
     install_empty();
+    m_reload_pending = false;
 }
 
 void calendar_annotations_set_reload(calendar_annotations_reload_fn reload)
@@ -224,7 +237,7 @@ uint16_t calendar_annotations_count(void)
 {
     uint16_t count = 0U;
     ANNO_CRITICAL_ENTER();
-    if (!m_rx_active && m_live_len >= CALENDAR_ANNOTATIONS_HEADER_SIZE) {
+    if (!m_rx_active && !m_reload_pending && m_live_len >= CALENDAR_ANNOTATIONS_HEADER_SIZE) {
         count = read_u16_le(live_bytes() + 6);
     }
     ANNO_CRITICAL_EXIT();
@@ -233,7 +246,7 @@ uint16_t calendar_annotations_count(void)
 
 uint16_t calendar_annotations_blob(const uint8_t** data)
 {
-    if (m_rx_active) {
+    if (m_rx_active || m_reload_pending) {
         if (data != NULL) {
             *data = NULL;
         }
@@ -260,7 +273,7 @@ bool calendar_annotations_get(uint16_t year, uint8_t month, uint8_t day,
         return false;
     }
     ANNO_CRITICAL_ENTER();
-    if (!m_rx_active && m_live_len >= CALENDAR_ANNOTATIONS_HEADER_SIZE) {
+    if (!m_rx_active && !m_reload_pending && m_live_len >= CALENDAR_ANNOTATIONS_HEADER_SIZE) {
         high = read_u16_le(live_bytes() + 6);
         want = ((uint32_t)year << 16) | ((uint32_t)month << 8) | day;
         while (low < high) {
@@ -282,9 +295,31 @@ bool calendar_annotations_get(uint16_t year, uint8_t month, uint8_t day,
     return found;
 }
 
+uint8_t* calendar_annotations_load_buffer(uint16_t* capacity)
+{
+    if (capacity != NULL) *capacity = CALENDAR_ANNOTATIONS_MAX_BYTES;
+    if (m_live_locked) return NULL;
+    abort_rx();
+    m_live_len = 0U;
+    return live_bytes();
+}
+
+bool calendar_annotations_load_commit(uint16_t length)
+{
+    size_t expected;
+    if (m_live_locked || !blob_valid(live_bytes(), length)) {
+        install_empty();
+        return false;
+    }
+    expected = CALENDAR_ANNOTATIONS_HEADER_SIZE +
+               (size_t)read_u16_le(live_bytes() + 6) * CALENDAR_ANNOTATIONS_RECORD_SIZE;
+    m_live_len = (uint16_t)expected;
+    return true;
+}
+
 bool calendar_annotations_rx_active(void)
 {
-    return m_rx_active;
+    return m_rx_active || m_reload_pending;
 }
 
 bool calendar_annotations_rx_cancel(void)
@@ -297,6 +332,7 @@ bool calendar_annotations_rx_cancel(void)
 calendar_anno_rx_t calendar_annotations_rx_write(uint16_t offset, uint16_t total,
                                                  const uint8_t* data, uint16_t length)
 {
+    if (m_live_locked || m_reload_pending) return CALENDAR_ANNO_RX_ERR;
     if (data == NULL && length != 0U) {
         return CALENDAR_ANNO_RX_ERR;
     }

@@ -48,6 +48,11 @@ static inline uint16_t clock_hhmm_span(uint16_t cS, uint16_t nD)
     return (cS == TIME_CS) ? clock_time_width(cS, nD) : clock_time_draw_width(cS, nD);
 }
 
+static inline uint16_t clock_hhmm_span_gap(uint16_t cS, uint16_t nD, uint8_t gap)
+{
+    return (uint16_t)(2U * clock_digit_block_width(cS, nD) + (uint16_t)gap * cS);
+}
+
 static inline uint16_t clock_time_height(uint16_t cS) /* 7 段数字高度 */
 {
     return (uint16_t)(20U * cS + 4U);
@@ -61,6 +66,12 @@ static inline uint16_t clock_digit_single_width(uint16_t cS) /* 含字间距的�
 static inline uint16_t clock_hhmm_local_x(uint16_t canvas_w, uint16_t cS, uint16_t nD) /* 画布内水平居中 */
 {
     return (uint16_t)((canvas_w - clock_hhmm_span(cS, nD)) / 2U);
+}
+
+static inline uint16_t clock_hhmm_local_x_gap(uint16_t canvas_w, uint16_t cS,
+                                              uint16_t nD, uint8_t gap)
+{
+    return (uint16_t)((canvas_w - clock_hhmm_span_gap(cS, nD, gap)) / 2U);
 }
 
 static inline uint16_t clock_hhmm_local_y(uint16_t canvas_h, uint16_t cS) /* 画布内垂直居中 */
@@ -192,6 +203,18 @@ static inline clock_refresh_window_t clock_hhmm_window_local(uint16_t canvas_w,
     return win;
 }
 
+static inline clock_refresh_window_t clock_hhmm_window_local_gap(uint16_t canvas_w,
+                                                                 uint16_t canvas_h,
+                                                                 uint16_t cS,
+                                                                 uint16_t nD,
+                                                                 uint8_t gap)
+{
+    clock_refresh_window_t win = clock_hhmm_window_local(canvas_w, canvas_h, cS, nD);
+    win.x = clock_hhmm_local_x_gap(canvas_w, cS, nD, gap);
+    win.w = clock_hhmm_span_gap(cS, nD, gap);
+    return win;
+}
+
 /* x/w 对齐到 8 像素，满足控制器窗口。 */
 static inline void clock_align_window_x(uint16_t *x, uint16_t *w, uint16_t canvas_w)
 {
@@ -223,6 +246,7 @@ typedef struct {
     uint16_t canvas_h;
     uint16_t cS;
     uint16_t nD;
+    uint8_t span_gap; /* split legacy centering=4, full draw width=6 */
 } clock_refresh_geom_t;
 
 /*
@@ -242,10 +266,12 @@ static inline clock_refresh_geom_t clock_refresh_geom(bool fullscreen,
         g.canvas_w = TIME_REFRESH_WIDTH;
         g.canvas_h = TIME_REFRESH_HEIGHT;
         g.cS = TIME_CS;
+        g.span_gap = 4U;
         return g;
     }
 
     g.cS = clock_full_cs(screen_h);
+    g.span_gap = 6U;
     {
         uint16_t time_w = clock_time_draw_width(g.cS, g.nD);
         uint16_t time_h = clock_time_height(g.cS);
@@ -279,7 +305,8 @@ static inline clock_refresh_window_t clock_refresh_local_window(const clock_refr
     if (g == NULL) {
         return win;
     }
-    win = clock_hhmm_window_local(g->canvas_w, g->canvas_h, g->cS, g->nD);
+    win = clock_hhmm_window_local_gap(g->canvas_w, g->canvas_h, g->cS, g->nD,
+                                      g->span_gap);
     if (clock_only_minute_ones_changed(prev_ts, curr_ts)) {
         win.x = clock_minute_ones_local_x(win.x, g->cS, g->nD);
         win.w = clock_digit_single_width(g->cS);
@@ -314,7 +341,8 @@ static inline uint8_t clock_refresh_local_windows(const clock_refresh_geom_t *g,
         return 0U;
     }
 
-    base = clock_hhmm_window_local(g->canvas_w, g->canvas_h, g->cS, g->nD);
+    base = clock_hhmm_window_local_gap(g->canvas_w, g->canvas_h, g->cS, g->nD,
+                                       g->span_gap);
     hhmm_x = base.x;
 
     if (clock_only_minute_ones_changed(prev_ts, curr_ts)) {
@@ -363,7 +391,8 @@ static inline void clock_hhmm_screen_xy(const clock_refresh_geom_t *g, uint16_t 
         return;
     }
     if (x != NULL) {
-        *x = (uint16_t)(g->origin_x + clock_hhmm_local_x(g->canvas_w, g->cS, g->nD));
+        *x = (uint16_t)(g->origin_x + clock_hhmm_local_x_gap(g->canvas_w, g->cS,
+                                                             g->nD, g->span_gap));
     }
     if (y != NULL) {
         *y = (uint16_t)(g->origin_y + clock_hhmm_local_y(g->canvas_h, g->cS));

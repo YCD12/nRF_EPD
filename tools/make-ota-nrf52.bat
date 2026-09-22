@@ -1,37 +1,41 @@
 @echo off
 setlocal
 
-set "PATH=%PATH%;%~dp0bin"
-
-set "fw_ver=0x19"
-set "fw_hex=%~1%~2.hex"
-set "p_key=%~dp0priv.pem"
-set "bl_hex=%~dp0bootloader\bl_nrf52811_xxaa_s112.hex"
-set "sd_hex=%~dp0..\SDK\17.1.0_ddde560\components\softdevice\s112\hex\s112_nrf52_7.3.0_softdevice.hex"
-set "settings=%~1%~2-settings.hex"
-set "fw_full_hex=%~1%~2-full.hex"
-set "ota_zip=%~1%~2-ota.zip"
-
-nrfutil pkg generate --application "%fw_hex%" --key-file "%p_key%" --hw-version 52 --sd-req 0x126 --sd-id 0x126 --application-version %fw_ver% "%ota_zip%"
-if errorlevel 1 exit /b 1
-
-if not exist "%sd_hex%" (
-    for %%F in ("%~dp0..\SDK\17.1.0_ddde560\components\softdevice\s112\hex\*_softdevice.hex") do (
-        if exist "%%~fF" set "sd_hex=%%~fF"
-    )
+if "%~1"=="" (
+    echo Usage: set DFU_APPLICATION_VERSION=0x1A ^& set DFU_PREVIOUS_APPLICATION_VERSION=0x19
+    echo        %~nx0 ^<output_prefix^>
+    exit /b 1
+)
+if "%DFU_APPLICATION_VERSION%"=="" (
+    echo Error: DFU_APPLICATION_VERSION must be a new monotonic Nordic DFU version.
+    exit /b 1
+)
+if "%DFU_PREVIOUS_APPLICATION_VERSION%"=="" (
+    echo Error: DFU_PREVIOUS_APPLICATION_VERSION must identify the prior released DFU version.
+    exit /b 1
 )
 
-if not exist "%sd_hex%" (
-    echo Warning: SoftDevice hex not found, skipping settings/full hex generation.
-    echo Expected path: "%~dp0..\SDK\17.1.0_ddde560\components\softdevice\s112\hex\s112_nrf52_7.3.0_softdevice.hex"
-    echo OTA zip created at "%ota_zip%"
-    exit /b 0
+set "prefix=%~1"
+for %%F in ("%prefix%") do (
+    set "out_dir=%%~dpF"
+    set "name=%%~nxF"
 )
+set "out_dir=%out_dir:~0,-1%"
 
-rem SDK 17 bootloader uses settings v2 and restores its backup page on boot.
-rem Generate both pages so SWD updates cannot restore the previous app CRC.
-nrfutil settings generate --family NRF52810 --application "%fw_hex%" --softdevice "%sd_hex%" --application-version %fw_ver% --bootloader-version 1 --bl-settings-version 2 --key-file "%p_key%" "%settings%"
-if errorlevel 1 exit /b 1
-
-mergehex -m "%sd_hex%" "%bl_hex%" "%fw_hex%" "%settings%" -o "%fw_full_hex%"
-if errorlevel 1 exit /b 1
+if "%DFU_RESOURCES_DIR%"=="" (
+    python "%~dp0dfu_release.py" ^
+        --application "%prefix%.hex" ^
+        --application-version "%DFU_APPLICATION_VERSION%" ^
+        --previous-version "%DFU_PREVIOUS_APPLICATION_VERSION%" ^
+        --output "%out_dir%" ^
+        --name "%name%"
+) else (
+    python "%~dp0dfu_release.py" ^
+        --application "%prefix%.hex" ^
+        --application-version "%DFU_APPLICATION_VERSION%" ^
+        --previous-version "%DFU_PREVIOUS_APPLICATION_VERSION%" ^
+        --output "%out_dir%" ^
+        --name "%name%" ^
+        --resources-dir "%DFU_RESOURCES_DIR%"
+)
+exit /b %errorlevel%

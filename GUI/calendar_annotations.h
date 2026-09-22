@@ -6,7 +6,8 @@
 #include <stdint.h>
 
 /*
- * Device-owned calendar annotations stored in FDS (not external Flash).
+ * Device-owned calendar annotations. Persistence is supplied by the external
+ * single-record store; this module owns the active RAM image.
  *
  * Binary layout, little endian:
  *   header (16 bytes): magic "ANNO", version, record_size, count,
@@ -60,13 +61,21 @@ typedef enum {
     CALENDAR_ANNO_RX_RECOVERED,
 } calendar_anno_rx_t;
 
-typedef void (*calendar_annotations_reload_fn)(void);
+/* Return false to retry later (e.g. the external store is busy). */
+typedef bool (*calendar_annotations_reload_fn)(void);
 
 void calendar_annotations_reset(void);
 void calendar_annotations_clear(void);
 void calendar_annotations_set_reload(calendar_annotations_reload_fn reload);
+/* Main loop only. Failed RX hides the live buffer until reload completes. */
+bool calendar_annotations_process_reload(void);
+bool calendar_annotations_reload_pending(void);
 void calendar_annotations_set_live_locked(bool locked);
 bool calendar_annotations_load(const uint8_t* data, size_t length);
+/* Storage reload reads directly into the existing 1040-byte live buffer so
+ * migration does not add a second large RAM copy. Call commit after reading. */
+uint8_t* calendar_annotations_load_buffer(uint16_t* capacity);
+bool calendar_annotations_load_commit(uint16_t length);
 bool calendar_annotations_get(uint16_t year, uint8_t month, uint8_t day,
                               calendar_annotation_t* annotation);
 calendar_anno_rx_t calendar_annotations_rx_write(uint16_t offset, uint16_t total,

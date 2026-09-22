@@ -42,14 +42,14 @@ struct Lunar_Date {
 /*
  * 农历显示用中文字符串
  */
-extern const char Lunar_MonthString[13][7];     /* 正月~腊月 */
-extern const char Lunar_MonthLeapString[2][4];  /* "" / 闰 */
-extern const char Lunar_DateString[31][7];      /* 初一~三十 */
-extern const char Lunar_DayString[7][4];        /* 日/一/二/三/四/五/六 */
-extern const char Lunar_ZodiacString[12][4];    /* 鼠~猪 */
-extern const char Lunar_StemStrig[10][4];       /* 甲~癸 */
-extern const char Lunar_BranchStrig[12][4];     /* 子~亥 */
-extern const char JieQiStr[24][7];              /* 二十四节气 */
+const char* LUNAR_MonthName(uint8_t index);
+const char* LUNAR_LeapName(uint8_t index);
+const char* LUNAR_DateName(uint8_t index);
+const char* LUNAR_WeekdayName(uint8_t index);
+const char* LUNAR_ZodiacName(uint8_t index);
+const char* LUNAR_StemName(uint8_t index);
+const char* LUNAR_BranchName(uint8_t index);
+const char* LUNAR_JieQiName(uint8_t index);
 
 /**
  * @brief 公历转农历

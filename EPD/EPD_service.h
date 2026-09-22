@@ -48,7 +48,7 @@ void ble_epd_evt_handler(ble_evt_t const* p_ble_evt, void* p_context);
     static ble_epd_t _name; \
     NRF_SDH_BLE_OBSERVER(_name##_obs, BLE_EPD_BLE_OBSERVER_PRIO, ble_epd_evt_handler, &_name)
 
-#define APP_VERSION 0x32  // Deferred INIT completion and complete session cleanup
+#define APP_VERSION 0x34  // Confirmed config readback for migration exports
 
 // EPD 服务的 128 位基础 UUID（自定义服务）
 #define BLE_UUID_EPD_SVC_BASE \
@@ -135,6 +135,10 @@ typedef struct {
     calendar_annotations_tx_t annotations_tx;
     volatile uint32_t annotations_rx_last_activity;
     volatile bool annotations_rx_abort_requested;
+    bool record_ack_pending;
+    uint8_t record_ack[12];
+    volatile bool config_read_pending;
+    uint8_t config_read_token;
 
     // 刷新消抖与校时保护
     uint32_t last_refresh_start; /**< 上一次物理刷新开始时间戳（秒），用于消抖 */

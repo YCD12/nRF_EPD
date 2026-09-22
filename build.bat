@@ -2,8 +2,9 @@
 setlocal EnableExtensions EnableDelayedExpansion
 
 rem Native Windows equivalent of build.sh.
-rem Usage: build.bat [clean|build|test|ota|flash|flash_full|flash_softdevice|erase|rebuild|size|info] [MAKE_VAR=VALUE ...]
-rem No argument defaults to ota, matching build.sh.
+rem Usage: build.bat [clean|build|incremental|test|ota|flash|flash_full|flash_softdevice|erase|rebuild|size|info] [MAKE_VAR=VALUE ...]
+rem No argument defaults to ota, matching the original build flow. OTA/flash require explicit DFU version variables.
+rem Firmware compilation defaults to one Make job per logical CPU; set BUILD_JOBS to override it.
 
 pushd "%~dp0" || exit /b 1
 set "ACTION=ota"
@@ -12,6 +13,7 @@ set "SOFTDEVICE_HEX=SDK\17.1.0_ddde560\components\softdevice\s112\hex\s112_nrf52
 
 if /I "%~1"=="clean" goto :select_clean
 if /I "%~1"=="build" goto :select_build
+if /I "%~1"=="incremental" goto :select_incremental
 if /I "%~1"=="test" goto :select_test
 if /I "%~1"=="ota" goto :selectota
 if /I "%~1"=="flash" goto :select_flash
@@ -29,6 +31,10 @@ shift
 goto :collect_args
 :select_build
 set "ACTION=build"
+shift
+goto :collect_args
+:select_incremental
+set "ACTION=incremental"
 shift
 goto :collect_args
 :select_test
@@ -99,6 +105,11 @@ if errorlevel 1 goto :failed
 
 if /I "%ACTION%"=="build" (
     call :build %MAKE_EXTRA%
+    if errorlevel 1 goto :failed
+    goto :success
+)
+if /I "%ACTION%"=="incremental" (
+    call :incremental %MAKE_EXTRA%
     if errorlevel 1 goto :failed
     goto :success
 )
@@ -182,6 +193,8 @@ set "PROJECT_ROOT=%CD%"
 set "PROJECT_ROOT=%PROJECT_ROOT:\=/%"
 set "SDK_ROOT=%PROJECT_ROOT%/SDK/17.1.0_ddde560"
 set "TOOLS_ROOT=%PROJECT_ROOT%/tools"
+if not defined BUILD_JOBS set "BUILD_JOBS=%NUMBER_OF_PROCESSORS%"
+if not defined BUILD_JOBS set "BUILD_JOBS=1"
 set "FIRMWARE_PREFIX=_build\nrf52811_xxaa"
 set "FIRMWARE_OUT=%FIRMWARE_PREFIX%.out"
 set "FIRMWARE_HEX=%FIRMWARE_PREFIX%.hex"
@@ -212,8 +225,9 @@ echo =========================================
 echo Building Make target: nrf52811_xxaa
 echo GCC : %GCC_EXE%
 echo Make: %MAKE_EXE%
+echo Jobs: %BUILD_JOBS%
 echo =========================================
-"%MAKE_EXE%" -f Makefile.nRF52_linux nrf52811_xxaa ^
+"%MAKE_EXE%" -j%BUILD_JOBS% -f Makefile.nRF52_linux nrf52811_xxaa ^
     "PROJ_DIR=%PROJECT_ROOT%" ^
     "SDK_ROOT=%SDK_ROOT%" ^
     "TOOLS_DIR=%TOOLS_ROOT%" ^
@@ -245,6 +259,7 @@ exit /b %errorlevel%
 
 :build
 call :clean
+:incremental
 call :run_host_tests
 if errorlevel 1 exit /b 1
 call :make_firmware %*
@@ -292,6 +307,14 @@ echo   RAM reserved: !RAM_RESERVED! / !RAM_LIMIT! bytes ^(includes !STACK_RESERV
 exit /b 0
 
 :ota
+if "%DFU_APPLICATION_VERSION%"=="" (
+    echo Error: set DFU_APPLICATION_VERSION to a new monotonic Nordic DFU version before OTA/flash.
+    exit /b 1
+)
+if "%DFU_PREVIOUS_APPLICATION_VERSION%"=="" (
+    echo Error: set DFU_PREVIOUS_APPLICATION_VERSION to the previous released DFU version before OTA/flash.
+    exit /b 1
+)
 call :build %*
 if errorlevel 1 exit /b %errorlevel%
 echo =========================================
@@ -359,6 +382,7 @@ echo Project:   EPD-nRF52
 echo Target:    nrf52811_xxaa
 echo GCC:       %GCC_BIN%
 echo Make:      %MAKE_EXE%
+echo Jobs:      %BUILD_JOBS%
 echo SDK:       %SDK_ROOT%
 echo Output:    _build
 exit /b 0

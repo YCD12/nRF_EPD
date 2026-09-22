@@ -1,81 +1,58 @@
 #include "EPD_config.h"
-#include "storage_retry.h"
+#include "persistent_record.h"
+#include "resource_layout.h"
+#include "fm25q04b.h"
 #include "app_util_platform.h"
-#include "fds.h"
 #include "main.h"
-#include "nrf_soc.h"
 #include <string.h>
 
-#define CONFIG_FILE_ID 0x0000
-#define CONFIG_REC_KEY 0x0001
-#define CONFIG_WORDS ((sizeof(epd_config_t) + 3U) / 4U)
+#define EPD_CONFIG_RECORD_MAGIC 0x31435045UL /* EPC1 */
 
-/* Requested values may change in BLE IRQs. The aligned snapshot remains
- * immutable until the matching FDS completion has been consumed in main. */
-static uint32_t m_requested[CONFIG_WORDS];
-static uint32_t m_snapshot[CONFIG_WORDS];
-static volatile bool m_pending, m_busy, m_done, m_clear, m_clear_done;
-static volatile bool m_deleting, m_clear_failed;
-static volatile uint32_t m_result;
-static volatile bool m_initialized;
-static volatile uint32_t m_init_result;
-static uint8_t m_attempts;
-static uint32_t m_due;
-
-static void fds_evt_handler(fds_evt_t const *evt)
-{
-    if (evt->id == FDS_EVT_INIT) {
-        m_init_result = evt->result;
-        m_initialized = true;
-    } else if (m_busy &&
-               ((!m_deleting && (evt->id == FDS_EVT_WRITE || evt->id == FDS_EVT_UPDATE) &&
-                 evt->write.file_id == CONFIG_FILE_ID && evt->write.record_key == CONFIG_REC_KEY) ||
-                (m_deleting && evt->id == FDS_EVT_DEL_RECORD &&
-                 evt->del.file_id == CONFIG_FILE_ID && evt->del.record_key == CONFIG_REC_KEY))) {
-        m_result = evt->result;
-        m_done = true;
-    }
-}
+/* BLE handlers may replace the requested value while main is writing. The
+ * snapshot remains immutable for the complete erase/program/commit cycle. */
+static epd_config_t m_requested, m_snapshot, m_committed;
+static volatile bool m_pending, m_busy, m_clear, m_clear_done, m_result_pending;
+static bool m_committed_valid;
+static uint8_t m_attempts, m_result;
+static uint32_t m_due, m_revision, m_data_crc;
 
 uint32_t epd_config_init(epd_config_t *cfg)
 {
     (void)cfg;
-    uint32_t err = epd_storage_init();
-    if (err != 0U) return err;
-    err = fds_register(fds_evt_handler);
-    if (err != 0U) return err;
-    m_initialized = false;
-    err = fds_init();
-    if (err != 0U) return err;
-    /* Main-context startup, before advertising. SoftDevice IRQs stay enabled
-     * so fresh-install and recovery writes can complete. */
-    app_feed_wdt();
-    while (!m_initialized) {
-        (void)sd_app_evt_wait();
-    }
-    return m_init_result;
+    m_pending = m_busy = m_clear = m_clear_done = m_result_pending = false;
+    m_committed_valid = false;
+    m_attempts = 0U;
+    m_due = 0U;
+    /* Resource damage must not prevent BLE recovery from starting. */
+    (void)fm25q04b_init();
+    return 0U;
 }
 
 void epd_config_read(epd_config_t *cfg)
 {
-    fds_record_desc_t desc;
-    fds_find_token_t token = {0};
-    fds_flash_record_t record;
+    persistent_record_info_t info;
     memset(cfg, 0xFF, sizeof(*cfg));
-    if (fds_record_find(CONFIG_FILE_ID, CONFIG_REC_KEY, &desc, &token) != 0U ||
-        fds_record_open(&desc, &record) != 0U) return;
-    uint32_t length = record.p_header->length_words * 4U;
-    if (length > sizeof(*cfg)) length = sizeof(*cfg);
-    memcpy(cfg, record.p_data, length);
-    (void)fds_record_close(&desc);
+    rs_result_t r = persistent_record_load(RS_PART_EPD_CONFIG, EPD_CONFIG_RECORD_MAGIC,
+                                           cfg, sizeof(*cfg), &info);
+    if (r == RS_OK && info.length == sizeof(*cfg)) {
+        m_committed = *cfg;
+        m_committed_valid = true;
+        m_revision = info.revision;
+        m_data_crc = info.data_crc;
+    } else {
+        memset(cfg, 0xFF, sizeof(*cfg));
+        m_committed_valid = false;
+        m_revision = 0U;
+        m_data_crc = 0U;
+    }
 }
 
 void epd_config_write(epd_config_t *cfg)
 {
+    if (cfg == NULL) return;
     CRITICAL_REGION_ENTER();
     if (!m_clear) {
-        memset(m_requested, 0, sizeof(m_requested));
-        memcpy(m_requested, cfg, sizeof(*cfg));
+        m_requested = *cfg;
         m_pending = true;
     }
     CRITICAL_REGION_EXIT();
@@ -86,36 +63,54 @@ void epd_config_clear(epd_config_t *cfg)
     (void)cfg;
     CRITICAL_REGION_ENTER();
     m_clear = true;
-    m_clear_failed = false;
+    m_clear_done = false;
     m_pending = false;
+    m_attempts = 0U;
     CRITICAL_REGION_EXIT();
 }
 
 bool epd_config_clear_complete(void) { return m_clear_done; }
 
+bool epd_config_busy(void) { return m_busy || m_pending || m_clear; }
+
+bool epd_config_is_saved(const epd_config_t *cfg)
+{
+    return !epd_config_busy() && m_committed_valid && cfg != NULL &&
+           memcmp(cfg, &m_committed, sizeof(*cfg)) == 0;
+}
+
+static void publish_result(rs_result_t result, const persistent_record_info_t *info)
+{
+    m_result = (uint8_t)result;
+    if (info != NULL) {
+        m_revision = info->revision;
+        m_data_crc = info->data_crc;
+    }
+    m_result_pending = true;
+}
+
+bool epd_config_take_save_result(uint8_t *result, uint32_t *revision, uint32_t *data_crc)
+{
+    if (!m_result_pending || result == NULL || revision == NULL || data_crc == NULL) return false;
+    CRITICAL_REGION_ENTER();
+    *result = m_result;
+    *revision = m_revision;
+    *data_crc = m_data_crc;
+    m_result_pending = false;
+    CRITICAL_REGION_EXIT();
+    return true;
+}
+
 void epd_config_process(void)
 {
+    bool clearing, start = false;
     uint32_t now = app_uptime_seconds();
-    if (m_done) {
-        uint32_t result = m_result;
-        m_done = false;
-        m_busy = false;
-        if (result == 0U || (m_clear && !m_deleting)) {
-            m_attempts = 0U;
-        } else if (epd_storage_retry(result, &m_attempts, &m_due)) {
-            if (!m_clear) m_pending = true;
-        } else if (m_clear) {
-            m_clear_failed = true; /* Never reset after a failed deletion. */
-        }
-    }
-    if (m_busy || epd_storage_gc_pending() || m_clear_done ||
-        (int32_t)(now - m_due) < 0 || (m_clear && m_clear_failed)) return;
+    if (m_busy || m_clear_done || (int32_t)(now - m_due) < 0) return;
 
-    bool start = false;
     CRITICAL_REGION_ENTER();
-    if (m_clear || m_pending) {
-        m_deleting = m_clear;
-        memcpy(m_snapshot, m_requested, sizeof(m_snapshot));
+    clearing = m_clear;
+    if (clearing || m_pending) {
+        if (!clearing) m_snapshot = m_requested;
         m_pending = false;
         m_busy = true;
         start = true;
@@ -123,26 +118,47 @@ void epd_config_process(void)
     CRITICAL_REGION_EXIT();
     if (!start) return;
 
-    fds_record_desc_t desc;
-    fds_find_token_t token = {0};
-    uint32_t err = fds_record_find(CONFIG_FILE_ID, CONFIG_REC_KEY, &desc, &token);
-    if (m_deleting) {
-        if (err == FDS_ERR_NOT_FOUND) {
-            m_busy = false;
+    if (!clearing && m_committed_valid &&
+        memcmp(&m_snapshot, &m_committed, sizeof(m_snapshot)) == 0) {
+        persistent_record_info_t same = {m_revision, m_data_crc, sizeof(m_snapshot)};
+        m_busy = false;
+        m_attempts = 0U;
+        publish_result(RS_OK, &same);
+        return;
+    }
+
+    persistent_record_info_t info;
+    uint16_t attempted_length = clearing ? 0U : sizeof(m_snapshot);
+    uint32_t attempted_crc = persistent_record_data_crc(clearing ? NULL : &m_snapshot,
+                                                        attempted_length);
+    rs_result_t r = persistent_record_save(RS_PART_EPD_CONFIG, EPD_CONFIG_RECORD_MAGIC,
+                                           clearing ? NULL : &m_snapshot,
+                                           attempted_length, clearing, &info);
+    m_busy = false;
+    if (r == RS_OK) {
+        m_attempts = 0U;
+        if (clearing) {
             m_clear_done = true;
-            return;
+            m_clear = false;
+            m_committed_valid = false;
+        } else {
+            m_committed = m_snapshot;
+            m_committed_valid = true;
         }
-        if (err == 0U) err = fds_record_delete(&desc);
-    } else {
-        fds_record_t record = {.file_id = CONFIG_FILE_ID, .key = CONFIG_REC_KEY,
-            .data = {.p_data = m_snapshot, .length_words = CONFIG_WORDS}};
-        if (err == 0U) err = fds_record_update(&desc, &record);
-        else if (err == FDS_ERR_NOT_FOUND) err = fds_record_write(&desc, &record);
+        publish_result(r, &info);
+        return;
     }
-    if (err != 0U) {
-        m_result = err;
-        m_done = true;
+    /* A failed single-copy write may already have erased the old record. */
+    if (r != RS_BUSY) m_committed_valid = false;
+    if (r == RS_BUSY || ++m_attempts <= 3U) {
+        m_due = now + 1U;
+        if (!clearing) m_pending = true;
+        return;
     }
+    m_attempts = 0U;
+    if (clearing) m_clear = false;
+    persistent_record_info_t failed = {0U, attempted_crc, attempted_length};
+    publish_result(r, &failed);
 }
 
 bool epd_config_empty(epd_config_t *cfg)

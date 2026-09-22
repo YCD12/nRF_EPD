@@ -9,6 +9,7 @@ function setup() {
   const logs = [];
   const context = vm.createContext({
     console: { log() {}, error() {} }, Uint8Array, DataView, TextDecoder,
+    URL, URLSearchParams,
     setTimeout, clearTimeout, Date, Promise,
     window: {},
     document: {
@@ -22,7 +23,7 @@ function setup() {
       },
     },
   });
-  for (const file of ['main.js', 'font_store.js']) {
+  for (const file of ['ble_transfer.js', 'main.js', 'font_store.js']) {
     vm.runInContext(fs.readFileSync(path.join(__dirname, '../html/js', file), 'utf8'), context);
   }
   context.record = message => logs.push(message);
@@ -252,4 +253,99 @@ test('all shipped font headers match browser geometry', () => {
     const bytes = fs.readFileSync(path.join(__dirname, `../tools/dist/u8g2_font_${name}.bin`));
     store.validateHeader(slot, bytes);
   });
+});
+
+test('migration export reads the saved config and rejects stale or changed connections', async () => {
+  const { run, context } = setup();
+  let exported = null;
+  context.URL = { createObjectURL() { return 'blob:test'; }, revokeObjectURL() {} };
+  context.Blob = class { constructor(parts) { exported = JSON.parse(parts.join('')); } };
+  context.setTimeout = (fn, ms) => setTimeout(fn, Math.min(ms, 5));
+  context.document.createElement = () => ({ click() {} });
+  context.window.CalendarAnnotations = {
+    async loadFromDevice() { return true; }, pack() { return Uint8Array.of(1, 2); },
+    cancelCommitWait() {},
+  };
+  run(`appVersion = CONFIG_READBACK_MIN_FIRMWARE_VERSION; lastDeviceConfig = new Uint8Array(14);
+    epdCharacteristic = {writeValueWithResponse: async data => {
+      if (data[0] === EpdCmd.GET_CONFIG) {
+        const response = new Uint8Array(17);
+        response[0] = 0xa9; response[1] = data[1]; response[2] = 0; response[15] = 1;
+        handleNotify(new DataView(response.buffer));
+      }
+    }};`);
+  assert.equal(await run('exportMigrationBundle()'), true);
+  assert.equal(Buffer.from(exported.epd_config_hex, 'hex')[12], 1);
+
+  exported = null;
+  context.window.CalendarAnnotations.loadFromDevice = async () => {
+    run('connectionGeneration++; epdCharacteristic = {};');
+    return true;
+  };
+  assert.equal(await run('exportMigrationBundle()'), false);
+  assert.equal(exported, null);
+
+  exported = null;
+  context.window.CalendarAnnotations.loadFromDevice = async () => true;
+  run(`appVersion = CONFIG_READBACK_MIN_FIRMWARE_VERSION - 1;
+    lastDeviceConfig = new Uint8Array(14); legacyConfigDirty = true;`);
+  assert.equal(await run('exportMigrationBundle()'), false);
+  assert.equal(exported, null);
+});
+
+test('legacy mode-changing commands invalidate cached migration config', async () => {
+  const commands = [
+    ['CLEAR', ''], ['REFRESH', ''], ['WRITE_IMG', ', [0, 1]'],
+    ['WRITE_BLOCK', ', [0, 0, 1, 0, 0, 1, 0, 0]'], ['SEND_CMD', ', [1]'],
+    ['SEND_DATA', ', [1]'],
+  ];
+  for (const [name, data] of commands) {
+    const { run } = setup();
+    run(`appVersion = CONFIG_READBACK_MIN_FIRMWARE_VERSION - 1; lastDeviceConfig = new Uint8Array(14);
+      lastDeviceConfig[11] = 2;
+      epdCharacteristic = {writeValueWithResponse: async () => {}};`);
+    assert.equal(await run(`write(EpdCmd.${name}${data})`), true, name);
+    assert.equal(run('legacyConfigDirty'), true, name);
+  }
+});
+
+test('CRC blocks use the shared export lock and never reach GATT during export', async () => {
+  const { run } = setup();
+  run(`appVersion = NEW_WEB_MIN_FIRMWARE_VERSION; bleDevice = {gatt: {connected: true}};
+    migrationExport = {}; rawWrites = 0;
+    epdCharacteristic = {
+      writeValueWithResponse: async () => rawWrites++,
+      writeValueWithoutResponse: async () => rawWrites++,
+    };`);
+  await assert.rejects(run('BleTransfer.sendBlockFast(0, 1, Uint8Array.of(255))'),
+                       /BLE write rejected/);
+  assert.equal(run('rawWrites'), 0);
+});
+
+test('firmware web routing is optional, versioned, and disconnects before navigation', async () => {
+  const { run, context } = setup();
+  let destination = null;
+  let disconnects = 0;
+  context.window.location = {
+    href: 'https://example.test/epd/index.html', search: '', protocol: 'https:',
+    assign(value) { destination = value; },
+  };
+  context.fetch = async () => ({
+    ok: true,
+    async json() { return {format: 'EPD-WEB-ROUTE', enabled: true, entry: 'index.html'}; },
+  });
+  context.routeDevice = {gatt: {connected: true, disconnect() { disconnects++; }}};
+  const minimum = run('NEW_WEB_MIN_FIRMWARE_VERSION');
+  assert.equal(Number.isInteger(minimum) && minimum > 0, true);
+  assert.equal(await run('routeWebForFirmware(NEW_WEB_MIN_FIRMWARE_VERSION, routeDevice)'), false);
+  assert.equal(await run('routeWebForFirmware(NEW_WEB_MIN_FIRMWARE_VERSION - 1, routeDevice)'), true);
+  assert.equal(disconnects, 1);
+  assert.match(destination, new RegExp(`/epd/legacy/index\\.html\\?firmware=0x${(minimum - 1).toString(16)}$`));
+
+  destination = null;
+  disconnects = 0;
+  context.fetch = async () => ({ok: false});
+  assert.equal(await run('routeWebForFirmware(NEW_WEB_MIN_FIRMWARE_VERSION - 1, routeDevice)'), false);
+  assert.equal(disconnects, 0);
+  assert.equal(destination, null);
 });

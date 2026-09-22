@@ -225,10 +225,10 @@ static uint8_t g_reload_blob[CALENDAR_ANNOTATIONS_MAX_BYTES];
 static size_t g_reload_len;
 static unsigned g_reload_calls;
 
-static void test_reload_from_snapshot(void)
+static bool test_reload_from_snapshot(void)
 {
     g_reload_calls++;
-    (void)calendar_annotations_load(g_reload_blob, g_reload_len);
+    return calendar_annotations_load(g_reload_blob, g_reload_len);
 }
 
 static void test_rx_rejects_gap_and_keeps_previous(void)
@@ -270,7 +270,14 @@ static void test_rx_failed_after_start_reloads_previous(void)
 
     assert(calendar_annotations_rx_write(16, (uint16_t)new_len, blob, 8) ==
            CALENDAR_ANNO_RX_RECOVERED);
-    assert(g_reload_calls >= 1U);
+    assert(g_reload_calls == 0U);
+    assert(calendar_annotations_reload_pending());
+    assert(calendar_annotations_blob(NULL) == 0);
+    assert(!calendar_annotations_get(2026, 2, 2, &annotation));
+    assert(calendar_annotations_rx_write(0, (uint16_t)new_len, blob, (uint16_t)new_len) ==
+           CALENDAR_ANNO_RX_ERR);
+    assert(calendar_annotations_process_reload());
+    assert(g_reload_calls == 1U);
     assert(calendar_annotations_get(2026, 2, 2, &annotation));
     assert(strcmp(annotation.label, "元旦节") == 0);
     calendar_annotations_set_reload(NULL);
@@ -312,6 +319,8 @@ static void test_rx_cancel_restores_saved_snapshot(void)
                                          first, sizeof(first)) == CALENDAR_ANNO_RX_MORE);
     assert(calendar_annotations_rx_active());
     assert(calendar_annotations_rx_cancel());
+    assert(calendar_annotations_reload_pending());
+    assert(calendar_annotations_process_reload());
     assert(!calendar_annotations_rx_active());
     assert(calendar_annotations_get(2026, 2, 2, &annotation));
     assert(strcmp(annotation.label, "元旦节") == 0);
