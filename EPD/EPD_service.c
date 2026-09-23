@@ -86,6 +86,7 @@
 #include "font_store.h"
 #include "font_transfer.h"
 #include "resource_transfer.h"
+#include "resource_protocol.h"
 #include "resource_store.h"
 #include "resource_layout.h"
 
@@ -216,7 +217,7 @@ static bool is_urgent_command(uint8_t cmd) {
     return epd_cmd_is_urgent(cmd);
 }
 
-#if FONT_STORE_MUTABLE || RESOURCE_STORE_MAINTENANCE
+#if FONT_STORE_MUTABLE || RESOURCE_STORE_WRITABLE
 static bool font_blocks_display_command(uint8_t cmd)
 {
     return epd_cmd_needs_display(cmd) ||
@@ -430,7 +431,8 @@ static void epd_gui_update(void* p_event_data, uint16_t event_size) {
      * queued event would still enter DrawGUI and contend with the external
      * Flash transaction.  Drop the stale event and let the normal timer (or
      * the delayed font refresh) schedule a new one later. */
-    if (RESOURCE_STORE_MAINTENANCE || p_epd->init_pending || p_epd->init_ack_pending || p_epd->disconnect_pending ||
+    if (resource_protocol_entered() || p_epd->init_pending ||
+        p_epd->init_ack_pending || p_epd->disconnect_pending ||
 #if FONT_STORE_MUTABLE
         p_epd->font.operation_pending || font_store_update_active()
 #else
@@ -1581,10 +1583,11 @@ static void epd_service_on_write(ble_epd_t* p_epd, uint8_t* p_data, uint16_t len
         resource_transfer_receive(p_data, length, p_epd->connection_generation);
         return;
     }
-#if RESOURCE_STORE_MAINTENANCE
-    /* The maintenance build keeps BLE/DFU/config recovery, but never starts
-     * the old font allocator or a panel operation while repartitioning. */
-    if (p_data[0] == EPD_CMD_FONT_STORE || font_blocks_display_command(p_data[0])) return;
+#if RESOURCE_STORE_WRITABLE
+    /* Avoid display/SPI commands only while an explicit resource write session
+     * is active. Leaving the session immediately restores normal operation. */
+    if (resource_protocol_entered() &&
+        (p_data[0] == EPD_CMD_FONT_STORE || font_blocks_display_command(p_data[0]))) return;
 #endif
     if (!is_bulk_data_command(p_data[0])) {
         NRF_LOG_DEBUG("[EPD]: on_write received command 0x%02x, LEN=%d\n", p_data[0], length);
@@ -1974,9 +1977,7 @@ uint32_t ble_epd_string_send(ble_epd_t* p_epd, uint8_t* p_string, uint16_t lengt
  * @param[in] force_update  为true时强制更新
  */
 void ble_epd_on_timer(ble_epd_t* p_epd, uint32_t timestamp, bool force_update) {
-#if RESOURCE_STORE_MAINTENANCE
-    return;
-#endif
+    if (resource_protocol_entered()) return;
     if (calendar_annotations_rx_active() &&
         (uint32_t)(app_uptime_seconds() - p_epd->annotations_rx_last_activity) >=
             EPD_ANNOTATIONS_RX_TIMEOUT_S) {

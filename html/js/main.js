@@ -14,8 +14,8 @@ let configReadToken = 0;
 let migrationExport = null;
 
 // APP版本号 (便于调试)
-const APP_VERSION = '2.0.17';
-const APP_BUILD_DATE = '2026-09-22';
+const APP_VERSION = '2.0.19';
+const APP_BUILD_DATE = '2026-09-23';
 const EPD_DEVICE_NAME_PREFIX = 'NRF_EPD';
 const SCAN_DURATION_MS = 5000;
 const LOG_CONSOLE_STORAGE_KEY = 'epd_log_to_console';
@@ -229,6 +229,7 @@ async function routeWebForFirmware(version, connectedDevice = bleDevice) {
 }
 
 function resetVariables() {
+  if (window.ExternalResourceInstaller) window.ExternalResourceInstaller.disconnect();
   if (configReadWaiter) configReadWaiter.resolve(null);
   configReadWaiter = null;
   if (initWaiter) initWaiter.resolve(false);
@@ -277,6 +278,10 @@ function updateBatteryVoltageDisplay(voltageMv = null, fallbackText = '未连接
 }
 
 async function write(cmd, data, withResponse = true, logPayload = true, serialize = true) {
+  if (window.ExternalResourceInstaller && window.ExternalResourceInstaller.busy() && cmd !== 0x26) {
+    addLog('外置 Flash 正在更新，请等待完成');
+    return false;
+  }
   if (migrationExport && cmd !== EpdCmd.GET_CONFIG &&
       !(cmd === EpdCmd.SET_ANNOTATIONS && data && data[0] === 2)) {
     addLog('正在导出迁移备份，请完成后再修改设备');
@@ -1105,6 +1110,8 @@ async function reConnect() {
 function handleNotify(value) {
   const data = new Uint8Array(value.buffer, value.byteOffset, value.byteLength);
 
+  if (window.ExternalResourceInstaller && window.ExternalResourceInstaller.notification(data)) return;
+
   if (data.length === 17 && data[0] === 0xA9) {
     if (configReadWaiter && configReadWaiter.generation === connectionGeneration &&
         configReadWaiter.token === data[1]) {
@@ -1412,6 +1419,7 @@ async function connect() {
       });
       await epdCharacteristic.startNotifications();
       ensureConnected();
+      if (window.ExternalResourceInstaller) window.ExternalResourceInstaller.bind(epdCharacteristic);
 
       // 兼容未在 CCCD 开启时主动上报电压的旧固件，并遵循协议连接初始化顺序。
       if (!await write(EpdCmd.INIT)) {
@@ -1443,6 +1451,10 @@ async function connect() {
     }
     if (window.FontStore && appVersion >= 0x2D) {
       await window.FontStore.refresh();
+      ensureConnected();
+    }
+    if (window.ExternalResourceInstaller && appVersion >= 0x34) {
+      await window.ExternalResourceInstaller.refresh();
       ensureConnected();
     }
 

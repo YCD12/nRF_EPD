@@ -74,9 +74,14 @@
     },
 
     setUiBusy(busy) {
+      const partitionFirmware = typeof appVersion === 'number' && appVersion >= 0x33;
       document.querySelectorAll('.font-store-control').forEach((control) => {
-        control.disabled = busy;
+        control.disabled = busy || partitionFirmware;
       });
+      const hint = document.getElementById('legacyFontHint');
+      if (hint) hint.textContent = partitionFirmware ?
+        '当前固件使用 Flash 分区资源，旧版 BIN 字库操作已停用。请使用上方“外置 Flash 一键烧录”更新 fonts.ers。' :
+        '适用于支持 FST2 / FST3 字库更新的旧固件。新版分区固件请使用上方资源维护入口上传 fonts.ers。';
     },
 
     onDisconnect() {
@@ -629,6 +634,9 @@
     },
 
     async uploadPackNow() {
+      if (typeof appVersion === 'number' && appVersion >= 0x33) {
+        throw new Error('当前固件使用分区资源，请使用外置 Flash 一键烧录更新 fonts.ers');
+      }
       if (typeof appVersion === 'number' && appVersion >= 0x2E) {
         return this.uploadPackStreamNow();
       }
@@ -649,6 +657,14 @@
     },
 
     async refresh() {
+      if (typeof appVersion === 'number' && appVersion >= 0x33) {
+        this.setUiBusy(false);
+        SLOT_NAMES.forEach((_, slot) => {
+          const state = document.getElementById(`fontState${slot}`);
+          if (state) state.textContent = '由字体资源分区管理';
+        });
+        return true;
+      }
       try {
         await this.list();
         return true;

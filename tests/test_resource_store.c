@@ -216,7 +216,7 @@ static void test_protocol(void)
     assert(executions == 1 && !sent);
     block_send = false;
     process(1, true, 2);
-    assert(sent == 1 && reply[3] == (RESOURCE_STORE_MAINTENANCE ? RS_OK : RS_READ_ONLY));
+    assert(sent == 1 && reply[3] == (RESOURCE_STORE_WRITABLE ? RS_OK : RS_READ_ONLY));
     unsigned before = mutations;
     resource_transfer_receive(request, sizeof(request), 1);
     process(1, true, 3);
@@ -225,11 +225,17 @@ static void test_protocol(void)
     resource_put_u32(begin + 4, 32);
     resource_transfer_receive(begin, sizeof(begin), 1);
     process(1, true, 4);
-    assert(reply[3] == (RESOURCE_STORE_MAINTENANCE ? RS_OK : RS_READ_ONLY));
+    assert(reply[3] == (RESOURCE_STORE_WRITABLE ? RS_OK : RS_READ_ONLY));
     before = mutations;
     resource_transfer_receive(begin, sizeof(begin), 1);
     process(1, true, 5);
     assert(mutations == before); /* duplicate BEGIN must not erase again */
+    if (RESOURCE_STORE_WRITABLE) {
+        uint8_t leave[] = {0x26, 7, 3};
+        resource_transfer_receive(leave, sizeof(leave), 1);
+        process(1, true, 6);
+        assert(reply[3] == RS_OK && !resource_store_active() && !resource_protocol_entered());
+    }
     process(2, false, 6);
     assert(!resource_store_active());
     resource_transfer_receive(begin, sizeof(begin), 3);

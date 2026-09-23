@@ -120,8 +120,22 @@
 				<table class="anno-table"><thead><tr><th>日期</th><th>短标签</th><th>位置</th><th>字号</th><th>颜色</th><th>操作</th></tr></thead><tbody id="calendarAnnotationsList"></tbody></table>
 			</div>
 		</section>
-		<section class="section">
-			<h2>外置字库</h2>
+		<section id="externalResources" class="section">
+			<h2>外置 Flash 一键烧录</h2>
+			<p>连接设备后选择 <code>build-external-resources.bat</code> 生成的目录，再点击一次按钮即可。空白 Flash 自动写入分区表；已有分区表时按实际布局更新资源。</p>
+			<div class="external-resource-actions">
+				<label for="externalResourceFolder" class="external-resource-picker">选择资源目录</label>
+				<input id="externalResourceFolder" type="file" accept=".ers" multiple webkitdirectory directory hidden>
+				<button id="externalResourceInstall" type="button" class="primary" onclick="ExternalResourceInstaller.install()" disabled>一键烧录</button>
+				<button id="externalResourceRefresh" type="button" class="secondary" onclick="ExternalResourceInstaller.refresh()" disabled>读取分区</button>
+			</div>
+			<div id="externalResourceBundle" class="external-resource-message">尚未选择资源目录</div>
+			<div id="externalResourceStatus" class="dfu-hint">连接设备后自动读取外置 Flash 分区状态。</div>
+			<progress id="externalResourceProgress" max="1" value="0"></progress>
+		</section>
+		<section id="legacyFontSection" class="section">
+			<h2>旧版外置字库（BIN）</h2>
+			<p id="legacyFontHint">适用于支持 FST2 / FST3 字库更新的旧固件。新版分区固件请使用上方“外置 Flash 一键烧录”更新 fonts.ers。</p>
 			<div class="dfu-hint">当前支持 WQY9、WQY12、HELVB18 三个字库。字库采用动态连续存储，每次更新都要提交完整目标组合：选择需要保留的 BIN，勾选需要删除的字库；未选择且设备已有的字库会被拒绝，避免误删。删除后设备不回退内置字库，而是显示固定宽度占位符。</div>
 			<div class="font-store-toolbar">
 				<button id="fontPackRefresh" type="button" class="secondary font-store-control">刷新列表</button>
@@ -435,8 +449,10 @@
 	<script type="text/javascript" src="js/crop.js?v=20260402b"></script>
 	<script type="text/javascript" src="js/ble_transfer.js?v=20260922a"></script>
 	<script type="text/javascript" src="js/calendar_annotations.js?v=20260916b"></script>
-	<script type="text/javascript" src="js/font_store.js?v=20260914a"></script>
-	<script type="text/javascript" src="js/main.js?v=20260922a"></script>
+	<script type="text/javascript" src="js/font_store.js?v=20260922b"></script>
+	<script type="text/javascript" src="js/resource_store.js?v=20260923a"></script>
+	<script type="text/javascript" src="js/resource_installer.js?v=20260923a"></script>
+	<script type="text/javascript" src="js/main.js?v=20260922b"></script>
 </body>
 
 </html>

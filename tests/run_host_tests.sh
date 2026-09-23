@@ -24,8 +24,8 @@ run test_calendar_resources -DCALENDAR_RESOURCES_HOST_TEST -IEPD -IGUI \
     GUI/calendar_resources.c GUI/Lunar.c tests/test_calendar_resources.c
 run test_ui_resources -DUI_RESOURCES_HOST_TEST -IEPD -IGUI \
     GUI/ui_resources.c tests/test_ui_resources.c
-for maintenance in 0 1; do
-    run "test_resource_store_${maintenance}" -DRESOURCE_STORE_MAINTENANCE=$maintenance \
+for writable in 0 1; do
+    run "test_resource_store_${writable}" -DRESOURCE_STORE_WRITABLE=$writable \
         -Itests/font_transfer_stubs -IEPD \
         -ISDK/17.1.0_ddde560/components/libraries/util \
         -ISDK/17.1.0_ddde560/components/softdevice/s112/headers \

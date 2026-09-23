@@ -3,11 +3,13 @@ setlocal EnableExtensions EnableDelayedExpansion
 
 rem Native Windows equivalent of build.sh.
 rem Usage: build.bat [clean|build|incremental|test|ota|flash|flash_full|flash_softdevice|erase|rebuild|size|info] [MAKE_VAR=VALUE ...]
-rem No argument defaults to ota, matching the original build flow. OTA/flash require explicit DFU version variables.
+rem No argument builds a full business firmware with external-Flash writes enabled.
+rem The directly flashable full HEX is generated without auditing the Bootloader
+rem signing key. Override BUILD_APPLICATION_VERSION when needed.
 rem Firmware compilation defaults to one Make job per logical CPU; set BUILD_JOBS to override it.
 
 pushd "%~dp0" || exit /b 1
-set "ACTION=ota"
+set "ACTION=build"
 set "MAKE_EXTRA="
 set "SOFTDEVICE_HEX=SDK\17.1.0_ddde560\components\softdevice\s112\hex\s112_nrf52_7.3.0_softdevice.hex"
 
@@ -259,7 +261,16 @@ exit /b %errorlevel%
 
 :build
 call :clean
+call :compile RESOURCE_STORE_WRITABLE=1 %*
+if errorlevel 1 exit /b %errorlevel%
+call :merge_full_firmware
+exit /b %errorlevel%
+
 :incremental
+call :compile %*
+exit /b %errorlevel%
+
+:compile
 call :run_host_tests
 if errorlevel 1 exit /b 1
 call :make_firmware %*
@@ -315,7 +326,8 @@ if "%DFU_PREVIOUS_APPLICATION_VERSION%"=="" (
     echo Error: set DFU_PREVIOUS_APPLICATION_VERSION to the previous released DFU version before OTA/flash.
     exit /b 1
 )
-call :build %*
+call :clean
+call :compile %*
 if errorlevel 1 exit /b %errorlevel%
 echo =========================================
 echo Generating OTA package...
@@ -326,6 +338,62 @@ if not exist "tools\make-ota-nrf52.bat" (
 )
 call tools\make-ota-nrf52.bat "%FIRMWARE_PREFIX%"
 exit /b %errorlevel%
+
+:merge_full_firmware
+set "MERGE_NRFUTIL_EXE="
+set "MERGEHEX_EXE="
+for /f "delims=" %%P in ('where nrfutil.exe 2^>nul') do if not defined MERGE_NRFUTIL_EXE set "MERGE_NRFUTIL_EXE=%%P"
+for /f "delims=" %%P in ('where mergehex.exe 2^>nul') do if not defined MERGEHEX_EXE set "MERGEHEX_EXE=%%P"
+if not defined MERGE_NRFUTIL_EXE (
+    echo Error: nrfutil.exe was not found. Install legacy Nordic nrfutil and add it to PATH.
+    exit /b 1
+)
+if not defined MERGEHEX_EXE (
+    echo Error: mergehex.exe was not found. Install Nordic nRF Command Line Tools and add it to PATH.
+    exit /b 1
+)
+if not exist "%FIRMWARE_HEX%" (
+    echo Error: application HEX was not generated: %FIRMWARE_HEX%
+    exit /b 1
+)
+if not exist "%SOFTDEVICE_HEX%" (
+    echo Error: SoftDevice HEX was not found: %SOFTDEVICE_HEX%
+    exit /b 1
+)
+set "BOOTLOADER_HEX=Keil\_build_DFU52\bl_nrf52811_xxaa_s112.hex"
+if not exist "!BOOTLOADER_HEX!" set "BOOTLOADER_HEX=tools\bootloader\bl_nrf52811_xxaa_s112.hex"
+if not exist "!BOOTLOADER_HEX!" (
+    echo Error: Bootloader HEX was not found.
+    exit /b 1
+)
+set "MERGE_APP_VERSION=%BUILD_APPLICATION_VERSION%"
+if not defined MERGE_APP_VERSION set "MERGE_APP_VERSION=%DFU_APPLICATION_VERSION%"
+if not defined MERGE_APP_VERSION set "MERGE_APP_VERSION=0x1C"
+set "SETTINGS_HEX=%FIRMWARE_PREFIX%-settings.hex"
+echo =========================================
+echo Generating directly flashable full firmware...
+echo Application version: !MERGE_APP_VERSION!
+echo Bootloader: !BOOTLOADER_HEX!
+echo Key compatibility audit: skipped for build target
+echo =========================================
+"!MERGE_NRFUTIL_EXE!" settings generate --family NRF52810 ^
+    --application "%FIRMWARE_HEX%" ^
+    --softdevice "%SOFTDEVICE_HEX%" ^
+    --application-version !MERGE_APP_VERSION! ^
+    --bootloader-version 1 ^
+    --bl-settings-version 2 ^
+    --app-boot-validation VALIDATE_GENERATED_CRC ^
+    --start-address 0x2F000 ^
+    "!SETTINGS_HEX!"
+if errorlevel 1 exit /b %errorlevel%
+"!MERGEHEX_EXE!" -m "%SOFTDEVICE_HEX%" "!BOOTLOADER_HEX!" "%FIRMWARE_HEX%" "!SETTINGS_HEX!" -o "%FULL_HEX%"
+if errorlevel 1 exit /b %errorlevel%
+if not exist "%FULL_HEX%" (
+    echo Error: merged firmware was not generated: %FULL_HEX%
+    exit /b 1
+)
+echo Full firmware: %FULL_HEX%
+exit /b 0
 
 :require_nrfjprog
 set "NRFJPROG_EXE="
@@ -385,4 +453,6 @@ echo Make:      %MAKE_EXE%
 echo Jobs:      %BUILD_JOBS%
 echo SDK:       %SDK_ROOT%
 echo Output:    _build
+echo Build full: %FULL_HEX%
+echo Build DFU application version: %BUILD_APPLICATION_VERSION% ^(default 0x1C^)
 exit /b 0

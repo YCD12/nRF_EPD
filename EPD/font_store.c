@@ -621,9 +621,6 @@ static font_store_result_t ensure_erased(uint32_t offset, size_t length)
 
 ret_code_t font_store_init(void)
 {
-#if RESOURCE_STORE_MAINTENANCE
-    return NRF_ERROR_NOT_FOUND;
-#endif
     fm25q04b_jedec_id_t id;
 
     if (m_ready) {

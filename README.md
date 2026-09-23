@@ -360,6 +360,14 @@ build.bat ota
 
 `build.bat` 的默认动作会生成 OTA；直接在 `Keil/EPD-nRF52.uvprojx` 中编译时只生成应用 HEX，需要再运行上述脚本。
 
+Windows 下直接执行 `build.bat`（或 `build.bat build`）会在应用编译和测试通过后，生成
+`_build/nrf52811_xxaa-settings.hex` 与 `_build/nrf52811_xxaa-full.hex`。完整 HEX
+包含 SoftDevice、现有 Bootloader、Application 和两页 settings，可用于 SWD 全量烧录，
+并直接支持外置 Flash 分区读取和资源更新，不需要切换维护固件。
+该开发构建只使用 CRC 启动校验，不检查现有 Bootloader 与 `tools/priv.pem` 的公钥是否匹配，
+也不生成 OTA ZIP；需要签名 OTA 和发布审计时仍使用 `build.bat ota`。settings 的应用版本默认
+为 `0x1C`，可在构建前通过 `set BUILD_APPLICATION_VERSION=0x1D` 覆盖。
+
 ### 方式四：生成全部外置 Flash 资源包
 
 在项目根目录执行以下命令，生成分区表、日历、UI、字体、默认 EPD 配置和空用户标注包：
@@ -381,6 +389,14 @@ build-external-resources.bat 3 output\resources-r3 "" calendar-2027.json
 ```
 
 脚本只生成并校验 `.ers` 文件，不会写入设备。上传顺序和迁移说明见 [外置资源生成说明](docs/external-resources-p4-20260916.md)。
+
+网页主控制台直接提供“外置 Flash 一键烧录”，复用当前蓝牙连接，不再跳转二级页面。
+首次烧录时选择 `build-external-resources.bat` 生成的资源目录，再点击“一键烧录”；网页会校验 6 个 ERS 文件并按分区表、日历、UI、字体、配置、标注的顺序连续写入。
+连接设备时会先读取并校验实际分区表。仅当设备报告分区表未安装或未提交时按空白 Flash 初始化；已有有效分区表时会正常展示实际地址、容量、revision 和包头状态，批量更新时保留现有分区表，只更新其余 5 个资源。
+格式错误、CRC 错误或不兼容的分区表不会被当成空白 Flash。单包更新、完整 Flash / 单分区 BIN 备份和 ERS 校验导出收在“高级操作”中。
+更新状态区与保留区禁止上传。
+当前业务固件直接支持查看、导出和更新分区资源；新版分区固件停用旧版 BIN 字库入口，字体改用 `fonts.ers`。
+BIN 为原始备份，不能直接作为 ERS 上传；列表的包头校验不代表载荷 CRC 已校验。
 
 ## 典型刷机流程图
 

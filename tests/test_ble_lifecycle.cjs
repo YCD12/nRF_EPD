@@ -31,6 +31,25 @@ function setup() {
   return { context, elements, logs, store: context.window.FontStore, run: code => vm.runInContext(code, context) };
 }
 
+test('partition firmware does not query or upload legacy BIN fonts', async () => {
+  const { run, context, elements } = setup();
+  const writes = [];
+  context.capture = data => writes.push(data);
+  run('appVersion = 0x34; epdCharacteristic = {writeValueWithResponse: async data => capture(data)};');
+  assert.equal(await run('window.FontStore.refresh()'), true);
+  await assert.rejects(run('window.FontStore.uploadPack()'), /分区资源/);
+  assert.equal(writes.length, 0);
+  assert.match(elements.get('fontState0').textContent, /分区管理/);
+});
+
+test('external resource installer stays on the main page', () => {
+  const { run } = setup();
+  assert.equal(run('typeof openResourcesPage'), 'undefined');
+  const html = fs.readFileSync(path.join(__dirname, '../html/index.html'), 'utf8');
+  assert.match(html, /id="externalResourceInstall"/);
+  assert.doesNotMatch(html, /openResourcesPage/);
+});
+
 test('INIT waits for matching device completion before the next GATT write', async () => {
   const { run, context, elements } = setup();
   const writes = [];
