@@ -14,7 +14,6 @@ enum EPD_CMDS {
     EPD_CMD_SET_MODE = 0x22,
     EPD_CMD_SYNC_TIME_SILENT = 0x23,
     EPD_CMD_SET_ANNOTATIONS = 0x24,
-    EPD_CMD_FONT_STORE = 0x25,
     EPD_CMD_RESOURCE = 0x26,
     EPD_CMD_WRITE_IMAGE = 0x30,
     EPD_CMD_WRITE_BLOCK = 0x31,
@@ -30,9 +29,6 @@ enum EPD_CMDS {
 #define EPD_RSP_BLOCK_ACK       0xA0U
 #define EPD_RSP_STATUS          0xA1U
 #define EPD_RSP_ANNOTATIONS     0xA2U
-#define EPD_RSP_FONT_LIST       0xA3U
-#define EPD_RSP_FONT_ACK        0xA4U
-#define EPD_RSP_FONT_STREAM_ACK 0xA5U
 #define EPD_RSP_INIT            0xA6U /* token, status (0=ready, 1=failed), MTU uint16 LE */
 #define EPD_RSP_RESOURCE        0xA7U
 #define EPD_RSP_RECORD_COMMIT   0xA8U /* partition, result, reserved, revision, data CRC */

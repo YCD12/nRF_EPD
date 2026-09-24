@@ -23,24 +23,13 @@ function setup() {
       },
     },
   });
-  for (const file of ['ble_transfer.js', 'main.js', 'font_store.js']) {
+  for (const file of ['ble_transfer.js', 'main.js']) {
     vm.runInContext(fs.readFileSync(path.join(__dirname, '../html/js', file), 'utf8'), context);
   }
   context.record = message => logs.push(message);
   vm.runInContext('addLog = record; gattServer = {connected: true}; epdCharacteristic = {};', context);
-  return { context, elements, logs, store: context.window.FontStore, run: code => vm.runInContext(code, context) };
+  return { context, elements, logs, run: code => vm.runInContext(code, context) };
 }
-
-test('partition firmware does not query or upload legacy BIN fonts', async () => {
-  const { run, context, elements } = setup();
-  const writes = [];
-  context.capture = data => writes.push(data);
-  run('appVersion = 0x34; epdCharacteristic = {writeValueWithResponse: async data => capture(data)};');
-  assert.equal(await run('window.FontStore.refresh()'), true);
-  await assert.rejects(run('window.FontStore.uploadPack()'), /分区资源/);
-  assert.equal(writes.length, 0);
-  assert.match(elements.get('fontState0').textContent, /分区管理/);
-});
 
 test('external resource installer stays on the main page', () => {
   const { run } = setup();
@@ -140,140 +129,6 @@ test('queued GATT writes never run after disconnect/reconnect', async () => {
   assert.equal(await pending, false);
 });
 
-test('queued font operations cannot move to a new connection', async () => {
-  const { store, run } = setup();
-  let release;
-  store.operationTail = new Promise(resolve => { release = resolve; });
-  let invoked = false;
-  const pending = store.enqueue(() => { invoked = true; });
-  store.onDisconnect();
-  run('gattServer = {connected: true}; epdCharacteristic = {};');
-  release();
-  await assert.rejects(pending, /连接已断开/);
-  assert.equal(invoked, false);
-});
-
-test('control/list write failure rejects cleanly without dangling waiters', async () => {
-  const { store, run } = setup();
-  run('write = async () => false;');
-  await assert.rejects(store.requestAck(6, 255, [6]), /发送失败/);
-  await assert.rejects(store.listNow(), /发送失败/);
-  assert.equal(store.ackWaiter, null);
-  assert.equal(store.listWaiter, null);
-  await new Promise(resolve => setImmediate(resolve));
-});
-
-test('disconnect while reading a BIN cannot begin an upload on a new link', async () => {
-  const { store, context } = setup();
-  store.listLoaded = true;
-  let release;
-  const bytes = new Promise(resolve => { release = resolve; });
-  context.document.getElementById('fontFile0').files = [{ size: 1, arrayBuffer: () => bytes }];
-  const pack = store.buildPack();
-  store.onDisconnect();
-  release(Uint8Array.of(1).buffer);
-  await assert.rejects(pack, /连接已断开/);
-});
-
-test('small MTU fails before BEGIN mutates Flash', async () => {
-  const { store, context } = setup();
-  store.listLoaded = true;
-  context.document.getElementById('mtusize').value = 20;
-  let writes = 0;
-  store.requestAck = async () => { writes++; };
-  await assert.rejects(store.uploadPackStreamNow(), /34/);
-  assert.equal(writes, 0);
-});
-
-test('stream write failure cleans up its ACK waiter', async () => {
-  const { store } = setup();
-  store.buildPack = async () => ({ data: Uint8Array.of(1), slots: [] });
-  store.requestAck = async () => ({ status: 0 });
-  store.sendStreamPacket = async () => false;
-  await assert.rejects(store.uploadPackStreamNow(), /发送失败/);
-  assert.equal(store.streamAckWaiter, null);
-  await new Promise(resolve => setImmediate(resolve));
-});
-
-test('success ACK with zero progress terminates after bounded retries', async () => {
-  const { store } = setup();
-  store.buildPack = async () => ({ data: Uint8Array.of(1), slots: [] });
-  store.requestAck = async () => ({ status: 0 });
-  let packets = 0;
-  store.sendStreamPacket = async () => {
-    packets++;
-    store.handleNotification(Uint8Array.of(0xa5, 0, 0, 0, 0, 0, 0, 3, 0));
-    return true;
-  };
-  await assert.rejects(store.uploadPackStreamNow(), /重试次数过多/);
-  assert.equal(packets, 6);
-});
-
-test('lost stream ACK resends the same window and commits once', async () => {
-  const { store } = setup();
-  store.buildPack = async () => ({ data: Uint8Array.of(1), slots: [] });
-  const operations = [];
-  store.requestAck = async op => { operations.push(op); return { status: 0 }; };
-  store.listNow = async () => [];
-  const wait = store.waitStreamAck.bind(store);
-  let windows = 0;
-  store.waitStreamAck = (...args) => ++windows === 1
-    ? Promise.reject(new Error('字库数据窗口响应超时')) : wait(...args);
-  const packets = [];
-  store.sendStreamPacket = async payload => {
-    packets.push(payload);
-    if (windows > 1) store.handleNotification(Uint8Array.of(0xa5, 1, 0, 1, 0, 0, 0, 3, 0));
-    return true;
-  };
-  await store.uploadPackStreamNow();
-  assert.equal(packets.length, 2);
-  assert.deepEqual(packets[0], packets[1]);
-  assert.deepEqual(operations, [6, 8]);
-});
-
-test('stream write retries stop when the connection changes', async () => {
-  const { store, context, run } = setup();
-  let writes = 0;
-  context.send = async () => { writes++; store.onDisconnect(); return false; };
-  run('write = send;');
-  await assert.rejects(store.sendStreamPacket([10]), /连接已断开/);
-  assert.equal(writes, 1);
-});
-
-test('FST3 validates slot geometry before BEGIN and uses the new capacity', async () => {
-  const { store, run, context } = setup();
-  run('appVersion = 0x2F;');
-  assert.equal(store.maxPackSize(), 0x7e000);
-  store.listLoaded = true;
-  const data = fs.readFileSync(path.join(__dirname, '../tools/dist/u8g2_font_wqy9_t_lunar.bin'));
-  context.document.getElementById('fontFile1').files = [{
-    size: data.length, arrayBuffer: async () => Uint8Array.from(data).buffer,
-  }];
-  let writes = 0;
-  store.requestAck = async () => { writes++; };
-  await assert.rejects(store.uploadPackStreamNow(), /尺寸不匹配/);
-  assert.equal(writes, 0);
-  run('appVersion = 0x2E;');
-  assert.equal(store.maxPackSize(), 0x7f000);
-});
-
-test('unchanged package skips Flash writes', async () => {
-  const { store } = setup();
-  store.listLoaded = true;
-  store.slots = [{ length: 10, crc32: 123 }, { length: 0, crc32: 0 }, { length: 0, crc32: 0 }];
-  store.buildPack = async () => ({ data: new Uint8Array(10), slots: store.slots });
-  store.requestAck = async () => { throw new Error('unchanged package should not write'); };
-  await store.uploadPackStreamNow();
-});
-
-test('all shipped font headers match browser geometry', () => {
-  const { store } = setup();
-  ['wqy9_t_lunar', 'wqy12_t_lunar', 'helvB18_tn'].forEach((name, slot) => {
-    const bytes = fs.readFileSync(path.join(__dirname, `../tools/dist/u8g2_font_${name}.bin`));
-    store.validateHeader(slot, bytes);
-  });
-});
-
 test('migration export reads the saved config and rejects stale or changed connections', async () => {
   const { run, context } = setup();
   let exported = null;
@@ -330,7 +185,7 @@ test('legacy mode-changing commands invalidate cached migration config', async (
 
 test('CRC blocks use the shared export lock and never reach GATT during export', async () => {
   const { run } = setup();
-  run(`appVersion = NEW_WEB_MIN_FIRMWARE_VERSION; bleDevice = {gatt: {connected: true}};
+  run(`appVersion = CONFIG_READBACK_MIN_FIRMWARE_VERSION; bleDevice = {gatt: {connected: true}};
     migrationExport = {}; rawWrites = 0;
     epdCharacteristic = {
       writeValueWithResponse: async () => rawWrites++,
@@ -339,32 +194,4 @@ test('CRC blocks use the shared export lock and never reach GATT during export',
   await assert.rejects(run('BleTransfer.sendBlockFast(0, 1, Uint8Array.of(255))'),
                        /BLE write rejected/);
   assert.equal(run('rawWrites'), 0);
-});
-
-test('firmware web routing is optional, versioned, and disconnects before navigation', async () => {
-  const { run, context } = setup();
-  let destination = null;
-  let disconnects = 0;
-  context.window.location = {
-    href: 'https://example.test/epd/index.html', search: '', protocol: 'https:',
-    assign(value) { destination = value; },
-  };
-  context.fetch = async () => ({
-    ok: true,
-    async json() { return {format: 'EPD-WEB-ROUTE', enabled: true, entry: 'index.html'}; },
-  });
-  context.routeDevice = {gatt: {connected: true, disconnect() { disconnects++; }}};
-  const minimum = run('NEW_WEB_MIN_FIRMWARE_VERSION');
-  assert.equal(Number.isInteger(minimum) && minimum > 0, true);
-  assert.equal(await run('routeWebForFirmware(NEW_WEB_MIN_FIRMWARE_VERSION, routeDevice)'), false);
-  assert.equal(await run('routeWebForFirmware(NEW_WEB_MIN_FIRMWARE_VERSION - 1, routeDevice)'), true);
-  assert.equal(disconnects, 1);
-  assert.match(destination, new RegExp(`/epd/legacy/index\\.html\\?firmware=0x${(minimum - 1).toString(16)}$`));
-
-  destination = null;
-  disconnects = 0;
-  context.fetch = async () => ({ok: false});
-  assert.equal(await run('routeWebForFirmware(NEW_WEB_MIN_FIRMWARE_VERSION - 1, routeDevice)'), false);
-  assert.equal(disconnects, 0);
-  assert.equal(destination, null);
 });

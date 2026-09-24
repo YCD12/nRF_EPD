@@ -113,6 +113,12 @@ static rs_result_t header_read(const rs_partition_t *p, uint8_t *b)
     return RS_OK;
 }
 
+static rs_result_t package_header(uint16_t id, rs_partition_t *partition, uint8_t *header)
+{
+    rs_result_t r = resource_store_find(id, partition);
+    return r == RS_OK ? header_read(partition, header) : r;
+}
+
 rs_result_t resource_store_mount(void)
 {
     uint8_t b[RS_HEADER_SIZE];
@@ -139,24 +145,25 @@ rs_result_t resource_store_find(uint16_t id, rs_partition_t *p)
 
 rs_result_t resource_store_open(uint16_t id, uint32_t *length)
 {
-    rs_package_info_t info;
+    rs_partition_t p;
+    uint8_t header[RS_HEADER_SIZE];
     if (!length) return RS_INVALID;
     *length = 0;
     /* Never retain a previously verified view when this validation fails. */
     m_read_cache.valid = false;
-    rs_result_t r = resource_store_info(id, &info);
+    if (m_update.active == id) return RS_BUSY;
+    rs_result_t r = package_header(id, &p, header);
     if (r == RS_OK) {
-        rs_partition_t p;
-        if (resource_store_find(id, &p) != RS_OK) return RS_IO;
-        r = crc_flash(p.offset + RS_HEADER_SIZE, info.length, info.crc32);
+        uint32_t payload_length = resource_get_u32(header + 12);
+        r = crc_flash(p.offset + RS_HEADER_SIZE, payload_length, resource_get_u32(header + 16));
         if (r == RS_OK) {
             m_read_cache.partition = p;
-            m_read_cache.length = info.length;
+            m_read_cache.length = payload_length;
             m_read_cache.id = id;
             m_read_cache.valid = true;
+            *length = payload_length;
         }
     }
-    if (r == RS_OK) *length = info.length;
     return r;
 }
 
@@ -167,8 +174,7 @@ rs_result_t resource_store_info(uint16_t id, rs_package_info_t *info)
     if (!info) return RS_INVALID;
     memset(info, 0, sizeof(*info));
     if (m_update.active == id) return RS_BUSY;
-    rs_result_t r = resource_store_find(id, &p);
-    if (r == RS_OK) r = header_read(&p, b);
+    rs_result_t r = package_header(id, &p, b);
     if (r == RS_OK) {
         info->revision = resource_get_u32(b + 8);
         info->length = resource_get_u32(b + 12);
@@ -188,8 +194,7 @@ rs_result_t resource_store_read(uint16_t id, uint32_t offset, void *data, size_t
         return read_flash(m_read_cache.partition.offset + RS_HEADER_SIZE + offset,
                           data, length);
     }
-    rs_result_t r = resource_store_find(id, &p);
-    if (r == RS_OK) r = header_read(&p, b);
+    rs_result_t r = package_header(id, &p, b);
     if (r != RS_OK) return r;
     uint32_t n = resource_get_u32(b + 12);
     if (offset > n || length > n - offset) return RS_INVALID;
@@ -218,7 +223,7 @@ rs_result_t resource_store_begin(uint16_t id, uint32_t length, uint32_t crc, uin
         if (r == RS_OK) r = resource_store_find(id, &p);
         if (r != RS_OK) return r;
         if (p.type == RS_PART_RESERVED || p.id == RS_PART_RESOURCE_UPDATE_STATUS)
-            return RS_READ_ONLY;
+            return RS_WRITE_PROTECTED;
     }
     if (!length || length > p.size - RS_HEADER_SIZE || p.schema != RS_ABI) return RS_INVALID;
     memset(&m_update, 0, sizeof(m_update));

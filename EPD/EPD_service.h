@@ -78,8 +78,6 @@ void ble_epd_evt_handler(ble_evt_t const* p_ble_evt, void* p_context);
 #define EPD_CMD_QUEUE_SIZE 2                       /**< 普通命令队列容量（最多 2 条待处理） */
 #define EPD_CMD_MAX_DATA_LEN BLE_EPD_MAX_DATA_LEN  /**< 单条命令最大数据长度 */
 
-#include "font_transfer_state.h"
-
 #include "epd_command_queue.h"
 #include "epd_display_queue.h"
 #include "calendar_annotations_tx.h"
@@ -129,7 +127,6 @@ typedef struct {
     uint8_t init_ack_token;
     uint8_t init_status;
     volatile uint32_t image_last_activity;
-    font_transfer_state_t font;
 
     epd_display_queue_t display_queue;
     calendar_annotations_tx_t annotations_tx;

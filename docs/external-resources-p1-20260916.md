@@ -16,42 +16,20 @@ P0 已完成分区 ID、资源 ABI、单份存储约束和容量规划；其正�
 
 | 文件 | 用途 |
 | --- | --- |
-| `tools/resource_pack.py` | 校验布局，生成 C/网页常量、分区表包及存储测试用资源包 |
-| `EPD/resource_layout.h`、`html/js/resource_layout.js` | 自动生成的分区 ID、偏移、大小；不要手工修改 |
+| `tools/resource_pack.py` | 校验布局，生成 C 分区常量、分区表包及存储测试用资源包 |
+| `EPD/resource_layout.h` | 自动生成的分区 ID、偏移、大小；不要手工修改 |
 | `EPD/resource_store.c/.h` | 分区表读取、ID 查找、包校验、范围检查、单份更新 |
-| `EPD/resource_protocol.c/.h` | `0x26` 请求 / `0xA7` 响应，状态、导出、维护写入 |
+| `EPD/resource_protocol.c/.h` | `0x26` 请求 / `0xA7` 响应，状态、读取、资源写入 |
 | `EPD/resource_transfer.c/.h` | 主循环执行、通知重试、请求去重、连接代次和超时清理 |
-| `html/resources.html`、`html/js/resource_store.js` | 独立维护页面及客户端，不替换现有业务页面 |
+| `html/index.html`、`html/js/resource_installer.js`、`html/js/resource_store.js` | 主页资源安装入口及客户端 |
 
-Makefile 和两个 Keil target 都已添加源码。Keil 默认使用正常版本，本轮只实际验证 GCC 构建。
+Makefile 和两个 Keil target 都已添加源码。本轮只实际验证 GCC 构建。
 
-## 两种构建
+## 当前固件构建与写入
 
-### 正常版本，默认 `RESOURCE_STORE_MAINTENANCE=0`
+Windows 下执行 `build.bat` 生成 `_build/nrf52811_xxaa-full.hex`。同一份应用固件运行显示业务并支持外置 Flash 分区读写。固件上电挂载并校验现有分区表；空白 Flash 可在网页主页初始化分区表并烧录资源，已有有效分区表时按表更新资源。
 
-- 保留现有页面、旧字体上传及内部配置/标注存储。
-- 新命令只开放状态和原始读取；所有资源写入请求返回 `RS_READ_ONLY`。
-- 不自动写表、格式化、搬移或擦除旧数据。
-- 字体初始化增加前缀检查，识别到新资源表或未知前缀后不启动旧分配器。
-
-### 维护版本，`RESOURCE_STORE_MAINTENANCE=1`
-
-- 保留 BLE、官方 DFU 入口和底层硬件驱动，停用旧字体初始化/上传及正常显示操作。
-- 先显式进入 `MIG1` 维护会话，再允许写表和资源包。进入会话本身不擦除。
-- 可在坏表或未安装表的情况下，重写固定地址处的分区表。
-- 专供 P1 存储验证；尚未接入新资源消费者，因此不是业务功能完整的替代固件。
-- 写入新表可能破坏旧字体目录；写资源可能覆盖旧字模。当前不能在旧设备上自动完成无损迁移。应先导出并校验，在测试设备上验证；正式转换器在 P4 提供。
-
-**改成新布局后不要安装仍按 FST2/FST3 分配空间的旧固件。** 新表有效时前缀检查可以阻止旧路径，但这不是旧固件在所有坏表/掉电状态下的保护机制。维护版本从构建上停用该路径。
-
-构建时为两个选项使用不同输出目录，避免复用选项不同的旧目标文件：
-
-```sh
-make -f Makefile.nRF52_linux nrf52811_xxaa RESOURCE_STORE_MAINTENANCE=0 OUTPUT_DIRECTORY=output/external-resources-p1/normal-build
-make -f Makefile.nRF52_linux nrf52811_xxaa RESOURCE_STORE_MAINTENANCE=1 OUTPUT_DIRECTORY=output/external-resources-p1/maintenance-build
-```
-
-Windows/Cygwin 环境沿用工程的 `PROJ_DIR`、`SDK_ROOT`、`GNU_INSTALL_ROOT` 绝对 Windows 路径及 `PASS_LINKER_INPUT_VIA_FILE=0` 设置。
+资源写入必须先通过 BLE `0x26` 命令进入 `MIG1` 写入会话；进入会话本身不擦除。未进入会话或目标为保留分区时返回 `RS_WRITE_PROTECTED`。分区表损坏或未安装时，仍可在固定地址重建分区表。旧设备转换前应先导出并核对需要保留的数据。
 
 ## 资源包 ABI 1
 
@@ -76,7 +54,7 @@ Windows/Cygwin 环境沿用工程的 `PROJ_DIR`、`SDK_ROOT`、`GNU_INSTALL_ROOT
 
 ## 单份更新语义
 
-1. 校验请求和当前分区表，阻止越界或只读分区写入。
+1. 校验请求和当前分区表，阻止越界或保留分区写入。
 2. 将旧有效标记写为无效并读回确认，再擦除首扇区。
 3. 顺序写入载荷，按需擦除后续扇区。
 4. 完整读回校验载荷；表包额外校验表项结构。
@@ -96,7 +74,7 @@ BLE 接收回调只复制请求。Flash 擦写及通知发送均由主循环执�
 
 | op | 请求体 | 响应追加内容 |
 | --- | --- | --- |
-| 0 状态 | 无 | 写入能力:u8、ABI:u8、活动 ID:u8、维护会话:u8、已收长度:u32、容量:u32 |
+| 0 状态 | 无 | 写入能力:u8、ABI:u8、活动 ID:u8、写入会话:u8、已收长度:u32、容量:u32 |
 | 1 原始读取 | 地址:u32、长度:u8（1～16） | 原始字节，用于旧布局导出和检查 |
 | 2 BEGIN | ID:u8、载荷长度:u32、CRC:u32、revision:u32 | 无 |
 | 3 DATA | 载荷偏移:u32、数据:1～13 B | 无 |
@@ -104,7 +82,7 @@ BLE 接收回调只复制请求。Flash 擦写及通知发送均由主循环执�
 | 5 ABORT | 无 | 无；仅取消 RAM 事务，不恢复旧数据 |
 | 6 ENTER | ASCII `MIG1` | 无 |
 
-状态值：0 成功、1 请求/格式错误、2 忙、3 CRC 错误、4 未找到、5 I/O 错误、6 ABI 不兼容、7 只读。状态查询的 result 表示表挂载结果；即使没有表，仍可导出和在维护版中重建表。包头/载荷的确认由 COMMIT 完成，DATA ACK 只表示底层写入返回成功。
+状态值：0 成功、1 请求/格式错误、2 忙、3 CRC 错误、4 未找到、5 I/O 错误、6 ABI 不兼容、7 写入受保护。状态查询的 result 表示表挂载结果；即使没有表，仍可导出和重建表。包头/载荷的确认由 COMMIT 完成，DATA ACK 只表示底层写入返回成功。
 
 ## 工具用法
 
@@ -117,32 +95,31 @@ python tools/resource_pack.py --resource-id 5 --payload path/to/test.bin --outpu
 
 输出 `partition-table.payload.bin`（128 B）与 `partition-table.ers`（160 B）。分区容量均包含 32 B 包头。
 
-从已有网页服务打开 `html/resources.html`，连接设备后先读取状态。支持导出完整 512 KiB Flash；使用 16 B 小块，传输较慢。该导出是原始字节快照，不包括内部 FDS 数据，也不替代 P4 的完整配置/标注迁移器；导出期间不得并发修改外置数据。页面显示导出文件 CRC，实际旧字体目录及字模 CRC 仍需后续盘点验证。
+从网页主页 `html/index.html` 连接设备后读取分区状态，可选择资源目录一键安装。BLE 协议保留原始 Flash 读取能力，用于检查数据；它不包括内部 FDS 数据。
 
-上传前选择 `.ers` 包并确认已保存旧数据；客户端校验文件头和载荷 CRC，设备提交前再次读回校验。普通固件拒绝写入。表需要先上传，其余包随后按分区 ID 写入。旧资源完整导入、新消费者切换、UI 兼容检查尚未提供。
+客户端校验 `.ers` 文件头和载荷 CRC，设备提交前再次读回校验。空白 Flash 先写入分区表，再按分区 ID 写入其余资源。
 
-## 构建与验证结果
+## P1 阶段历史测量
 
 GCC 9.3.1、生产 56 KiB 链接区域、`-Os` + LTO：
 
 | 构建 | Flash | 剩余 | 静态 RAM 段合计 |
 | --- | ---: | ---: | ---: |
 | 本次前基线 | 52,412 B | 4,932 B | 6,788 B |
-| 正常版本 | 53,884 B | 3,460 B | 6,908 B |
-| 维护版本 | 35,740 B | 21,604 B | 4,780 B |
+| 当时的应用固件 | 53,884 B | 3,460 B | 6,908 B |
 
-正常版新增 1,472 B Flash、120 B 静态 RAM。RAM 段合计不含 4 B 对齐及 2,048 B 栈预留；正常版静态区与栈间空余 6,696 B。尚未测实机栈峰值。
+当时的应用固件新增 1,472 B Flash、120 B 静态 RAM。RAM 段合计不含 4 B 对齐及 2,048 B 栈预留；静态区与栈间空余 6,696 B。尚未测实机栈峰值。
 
-正常版剩余低于 4 KiB 预警线，未超过硬上限；下一步应通过替换旧字体存储路径控制过渡代码，而不是再叠加一整套旧/新实现。维护版因停用显示与旧字体路径而变小，不能计为完整应用的优化收益。
+当时的应用固件剩余低于 4 KiB 预警线，未超过硬上限；后续通过替换旧字体存储路径控制过渡代码。
 
 - 全量通过：32 个 C 测试程序、实际服务函数提取集成测试、22 个 Node 测试、6 个 Python 单元测试。
 - 新测试包括表/资源更新中断、部分擦除/编程/提交、CRC、坏表修复、重复/越界 ID、跨扇区写入及相邻分区保护、表挂载后损坏时拒绝擦写。
-- BLE 传输测试覆盖队列满重试、重复 BEGIN 不重复擦除、断连取消、正常版本拒写、错误 token 和客户端 CRC/长度检查。
-- 两份 HEX 校验和、地址范围和加载内容均与 BIN 一致，最大地址小于 `0x27000`。
+- BLE 传输测试覆盖队列满重试、重复 BEGIN 不重复擦除、断连取消、未进入写入会话时拒写、错误 token 和客户端 CRC/长度检查。
+- 应用 HEX 校验和、地址范围和加载内容均与 BIN 一致，最大地址小于 `0x27000`。
 - 生成文件一致性与 `git diff --check` 通过。
 - 未做设备烧录、真实 BLE、SPI 掉电、页面浏览器交互或 DFU 实机验证。
 
-产物位于 `output/external-resources-p1/{normal-build,maintenance-build}/`；测量、SHA-256 和链接符号位于 `output/external-resources-p1/result.json`，回归日志为同目录 `host-tests.log`。
+此处数据为 P1 阶段历史测量，不代表当前单固件构建体积；当前产物以 `build.bat` 输出为准。
 
 ## 后续实施
 

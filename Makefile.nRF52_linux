@@ -31,9 +31,6 @@ USE_RTT ?= 0
 USE_SYSVIEW ?= 0
 DEBUG_LAYOUT ?= 0
 USE_BLE_LOG ?= 0
-RESOURCE_STORE_WRITABLE ?= 1
-CFLAGS += -DRESOURCE_STORE_WRITABLE=$(RESOURCE_STORE_WRITABLE)
-CFLAGS += -DFONT_STORE_MUTABLE=0
 
 # 调试布局默认强制开启 RTT
 ifeq ($(DEBUG_LAYOUT),1)
@@ -112,7 +109,6 @@ SRC_FILES += \
   $(PROJ_DIR)/EPD/calendar_annotations_tx.c \
   $(PROJ_DIR)/EPD/calendar_annotations_store.c \
   $(PROJ_DIR)/EPD/font_store.c \
-  $(PROJ_DIR)/EPD/font_transfer.c \
   $(PROJ_DIR)/EPD/UC8179.c \
   $(PROJ_DIR)/GUI/GUI.c \
   $(PROJ_DIR)/GUI/calendar_resources.c \

@@ -83,7 +83,7 @@ static void test_boundaries(void)
     memset(data, 0x39, sizeof(data));
     unsigned before = mutations;
     assert(resource_store_begin(2, 4096, 0, 1) == RS_INVALID);
-    assert(resource_store_begin(8, 12, 0, 1) == RS_READ_ONLY);
+    assert(resource_store_begin(8, 12, 0, 1) == RS_WRITE_PROTECTED);
     assert(resource_store_begin(99, 12, 0, 1) == RS_NOT_FOUND);
     assert(before == mutations);
     assert(resource_store_begin(2, sizeof(data), crc(data, sizeof(data)), 1) == RS_OK);
@@ -216,7 +216,7 @@ static void test_protocol(void)
     assert(executions == 1 && !sent);
     block_send = false;
     process(1, true, 2);
-    assert(sent == 1 && reply[3] == (RESOURCE_STORE_WRITABLE ? RS_OK : RS_READ_ONLY));
+    assert(sent == 1 && reply[3] == RS_OK);
     unsigned before = mutations;
     resource_transfer_receive(request, sizeof(request), 1);
     process(1, true, 3);
@@ -225,22 +225,20 @@ static void test_protocol(void)
     resource_put_u32(begin + 4, 32);
     resource_transfer_receive(begin, sizeof(begin), 1);
     process(1, true, 4);
-    assert(reply[3] == (RESOURCE_STORE_WRITABLE ? RS_OK : RS_READ_ONLY));
+    assert(reply[3] == RS_OK);
     before = mutations;
     resource_transfer_receive(begin, sizeof(begin), 1);
     process(1, true, 5);
     assert(mutations == before); /* duplicate BEGIN must not erase again */
-    if (RESOURCE_STORE_WRITABLE) {
-        uint8_t leave[] = {0x26, 7, 3};
-        resource_transfer_receive(leave, sizeof(leave), 1);
-        process(1, true, 6);
-        assert(reply[3] == RS_OK && !resource_store_active() && !resource_protocol_entered());
-    }
+    uint8_t leave[] = {0x26, 7, 3};
+    resource_transfer_receive(leave, sizeof(leave), 1);
+    process(1, true, 6);
+    assert(reply[3] == RS_OK && !resource_store_active() && !resource_protocol_entered());
     process(2, false, 6);
     assert(!resource_store_active());
     resource_transfer_receive(begin, sizeof(begin), 3);
     process(3, true, 7);
-    assert(reply[3] == RS_READ_ONLY); /* ENTER is connection owned */
+    assert(reply[3] == RS_WRITE_PROTECTED); /* ENTER is connection owned */
     uint8_t read_bad[] = {0x26, 1, 3, 0xff, 0xff, 0xff, 0xff, 16};
     resource_transfer_receive(read_bad, sizeof(read_bad), 3);
     process(3, true, 8);

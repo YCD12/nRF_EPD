@@ -137,12 +137,7 @@ nRF_EPD/
 
 主页入口：`html/index.html`
 
-连接后网页按设备协议版本选择界面：`0x34` 及以上继续使用当前页面；
-`0x33` 及以下会检测 `html/legacy/manifest.json`。以后把旧网页放到
-`html/legacy/index.html`，再把清单中的 `enabled` 改为 `true`，页面就会在断开当前 BLE
-连接后自动切换。旧版页面尚未启用时会留在当前兼容页面。本地以 `file://` 打开时不能自动探测文件，
-可在地址后添加 `?web=legacy` 强制切换，或添加 `?web=current` 始终留在当前页面。
-分流版本统一由 `html/js/main.js` 中的 `NEW_WEB_MIN_FIRMWARE_VERSION` 配置。
+连接后在主页面直接操作设备；外置 Flash 分区资源也在主页面更新。
 
 - 蓝牙连接、重连、设备过滤、日志查看
 - 屏幕驱动选择与引脚配置下发
@@ -285,7 +280,7 @@ nRF_EPD/
 
 Keil 工程配套说明：
 
-- `build.bat` 默认编译应用并生成 OTA；正式发布前必须显式指定新旧 DFU 版本，避免开发构建重复产生同版本升级包
+- `build.bat` 默认编译应用并生成完整 HEX；正式发布 OTA 前必须显式指定新旧 DFU 版本，避免开发构建重复产生同版本升级包
 - 同时会自动调用 `keil5_disp_size_bar.exe`，辅助查看当前构建结果的 Flash / RAM 占用
 - `Keil/DFU-nRF52.uvprojx` 用于单独编译 BLE Secure DFU Bootloader，适合需要完整升级链路的场景
 
@@ -358,14 +353,14 @@ build.bat ota
 - Bootloader：`tools/bootloader/bl_nrf52811_xxaa_s112.hex`
 - `nrfutil`、`mergehex`：`tools/bin/`
 
-`build.bat` 的默认动作会生成 OTA；直接在 `Keil/EPD-nRF52.uvprojx` 中编译时只生成应用 HEX，需要再运行上述脚本。
+`build.bat` 的默认动作会生成完整 HEX；需要 OTA 包时显式运行 `build.bat ota`。直接在 `Keil/EPD-nRF52.uvprojx` 中编译时只生成应用 HEX，需要再运行上述脚本。
 
 Windows 下直接执行 `build.bat`（或 `build.bat build`）会在应用编译和测试通过后，生成
 `_build/nrf52811_xxaa-settings.hex` 与 `_build/nrf52811_xxaa-full.hex`。完整 HEX
 包含 SoftDevice、现有 Bootloader、Application 和两页 settings，可用于 SWD 全量烧录，
-并直接支持外置 Flash 分区读取和资源更新，不需要切换维护固件。
-该开发构建只使用 CRC 启动校验，不检查现有 Bootloader 与 `tools/priv.pem` 的公钥是否匹配，
-也不生成 OTA ZIP；需要签名 OTA 和发布审计时仍使用 `build.bat ota`。settings 的应用版本默认
+并直接支持外置 Flash 分区读取和资源更新。
+该开发构建只使用 CRC 启动校验，也不生成 OTA ZIP；需要签名 OTA 时使用 `build.bat ota`。
+两个构建流程均不检查现有 Bootloader 与 `tools/priv.pem` 的公钥是否匹配。settings 的应用版本默认
 为 `0x1C`，可在构建前通过 `set BUILD_APPLICATION_VERSION=0x1D` 覆盖。
 
 ### 方式四：生成全部外置 Flash 资源包
@@ -392,7 +387,7 @@ build-external-resources.bat 3 output\resources-r3 "" calendar-2027.json
 
 网页主控制台直接提供“外置 Flash 一键烧录”，复用当前蓝牙连接，不再跳转二级页面。
 首次烧录时选择 `build-external-resources.bat` 生成的资源目录，再点击“一键烧录”；网页会校验 6 个 ERS 文件并按分区表、日历、UI、字体、配置、标注的顺序连续写入。
-连接设备时会先读取并校验实际分区表。仅当设备报告分区表未安装或未提交时按空白 Flash 初始化；已有有效分区表时会正常展示实际地址、容量、revision 和包头状态，批量更新时保留现有分区表，只更新其余 5 个资源。
+连接设备时会先读取并校验实际分区表。仅当设备报告分区表未安装或未提交时按空白 Flash 初始化；已有有效分区表时保留现有分区表、设备配置和日期标注，只更新日历、UI 和字体资源。
 格式错误、CRC 错误或不兼容的分区表不会被当成空白 Flash。单包更新、完整 Flash / 单分区 BIN 备份和 ERS 校验导出收在“高级操作”中。
 更新状态区与保留区禁止上传。
 当前业务固件直接支持查看、导出和更新分区资源；新版分区固件停用旧版 BIN 字库入口，字体改用 `fonts.ers`。

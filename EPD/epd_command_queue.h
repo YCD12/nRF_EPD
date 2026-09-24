@@ -5,7 +5,12 @@
 #include "app_scheduler.h"
 #include "app_util_platform.h"
 
-/* epd_cmd_queue_item_t and the wire limits are supplied by the service. */
+/* The wire limits are supplied by the service. */
+typedef struct {
+    uint8_t cmd;
+    uint8_t data[EPD_CMD_MAX_DATA_LEN];
+    uint16_t length;
+} epd_cmd_queue_item_t;
 typedef struct {
     epd_cmd_queue_item_t items[EPD_CMD_QUEUE_SIZE];
     uint8_t head;

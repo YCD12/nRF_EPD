@@ -5,10 +5,8 @@
 #include "epd_refresh_policy.h"
 #include "epd_protocol.h"
 #include "EPD_config.h"
-#define FONT_STORE_MUTABLE 1
 #define EPD_CMD_QUEUE_SIZE 2U
 #define EPD_CMD_MAX_DATA_LEN 16U
-typedef struct { uint8_t cmd; uint16_t length; uint8_t data[EPD_CMD_MAX_DATA_LEN]; } epd_cmd_queue_item_t;
 #include "epd_command_queue.h"
 void test_critical_enter(void) {}
 void test_critical_exit(void) {}
@@ -22,7 +20,6 @@ uint32_t app_sched_event_put(void *data, uint16_t length, app_sched_event_handle
 #define UNUSED_PARAMETER(x) ((void)(x))
 #define BLE_CONN_HANDLE_INVALID 65535U
 #define NRF_ERROR_RESOURCES 19U
-#define FONT_TASK_TIMEOUT_ABORT 1U
 #define EPD_IMAGE_RX_TIMEOUT_S 30U
 typedef unsigned epd_model_id_t;
 typedef struct epd_model epd_model_t;
@@ -37,8 +34,6 @@ typedef struct {
     unsigned image_last_activity;
     const epd_model_t *epd;
     epd_config_t config;
-    struct { bool operation_pending, abort_requested, task_scheduled;
-             uint8_t task_pending, task_wait_tx; } font;
     epd_cmd_queue_t cmd_queue;
     image_transfer_ctx_t transfer_ctx;
     unsigned annotations_tx;
@@ -48,7 +43,7 @@ typedef struct {
 } ble_epd_t;
 typedef struct { struct { struct { unsigned conn_handle; } gap_evt; } evt; } ble_evt_t;
 static unsigned refs, init_calls, sleeps, requests, now, ack_error, ack_calls, gpio_calls;
-static bool font_active, busy_timeout, interrupt_init, busy_abort;
+static bool busy_timeout, interrupt_init, busy_abort;
 static uint8_t last_ack[5];
 static ble_epd_t *current;
 static unsigned commands;
@@ -82,14 +77,12 @@ static void EPD_RequestBusyAbort(void) { busy_abort = true; }
 static void UC8179_ClearBusyTimeout(void) {}
 static bool UC8179_HadBusyTimeout(void) { return busy_timeout; }
 static void epd_clock_refresh_invalidate(void) {}
-static bool font_store_update_active(void) { return font_active; }
 #define epd_config_write(p) ((void)(p))
 static unsigned app_uptime_seconds(void) { return now; }
 static unsigned timestamp(void) { return 1000U + now; }
 static void epd_display_request(ble_epd_t *p, unsigned ts) { (void)p; (void)ts; requests++; }
 static void calendar_annotations_tx_cancel(unsigned *p) { *p = 0; }
 static bool calendar_annotations_rx_active(void) { return true; }
-static unsigned font_task_schedule(ble_epd_t *p, unsigned task) { (void)p; (void)task; return 0; }
 static unsigned ble_epd_notification_try_send(ble_epd_t *p, uint8_t *data, unsigned len) {
     assert(p->conn_handle != BLE_CONN_HANDLE_INVALID && len == sizeof(last_ack));
     memcpy(last_ack, data, len); ack_calls++; return ack_error;
@@ -163,10 +156,6 @@ int main(void) {
     epd_init_process(current);
     assert(init_calls == 0);
     current->is_refreshing = false;
-    font_active = true;
-    epd_init_process(current);
-    assert(init_calls == 0);
-    font_active = false;
     ack_error = NRF_ERROR_RESOURCES;
     epd_init_process(current);
     assert(init_calls == 1 && current->init_ack_pending && !current->is_refreshing);

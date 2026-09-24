@@ -31,12 +31,7 @@ let lastWeekStartSent = null;
 let internalDisconnectInProgress = false;
 let internalDisconnectSuppressUntil = 0;
 const DFU_PAGE_HANDOFF_KEY = 'epd_dfu_page_handoff';
-/* Minimum device protocol version handled by the new web application.新旧版本区分 */
-const NEW_WEB_MIN_FIRMWARE_VERSION = 0x34;
-/* GET_CONFIG is a protocol capability; keep it independent from page routing. */
 const CONFIG_READBACK_MIN_FIRMWARE_VERSION = 0x34;
-const LEGACY_WEB_PATH = 'legacy/index.html';
-const LEGACY_WEB_MANIFEST_PATH = 'legacy/manifest.json';
 
 const EpdCmd = {
   SET_PINS: 0x00,
@@ -52,7 +47,6 @@ const EpdCmd = {
   SET_MODE: 0x22,
   SYNC_TIME_SILENT: 0x23,
   SET_ANNOTATIONS: 0x24,
-  FONT_STORE: 0x25,
 
   WRITE_IMG: 0x30, // v1.6
 
@@ -183,49 +177,6 @@ async function withTimeout(promise, timeoutMs, timeoutMessage) {
   } finally {
     if (timer) clearTimeout(timer);
   }
-}
-
-/* Firmware version is only known after connecting. Probe the optional legacy
- * page before leaving this one; deployments without it retain compatibility
- * mode. ?web=current disables routing and ?web=legacy forces local routing. */
-async function routeWebForFirmware(version, connectedDevice = bleDevice) {
-  if (version >= NEW_WEB_MIN_FIRMWARE_VERSION || !window.location || typeof URL !== 'function') {
-    return false;
-  }
-  const selection = new URLSearchParams(window.location.search || '').get('web');
-  if (selection === 'current') return false;
-  const target = new URL(LEGACY_WEB_PATH, window.location.href);
-  const manifestUrl = new URL(LEGACY_WEB_MANIFEST_PATH, window.location.href);
-  target.searchParams.set('firmware', `0x${version.toString(16)}`);
-  if (selection !== 'legacy') {
-    if (typeof fetch !== 'function' || window.location.protocol === 'file:') {
-      addLog('未自动检测旧版网页，继续使用当前兼容页面；可用 ?web=legacy 强制切换');
-      return false;
-    }
-    try {
-      const response = await fetch(manifestUrl.href, {cache: 'no-store'});
-      if (!response.ok) {
-        addLog(`旧版网页尚未安装，继续使用当前兼容页面（${LEGACY_WEB_MANIFEST_PATH}）`);
-        return false;
-      }
-      const manifest = await response.json();
-      if (!manifest || manifest.format !== 'EPD-WEB-ROUTE' || manifest.enabled !== true ||
-          manifest.entry !== 'index.html') {
-        addLog('旧版网页尚未启用，继续使用当前兼容页面');
-        return false;
-      }
-    } catch (error) {
-      addLog(`旧版网页检测失败，继续使用当前兼容页面：${error.message || error}`);
-      return false;
-    }
-  }
-  addLog(`固件 0x${version.toString(16)} 使用旧版网页，正在切换...`);
-  if (connectedDevice && connectedDevice.gatt && connectedDevice.gatt.connected) {
-    internalDisconnectInProgress = true;
-    connectedDevice.gatt.disconnect();
-  }
-  window.location.assign(target.href);
-  return true;
 }
 
 function resetVariables() {
@@ -799,9 +750,6 @@ function updateButtonStatus(forceDisabled = false) {
 
 function disconnect() {
   const isInternalRetryDisconnect = internalDisconnectInProgress || Date.now() < internalDisconnectSuppressUntil;
-  if (window.FontStore && typeof window.FontStore.onDisconnect === 'function') {
-    window.FontStore.onDisconnect();
-  }
   resetVariables();
   updateButtonStatus();
   updateBatteryVoltageDisplay(null, '未连接');
@@ -1152,13 +1100,6 @@ function handleNotify(value) {
     }
     return;
   }
-  if (data.length >= 1 &&
-      (data[0] === 0xA3 || data[0] === 0xA4 || data[0] === 0xA5) &&
-      window.FontStore) {
-    window.FontStore.handleNotification(value);
-    return;
-  }
-
   if (textDecoder == null) textDecoder = new TextDecoder();
   const msg = textDecoder.decode(data);
 
@@ -1396,7 +1337,6 @@ async function connect() {
       console.error(e);
       appVersion = 0x15;
     }
-    if (await routeWebForFirmware(appVersion, targetDevice)) return;
     ensureConnected();
 
     if (appVersion < 0x16) {
@@ -1447,10 +1387,6 @@ async function connect() {
     }
     if (window.CalendarAnnotations && appVersion >= 0x29) {
       await window.CalendarAnnotations.loadFromDevice();
-      ensureConnected();
-    }
-    if (window.FontStore && appVersion >= 0x2D) {
-      await window.FontStore.refresh();
       ensureConnected();
     }
     if (window.ExternalResourceInstaller && appVersion >= 0x34) {
@@ -1868,9 +1804,6 @@ document.body.onload = () => {
   checkDebugMode();
   if (window.CalendarAnnotations) {
     window.CalendarAnnotations.init();
-  }
-  if (window.FontStore) {
-    window.FontStore.init();
   }
   if (typeof initDfuPanel === 'function') {
     initDfuPanel();

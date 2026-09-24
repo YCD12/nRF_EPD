@@ -24,13 +24,10 @@ run test_calendar_resources -DCALENDAR_RESOURCES_HOST_TEST -IEPD -IGUI \
     GUI/calendar_resources.c GUI/Lunar.c tests/test_calendar_resources.c
 run test_ui_resources -DUI_RESOURCES_HOST_TEST -IEPD -IGUI \
     GUI/ui_resources.c tests/test_ui_resources.c
-for writable in 0 1; do
-    run "test_resource_store_${writable}" -DRESOURCE_STORE_WRITABLE=$writable \
-        -Itests/font_transfer_stubs -IEPD \
-        -ISDK/17.1.0_ddde560/components/libraries/util \
-        -ISDK/17.1.0_ddde560/components/softdevice/s112/headers \
-        EPD/resource_store.c EPD/persistent_record.c EPD/resource_protocol.c EPD/resource_transfer.c tests/test_resource_store.c
-done
+run test_resource_store -Itests/font_transfer_stubs -IEPD \
+    -ISDK/17.1.0_ddde560/components/libraries/util \
+    -ISDK/17.1.0_ddde560/components/softdevice/s112/headers \
+    EPD/resource_store.c EPD/persistent_record.c EPD/resource_protocol.c EPD/resource_transfer.c tests/test_resource_store.c
 run test_advertising -DSVCALL_AS_NORMAL_FUNCTION -DS112 \
     -Itests/advertising_stubs -Itests/storage_stubs -IEPD \
     -ISDK/17.1.0_ddde560/components/softdevice/s112/headers \
@@ -61,14 +58,6 @@ run test_font_store -I. -IEPD -IGUI \
     -ISDK/17.1.0_ddde560/components/libraries/util \
     -ISDK/17.1.0_ddde560/components/softdevice/s112/headers \
     -DFONT_STORE_HOST_TEST EPD/font_store.c tests/test_font_store.c
-run test_font_store_atomic -I. -IEPD -IGUI \
-    -ISDK/17.1.0_ddde560/components/libraries/util \
-    -ISDK/17.1.0_ddde560/components/softdevice/s112/headers \
-    -DFONT_STORE_HOST_TEST EPD/font_store.c tests/test_font_store_atomic.c
-run test_font_transfer -Itests/font_transfer_stubs -I. -IEPD -IGUI \
-    -ISDK/17.1.0_ddde560/components/libraries/util \
-    -ISDK/17.1.0_ddde560/components/softdevice/s112/headers \
-    -DFONT_TRANSFER_HOST_TEST -DFONT_STORE_MUTABLE=1 EPD/font_transfer.c tests/test_font_transfer.c
 run test_fm25q04b_read -Itests/spi_stubs -I. -IEPD \
     -ISDK/17.1.0_ddde560/components/libraries/util \
     -ISDK/17.1.0_ddde560/components/softdevice/s112/headers \

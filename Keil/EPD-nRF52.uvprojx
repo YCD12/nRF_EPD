@@ -474,11 +474,6 @@
               <FileType>1</FileType>
               <FilePath>..\EPD\font_store.c</FilePath>
             </File>
-            <File>
-              <FileName>font_transfer.c</FileName>
-              <FileType>1</FileType>
-              <FilePath>..\EPD\font_transfer.c</FilePath>
-            </File>
 
 
 
@@ -1299,11 +1294,6 @@
               <FilePath>..\EPD\font_store.c</FilePath>
             </File>
 
-            <File>
-              <FileName>font_transfer.c</FileName>
-              <FileType>1</FileType>
-              <FilePath>..\EPD\font_transfer.c</FilePath>
-            </File>
             <File>
               <FileName>epd_advertising.c</FileName>
               <FileType>1</FileType>

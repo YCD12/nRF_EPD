@@ -3,7 +3,7 @@
   const api = root.EPDResourceStore;
   const names = { 1: '分区表', 2: '设备配置', 3: '日期标注', 5: '日历资源', 6: 'UI 布局', 7: '字体资源' };
   const $ = id => document.getElementById(id);
-  let client = null, characteristic = null, binding = 0, bundle = null, running = false, completed = false;
+  let client = null, characteristic = null, binding = 0, bundle = null, running = false, installationCompleted = false;
 
   function report(message, error = false) {
     const status = $('externalResourceStatus');
@@ -23,7 +23,7 @@
   function bind(nextCharacteristic) {
     if (client) client.disconnect();
     characteristic = nextCharacteristic;
-    completed = false;
+    installationCompleted = false;
     const token = ++binding;
     client = new api.ResourceClient(bytes => {
       if (token !== binding || characteristic !== nextCharacteristic)
@@ -38,7 +38,7 @@
     if (client) client.disconnect();
     client = null; characteristic = null; running = false;
     const status = $('externalResourceStatus');
-    if (status) status.textContent = completed ? '资源已写入，设备已重启，请重新连接。' : '设备未连接';
+    if (status) status.textContent = installationCompleted ? '资源已写入，设备已重启，请重新连接。' : '设备未连接';
     controls();
   }
 
@@ -51,7 +51,7 @@
   async function readStatus(silent = false) {
     if (!client) throw new Error('请先连接设备');
     const status = api.parseStatus(await client.status());
-    let message = `外置 Flash：${status.writable ? '可读写' : '只读'} · ${status.capacity / 1024} KiB · 分区表：${api.statusName(status.code)}`;
+    let message = `外置 Flash：可读写 · ${status.capacity / 1024} KiB · 分区表：${api.statusName(status.code)}`;
     if (status.code === 0) {
       const partitions = await client.partitions();
       message += ` · ${partitions.length} 个分区`;
@@ -80,7 +80,6 @@
     let entered = false;
     try {
       let current = await readStatus(true);
-      if (!current.status.writable) throw new Error('当前固件只读，请烧录 build.bat 生成的 full HEX');
       if (current.status.active) {
         await client.request(5);
         current = await readStatus(true);
@@ -88,24 +87,25 @@
       const initializing = current.status.code === 4;
       const packages = api.installationPlan(bundle, current.status.code, current.partitions);
       const total = packages.reduce((sum, item) => sum + item.pack.payload.length, 0);
-      let completed = 0;
+      let completedBytes = 0;
       for (let i = 0; i < packages.length; ++i) {
         const item = packages[i];
         const title = names[item.pack.id] || `分区 ${item.pack.id}`;
         report(`正在写入 ${i + 1}/${packages.length}：${title}`);
         entered = true;
         await client.upload(item.bytes, n => {
-          const done = completed + n;
+          const done = completedBytes + n;
           progress.value = done / total;
           $('externalResourceStatus').textContent = `正在写入 ${i + 1}/${packages.length}：${title} · ${Math.round(done * 100 / total)}%`;
-        });
-        completed += item.pack.payload.length;
+        }, current.partitions);
+        completedBytes += item.pack.payload.length;
+        if (item.pack.id === 1) current.partitions = bundle.partitions;
       }
       await client.leave();
       entered = false;
       progress.value = 1;
       await readStatus(true);
-      completed = true;
+      installationCompleted = true;
       report(initializing ? '外置 Flash 初始化完成，设备正在重启。' : '外置 Flash 资源更新完成，设备正在重启。');
       try { await characteristic.writeValueWithResponse(Uint8Array.of(0x91)); }
       catch (_) { /* Reset commonly closes GATT before the write promise settles. */ }

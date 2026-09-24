@@ -5,11 +5,6 @@
 #include <stddef.h>
 #include <stdint.h>
 
-/* The normal firmware reads and updates partitioned external resources. */
-#ifndef RESOURCE_STORE_WRITABLE
-#define RESOURCE_STORE_WRITABLE 1
-#endif
-
 #define RS_HEADER_SIZE 32U
 #define RS_ENTRY_SIZE 16U
 #define RS_MAX_PARTITIONS 32U
@@ -19,7 +14,7 @@
 
 typedef enum {
     RS_OK, RS_INVALID, RS_BUSY, RS_CRC, RS_NOT_FOUND, RS_IO,
-    RS_INCOMPATIBLE, RS_READ_ONLY
+    RS_INCOMPATIBLE, RS_WRITE_PROTECTED
 } rs_result_t;
 
 typedef struct {

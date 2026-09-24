@@ -403,45 +403,6 @@ label {
     font-weight: 600;
 }
 
-.font-store-list {
-    display: flex;
-    flex-direction: column;
-    gap: 0.55rem;
-}
-
-.font-store-toolbar {
-    display: flex;
-    align-items: center;
-    gap: 0.75rem;
-    margin: 0.7rem 0;
-    flex-wrap: wrap;
-}
-
-.font-store-toolbar progress {
-    width: 12rem;
-    height: 0.8rem;
-}
-
-.font-store-row {
-    display: flex;
-    align-items: center;
-    gap: 0.55rem;
-    flex-wrap: wrap;
-}
-
-.font-store-row b {
-    min-width: 5.5rem;
-}
-
-.font-store-row progress {
-    width: 7rem;
-    height: 0.8rem;
-}
-
-.font-store-row label {
-    white-space: nowrap;
-}
-
 .orientation-hint {
     font-size: 85%;
     color: #666;

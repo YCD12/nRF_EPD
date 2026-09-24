@@ -83,8 +83,6 @@
 #include "epd_refresh_policy.h"
 #include "calendar_annotations.h"
 #include "calendar_annotations_store.h"
-#include "font_store.h"
-#include "font_transfer.h"
 #include "resource_transfer.h"
 #include "resource_protocol.h"
 #include "resource_store.h"
@@ -92,13 +90,13 @@
 
 static void epd_enter_picture_mode(ble_epd_t *p_epd); /* 切图片模式 */
 static void epd_gui_update(void* p_event_data, uint16_t event_size);
+uint32_t ble_epd_notification_try_send(ble_epd_t* p_epd, uint8_t* data, uint16_t length);
 
 // ============================================================================
 // CRC16计算和传输响应函数
 // ============================================================================
 
 #define LOW_BATTERY_POLL_INTERVAL_S 10  // 低电量模式电压轮询周期(秒)
-#define EPD_FONT_REFRESH_DELAY_S 5U     // 连续上传多个槽位时合并一次全屏刷新
 #define EPD_ANNOTATIONS_RX_TIMEOUT_S 10U
 #define EPD_IMAGE_RX_TIMEOUT_S 30U
 
@@ -217,8 +215,7 @@ static bool is_urgent_command(uint8_t cmd) {
     return epd_cmd_is_urgent(cmd);
 }
 
-#if FONT_STORE_MUTABLE || RESOURCE_STORE_WRITABLE
-static bool font_blocks_display_command(uint8_t cmd)
+static bool resource_blocks_display_command(uint8_t cmd)
 {
     return epd_cmd_needs_display(cmd) ||
            cmd == EPD_CMD_INIT ||
@@ -228,24 +225,6 @@ static bool font_blocks_display_command(uint8_t cmd)
            cmd == EPD_CMD_SET_ANNOTATIONS;
 }
 
-#if FONT_STORE_MUTABLE
-static void epd_report_font_busy(ble_epd_t* p_epd,
-                                  const uint8_t* p_data,
-                                  uint16_t length)
-{
-    if (p_epd == NULL || p_data == NULL || length == 0U) {
-        return;
-    }
-    /* WRITE_BLOCK has an application-level ACK path.  Tell the image
-     * transfer to restart instead of silently dropping the packet and
-     * leaving its sender waiting for a response that can never arrive. */
-    if (p_data[0] == EPD_CMD_WRITE_BLOCK && length >= 3U) {
-        uint16_t block_id = (uint16_t)p_data[1] | ((uint16_t)p_data[2] << 8);
-        send_block_response(p_epd, block_id, EPD_BLOCK_STATUS_RESTART);
-    }
-}
-#endif
-#endif
 
 
 /* 时钟刷新会睡眠面板并可能清空 p_epd->epd。
@@ -262,7 +241,7 @@ static bool epd_ensure_display(ble_epd_t *p_epd)
 
 /* WRITE_BLOCK 量大，少打 hexdump。 */
 static bool is_bulk_data_command(uint8_t cmd) {
-    return cmd == EPD_CMD_WRITE_BLOCK || cmd == EPD_CMD_SET_ANNOTATIONS || cmd == EPD_CMD_FONT_STORE;
+    return cmd == EPD_CMD_WRITE_BLOCK || cmd == EPD_CMD_SET_ANNOTATIONS;
 }
 
 // 异步命令处理的前向声明
@@ -426,29 +405,12 @@ static void epd_gui_update(void* p_event_data, uint16_t event_size) {
         !epd_display_queue_begin(&p_epd->display_queue, &requested_timestamp)) return;
     mode = (display_mode_t)p_epd->config.display_mode;
 
-    /* A refresh event may already be in app_scheduler when the first font
-     * packet arrives.  Checking only in ble_epd_on_timer() is too late: that
-     * queued event would still enter DrawGUI and contend with the external
-     * Flash transaction.  Drop the stale event and let the normal timer (or
-     * the delayed font refresh) schedule a new one later. */
+    /* A queued refresh must not contend with an active resource write. */
     if (resource_protocol_entered() || p_epd->init_pending ||
-        p_epd->init_ack_pending || p_epd->disconnect_pending ||
-#if FONT_STORE_MUTABLE
-        p_epd->font.operation_pending || font_store_update_active()
-#else
-        false
-#endif
-        ) {
+        p_epd->init_ack_pending || p_epd->disconnect_pending) {
         epd_display_complete(p_epd);
         return;
     }
-#if FONT_STORE_MUTABLE
-    if (p_epd->font.refresh_pending &&
-        (int32_t)(app_uptime_seconds() - p_epd->font.refresh_due) < 0) {
-        epd_display_complete(p_epd);
-        return;
-    }
-#endif
 
     if (epd_clock_refresh_must_yield(mode, p_epd->transfer_ctx.transfer_active)) {
         epd_display_complete(p_epd);
@@ -670,18 +632,6 @@ static void on_disconnect(ble_epd_t* p_epd, ble_evt_t* p_ble_evt) {
         p_epd->annotations_rx_abort_requested = true;
     }
 
-#if FONT_STORE_MUTABLE
-    /* Do not reset FIFO/command state from the BLE event context.  A font
-     * worker may already be running from app_scheduler; let that worker
-     * serialize the cancellation and discard stale work in one place. */
-    p_epd->font.abort_requested = true;
-    p_epd->font.task_pending |= FONT_TASK_TIMEOUT_ABORT;
-    p_epd->font.task_wait_tx &= (uint8_t)~FONT_TASK_TIMEOUT_ABORT;
-    if (!p_epd->font.task_scheduled) {
-        (void)font_task_schedule(p_epd, FONT_TASK_TIMEOUT_ABORT);
-    }
-    NRF_LOG_WARNING("[FONT]: upload abort deferred after BLE disconnect\n");
-#endif
 
     /* GPIO, panel sleep and image-session cancellation run in main. */
 
@@ -867,13 +817,7 @@ static void epd_init_process(ble_epd_t *p_epd)
     if (p_epd->disconnect_pending || !p_epd->gpio_connection_ref ||
         p_epd->conn_handle == BLE_CONN_HANDLE_INVALID) return;
     if (p_epd->init_pending && p_epd->init_prior_commands == 0U &&
-        !p_epd->init_ack_pending && !p_epd->is_refreshing &&
-#if FONT_STORE_MUTABLE
-        !p_epd->font.operation_pending && !font_store_update_active()
-#else
-        true
-#endif
-        ) {
+        !p_epd->init_ack_pending && !p_epd->is_refreshing) {
         uint32_t generation;
         bool connected;
         uint8_t model, token;
@@ -1089,16 +1033,6 @@ static void epd_refresh_annotations(ble_epd_t *p_epd)
     ble_epd_on_timer(p_epd, timestamp(), true);
 }
 
-#if FONT_STORE_MUTABLE
-void epd_refresh_fonts(ble_epd_t *p_epd)
-{
-    if (p_epd == NULL || p_epd->config.display_mode == MODE_PICTURE) {
-        return;
-    }
-    p_epd->font.refresh_pending = true;
-    p_epd->font.refresh_due = app_uptime_seconds() + EPD_FONT_REFRESH_DELAY_S;
-}
-#endif
 
 static void annotations_store_applied(void)
 {
@@ -1366,21 +1300,6 @@ static void cmd_cfg_erase(ble_epd_t *p_epd, uint8_t *p_data, uint16_t length) /*
 static void epd_execute_command(ble_epd_t* p_epd, uint8_t* p_data, uint16_t length) {
     if (p_data == NULL || length == 0) return;
 
-#if FONT_STORE_MUTABLE
-    /* A queued display command may have been accepted just before the font
-     * transaction set its guard.  Drop it here as a second line of defense;
-     * otherwise it can start a panel refresh while the external Flash is
-     * being written. */
-    if (p_epd->font.operation_pending || font_store_update_active()) {
-        if (p_data[0] != EPD_CMD_FONT_STORE &&
-            font_blocks_display_command(p_data[0])) {
-            NRF_LOG_WARNING("[EPD]: drop display command 0x%02x during font update\n",
-                            p_data[0]);
-            epd_report_font_busy(p_epd, p_data, length);
-            return;
-        }
-    }
-#endif
 
     if (!is_bulk_data_command(p_data[0])) {
         NRF_LOG_DEBUG("[EPD]: Executing command 0x%02x, LEN=%d\n", p_data[0], length);
@@ -1404,9 +1323,6 @@ static void epd_execute_command(ble_epd_t* p_epd, uint8_t* p_data, uint16_t leng
         case EPD_CMD_SYNC_TIME_SILENT: cmd_sync_time_silent(p_epd, p_data, length); break;
         case EPD_CMD_SET_WEEK_START:  cmd_set_week_start(p_epd, p_data, length);  break;
         case EPD_CMD_SET_ANNOTATIONS: cmd_set_annotations(p_epd, p_data, length); break;
-#if FONT_STORE_MUTABLE
-        case EPD_CMD_FONT_STORE:      cmd_font_store(p_epd, p_data, length);      break;
-#endif
         case EPD_CMD_SET_MODE:        cmd_set_mode(p_epd, p_data, length);        break;
         case EPD_CMD_WRITE_IMAGE:     cmd_write_image(p_epd, p_data, length);     break;
         case EPD_CMD_WRITE_BLOCK:     cmd_write_block(p_epd, p_data, length);     break;
@@ -1531,12 +1447,7 @@ void ble_epd_process(ble_epd_t* p_epd) {
     epd_init_process(p_epd);
     resource_transfer_process(p_epd, p_epd->connection_generation,
         p_epd->conn_handle != BLE_CONN_HANDLE_INVALID && !p_epd->disconnect_pending,
-        !p_epd->is_refreshing
-#if FONT_STORE_MUTABLE
-            && !p_epd->font.operation_pending && !font_store_update_active()
-#endif
-        ,
-        app_uptime_seconds(), resource_notification_send);
+        !p_epd->is_refreshing, app_uptime_seconds(), resource_notification_send);
     if (p_epd->annotations_rx_abort_requested) {
         (void)calendar_annotations_rx_cancel();
         CRITICAL_REGION_ENTER();
@@ -1553,9 +1464,6 @@ void ble_epd_process(ble_epd_t* p_epd) {
     if (epd_config_clear_complete()) NVIC_SystemReset();
     epd_cmd_queue_schedule(&p_epd->cmd_queue, p_epd, epd_process_next_command);
     epd_display_queue_schedule(&p_epd->display_queue, p_epd, epd_gui_update);
-#if FONT_STORE_MUTABLE
-    font_task_retry(p_epd);
-#endif
 }
 
 /**@brief 服务写入处理包装函数(将命令入队或执行)
@@ -1583,12 +1491,9 @@ static void epd_service_on_write(ble_epd_t* p_epd, uint8_t* p_data, uint16_t len
         resource_transfer_receive(p_data, length, p_epd->connection_generation);
         return;
     }
-#if RESOURCE_STORE_WRITABLE
     /* Avoid display/SPI commands only while an explicit resource write session
      * is active. Leaving the session immediately restores normal operation. */
-    if (resource_protocol_entered() &&
-        (p_data[0] == EPD_CMD_FONT_STORE || font_blocks_display_command(p_data[0]))) return;
-#endif
+    if (resource_protocol_entered() && resource_blocks_display_command(p_data[0])) return;
     if (!is_bulk_data_command(p_data[0])) {
         NRF_LOG_DEBUG("[EPD]: on_write received command 0x%02x, LEN=%d\n", p_data[0], length);
     }
@@ -1597,67 +1502,6 @@ static void epd_service_on_write(ble_epd_t* p_epd, uint8_t* p_data, uint16_t len
         ble_log("[CMD]:%02x/%d", p_data[0], length);
     }
 
-#if FONT_STORE_MUTABLE
-    /* GET is read-only and must never enter the two-entry display queue.
-     * During a busy notification window, restart the dedicated list worker
-     * from slot zero; duplicate A3 records are harmless and this prevents a
-     * browser list request from being silently lost behind a refresh. */
-    if (p_data[0] == EPD_CMD_FONT_STORE && length >= 2U &&
-        p_data[1] == FONT_STORE_OP_GET) {
-        font_store_send_list(p_epd);
-        return;
-    }
-
-    /* Stop timer-driven display work as soon as a mutating font command is
-     * received, even if the command is still waiting in the app scheduler. */
-    bool font_guard = (p_data[0] == EPD_CMD_FONT_STORE && length >= 2U &&
-                       p_data[1] != 0x00U);
-    if (font_guard && p_epd->font.abort_requested) return;
-    if (font_guard) {
-        p_epd->font.operation_pending = true;
-        p_epd->font.last_activity_ts = app_uptime_seconds();
-    }
-
-    /* High-speed font data is copied into a dedicated FIFO immediately.  It
-     * must not consume one of the two general command-queue entries. */
-    if (p_data[0] == EPD_CMD_FONT_STORE && length >= 2U &&
-        p_data[1] == FONT_STORE_OP_STREAM_DATA) {
-        cmd_font_store(p_epd, p_data, length);
-        return;
-    }
-
-    /* GET only schedules three short notifications and does not mutate the
-     * store.  Mutating control commands get a private scheduler slot so a
-     * pending refresh can never make BEGIN/COMMIT/ABORT disappear from the
-     * two-entry display command queue. */
-    if (p_data[0] == EPD_CMD_FONT_STORE && length >= 2U &&
-        p_data[1] != FONT_STORE_OP_GET) {
-        if (p_epd->font.cmd_pending) {
-            font_store_send_ack(p_epd, p_data[1], FONT_STORE_BUSY, 0xFFU);
-            return;
-        }
-        if (length > sizeof(p_epd->font.cmd.data)) {
-            font_store_send_ack(p_epd, p_data[1], FONT_STORE_INVALID, 0xFFU);
-            p_epd->font.operation_pending = false;
-            return;
-        }
-        p_epd->font.cmd.cmd = EPD_CMD_FONT_STORE;
-        memcpy(p_epd->font.cmd.data, p_data, length);
-        p_epd->font.cmd.length = length;
-        p_epd->font.cmd_pending = true;
-        (void)font_task_schedule(p_epd, FONT_TASK_CONTROL);
-        return;
-    }
-
-    if ((p_epd->font.operation_pending || font_store_update_active()) &&
-        p_data[0] != EPD_CMD_FONT_STORE &&
-        font_blocks_display_command(p_data[0])) {
-        NRF_LOG_WARNING("[EPD]: reject display command 0x%02x during font update\n",
-                        p_data[0]);
-        epd_report_font_busy(p_epd, p_data, length);
-        return;
-    }
-#endif
 
     // 紧急命令绕过队列立即执行
     if (is_urgent_command(p_data[0]) || epd_cmd_is_immediate(p_data[0])) {
@@ -1756,11 +1600,6 @@ void ble_epd_on_ble_evt(ble_epd_t* p_epd, ble_evt_t* p_ble_evt) {
             /* Notification workers use a single non-blocking HVX attempt.
              * Retry only after SoftDevice reports that TX queue space was
              * released, so BLE event handling never sleeps on resources. */
-#if FONT_STORE_MUTABLE
-            font_task_wake_tx(p_epd, FONT_TASK_LIST |
-                                       FONT_TASK_OPERATION_ACK |
-                                       FONT_TASK_STREAM_ACK);
-#endif
             calendar_annotations_tx_wake(&p_epd->annotations_tx);
             break;
 
@@ -1880,7 +1719,6 @@ uint32_t ble_epd_init(ble_epd_t* p_epd) {
     p_epd->init_ack_pending = false;
     p_epd->image_last_activity = 0U;
     p_epd->annotations_tx = (calendar_annotations_tx_t){0};
-    memset(&p_epd->font, 0, sizeof(p_epd->font));
     epd_display_queue_init(&p_epd->display_queue);
     calendar_annotations_tx_cancel(&p_epd->annotations_tx);
     p_epd->annotations_rx_last_activity = 0U;
@@ -1984,45 +1822,6 @@ void ble_epd_on_timer(ble_epd_t* p_epd, uint32_t timestamp, bool force_update) {
         p_epd->annotations_rx_abort_requested = true;
     }
 
-#if FONT_STORE_MUTABLE
-    /* Retry deferred font tasks from the timer path.  This path only posts a
-     * scheduler event; Flash/SPI work remains in font_task_worker(). */
-    font_task_retry(p_epd);
-    if ((p_epd->font.operation_pending || font_store_update_active()) &&
-        p_epd->font.last_activity_ts != 0U &&
-        (uint32_t)(app_uptime_seconds() - p_epd->font.last_activity_ts) >=
-            FONT_STORE_IDLE_TIMEOUT_S &&
-        (p_epd->font.task_pending & FONT_TASK_TIMEOUT_ABORT) == 0U) {
-        (void)font_task_schedule(p_epd, FONT_TASK_TIMEOUT_ABORT);
-    }
-
-    /* Do not enqueue a refresh while a font transaction is being received or
-     * while its post-commit merge window is active.  The old implementation
-     * only checked the update flag when the delayed refresh became due, so a
-     * periodic refresh could still start in the middle of an upload. */
-    if (p_epd->font.operation_pending || font_store_update_active()) {
-        return;
-    }
-
-    /* Font commits used to start a full refresh immediately from the BLE
-     * command handler.  On a 7.5-inch panel that blocks the app scheduler for
-     * several seconds, so the following list request or next font upload
-     * timed out even though the Flash transaction had already succeeded.
-     * Defer and coalesce the refresh; an active upload or queued command wins. */
-    if (p_epd->font.refresh_pending &&
-        (int32_t)(app_uptime_seconds() - p_epd->font.refresh_due) >= 0 &&
-        !p_epd->is_refreshing &&
-        !font_store_update_active() &&
-        p_epd->cmd_queue.count == 0U &&
-        !p_epd->cmd_queue.is_processing) {
-        p_epd->font.refresh_pending = false;
-        p_epd->force_full_refresh = true;
-        force_update = true;
-    }
-
-    // 低电量保持：停周期刷新，仍显示月历/时钟。每 LOW_BATTERY_POLL_INTERVAL_S
-    // 采样：临界则再刷一帧正常画面后关机，恢复则强制全刷。
-#endif
     if (p_epd->low_battery_screen_active && !force_update) {
         if (timestamp % LOW_BATTERY_POLL_INTERVAL_S == 0) {
             uint16_t voltage_mv = EPD_ReadVoltageAndCache();

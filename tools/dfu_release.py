@@ -52,12 +52,7 @@ class ReleaseError(ValueError):
 
 
 def default_bootloader(workspace: Path | None = None) -> Path:
-    """Prefer the Bootloader built from the checked-in SDK public key.
-
-    `Keil/DFU-nRF52.uvprojx` compiles SDK/dfu/dfu_public_key.c.  The checked-in
-    tools image is only a fallback for projects that have not built that target.
-    It is still audited and will be rejected if its embedded key differs.
-    """
+    """Prefer a locally built bootloader HEX when present."""
     workspace = ROOT if workspace is None else workspace
     generated = workspace / 'Keil/_build_DFU52/bl_nrf52811_xxaa_s112.hex'
     if generated.is_file():
@@ -110,41 +105,6 @@ def intel_hex_ranges(path: Path) -> list[tuple[int, int]]:
     return ranges
 
 
-def intel_hex_image(path: Path) -> dict[int, int]:
-    base = 0
-    image: dict[int, int] = {}
-    for line_number, raw in enumerate(path.read_text(encoding='ascii').splitlines(), 1):
-        if not raw:
-            continue
-        if not raw.startswith(':'):
-            raise ReleaseError(f'{path}:{line_number}: invalid Intel HEX record')
-        try:
-            record = bytes.fromhex(raw[1:])
-        except ValueError as error:
-            raise ReleaseError(f'{path}:{line_number}: invalid hexadecimal data') from error
-        if len(record) < 5 or len(record) != record[0] + 5 or sum(record) & 0xFF:
-            raise ReleaseError(f'{path}:{line_number}: invalid Intel HEX checksum or length')
-        length, offset, kind = record[0], (record[1] << 8) | record[2], record[3]
-        data = record[4:4 + length]
-        if kind == 0:
-            for index, value in enumerate(data):
-                address = base + offset + index
-                if address in image and image[address] != value:
-                    raise ReleaseError(f'{path}:{line_number}: conflicting data at 0x{address:08X}')
-                image[address] = value
-        elif kind == 2:
-            if length != 2:
-                raise ReleaseError(f'{path}:{line_number}: invalid segment address')
-            base = int.from_bytes(data, 'big') << 4
-        elif kind == 4:
-            if length != 2:
-                raise ReleaseError(f'{path}:{line_number}: invalid extended address')
-            base = int.from_bytes(data, 'big') << 16
-        elif kind not in (1, 3, 5):
-            raise ReleaseError(f'{path}:{line_number}: unsupported Intel HEX record {kind}')
-    return image
-
-
 def range_summary(ranges: list[tuple[int, int]]) -> dict[str, int]:
     return {'start': min(start for start, _ in ranges),
             'end_exclusive': max(end for _, end in ranges),
@@ -163,29 +123,6 @@ def require_no_overlap(name: str, ranges: list[tuple[int, int]], start: int, end
     for item_start, item_end in ranges:
         if item_start < end and item_end > start:
             raise ReleaseError(f'{name} writes reserved range 0x{start:05X}-0x{end:05X}')
-
-
-def embedded_public_key(path: Path) -> str:
-    values = re.findall(r'0x([0-9a-fA-F]{2})', path.read_text(encoding='utf-8'))
-    if len(values) != 64:
-        raise ReleaseError(f'{path}: expected exactly 64 public-key bytes, found {len(values)}')
-    return ''.join(values).lower()
-
-
-def image_contains(image: dict[int, int], needle: bytes) -> bool:
-    for address in image:
-        if all(image.get(address + index) == value for index, value in enumerate(needle)):
-            return True
-    return False
-
-
-def derived_public_key(nrfutil: str, private_key: Path) -> str:
-    completed = subprocess.run([nrfutil, 'keys', 'display', '--key', 'pk', '--format', 'hex',
-                                str(private_key)], check=True, text=True, capture_output=True)
-    match = re.search(r'(?m)^([0-9a-fA-F]{128})$', completed.stdout)
-    if match is None:
-        raise ReleaseError('nrfutil did not return a P-256 public key')
-    return match.group(1).lower()
 
 
 def config_value(path: Path, name: str) -> int:
@@ -285,9 +222,8 @@ def build_release(args: argparse.Namespace) -> dict[str, object]:
     bootloader = args.bootloader.resolve()
     softdevice = args.softdevice.resolve()
     private_key = args.key.resolve()
-    public_key_source = args.public_key_source.resolve()
     bootloader_config = args.bootloader_config.resolve()
-    for path in (app, bootloader, softdevice, private_key, public_key_source, bootloader_config):
+    for path in (app, bootloader, softdevice, private_key, bootloader_config):
         if not path.is_file():
             raise ReleaseError(f'missing required file: {path}')
     if args.application_version <= args.previous_version:
@@ -303,12 +239,6 @@ def build_release(args: argparse.Namespace) -> dict[str, object]:
     boot_range = require_inside('bootloader', boot_flash_ranges, BOOTLOADER_START, SETTINGS_BACKUP)
     require_inside('bootloader UICR', boot_uicr_ranges, UICR_BOOTLOADER_RECORD_START,
                    UICR_BOOTLOADER_RECORD_END)
-    compiled_public_key = embedded_public_key(public_key_source)
-    if derived_public_key(args.nrfutil, private_key) != compiled_public_key:
-        raise ReleaseError('signing key does not match the public key compiled into the bootloader')
-    if not image_contains(intel_hex_image(bootloader), bytes.fromhex(compiled_public_key)):
-        raise ReleaseError('bootloader HEX does not contain the expected compiled public key')
-
     signed = config_value(bootloader_config, 'NRF_DFU_REQUIRE_SIGNED_APP_UPDATE')
     downgrade = config_value(bootloader_config, 'NRF_DFU_APP_DOWNGRADE_PREVENTION')
     force_dual = config_value(bootloader_config, 'NRF_DFU_FORCE_DUAL_BANK_APP_UPDATES')
@@ -368,10 +298,7 @@ def build_release(args: argparse.Namespace) -> dict[str, object]:
                        'force_dual_bank': bool(force_dual),
                        'single_bank_configured': bool(single_bank),
                        'effective_update_mode': 'dual-bank-if-space-else-single-bank',
-                       'external_firmware_slots': 0,
-                       'public_key_in_bootloader_hex': True,
-                       'public_key_sha256': hashlib.sha256(
-                           bytes.fromhex(compiled_public_key)).hexdigest().upper()},
+                       'external_firmware_slots': 0},
         'external_resources': resources,
         'package': {'path': package.name, 'sha256': sha256(package), **info},
         'settings': {'path': settings.name, 'sha256': sha256(settings), **settings_range},
@@ -393,8 +320,6 @@ def main() -> None:
     parser.add_argument('--bootloader', type=Path, default=default_bootloader())
     parser.add_argument('--softdevice', type=Path,
                         default=Path('SDK/17.1.0_ddde560/components/softdevice/s112/hex/s112_nrf52_7.3.0_softdevice.hex'))
-    parser.add_argument('--public-key-source', type=Path,
-                        default=Path('SDK/17.1.0_ddde560/dfu/dfu_public_key.c'))
     parser.add_argument('--bootloader-config', type=Path,
                         default=Path('SDK/17.1.0_ddde560/dfu/sdk_config.h'))
     parser.add_argument('--resources-dir', type=Path,

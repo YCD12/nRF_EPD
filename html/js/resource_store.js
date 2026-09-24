@@ -3,7 +3,7 @@
   const u32 = (b, at) => new DataView(b.buffer, b.byteOffset, b.byteLength).getUint32(at, true);
   const CAPACITY = 524288;
   const INSTALL_ORDER = [1, 5, 6, 7, 2, 3];
-  const STATUS_NAMES = ['有效', '格式错误', '正在更新', '校验失败', '未安装或未提交', '读写失败', '版本不兼容', '只读'];
+  const STATUS_NAMES = ['有效', '格式错误', '正在更新', '校验失败', '未安装或未提交', '读写失败', '版本不兼容', '写入受保护'];
   function statusName(code) { return STATUS_NAMES[code] || `未知状态 ${code}`; }
   function put32(b, at, value) { new DataView(b.buffer).setUint32(at, value, true); }
   function crc32(bytes) {
@@ -40,8 +40,8 @@
   }
   function parseStatus(reply) {
     if (reply.length !== 16) throw new Error(`无法读取资源能力：${statusName(reply[3])}（旧固件可能不支持资源协议）`);
-    if (reply[4] > 1 || reply[5] !== 1 || u32(reply, 12) !== CAPACITY) throw new Error('设备资源 ABI 或 Flash 容量不兼容');
-    return { code: reply[3], writable: reply[4] === 1, abi: reply[5], active: reply[6], entered: !!reply[7], received: u32(reply, 8), capacity: u32(reply, 12) };
+    if (reply[4] !== 1 || reply[5] !== 1 || u32(reply, 12) !== CAPACITY) throw new Error('设备不支持外置 Flash 读写或资源 ABI/容量不兼容');
+    return { code: reply[3], abi: reply[5], active: reply[6], entered: !!reply[7], received: u32(reply, 8), capacity: u32(reply, 12) };
   }
   function validateTarget(pack, partitions) {
     const p = pack.id === 1 ? { id: 1, type: 1, offset: 0, size: 4096 } : partitions.find(p => p.id === pack.id);
@@ -51,16 +51,16 @@
     if (pack.id === 1) parseTable(pack);
     return p;
   }
+  function verifyPayload(bytes, info) {
+    if (bytes.length !== info.length + 32 || crc32(bytes.subarray(32)) !== info.crc)
+      throw new Error('资源包格式或 CRC 错误');
+    return { id: info.id, revision: info.revision, crc: info.crc, payload: bytes.subarray(32) };
+  }
   function parsePackage(bytes) {
-    if (!(bytes instanceof Uint8Array) || bytes.length < 33 ||
-        u32(bytes, 0) !== 0x31535245 || u32(bytes, 28) !== 0xa55ac33c ||
-        (u32(bytes, 4) >>> 16) !== 1 || u32(bytes, 20) !== 524288 ||
-        crc32(bytes.subarray(0, 24)) !== u32(bytes, 24) ||
-        u32(bytes, 12) !== bytes.length - 32 ||
-        crc32(bytes.subarray(32)) !== u32(bytes, 16)) throw new Error('资源包格式或 CRC 错误');
-    const id = u32(bytes, 4) & 0xffff;
-    if (!id || id > 255) throw new Error('不支持的分区 ID');
-    return { id, revision: u32(bytes, 8), crc: u32(bytes, 16), payload: bytes.subarray(32) };
+    if (!(bytes instanceof Uint8Array) || bytes.length < 33) throw new Error('资源包格式或 CRC 错误');
+    const info = parseHeader(bytes);
+    if (!info.id || info.id > 255) throw new Error('不支持的分区 ID');
+    return verifyPayload(bytes, info);
   }
   function prepareBundle(files) {
     if (!files || !files.length) throw new Error('请选择包含 ERS 资源包的文件夹');
@@ -87,7 +87,9 @@
     if (!bundle || !Array.isArray(bundle.packages)) throw new Error('资源目录尚未就绪');
     if (statusCode === 4) return bundle.packages.slice();
     if (statusCode !== 0) throw new Error(`分区表状态为“${statusName(statusCode)}”，不能按空白设备处理`);
-    const packages = bundle.packages.filter(item => item.pack.id !== 1);
+    // Existing devices own their config and annotations. Factory records are
+    // installed only alongside a new partition table on blank Flash.
+    const packages = bundle.packages.filter(item => ![1, 2, 3].includes(item.pack.id));
     for (const item of packages) validateTarget(item.pack, installedPartitions || []);
     return packages;
   }
@@ -150,24 +152,23 @@
       }
       return data;
     }
-    exportFlash(progress = () => {}) { return this.readRange(0, CAPACITY, progress); }
     async readPackage(partition, progress = () => {}) {
       const header = await this.readRange(partition.offset, 32);
       const info = parseHeader(header, partition);
       const bytes = new Uint8Array(32 + info.length);
       bytes.set(header); bytes.set(await this.readRange(partition.offset + 32, info.length, progress), 32);
-      parsePackage(bytes);
+      verifyPayload(bytes, info);
       return bytes;
     }
     async partitions() {
-      return parseTable(parsePackage(await this.readPackage({ id: 1, offset: 0, size: 4096 })));
+      const bytes = await this.readPackage({ id: 1, offset: 0, size: 4096 });
+      return parseTable({ id: 1, payload: bytes.subarray(32) });
     }
-    async upload(bytes, progress = () => {}) {
+    async upload(bytes, progress = () => {}, knownPartitions = null) {
       const pack = parsePackage(bytes);
       const status = parseStatus(await this.status());
-      if (!status.writable) throw new Error('当前固件只支持读取，请烧录 build.bat 生成的 full HEX');
       if (status.active) throw new Error('设备正在更新，请先终止未完成事务');
-      validateTarget(pack, pack.id === 1 ? [] : await this.partitions());
+      validateTarget(pack, pack.id === 1 ? [] : knownPartitions || await this.partitions());
       await this.request(6, Uint8Array.of(77, 73, 71, 49));
       await this.request(5);
       const begin = new Uint8Array(13);

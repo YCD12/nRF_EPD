@@ -1,5 +1,7 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const vm = require('node:vm');
 const { ResourceClient, crc32, parsePackage, parseHeader, parseTable, parseStatus, validateTarget, prepareBundle, installationPlan } = require('../html/js/resource_store.js');
 const layout = require('../docs/external-flash-layout-v1.draft.json');
 function wrap(id, payload) {
@@ -18,17 +20,17 @@ function tableBytes() {
   });
   return wrap(1, b);
 }
-function statusBytes(token, writable = true, code = 0) {
-  const b = new Uint8Array(16); b.set([0xa7, 0, token, code, Number(writable), 1]);
+function statusBytes(token, code = 0) {
+  const b = new Uint8Array(16); b.set([0xa7, 0, token, code, 1, 1]);
   new DataView(b.buffer).setUint32(12, 524288, true); return b;
 }
-function deviceClient({ writable = true, table = tableBytes(), status = null } = {}) {
+function deviceClient({ table = tableBytes(), status = null } = {}) {
   const memory = new Uint8Array(524288).fill(255), packets = [];
   memory.set(table); memory.set(packageBytes(), 4096);
   const client = new ResourceClient(async p => {
     packets.push(p);
     let a = Uint8Array.of(0xa7, p[1], p[2], 0);
-    if (p[1] === 0) { a = status || statusBytes(p[2], writable); a[2] = p[2]; }
+    if (p[1] === 0) { a = status || statusBytes(p[2]); a[2] = p[2]; }
     if (p[1] === 1) {
       const at = new DataView(p.buffer).getUint32(3, true);
       a = Uint8Array.of(...a, ...memory.subarray(at, at + p[7]));
@@ -72,11 +74,11 @@ test('one-click bundle is complete, validated and sorted in safe install order',
   assert.throws(() => prepareBundle([...completeBundle(), { name: 'duplicate.ers', bytes: wrap(2, Uint8Array.of(2)) }]), /重复/);
   assert.throws(() => prepareBundle([...completeBundle().slice(0, -1), { name: 'unsupported.ers', bytes: wrap(9, Uint8Array.of(9)) }]), /缺少|不支持/);
 });
-test('install plan initializes only a missing table and preserves an existing table', () => {
+test('install plan initializes blank Flash and preserves the table and personal data on existing devices', () => {
   const bundle = prepareBundle(completeBundle());
   const partitions = parseTable(parsePackage(tableBytes()));
   assert.deepEqual(installationPlan(bundle, 4, null).map(item => item.pack.id), [1, 5, 6, 7, 2, 3]);
-  assert.deepEqual(installationPlan(bundle, 0, partitions).map(item => item.pack.id), [5, 6, 7, 2, 3]);
+  assert.deepEqual(installationPlan(bundle, 0, partitions).map(item => item.pack.id), [5, 6, 7]);
   assert.throws(() => installationPlan(bundle, 3, partitions), /不能按空白/);
 });
 test('upload uses stop-and-wait packets bounded to default ATT payload', async () => {
@@ -85,6 +87,47 @@ test('upload uses stop-and-wait packets bounded to default ATT payload', async (
   assert.deepEqual(packets.filter(p => p[1] !== 1).map(p => p[1]), [0, 6, 5, 2, 3, 3, 3, 4]);
   assert.ok(packets.every(p => p.length <= 20));
   assert.deepEqual(packets.filter(p => p[1] === 3).map(p => new DataView(p.buffer).getUint32(3, true)), [0, 13, 26]);
+});
+test('upload reuses a previously validated partition table', async () => {
+  const { client, packets } = deviceClient();
+  const partitions = parseTable(parsePackage(tableBytes()));
+  await client.upload(packageBytes(), () => {}, partitions);
+  assert.equal(packets.filter(p => p[1] === 1).length, 0);
+  assert.ok(packets.some(p => p[1] === 4));
+});
+test('installer keeps the completed message when the device restarts', async () => {
+  const bundle = prepareBundle(completeBundle());
+  const nodes = new Map(), listeners = new Map(), uploads = [];
+  function node(id) {
+    if (!nodes.has(id)) nodes.set(id, {
+      classList: { add() {}, remove() {} },
+      addEventListener(event, listener) { listeners.set(`${id}:${event}`, listener); }
+    });
+    return nodes.get(id);
+  }
+  class FakeClient {
+    status() { return statusBytes(0, 4); }
+    async upload(bytes, progress, partitions) {
+      const pack = parsePackage(bytes);
+      uploads.push({ id: pack.id, partitions });
+      progress(pack.payload.length);
+    }
+    async leave() {}
+    disconnect() {}
+  }
+  const context = {
+    document: { getElementById: node },
+    EPDResourceStore: { ...require('../html/js/resource_store.js'), ResourceClient: FakeClient, prepareBundle: () => bundle }
+  };
+  vm.runInNewContext(fs.readFileSync(require.resolve('../html/js/resource_installer.js'), 'utf8'), context);
+  await listeners.get('externalResourceFolder:change')({ target: { files: [{ name: 'bundle.ers', arrayBuffer: async () => new ArrayBuffer(1) }] } });
+  context.ExternalResourceInstaller.bind({ writeValueWithResponse: async () => {} });
+  await context.ExternalResourceInstaller.install();
+  assert.deepEqual(uploads.map(item => item.id), [1, 5, 6, 7, 2, 3]);
+  assert.equal(uploads[0].partitions, null);
+  assert.equal(uploads[1].partitions, bundle.partitions);
+  context.ExternalResourceInstaller.disconnect();
+  assert.match(node('externalResourceStatus').textContent, /资源已写入/);
 });
 test('lost ACK retries identical packet and token', async () => {
   const packets = [];
@@ -95,17 +138,6 @@ test('lost ACK retries identical packet and token', async () => {
   await client.request(4);
   assert.deepEqual(packets[0], packets[1]);
 });
-test('read-only firmware refuses upload before ENTER or erase', async () => {
-  const packets = [];
-  const client = new ResourceClient(async p => {
-    packets.push(p);
-    const a = statusBytes(p[2], false, 4);
-    client.receive(a);
-  });
-  await assert.rejects(client.upload(packageBytes()), /full HEX/);
-  assert.equal(packets.length, 1);
-});
-
 test('actual device partition table is read and validated; payload export verifies full CRC', async () => {
   const { client, memory } = deviceClient();
   const entries = await client.partitions();
@@ -144,8 +176,8 @@ test('missing partition, reserved regions and oversized packages are refused bef
   assert.throws(() => validateTarget(parsePackage(packageBytes()), []), /先安装/);
 });
 
-test('writable firmware can repair absent table, but cannot upload other resources without it', async () => {
-  const { client, packets } = deviceClient({ table: new Uint8Array(160).fill(255), status: statusBytes(0, true, 4) });
+test('firmware can repair absent table, but cannot upload other resources without it', async () => {
+  const { client, packets } = deviceClient({ table: new Uint8Array(160).fill(255), status: statusBytes(0, 4) });
   await assert.rejects(client.upload(packageBytes()), /未安装/);
   assert.ok(packets.every(p => p[1] < 2));
   await client.upload(tableBytes());
@@ -153,10 +185,11 @@ test('writable firmware can repair absent table, but cannot upload other resourc
 });
 
 test('short or incompatible capability and an active transaction cannot start upload', async () => {
-  for (const [i, status] of [Uint8Array.of(0xa7, 0, 0, 5), statusBytes(0), statusBytes(0), statusBytes(0)].entries()) {
+  for (const [i, status] of [Uint8Array.of(0xa7, 0, 0, 5), statusBytes(0), statusBytes(0), statusBytes(0), statusBytes(0)].entries()) {
     if (status.length === 16) {
       if (i === 1) status[5] = 2;
       else if (i === 2) status[12] = 1;
+      else if (i === 3) status[4] = 0;
       else status[6] = 2;
     }
     const { client, packets } = deviceClient({ status });

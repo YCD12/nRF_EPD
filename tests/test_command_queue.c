@@ -5,7 +5,6 @@
 #define BLE_EPD_MAX_DATA_LEN 244U
 #define EPD_CMD_MAX_DATA_LEN BLE_EPD_MAX_DATA_LEN
 #define EPD_CMD_QUEUE_SIZE 2U
-#include "font_transfer_state.h"
 #include "epd_command_queue.h"
 
 static unsigned depth, posts;

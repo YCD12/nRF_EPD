@@ -261,7 +261,7 @@ exit /b %errorlevel%
 
 :build
 call :clean
-call :compile RESOURCE_STORE_WRITABLE=1 %*
+call :compile %*
 if errorlevel 1 exit /b %errorlevel%
 call :merge_full_firmware
 exit /b %errorlevel%

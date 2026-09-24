@@ -50,48 +50,15 @@ static bool validate_font_structure(font_store_slot_t slot, uint32_t address, ui
 static bool validate_font_records(uint32_t address, uint32_t length,
                                   uint16_t start_upper, uint16_t start_lower,
                                   uint16_t start_unicode);
-static font_store_result_t manifest_write(const font_record_t* records, uint32_t generation);
-
 static uint8_t m_ready;
 static uint32_t m_generation;
 static uint32_t m_revision = 1U;
 static font_record_t m_records[FONT_STORE_SLOT_COUNT];
 
-/* Published records never change during an upload. Abort only drops this
- * transaction, so no duplicate copy of the old directory is needed. */
-static struct {
-    uint32_t storage_offset;
-    uint32_t total_length;
-    uint32_t expected_crc32;
-    uint32_t received_length;
-    uint32_t running_crc32;
-    uint32_t next_erase_sector;
-    font_store_pack_slot_t slots[FONT_STORE_SLOT_COUNT];
-    volatile bool active;
-} m_update;
 static uint32_t m_manifest_address = FONT_STORE_NO_MANIFEST;
 static uint32_t m_data_base = FONT_STORE_DATA_BASE;
-static bool m_resource_layout;
-/* An I/O error while publishing may mean the commit reached Flash. Require
- * a reboot/reload before reusing data that either directory could reference. */
-static bool m_commit_uncertain;
-
 static fm25q04b_region_t m_regions[FONT_STORE_SLOT_COUNT];
 static u8g2_font_source_t m_sources[FONT_STORE_SLOT_COUNT];
-
-static void put_u16(uint8_t* p, uint16_t value)
-{
-    p[0] = (uint8_t)value;
-    p[1] = (uint8_t)(value >> 8);
-}
-
-static void put_u32(uint8_t* p, uint32_t value)
-{
-    p[0] = (uint8_t)value;
-    p[1] = (uint8_t)(value >> 8);
-    p[2] = (uint8_t)(value >> 16);
-    p[3] = (uint8_t)(value >> 24);
-}
 
 static uint16_t get_u16(const uint8_t* p)
 {
@@ -200,30 +167,6 @@ static bool records_non_overlapping(const font_record_t* records)
         }
     }
     return true;
-}
-
-static uint32_t records_data_end(const font_record_t* records)
-{
-    uint32_t end = 0U;
-    uint8_t slot;
-
-    if (records == NULL) {
-        return 0U;
-    }
-    for (slot = 0U; slot < FONT_STORE_SLOT_COUNT; slot++) {
-        uint32_t record_end = records[slot].offset + records[slot].length;
-        if (record_end > end) {
-            end = record_end;
-        }
-    }
-    return end;
-}
-
-static uint32_t align_data_offset(uint32_t offset)
-{
-    const uint32_t mask = FM25Q04B_SECTOR_SIZE - 1U;
-
-    return (offset + mask) & ~mask;
 }
 
 static void font_store_update_sources(void)
@@ -363,64 +306,6 @@ static void manifest_load(void)
             memset(record, 0, sizeof(*record));
         }
     }
-}
-
-static font_store_result_t manifest_write(const font_record_t* records, uint32_t generation)
-{
-    uint8_t raw[FONT_STORE_MANIFEST_SIZE];
-    uint8_t check[FONT_STORE_MANIFEST_SIZE];
-    uint32_t address = m_manifest_address < FM25Q04B_SECTOR_SIZE ?
-                       FONT_STORE_SECONDARY_ADDR : FONT_STORE_PRIMARY_ADDR;
-    bool migration = m_manifest_address == 0U;
-    if (migration) {
-        /* FST2 may use the last sector as data. Append the first FST3
-         * directory in sector zero without erasing any legacy bytes. */
-        for (address = FONT_STORE_PRIMARY_ADDR; address < FM25Q04B_SECTOR_SIZE; address += 64U) {
-            bool blank = true;
-            if (fm25q04b_read(address, check, sizeof(check)) != NRF_SUCCESS) return FONT_STORE_IO;
-            for (size_t i = 0; i < sizeof(check); i++) if (check[i] != 0xFFU) blank = false;
-            if (blank) break;
-        }
-        if (address >= FM25Q04B_SECTOR_SIZE) return FONT_STORE_NO_SPACE;
-    }
-    memset(raw, 0xFF, sizeof(raw));
-    put_u32(raw, FONT_STORE_MAGIC);
-    put_u16(&raw[4], FONT_STORE_VERSION);
-    raw[6] = FONT_STORE_SLOT_COUNT;
-    raw[7] = 0U;
-    put_u32(&raw[8], generation);
-    for (uint8_t slot = 0U; slot < FONT_STORE_SLOT_COUNT; slot++) {
-        uint32_t base = 12U + slot * FONT_STORE_RECORD_SIZE;
-        put_u32(&raw[base], records[slot].offset);
-        put_u32(&raw[base + 4U], records[slot].length);
-        put_u32(&raw[base + 8U], records[slot].crc32);
-    }
-    put_u32(&raw[FONT_STORE_MANIFEST_CRC_OFFSET], font_store_crc32(raw, FONT_STORE_MANIFEST_CRC_OFFSET));
-    put_u32(&raw[FONT_STORE_MANIFEST_STATE_OFFSET], FONT_STORE_MANIFEST_STATE_READY);
-    m_commit_uncertain = true;
-    if ((!migration && fm25q04b_erase_sector(address) != NRF_SUCCESS) ||
-        fm25q04b_write(address, raw, sizeof(raw)) != NRF_SUCCESS ||
-        fm25q04b_read(address, check, sizeof(check)) != NRF_SUCCESS ||
-        memcmp(raw, check, sizeof(raw)) != 0) return FONT_STORE_IO;
-    put_u32(&raw[FONT_STORE_MANIFEST_COMMIT_OFFSET], FONT_STORE_COMMIT);
-    if (fm25q04b_write(address + FONT_STORE_MANIFEST_COMMIT_OFFSET,
-                       &raw[FONT_STORE_MANIFEST_COMMIT_OFFSET], 4U) != NRF_SUCCESS ||
-        fm25q04b_read(address, check, sizeof(check)) != NRF_SUCCESS ||
-        memcmp(raw, check, sizeof(raw)) != 0) return FONT_STORE_IO;
-    m_manifest_address = address;
-    m_commit_uncertain = false;
-    return FONT_STORE_OK;
-}
-
-/* Before recycling any old data, retire a stale FST2 fallback. This word is
- * outside all FST3 records and can be programmed without erasing sector zero. */
-static bool retire_legacy_manifest(void)
-{
-    uint32_t dirty = 0U;
-    uint32_t check = UINT32_MAX;
-    return fm25q04b_write(FONT_STORE_MANIFEST_STATE_OFFSET, &dirty, sizeof(dirty)) == NRF_SUCCESS &&
-           fm25q04b_read(FONT_STORE_MANIFEST_STATE_OFFSET, &check, sizeof(check)) == NRF_SUCCESS &&
-           check == 0U;
 }
 
 static uint16_t header_word(const font_header_t* header, unsigned offset)
@@ -596,29 +481,6 @@ static bool validate_font_records(uint32_t address, uint32_t length,
            validate_unicode_records(&reader, unicode_table + lookup_offset);
 }
 
-static font_store_result_t ensure_erased(uint32_t offset, size_t length)
-{
-    uint32_t first;
-    uint32_t last;
-
-    if (length == 0U) {
-        return FONT_STORE_OK;
-    }
-    if (offset > FONT_STORE_DATA_CAPACITY ||
-        length > (size_t)(FONT_STORE_DATA_CAPACITY - offset)) {
-        return FONT_STORE_INVALID;
-    }
-    first = offset / FM25Q04B_SECTOR_SIZE;
-    last = (offset + (uint32_t)length - 1U) / FM25Q04B_SECTOR_SIZE;
-    if (first < m_update.next_erase_sector) first = m_update.next_erase_sector;
-    while (first <= last) {
-        if (fm25q04b_erase_sector(FONT_STORE_DATA_BASE + first * FM25Q04B_SECTOR_SIZE) != NRF_SUCCESS)
-            return FONT_STORE_IO;
-        m_update.next_erase_sector = ++first;
-    }
-    return FONT_STORE_OK;
-}
-
 ret_code_t font_store_init(void)
 {
     fm25q04b_jedec_id_t id;
@@ -631,7 +493,6 @@ ret_code_t font_store_init(void)
     }
     memset(m_records, 0, sizeof(m_records));
     if (resource_store_mount() == RS_OK) {
-        m_resource_layout = true;
         (void)resource_font_pack_load();
         m_ready = 1U;
         font_store_update_sources();
@@ -653,134 +514,12 @@ bool font_store_ready(void)
     return m_ready != 0U;
 }
 
-bool font_store_update_active(void)
-{
-    return m_update.active;
-}
-
 const u8g2_font_source_t* font_store_get_source(font_store_slot_t slot)
 {
     if (!m_ready || !slot_valid(slot) || m_records[slot].length == 0U) {
         return NULL;
     }
     return &m_sources[slot];
-}
-
-bool font_store_get_info(font_store_slot_t slot, font_store_info_t* info)
-{
-    if (!m_ready || !slot_valid(slot) || info == NULL) {
-        return false;
-    }
-    info->present = (m_records[slot].length != 0U) ? 1U : 0U;
-    info->length = m_records[slot].length;
-    info->crc32 = m_records[slot].crc32;
-    info->revision = m_revision;
-    return true;
-}
-
-/* Try the tail first to distribute erases, then recycle a sector-aligned
- * hole. Check erase-sector overlap, not just byte overlap with old data. */
-static bool find_update_space(uint32_t length, uint32_t* out)
-{
-    uint32_t candidate = align_data_offset(records_data_end(m_records));
-    if (candidate <= FONT_STORE_DATA_CAPACITY && length <= FONT_STORE_DATA_CAPACITY - candidate) {
-        *out = candidate;
-        return true;
-    }
-    candidate = 0U;
-    while (candidate <= FONT_STORE_DATA_CAPACITY && length <= FONT_STORE_DATA_CAPACITY - candidate) {
-        uint32_t next = candidate;
-        uint32_t end = candidate + align_data_offset(length);
-        for (uint8_t slot = 0U; slot < FONT_STORE_SLOT_COUNT; slot++) {
-            const font_record_t* r = &m_records[slot];
-            uint32_t r_end = align_data_offset(r->offset + r->length);
-            uint32_t r_start = r->offset & ~(FM25Q04B_SECTOR_SIZE - 1U);
-            if (r->length != 0U && candidate < r_end && r_start < end && r_end > next) next = r_end;
-        }
-        if (next == candidate) { *out = candidate; return true; }
-        candidate = next;
-    }
-    return false;
-}
-
-font_store_result_t font_store_begin_pack(uint32_t total_length, uint32_t pack_crc32,
-                                          const font_store_pack_slot_t* slots)
-{
-    uint32_t sum = 0U;
-    uint32_t storage_offset;
-    if (!m_ready || m_resource_layout || slots == NULL || total_length > FONT_STORE_DATA_CAPACITY)
-        return FONT_STORE_INVALID;
-    if (m_commit_uncertain) return FONT_STORE_IO;
-    if (m_update.active) return FONT_STORE_BUSY;
-    for (uint8_t slot = 0U; slot < FONT_STORE_SLOT_COUNT; slot++) {
-        if ((slots[slot].length == 0U && slots[slot].crc32 != 0U) ||
-            slots[slot].length > FONT_STORE_DATA_CAPACITY - sum) return FONT_STORE_INVALID;
-        sum += slots[slot].length;
-    }
-    if (sum != total_length) return FONT_STORE_INVALID;
-    if (!find_update_space(total_length, &storage_offset)) return FONT_STORE_NO_SPACE;
-    if (m_manifest_address != 0U && m_manifest_address != FONT_STORE_NO_MANIFEST &&
-        !retire_legacy_manifest()) return FONT_STORE_IO;
-    memset(&m_update, 0, sizeof(m_update));
-    m_update.storage_offset = storage_offset;
-    m_update.total_length = total_length;
-    m_update.expected_crc32 = pack_crc32;
-    m_update.running_crc32 = UINT32_MAX;
-    m_update.next_erase_sector = storage_offset / FM25Q04B_SECTOR_SIZE;
-    memcpy(m_update.slots, slots, sizeof(m_update.slots));
-    m_update.active = true;
-    return FONT_STORE_OK;
-}
-
-font_store_result_t font_store_write_pack_chunk(uint32_t offset, const uint8_t* data, size_t length)
-{
-    font_store_result_t result;
-    if (!m_update.active || m_commit_uncertain || (data == NULL && length != 0U) ||
-        offset != m_update.received_length || offset > m_update.total_length ||
-        length > m_update.total_length - offset) return FONT_STORE_INVALID;
-    result = ensure_erased(m_update.storage_offset + offset, length);
-    if (result != FONT_STORE_OK) return result;
-    if (length != 0U && fm25q04b_write(FONT_STORE_DATA_BASE + m_update.storage_offset + offset,
-                                      data, length) != NRF_SUCCESS) return FONT_STORE_IO;
-    m_update.running_crc32 = font_store_crc32_update(m_update.running_crc32, data, length);
-    m_update.received_length += (uint32_t)length;
-    return FONT_STORE_OK;
-}
-
-font_store_result_t font_store_commit_pack(void)
-{
-    font_record_t records[FONT_STORE_SLOT_COUNT] = {0};
-    uint32_t offset = 0U;
-    if (!m_update.active) return FONT_STORE_INVALID;
-    if (m_commit_uncertain) return FONT_STORE_IO;
-    if (m_update.received_length != m_update.total_length ||
-        (m_update.running_crc32 ^ UINT32_MAX) != m_update.expected_crc32) return FONT_STORE_CRC;
-    for (uint8_t slot = 0U; slot < FONT_STORE_SLOT_COUNT; slot++) {
-        uint32_t crc;
-        uint32_t length = m_update.slots[slot].length;
-        if (length == 0U) continue;
-        records[slot] = (font_record_t){m_update.storage_offset + offset, length, m_update.slots[slot].crc32};
-        if (!font_store_crc32_flash(record_address(&records[slot]), length, &crc)) return FONT_STORE_IO;
-        if (crc != records[slot].crc32) return FONT_STORE_CRC;
-        if (!validate_font_structure((font_store_slot_t)slot, record_address(&records[slot]), length))
-            return FONT_STORE_INVALID;
-        offset += length;
-    }
-    font_store_result_t result = manifest_write(records, m_generation + 1U);
-    if (result != FONT_STORE_OK) return result;
-    memcpy(m_records, records, sizeof(m_records));
-    m_generation++;
-    m_update.active = false;
-    m_revision++;
-    font_store_update_sources();
-    return FONT_STORE_OK;
-}
-
-font_store_result_t font_store_abort_update(void)
-{
-    if (!m_update.active) return FONT_STORE_INVALID;
-    m_update.active = false;
-    return FONT_STORE_OK;
 }
 
 #if defined(FONT_STORE_HOST_TEST)
@@ -791,10 +530,7 @@ void font_store_host_reset(void)
     m_revision = 1U;
     m_manifest_address = FONT_STORE_NO_MANIFEST;
     m_data_base = FONT_STORE_DATA_BASE;
-    m_resource_layout = false;
-    m_commit_uncertain = false;
     memset(m_records, 0, sizeof(m_records));
-    memset(&m_update, 0, sizeof(m_update));
     memset(m_regions, 0, sizeof(m_regions));
     memset(m_sources, 0, sizeof(m_sources));
 }
