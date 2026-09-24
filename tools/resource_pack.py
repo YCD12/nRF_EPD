@@ -3,6 +3,7 @@ import argparse
 import importlib.util
 import json
 import struct
+import time
 import zlib
 from pathlib import Path
 
@@ -12,6 +13,17 @@ _font_spec = importlib.util.spec_from_file_location('font_store_tool', ROOT / 't
 font_store_tool = importlib.util.module_from_spec(_font_spec)
 _font_spec.loader.exec_module(font_store_tool)
 MAGIC, COMMIT, ABI = 0x31535245, 0xA55AC33C, 1
+STAMP_MAGIC = 0x54535245  # ERST, appended after the payload and not written to Flash
+# Written into each ERS header revision and stored on the device. Bump a module
+# here when its resource contents change.
+MODULE_VERSIONS = {
+    1: 1,  # partition table
+    2: 1,  # epd config
+    3: 1,  # calendar annotations
+    5: 1,  # calendar
+    6: 1,  # ui
+    7: 1,  # fonts
+}
 RECORD_SCHEMA, RECORD_HEADER_SIZE = 1, 16
 CONFIG_RECORD_MAGIC, ANNOTATION_RECORD_MAGIC = 0x31435045, 0x31434E41
 TYPES = {'partition_table': 1, 'config_record': 2, 'annotation_record': 3,
@@ -51,12 +63,16 @@ def table_payload(layout):
                     for p in layout['partitions'])
 
 
-def package(part_id, payload, revision=1):
+def package(part_id, payload, revision=1, built_at=None):
     if not payload or not 0 < part_id < 65536:
         raise ValueError('empty package or invalid ID')
+    if built_at is None:
+        built_at = int(time.time())
     header = struct.pack('<6I', MAGIC, ABI << 16 | part_id, revision,
                          len(payload), zlib.crc32(payload), 524288)
-    return header + struct.pack('<II', zlib.crc32(header), COMMIT) + payload
+    image = header + struct.pack('<II', zlib.crc32(header), COMMIT) + payload
+    stamp = struct.pack('<II', STAMP_MAGIC, built_at & 0xFFFFFFFF)
+    return image + stamp + struct.pack('<I', zlib.crc32(stamp))
 
 
 def record_payload(record_magic, data, tombstone=False):
@@ -287,6 +303,7 @@ def main():
     parser.add_argument('--annotations-record', type=Path, help='legacy ANNO blob export')
     parser.add_argument('--migration-bundle', type=Path, help='EPD-MIG1 JSON exported by the legacy web UI')
     args = parser.parse_args()
+    built_at = int(time.time())
     layout = load_layout(args.layout)
     generate(layout, args.check)
     if args.payload or args.resource_id:
@@ -299,7 +316,8 @@ def main():
         if not payload or len(payload) > part['size_bytes'] - 32 or not 0 <= args.revision <= 0xffffffff:
             parser.error('payload or revision is out of range')
         args.output.mkdir(parents=True, exist_ok=True)
-        (args.output / f'resource-{args.resource_id}.ers').write_bytes(package(args.resource_id, payload, args.revision))
+        (args.output / f'resource-{args.resource_id}.ers').write_bytes(
+            package(args.resource_id, payload, args.revision, built_at))
     if args.fonts:
         if not args.output:
             parser.error('--fonts requires --output')
@@ -308,7 +326,7 @@ def main():
         if len(payload) > fonts['size_bytes'] - 32:
             parser.error('font package exceeds its partition')
         args.output.mkdir(parents=True, exist_ok=True)
-        (args.output / 'fonts.ers').write_bytes(package(7, payload, args.revision))
+        (args.output / 'fonts.ers').write_bytes(package(7, payload, MODULE_VERSIONS[7], built_at))
         (args.output / 'fonts.json').write_text(json.dumps({
             'format': 'FPK1', 'revision': args.revision,
             'payload_bytes': len(payload), 'slots': records,
@@ -325,7 +343,7 @@ def main():
         if len(payload) > calendar['size_bytes'] - 32:
             parser.error('calendar package exceeds its partition')
         args.output.mkdir(parents=True, exist_ok=True)
-        (args.output / 'calendar.ers').write_bytes(package(5, payload, args.revision))
+        (args.output / 'calendar.ers').write_bytes(package(5, payload, MODULE_VERSIONS[5], built_at))
         (args.output / 'calendar.json').write_text(json.dumps({
             'format': 'CAL1', 'revision': args.revision,
             'year_min': year_min, 'year_max': year_max, 'holiday_year': holiday_year,
@@ -339,7 +357,7 @@ def main():
         if len(payload) > ui['size_bytes'] - 32:
             parser.error('UI package exceeds its partition')
         args.output.mkdir(parents=True, exist_ok=True)
-        (args.output / 'ui.ers').write_bytes(package(6, payload, args.revision))
+        (args.output / 'ui.ers').write_bytes(package(6, payload, MODULE_VERSIONS[6], built_at))
         (args.output / 'ui.json').write_text(json.dumps({
             'format': 'UIR1', 'revision': args.revision,
             'screen_width': 800, 'screen_height': 480,
@@ -368,8 +386,9 @@ def main():
         args.output.mkdir(parents=True, exist_ok=True)
         config_payload = record_payload(CONFIG_RECORD_MAGIC, config)
         annotation_payload = record_payload(ANNOTATION_RECORD_MAGIC, annotations)
-        (args.output / 'epd-config.ers').write_bytes(package(2, config_payload, args.revision))
-        (args.output / 'calendar-annotations.ers').write_bytes(package(3, annotation_payload, args.revision))
+        (args.output / 'epd-config.ers').write_bytes(package(2, config_payload, MODULE_VERSIONS[2], built_at))
+        (args.output / 'calendar-annotations.ers').write_bytes(
+            package(3, annotation_payload, MODULE_VERSIONS[3], built_at))
         (args.output / 'records.json').write_text(json.dumps({
             'format': 'REC1', 'revision': args.revision,
             'epd_config': {'bytes': len(config), 'crc32': f'0x{zlib.crc32(config):08X}'},
@@ -381,8 +400,10 @@ def main():
         args.output.mkdir(parents=True, exist_ok=True)
         payload = table_payload(layout)
         (args.output / 'partition-table.payload.bin').write_bytes(payload)
-        (args.output / 'partition-table.ers').write_bytes(package(1, payload))
+        (args.output / 'partition-table.ers').write_bytes(package(1, payload, MODULE_VERSIONS[1], built_at))
     print('Resource layout OK: single copy, 512 KiB, sector aligned')
+    if args.output:
+        print(f'Build timestamp: {time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(built_at))}')
 
 
 if __name__ == '__main__':

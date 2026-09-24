@@ -339,9 +339,16 @@ endif
 # =============================================================================
 # 便捷目标
 # =============================================================================
-.PHONY: default build host_test test clean rebuild ota flash flash_full flash_softdevice erase size memory info
+.PHONY: default build firmware host_test test clean rebuild ota flash flash_full flash_softdevice erase size memory info merge_full
 
 default: build
+
+SOFTDEVICE_HEX := $(SDK_ROOT)/components/softdevice/s112/hex/s112_nrf52_7.3.0_softdevice.hex
+KEIL_BOOTLOADER_HEX := $(PROJ_DIR)/Keil/_build_DFU52/bl_nrf52811_xxaa_s112.hex
+TOOLS_BOOTLOADER_HEX := $(TOOLS_DIR)/bootloader/bl_nrf52811_xxaa_s112.hex
+FIRMWARE_PREFIX := $(OUTPUT_DIRECTORY)/nrf52811_xxaa
+NRFUTIL ?= nrfutil
+MERGEHEX ?= mergehex
 
 host_test:
 	@chmod +x $(PROJ_DIR)/tests/run_host_tests.sh
@@ -349,13 +356,42 @@ host_test:
 
 test: host_test
 
-build: host_test nrf52811_xxaa
+# 编译应用，不生成 OTA 包。
+firmware: host_test nrf52811_xxaa
 	@echo "=== Build completed ==="
 	@$(MAKE) -f Makefile.nRF52_linux --no-print-directory size
 	@$(MAKE) -f Makefile.nRF52_linux --no-print-directory memory
 
-# 编译后生成 OTA 包 + 合并完整 hex
-ota: build
+# 编译并生成可直接烧录的 full HEX（CRC 校验，不审计签名、不生成 OTA ZIP）。
+build: firmware
+	@$(MAKE) -f Makefile.nRF52_linux --no-print-directory merge_full
+
+merge_full: $(FIRMWARE_PREFIX).hex
+	@test -f "$(SOFTDEVICE_HEX)" || { echo "Error: SoftDevice HEX was not found: $(SOFTDEVICE_HEX)"; exit 1; }
+	@bootloader="$(KEIL_BOOTLOADER_HEX)"; \
+	if [ ! -f "$$bootloader" ]; then bootloader="$(TOOLS_BOOTLOADER_HEX)"; fi; \
+	if [ ! -f "$$bootloader" ]; then echo "Error: Bootloader HEX was not found."; exit 1; fi; \
+	command -v "$(NRFUTIL)" >/dev/null 2>&1 || { echo "Error: nrfutil was not found. Install legacy Nordic nrfutil and add it to PATH."; exit 1; }; \
+	command -v "$(MERGEHEX)" >/dev/null 2>&1 || { echo "Error: mergehex was not found. Install Nordic nRF Command Line Tools and add it to PATH."; exit 1; }; \
+	echo "========================================="; \
+	echo "Generating directly flashable full firmware..."; \
+	echo "Bootloader: $$bootloader"; \
+	echo "Key compatibility audit: skipped for build target"; \
+	echo "========================================="; \
+	"$(NRFUTIL)" settings generate --family NRF52810 \
+		--application "$(FIRMWARE_PREFIX).hex" \
+		--softdevice "$(SOFTDEVICE_HEX)" \
+		--application-version 1 \
+		--bootloader-version 1 \
+		--bl-settings-version 2 \
+		--app-boot-validation VALIDATE_GENERATED_CRC \
+		--start-address 0x2F000 \
+		"$(FIRMWARE_PREFIX)-settings.hex" && \
+	"$(MERGEHEX)" -m "$(SOFTDEVICE_HEX)" "$$bootloader" "$(FIRMWARE_PREFIX).hex" "$(FIRMWARE_PREFIX)-settings.hex" -o "$(FIRMWARE_PREFIX)-full.hex" && \
+	test -f "$(FIRMWARE_PREFIX)-full.hex" || { echo "Error: merged firmware was not generated: $(FIRMWARE_PREFIX)-full.hex"; exit 1; }; \
+	echo "Full firmware: $(FIRMWARE_PREFIX)-full.hex"
+
+ota: firmware
 	@echo "=== Generating OTA package ==="
 	@chmod +x $(TOOLS_DIR)/make-ota-nrf52.sh
 	$(TOOLS_DIR)/make-ota-nrf52.sh $(OUTPUT_DIRECTORY)/nrf52811_xxaa
@@ -394,14 +430,15 @@ memory: $(OUTPUT_DIRECTORY)/nrf52811_xxaa.out
 	  printf "  RAM reserved: %u / %u bytes (includes %u-byte stack; free %u)\n", ram_reserved, ram, stack, ram - ram_reserved; \
 	}'
 
-# 烧录应用（需要已烧录 SoftDevice）
+# 烧录应用和对应 settings（需要已烧录 SoftDevice 与 Bootloader）
 flash: build
-	nrfjprog -f nrf52 --program $(OUTPUT_DIRECTORY)/nrf52811_xxaa.hex --sectorerase
+	nrfjprog -f nrf52 --program $(FIRMWARE_PREFIX).hex --sectorerase --verify
+	nrfjprog -f nrf52 --program $(FIRMWARE_PREFIX)-settings.hex --sectorerase --verify
 	nrfjprog -f nrf52 --reset
 
-# 烧录完整固件（SD + BL + App + Settings）
-flash_full: ota
-	nrfjprog -f nrf52 --program $(OUTPUT_DIRECTORY)/nrf52811_xxaa-full.hex --chiperase
+# 烧录完整固件（SD + BL + App + Settings），使用开发构建的 full HEX
+flash_full: build
+	nrfjprog -f nrf52 --program $(FIRMWARE_PREFIX)-full.hex --chiperase
 	nrfjprog -f nrf52 --reset
 
 flash_softdevice:
@@ -418,3 +455,4 @@ info:
 	@echo "nRF tools: $(NRF_TOOLS_BIN)"
 	@echo "SDK:       $(SDK_ROOT)"
 	@echo "Output:    $(OUTPUT_DIRECTORY)"
+	@echo "Build full: $(FIRMWARE_PREFIX)-full.hex"

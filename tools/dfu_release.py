@@ -35,6 +35,7 @@ ROOT = Path(__file__).resolve().parents[1]
 RESOURCE_ABI = 1
 RESOURCE_MAGIC = 0x31535245
 RESOURCE_COMMIT = 0xA55AC33C
+RESOURCE_STAMP_MAGIC = 0x54535245
 RESOURCE_PACKAGES = {
     'partition-table.ers': 1,
     'calendar.ers': 5,
@@ -58,13 +59,6 @@ def default_bootloader(workspace: Path | None = None) -> Path:
     if generated.is_file():
         return generated
     return workspace / 'tools/bootloader/bl_nrf52811_xxaa_s112.hex'
-
-
-def parse_u32(value: str) -> int:
-    number = int(value, 0)
-    if not 0 <= number <= 0xFFFFFFFF:
-        raise argparse.ArgumentTypeError('must be an unsigned 32-bit integer')
-    return number
 
 
 def sha256(path: Path) -> str:
@@ -206,11 +200,16 @@ def external_resource_packages(directory: Path | None) -> dict[str, object]:
             raise ReleaseError(f'{path}: resource package is too small')
         magic, abi_and_partition, revision, length, payload_crc, capacity, header_crc, commit = \
             struct.unpack_from('<8I', data)
-        payload = data[32:]
+        payload = data[32:32 + length]
+        trailer = data[32 + length:]
+        stamp_ok = not trailer
+        if len(trailer) == 12:
+            stamp_magic, _built_at, stamp_crc = struct.unpack('<3I', trailer)
+            stamp_ok = stamp_magic == RESOURCE_STAMP_MAGIC and stamp_crc == zlib.crc32(trailer[:8])
         if (magic != RESOURCE_MAGIC or abi_and_partition != (RESOURCE_ABI << 16 | partition_id)
                 or not revision or length != len(payload) or payload_crc != zlib.crc32(payload)
                 or capacity != 524288 or header_crc != zlib.crc32(data[:24])
-                or commit != RESOURCE_COMMIT):
+                or commit != RESOURCE_COMMIT or not stamp_ok):
             raise ReleaseError(f'{path}: invalid or incompatible ERS package')
         packages[name] = {'partition_id': partition_id, 'revision': revision,
                           'bytes': len(data), 'sha256': sha256(path)}
@@ -226,8 +225,6 @@ def build_release(args: argparse.Namespace) -> dict[str, object]:
     for path in (app, bootloader, softdevice, private_key, bootloader_config):
         if not path.is_file():
             raise ReleaseError(f'missing required file: {path}')
-    if args.application_version <= args.previous_version:
-        raise ReleaseError('application version must be greater than previous version')
     resources = external_resource_packages(args.resources_dir)
 
     app_range = require_inside('application', intel_hex_ranges(app), APP_START, APP_END)
@@ -261,10 +258,10 @@ def build_release(args: argparse.Namespace) -> dict[str, object]:
 
     run([args.nrfutil, 'pkg', 'generate', '--application', str(app), '--key-file', str(private_key),
          '--hw-version', str(HARDWARE_VERSION), '--sd-req', hex(SOFTDEVICE_ID), '--sd-id',
-         hex(SOFTDEVICE_ID), '--application-version', str(args.application_version),
+         hex(SOFTDEVICE_ID), '--application-version', '1',
          '--app-boot-validation', 'VALIDATE_GENERATED_CRC', str(package)])
     run([args.nrfutil, 'settings', 'generate', '--family', 'NRF52810', '--application', str(app),
-         '--softdevice', str(softdevice), '--application-version', str(args.application_version),
+         '--softdevice', str(softdevice), '--application-version', '1',
          '--bootloader-version', '1', '--bl-settings-version', '2', '--key-file', str(private_key),
          '--app-boot-validation', 'VALIDATE_GENERATED_CRC', '--start-address', hex(SETTINGS),
          str(settings)])
@@ -281,13 +278,12 @@ def build_release(args: argparse.Namespace) -> dict[str, object]:
     require_no_overlap('merged full image', full_flash_ranges, FDS_START, FDS_END)
     validate_package_layout(package)
     info = package_info(args.nrfutil, package)
-    if (info['version'], info['hardware'], info['softdevice'], info['size']) != (
-            args.application_version, HARDWARE_VERSION, SOFTDEVICE_ID, app_range['occupied_bytes']):
+    if (info['hardware'], info['softdevice'], info['size']) != (
+            HARDWARE_VERSION, SOFTDEVICE_ID, app_range['occupied_bytes']):
         raise ReleaseError('DFU package metadata does not match application image')
     result = {
         'release_abi': 1,
-        'application_version': args.application_version,
-        'previous_version': args.previous_version,
+        'application_version': info['version'],
         'application': app_range,
         'internal_fds_reserved': {'start': FDS_START, 'end_exclusive': FDS_END,
                                   'bytes': FDS_END - FDS_START, 'changed': False},
@@ -312,8 +308,6 @@ def build_release(args: argparse.Namespace) -> dict[str, object]:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--application', type=Path, required=True)
-    parser.add_argument('--application-version', type=parse_u32, required=True)
-    parser.add_argument('--previous-version', type=parse_u32, required=True)
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--name', default='nrf52811_xxaa')
     parser.add_argument('--key', type=Path, default=Path('tools/priv.pem'))

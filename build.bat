@@ -5,7 +5,7 @@ rem Native Windows equivalent of build.sh.
 rem Usage: build.bat [clean|build|incremental|test|ota|flash|flash_full|flash_softdevice|erase|rebuild|size|info] [MAKE_VAR=VALUE ...]
 rem No argument builds a full business firmware with external-Flash writes enabled.
 rem The directly flashable full HEX is generated without auditing the Bootloader
-rem signing key. Override BUILD_APPLICATION_VERSION when needed.
+rem signing key.
 rem Firmware compilation defaults to one Make job per logical CPU; set BUILD_JOBS to override it.
 
 pushd "%~dp0" || exit /b 1
@@ -278,6 +278,8 @@ if errorlevel 1 exit /b %errorlevel%
 call :show_size
 if errorlevel 1 exit /b %errorlevel%
 call :show_memory
+if errorlevel 1 exit /b %errorlevel%
+call :build_external_resources
 exit /b %errorlevel%
 
 :show_size
@@ -318,14 +320,6 @@ echo   RAM reserved: !RAM_RESERVED! / !RAM_LIMIT! bytes ^(includes !STACK_RESERV
 exit /b 0
 
 :ota
-if "%DFU_APPLICATION_VERSION%"=="" (
-    echo Error: set DFU_APPLICATION_VERSION to a new monotonic Nordic DFU version before OTA/flash.
-    exit /b 1
-)
-if "%DFU_PREVIOUS_APPLICATION_VERSION%"=="" (
-    echo Error: set DFU_PREVIOUS_APPLICATION_VERSION to the previous released DFU version before OTA/flash.
-    exit /b 1
-)
 call :clean
 call :compile %*
 if errorlevel 1 exit /b %errorlevel%
@@ -337,6 +331,17 @@ if not exist "tools\make-ota-nrf52.bat" (
     exit /b 1
 )
 call tools\make-ota-nrf52.bat "%FIRMWARE_PREFIX%"
+exit /b %errorlevel%
+
+:build_external_resources
+echo =========================================
+echo Building external Flash resources...
+echo =========================================
+if not exist "build-external-resources.bat" (
+    echo Error: build-external-resources.bat was not found.
+    exit /b 1
+)
+call build-external-resources.bat
 exit /b %errorlevel%
 
 :merge_full_firmware
@@ -366,20 +371,16 @@ if not exist "!BOOTLOADER_HEX!" (
     echo Error: Bootloader HEX was not found.
     exit /b 1
 )
-set "MERGE_APP_VERSION=%BUILD_APPLICATION_VERSION%"
-if not defined MERGE_APP_VERSION set "MERGE_APP_VERSION=%DFU_APPLICATION_VERSION%"
-if not defined MERGE_APP_VERSION set "MERGE_APP_VERSION=0x1C"
 set "SETTINGS_HEX=%FIRMWARE_PREFIX%-settings.hex"
 echo =========================================
 echo Generating directly flashable full firmware...
-echo Application version: !MERGE_APP_VERSION!
 echo Bootloader: !BOOTLOADER_HEX!
 echo Key compatibility audit: skipped for build target
 echo =========================================
 "!MERGE_NRFUTIL_EXE!" settings generate --family NRF52810 ^
     --application "%FIRMWARE_HEX%" ^
     --softdevice "%SOFTDEVICE_HEX%" ^
-    --application-version !MERGE_APP_VERSION! ^
+    --application-version 1 ^
     --bootloader-version 1 ^
     --bl-settings-version 2 ^
     --app-boot-validation VALIDATE_GENERATED_CRC ^
@@ -454,5 +455,4 @@ echo Jobs:      %BUILD_JOBS%
 echo SDK:       %SDK_ROOT%
 echo Output:    _build
 echo Build full: %FULL_HEX%
-echo Build DFU application version: %BUILD_APPLICATION_VERSION% ^(default 0x1C^)
 exit /b 0

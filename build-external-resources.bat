@@ -12,8 +12,12 @@ rem   build-external-resources.bat 3 output\resources-r3 "" calendar-2027.json
 set "REVISION=%~1"
 if "%REVISION%"=="" set "REVISION=1"
 
+set "BUILD_STAMP="
+for /f %%T in ('powershell -NoProfile -Command "Get-Date -Format yyyyMMdd-HHmmss"') do set "BUILD_STAMP=%%T"
+if not defined BUILD_STAMP set "BUILD_STAMP=unknown"
+
 set "OUTPUT_DIR=%~2"
-if "%OUTPUT_DIR%"=="" set "OUTPUT_DIR=output\external-resources-r%REVISION%"
+if "%OUTPUT_DIR%"=="" set "OUTPUT_DIR=output\external-resources-r%REVISION%-%BUILD_STAMP%"
 
 set "MIGRATION_BUNDLE=%~3"
 set "CALENDAR_DATA=%~4"
@@ -75,5 +79,8 @@ for %%F in ("%OUTPUT_DIR%\*.ers") do echo   %%~nxF
 echo.
 echo Upload order: partition-table, calendar, ui, fonts, epd-config, calendar-annotations.
 echo Generation completed. No device Flash was written.
+if /I "%OUTPUT_DIR:~0,7%"=="output\" (
+    > "output\external-resources-latest.txt" echo %OUTPUT_DIR:~7%
+)
 popd
 exit /b 0

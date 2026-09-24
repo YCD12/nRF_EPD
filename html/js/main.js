@@ -201,6 +201,12 @@ function formatVoltageDisplay(voltageMv) {
   return `${(voltageMv / 1000).toFixed(2)} V (${voltageMv} mV)`;
 }
 
+function updateFirmwareVersionDisplay(version = null) {
+  const firmwareVersion = document.getElementById('firmwareVersion');
+  if (!firmwareVersion) return;
+  firmwareVersion.innerText = typeof version === 'number' ? `0x${version.toString(16)}` : '未连接';
+}
+
 function updateBatteryVoltageDisplay(voltageMv = null, fallbackText = '未连接') {
   const batteryVoltage = document.getElementById('batteryVoltage');
   const batteryWarning = document.getElementById('batteryWarning');
@@ -753,6 +759,7 @@ function disconnect() {
   resetVariables();
   updateButtonStatus();
   updateBatteryVoltageDisplay(null, '未连接');
+  updateFirmwareVersionDisplay(null);
   if (!isInternalRetryDisconnect) {
     clearLogOnNextSuccessfulConnect = true;
     lastWeekStartSent = null;
@@ -1331,11 +1338,13 @@ async function connect() {
       const versionCharacteristic = await epdService.getCharacteristic('62750003-d828-918d-fb46-b6c11c675aec');
       const versionData = await versionCharacteristic.readValue();
       appVersion = versionData.getUint8(0);
+      updateFirmwareVersionDisplay(appVersion);
       addLog(`固件版本: 0x${appVersion.toString(16)}`);
       addLog(`APP版本: v${APP_VERSION} (${APP_BUILD_DATE})`);
     } catch (e) {
       console.error(e);
       appVersion = 0x15;
+      updateFirmwareVersionDisplay(appVersion);
     }
     ensureConnected();
 

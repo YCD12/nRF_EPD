@@ -28,6 +28,9 @@ class ResourcePackTests(unittest.TestCase):
         self.assertEqual(words[4], zlib.crc32(payload))
         self.assertEqual(words[6], zlib.crc32(image[:24]))
         self.assertEqual(words[7], pack.COMMIT)
+        stamp = struct.unpack('<3I', image[32 + 128:])
+        self.assertEqual(stamp[0], pack.STAMP_MAGIC)
+        self.assertEqual(stamp[2], zlib.crc32(image[32 + 128:32 + 128 + 8]))
 
     def test_font_payload_uses_validated_three_slot_directory(self):
         payload, records = pack.font_payload(ROOT / 'tools/dist')

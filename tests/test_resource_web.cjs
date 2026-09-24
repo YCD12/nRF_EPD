@@ -95,6 +95,48 @@ test('upload reuses a previously validated partition table', async () => {
   assert.equal(packets.filter(p => p[1] === 1).length, 0);
   assert.ok(packets.some(p => p[1] === 4));
 });
+test('selecting output with several resource folders explains which folder to open', async () => {
+  const nodes = new Map(), listeners = new Map();
+  function node(id) {
+    if (!nodes.has(id)) nodes.set(id, {
+      classList: { add() {}, remove() {} },
+      addEventListener(event, listener) { listeners.set(`${id}:${event}`, listener); }
+    });
+    return nodes.get(id);
+  }
+  const context = { document: { getElementById: node }, EPDResourceStore: require('../html/js/resource_store.js') };
+  vm.runInNewContext(fs.readFileSync(require.resolve('../html/js/resource_installer.js'), 'utf8'), context);
+  const older = 'external-resources-r1-20260924-182356/partition-table.ers';
+  const newer = 'external-resources-r1-20260924-182648/fonts.ers';
+  await listeners.get('externalResourceFolder:change')({ target: { files: [
+    { name: 'partition-table.ers', webkitRelativePath: older },
+    { name: 'fonts.ers', webkitRelativePath: newer }
+  ] } });
+  const message = node('externalResourceBundle').textContent;
+  assert.match(message, /2 套资源包/);
+  assert.match(message, /external-resources-r1-20260924-182356/);
+  assert.match(message, /时间最新的是 external-resources-r1-20260924-182648/);
+  assert.equal(node('externalResourceUsage').textContent, '尚未加载分区表');
+});
+test('selecting one resource folder shows its package name', async () => {
+  const nodes = new Map(), listeners = new Map();
+  function node(id) {
+    if (!nodes.has(id)) nodes.set(id, {
+      classList: { add() {}, remove() {} },
+      addEventListener(event, listener) { listeners.set(`${id}:${event}`, listener); }
+    });
+    return nodes.get(id);
+  }
+  const context = {
+    document: { getElementById: node },
+    EPDResourceStore: { ...require('../html/js/resource_store.js'), prepareBundle: () => prepareBundle(completeBundle()) }
+  };
+  vm.runInNewContext(fs.readFileSync(require.resolve('../html/js/resource_installer.js'), 'utf8'), context);
+  await listeners.get('externalResourceFolder:change')({ target: { files: [
+    { name: 'partition-table.ers', webkitRelativePath: 'external-resources-r1-20260924-183132/partition-table.ers', arrayBuffer: async () => new ArrayBuffer(1) }
+  ] } });
+  assert.match(node('externalResourceBundle').textContent, /已加载 external-resources-r1-20260924-183132/);
+});
 test('installer keeps the completed message when the device restarts', async () => {
   const bundle = prepareBundle(completeBundle());
   const nodes = new Map(), listeners = new Map(), uploads = [];

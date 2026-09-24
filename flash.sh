@@ -1,4 +1,6 @@
 #!/bin/bash
+# 用法: ./flash.sh [flash_full|flash|ota|flash_softdevice|erase|clean|rebuild|size|info]
+# 不带参数默认执行 flash_full：编译并烧录开发用 full HEX（SD + Bootloader + App + Settings），同时生成全部外置 Flash ERS 包。
 
 # 确保脚本在遇到错误时立即停止
 set -e
@@ -9,9 +11,22 @@ cd "$SCRIPT_DIR"
 
 # 检查第一个参数是否是特定的 Makefile 便捷目标
 TARGET="flash_full"
-if [[ "$1" =~ ^(clean|erase|flash_softdevice|rebuild|ota|size|info)$ ]]; then
+if [[ "$1" =~ ^(clean|build|incremental|test|erase|flash|flash_full|flash_softdevice|rebuild|ota|size|info)$ ]]; then
     TARGET="$1"
     shift
+fi
+
+if [[ "$TARGET" == "test" ]]; then
+    TARGET="host_test"
+fi
+
+GENERATE_RESOURCES=0
+if [[ "$TARGET" =~ ^(build|incremental|rebuild|ota|flash|flash_full)$ ]]; then
+    GENERATE_RESOURCES=1
+fi
+
+if [[ "$TARGET" == "incremental" ]]; then
+    TARGET="nrf52811_xxaa"
 fi
 
 # 如果是编译或烧录相关的目标，先执行 clean 以防止不同编译配置（如 RTT/BLE 日志）的缓存干扰
@@ -28,6 +43,13 @@ echo "========================================="
 
 # 执行 Makefile 中的对应目标，并传递剩余的所有参数
 make -f Makefile.nRF52_linux "$TARGET" "$@"
+
+if [[ "$GENERATE_RESOURCES" == 1 ]]; then
+    echo "========================================="
+    echo " 正在生成外置 Flash 资源包..."
+    echo "========================================="
+    ./build-external-resources.sh
+fi
 
 echo "========================================="
 echo " 执行 $TARGET 成功！"

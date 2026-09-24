@@ -463,6 +463,7 @@ label {
     border: 1px solid var(--border-color);
     border-radius: 6px;
     background: var(--bg-color);
+    white-space: pre-line;
 }
 
 .external-resource-message.ready { color: #166534; border-color: #16a34a; background: #f0fdf4; }

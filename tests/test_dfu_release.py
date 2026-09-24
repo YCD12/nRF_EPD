@@ -49,16 +49,18 @@ class DfuReleaseTests(unittest.TestCase):
             generated.write_text(':00000001FF\n', encoding='ascii')
             self.assertEqual(release.default_bootloader(root), generated)
 
-    def test_release_wrappers_require_explicit_monotonic_versions(self):
+    def test_release_wrappers_do_not_gate_on_dfu_versions(self):
         shell = (ROOT / 'tools/make-ota-nrf52.sh').read_text(encoding='utf-8')
         batch = (ROOT / 'tools/make-ota-nrf52.bat').read_text(encoding='utf-8')
-        self.assertIn('DFU_APPLICATION_VERSION', shell)
-        self.assertIn('DFU_PREVIOUS_APPLICATION_VERSION', shell)
+        release_source = (ROOT / 'tools/dfu_release.py').read_text(encoding='utf-8')
+        for text in (shell, batch, release_source):
+            self.assertNotIn('DFU_APPLICATION_VERSION', text)
+            self.assertNotIn('DFU_PREVIOUS_APPLICATION_VERSION', text)
+            self.assertNotIn('previous-version', text)
+            self.assertNotIn('previous_version', text)
         self.assertIn('DFU_RESOURCES_DIR', shell)
         self.assertIn('NRFUTIL', shell)
         self.assertNotIn('FW_VER=', shell)
-        self.assertIn('DFU_APPLICATION_VERSION', batch)
-        self.assertIn('DFU_PREVIOUS_APPLICATION_VERSION', batch)
         self.assertIn('DFU_RESOURCES_DIR', batch)
         self.assertNotIn('set "fw_ver=', batch.lower())
 

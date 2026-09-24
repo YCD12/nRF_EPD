@@ -51,10 +51,17 @@
     if (pack.id === 1) parseTable(pack);
     return p;
   }
+  function parseStamp(bytes) {
+    if (!bytes.length) return null;
+    if (bytes.length !== 12 || u32(bytes, 0) !== 0x54535245 || crc32(bytes.subarray(0, 8)) !== u32(bytes, 8))
+      throw new Error('资源包编译时间戳错误');
+    return u32(bytes, 4);
+  }
   function verifyPayload(bytes, info) {
-    if (bytes.length !== info.length + 32 || crc32(bytes.subarray(32)) !== info.crc)
+    const end = info.length + 32;
+    if (bytes.length < end || crc32(bytes.subarray(32, end)) !== info.crc)
       throw new Error('资源包格式或 CRC 错误');
-    return { id: info.id, revision: info.revision, crc: info.crc, payload: bytes.subarray(32) };
+    return { id: info.id, revision: info.revision, crc: info.crc, builtAt: parseStamp(bytes.subarray(end)), payload: bytes.subarray(32, end) };
   }
   function parsePackage(bytes) {
     if (!(bytes instanceof Uint8Array) || bytes.length < 33) throw new Error('资源包格式或 CRC 错误');

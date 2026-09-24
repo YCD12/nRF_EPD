@@ -52,6 +52,7 @@
 			<div class="log-container" id="log"></div>
 			<div class="device-info">
 				<b>设备电压：</b><span id="batteryVoltage" class="device-badge">未连接</span><span id="batteryWarning" class="device-warning" style="display:none;"></span>
+				<b>固件版本：</b><span id="firmwareVersion" class="device-badge">未连接</span>
 			</div>
 		</section>
 		<section class="section">
@@ -130,10 +131,12 @@
 				<button id="externalResourceRefresh" type="button" class="secondary" onclick="ExternalResourceInstaller.refresh()" disabled>读取分区</button>
 			</div>
 			<div id="externalResourceBundle" class="external-resource-message">尚未选择资源目录</div>
+			<div id="externalResourceUsage" class="external-resource-message">尚未加载分区表</div>
+			<div id="deviceResourceVersions" class="external-resource-message">尚未读取设备资源版本</div>
 			<div id="externalResourceStatus" class="dfu-hint">连接设备后自动读取外置 Flash 分区状态。</div>
 			<progress id="externalResourceProgress" max="1" value="0"></progress>
 		</section>
-		<section class="section">
+		<section class="section" hidden>
 			<h2>Nordic DFU 升级</h2>
 			<div class="flex-container">
 				<div class="flex-group">
