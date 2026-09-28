@@ -347,14 +347,20 @@ exit /b %errorlevel%
 :merge_full_firmware
 set "MERGE_NRFUTIL_EXE="
 set "MERGEHEX_EXE="
-for /f "delims=" %%P in ('where nrfutil.exe 2^>nul') do if not defined MERGE_NRFUTIL_EXE set "MERGE_NRFUTIL_EXE=%%P"
-for /f "delims=" %%P in ('where mergehex.exe 2^>nul') do if not defined MERGEHEX_EXE set "MERGEHEX_EXE=%%P"
+if exist "tools\windows_tools\nrfutil.exe" set "MERGE_NRFUTIL_EXE=%CD%\tools\windows_tools\nrfutil.exe"
+if exist "tools\windows_tools\mergehex.exe" set "MERGEHEX_EXE=%CD%\tools\windows_tools\mergehex.exe"
 if not defined MERGE_NRFUTIL_EXE (
-    echo Error: nrfutil.exe was not found. Install legacy Nordic nrfutil and add it to PATH.
+    for /f "delims=" %%P in ('where nrfutil.exe 2^>nul') do if not defined MERGE_NRFUTIL_EXE set "MERGE_NRFUTIL_EXE=%%P"
+)
+if not defined MERGEHEX_EXE (
+    for /f "delims=" %%P in ('where mergehex.exe 2^>nul') do if not defined MERGEHEX_EXE set "MERGEHEX_EXE=%%P"
+)
+if not defined MERGE_NRFUTIL_EXE (
+    echo Error: nrfutil.exe was not found under tools\windows_tools or on PATH.
     exit /b 1
 )
 if not defined MERGEHEX_EXE (
-    echo Error: mergehex.exe was not found. Install Nordic nRF Command Line Tools and add it to PATH.
+    echo Error: mergehex.exe was not found under tools\windows_tools or on PATH.
     exit /b 1
 )
 if not exist "%FIRMWARE_HEX%" (
