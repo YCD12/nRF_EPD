@@ -180,6 +180,50 @@ test('lost ACK retries identical packet and token', async () => {
   await client.request(4);
   assert.deepEqual(packets[0], packets[1]);
 });
+
+test('capability flags accept hot reload and offline mode while retaining legacy support', async () => {
+  const status = statusBytes(0);
+  assert.equal(parseStatus(status).hotReload, false);
+  status[4] = 7;
+  assert.equal(parseStatus(status).hotReload, true);
+  assert.equal(parseStatus(status).offline, true);
+  const { client, packets } = deviceClient({ status });
+  await client.runOffline();
+  assert.deepEqual(Array.from(packets[0]).slice(0, 2), [0x26, 8]);
+});
+
+test('new installer applies without reset, syncs time before offline and keeps the disconnect result', async () => {
+  const nodes = new Map(), calls = [];
+  const node = id => {
+    if (!nodes.has(id)) nodes.set(id, { checked: true, classList: { add() {}, remove() {} }, addEventListener() {} });
+    return nodes.get(id);
+  };
+  let activationError = false;
+  class FakeClient {
+    status() { const b = statusBytes(0, 4); b[4] = 7; return b; }
+    async upload() { calls.push('upload'); }
+    async leave() { calls.push('activate'); if (activationError) throw new Error('semantic failure'); }
+    async runOffline() { calls.push('offline'); }
+    disconnect() {}
+  }
+  const context = { document: { getElementById: node }, Uint8Array,
+    buildTimeData: () => [1,2,3,4,8],
+    EPDResourceStore: { ...require('../html/js/resource_store.js'), ResourceClient: FakeClient } };
+  vm.runInNewContext(fs.readFileSync(require.resolve('../html/js/resource_installer.js'), 'utf8'), context);
+  const installer = context.ExternalResourceInstaller;
+  await installer.loadBundle(completeBundle(), 'test');
+  installer.bind({ writeValueWithResponse: async b => { calls.push(b[0]); } });
+  await installer.install();
+  assert.deepEqual(calls.slice(-3), ['activate', 0x23, 'offline']);
+  assert.ok(!calls.includes(0x91));
+  installer.disconnect();
+  assert.match(node('externalResourceStatus').textContent, /断开连接.*间歇广播/);
+  activationError = true; calls.length = 0;
+  installer.bind({ writeValueWithResponse: async b => { calls.push(b[0]); } });
+  await installer.install();
+  assert.ok(!calls.includes('offline') && !calls.includes(0x91));
+  assert.match(node('externalResourceStatus').textContent, /semantic failure/);
+});
 test('actual device partition table is read and validated; payload export verifies full CRC', async () => {
   const { client, memory } = deviceClient();
   const entries = await client.partitions();
@@ -266,4 +310,146 @@ test('wrong token is ignored; out of range read never reaches transport', async 
   assert.deepEqual(await client.read(0, 1), Uint8Array.of(0x73));
   await assert.rejects(client.read(524288, 1));
   assert.equal(writes, 1);
+});
+
+function deferred() {
+  let resolve, reject;
+  const promise = new Promise((yes, no) => { resolve = yes; reject = no; });
+  return { promise, resolve, reject };
+}
+function installerFixture(Client = ResourceClient, fetch) {
+  const nodes = new Map(), listeners = new Map();
+  const node = id => {
+    if (!nodes.has(id)) nodes.set(id, {
+      classList: { add() {}, remove() {} },
+      addEventListener(event, listener) { listeners.set(`${id}:${event}`, listener); }
+    });
+    return nodes.get(id);
+  };
+  const context = { document: { getElementById: node }, fetch, Uint8Array,
+    EPDResourceStore: { ...require('../html/js/resource_store.js'), ResourceClient: Client } };
+  vm.runInNewContext(fs.readFileSync(require.resolve('../html/js/resource_installer.js'), 'utf8'), context);
+  return { installer: context.ExternalResourceInstaller, node,
+    select: files => listeners.get('externalResourceFolder:change')({ target: { files } }) };
+}
+
+test('offline application ACK remains authoritative if the final GATT write closes', async () => {
+  const client = new ResourceClient(async packet => {
+    client.receive(Uint8Array.of(0xa7, 8, packet[2], 0));
+    client.disconnect();
+    throw new Error('GATT closed');
+  });
+  assert.equal((await client.runOffline())[3], 0);
+});
+
+test('disconnect without a successful offline ACK never reports success', async () => {
+  for (const status of [null, 2]) {
+    const client = new ResourceClient(async packet => {
+      if (status !== null) client.receive(Uint8Array.of(0xa7, 8, packet[2], status));
+      client.disconnect();
+      throw new Error('GATT closed');
+    });
+    await assert.rejects(client.runOffline());
+  }
+});
+
+test('late upload progress and failure cannot overwrite or unlock a new connection', async () => {
+  const uploading = deferred(), oldUpload = deferred(), newStatus = deferred();
+  let clients = 0, oldProgress;
+  class Client {
+    constructor() { this.id = ++clients; }
+    status() { return this.id === 1 ? statusBytes(0, 4) : newStatus.promise; }
+    upload(bytes, progress) { oldProgress = progress; uploading.resolve(); return oldUpload.promise; }
+    leave() { throw new Error('old session must not leave'); }
+    disconnect() {}
+  }
+  const { installer, node } = installerFixture(Client);
+  await installer.loadBundle(completeBundle(), 'manual');
+  installer.bind({});
+  const oldWork = installer.install();
+  await uploading.promise;
+  installer.bind({}); // Also exercise replacement without a preceding disconnect event.
+  const freshWork = installer.refresh();
+  node('externalResourceStatus').textContent = 'new connection';
+  oldProgress(1);
+  oldUpload.reject(new Error('old upload failed'));
+  await oldWork;
+  assert.equal(node('externalResourceStatus').textContent, 'new connection');
+  assert.equal(installer.busy(), true);
+  newStatus.resolve(statusBytes(0, 4));
+  await freshWork;
+  assert.equal(installer.busy(), false);
+});
+
+test('late offline success cannot become the completion message of a new connection', async () => {
+  const started = deferred(), ack = deferred();
+  class Client {
+    status() { const b = statusBytes(0, 4); b[4] = 7; return b; }
+    runOffline() { started.resolve(); return ack.promise; }
+    disconnect() {}
+  }
+  const { installer, node } = installerFixture(Client);
+  installer.bind({});
+  const oldWork = installer.runOffline();
+  await started.promise;
+  installer.disconnect();
+  installer.bind({});
+  node('externalResourceStatus').textContent = 'new connection';
+  ack.resolve();
+  await oldWork;
+  assert.equal(node('externalResourceStatus').textContent, 'new connection');
+  installer.disconnect();
+  assert.equal(node('externalResourceStatus').textContent, '设备未连接');
+});
+
+test('offline completion survives its own intentional disconnect', async () => {
+  const started = deferred(), ack = deferred();
+  class Client {
+    status() { const b = statusBytes(0, 4); b[4] = 7; return b; }
+    runOffline() { started.resolve(); return ack.promise; }
+    disconnect() {}
+  }
+  const { installer, node } = installerFixture(Client);
+  installer.bind({});
+  const work = installer.runOffline();
+  await started.promise;
+  installer.disconnect();
+  ack.resolve();
+  await work;
+  assert.match(node('externalResourceStatus').textContent, /断开连接.*间歇广播/);
+});
+
+test('a slow folder read cannot replace a later folder selection', async () => {
+  const slow = deferred();
+  const { installer, node, select } = installerFixture();
+  const files = (label, wait) => completeBundle().map((p, i) => ({
+    name: p.name, webkitRelativePath: `${label}/${p.name}`,
+    arrayBuffer: async () => { if (wait && i === 0) await slow.promise; return p.bytes.buffer; }
+  }));
+  const oldWork = select(files('old', true));
+  await select(files('new', false));
+  const selected = installer.getBundle();
+  slow.resolve();
+  await oldWork;
+  assert.equal(installer.getBundle(), selected);
+  assert.match(node('externalResourceBundle').textContent, /已加载 new/);
+});
+
+test('background output loading cannot replace a manually prepared bundle', async () => {
+  const fetching = deferred(), slow = deferred();
+  const fetch = async url => {
+    if (url.endsWith('.txt')) return { ok: true, text: async () => 'external-resources-r1-20260928-120000' };
+    fetching.resolve();
+    await slow.promise;
+    const pack = completeBundle().find(p => url.endsWith(p.name));
+    return { ok: true, arrayBuffer: async () => pack.bytes.buffer };
+  };
+  const { installer, node } = installerFixture(ResourceClient, fetch);
+  await fetching.promise;
+  await installer.loadBundle(completeBundle(), 'manual');
+  const selected = installer.getBundle();
+  slow.resolve();
+  await new Promise(setImmediate);
+  assert.equal(installer.getBundle(), selected);
+  assert.match(node('externalResourceBundle').textContent, /已加载 manual/);
 });

@@ -6,7 +6,7 @@
 	<meta name="viewport" content="width=device-width, initial-scale=1">
 	<title>墨水屏控制台</title>
 	<link rel="shortcut icon" type="image/png" href="favicon.png">
-	<link rel="stylesheet" href="css/main.css?v=20260908a">
+	<link rel="stylesheet" href="css/main.css?v=20260928a">
 </head>
 
 <body>
@@ -122,19 +122,53 @@
 			</div>
 		</section>
 		<section id="externalResources" class="section">
-			<h2>外置 Flash 一键烧录</h2>
-			<p>连接设备后选择 <code>build-external-resources.bat</code> 生成的目录，再点击一次按钮即可。空白 Flash 安装全部资源；已有分区表时按实际布局更新日历、UI 和字体，保留设备配置与日期标注。</p>
+			<h2>设备资源</h2>
+			<p>选择资源目录，也可在下方编辑并生成资源包。空白 Flash 安装全部资源；已有分区表时更新日历、UI 和字体，保留设备配置与日期标注。</p>
 			<div class="external-resource-actions">
 				<label for="externalResourceFolder" class="external-resource-picker">选择资源目录</label>
 				<input id="externalResourceFolder" type="file" accept=".ers" multiple webkitdirectory directory hidden>
 				<button id="externalResourceInstall" type="button" class="primary" onclick="ExternalResourceInstaller.install()" disabled>一键烧录</button>
 				<button id="externalResourceRefresh" type="button" class="secondary" onclick="ExternalResourceInstaller.refresh()" disabled>读取分区</button>
+				<button id="externalResourceOffline" type="button" class="secondary" onclick="ExternalResourceInstaller.runOffline()" disabled>应用并断开连接</button>
 			</div>
+			<label><input id="externalResourceAutoOffline" type="checkbox" checked> 更新完成后自动断开连接</label>
+			<p class="dfu-hint">保持蓝牙连接也可切换模式并刷新屏幕；资源写入期间暂停刷新。断开后时钟继续运行，蓝牙按原策略间歇广播。单张图片仍直接传入屏幕 RAM。</p>
 			<div id="externalResourceBundle" class="external-resource-message">尚未选择资源目录</div>
 			<div id="externalResourceUsage" class="external-resource-message">尚未加载分区表</div>
 			<div id="deviceResourceVersions" class="external-resource-message">尚未读取设备资源版本</div>
 			<div id="externalResourceStatus" class="dfu-hint">连接设备后自动读取外置 Flash 分区状态。</div>
 			<progress id="externalResourceProgress" max="1" value="0"></progress>
+			<details class="resource-editor">
+				<summary>编辑并生成设备资源</summary>
+				<p>日历与布局在网页内生成，无需重新编译固件。先加载模板或资源目录，再编辑 JSON；生成后可直接烧录。布局预览显示组件位置，不代替屏幕实际排版。</p>
+				<div class="external-resource-actions">
+					<button type="button" onclick="ExternalResourceEditor.loadDefault()">加载默认模板</button>
+					<label class="external-resource-picker">导入资源工程<input id="resourceProjectImport" type="file" accept=".json" hidden></label>
+					<button type="button" onclick="ExternalResourceEditor.exportProject()">导出完整工程</button>
+				</div>
+				<label for="resourceCalendarSource">日历数据：节日、休班日期、文字与年份计算表</label>
+				<p class="dfu-hint">holidays 中 work=false 表示休假，true 表示补班。修改年份范围时须提供相应农历和节气计算表；默认模板覆盖 2025–2027，休班表为 2026 年。新增文字需有对应字模。</p>
+				<textarea id="resourceCalendarSource" rows="12" spellcheck="false" aria-label="日历资源 JSON"></textarea>
+				<label for="resourceLayoutSource">布局：19 个固定组件的坐标、尺寸和字体槽位</label>
+				<textarea id="resourceLayoutSource" rows="12" spellcheck="false" aria-label="布局资源 JSON"></textarea>
+				<div class="external-resource-actions">
+					<select id="resourcePreviewMode" aria-label="预览模式" onchange="ExternalResourceEditor.preview()"><option value="1">日历</option><option value="2">分屏</option><option value="3">时钟</option></select>
+					<button type="button" onclick="ExternalResourceEditor.preview()">预览布局</button>
+				</div>
+				<canvas id="resourceLayoutPreview" width="800" height="480" aria-label="设备布局示意"></canvas>
+				<details><summary>替换字模（可选）</summary>
+					<p class="dfu-hint">未选择时保留原字模。支持与槽位几何一致的 u8g2 .bin 文件；TTF/BDF 仍需先转换成字模。</p>
+					<label>小字 WQY9 <input id="resourceFont0" type="file" accept=".bin"></label>
+					<label>中字 WQY12 <input id="resourceFont1" type="file" accept=".bin"></label>
+					<label>数字 HELVB18 <input id="resourceFont2" type="file" accept=".bin"></label>
+				</details>
+				<div class="external-resource-actions">
+					<button type="button" class="primary" onclick="ExternalResourceEditor.generate()">生成并载入烧录区</button>
+					<select id="resourceDownloadPart" aria-label="下载资源类型"><option value="5">日历</option><option value="6">布局</option><option value="7">字体</option><option value="1">分区表</option><option value="2">出厂配置</option><option value="3">出厂标注</option></select>
+					<button type="button" onclick="ExternalResourceEditor.download()">下载 ERS</button>
+				</div>
+				<div id="resourceEditorStatus" class="external-resource-message" role="status">请加载模板或选择资源目录。</div>
+			</details>
 		</section>
 		<section class="section" hidden>
 			<h2>Nordic DFU 升级</h2>
@@ -437,9 +471,11 @@
 	<script type="text/javascript" src="js/crop.js?v=20260402b"></script>
 	<script type="text/javascript" src="js/ble_transfer.js?v=20260922a"></script>
 	<script type="text/javascript" src="js/calendar_annotations.js?v=20260916b"></script>
-	<script type="text/javascript" src="js/resource_store.js?v=20260923a"></script>
-	<script type="text/javascript" src="js/resource_installer.js?v=20260923a"></script>
-	<script type="text/javascript" src="js/main.js?v=20260922b"></script>
+	<script type="text/javascript" src="js/resource_store.js?v=20260928a"></script>
+	<script type="text/javascript" src="js/resource_builder.js?v=20260928a"></script>
+	<script type="text/javascript" src="js/resource_installer.js?v=20260928a"></script>
+	<script type="text/javascript" src="js/resource_editor.js?v=20260928a"></script>
+	<script type="text/javascript" src="js/main.js?v=20260929a"></script>
 </body>
 
 </html>

@@ -180,10 +180,17 @@ static bool GetFestival(uint16_t year, uint8_t mon, uint8_t day, uint8_t week, c
     // 需要判断次日是否为正月初一，因为农历大小月不固定
     if (Lunar->Month == 12 && Lunar->Date == 29) {
         struct Lunar_Date nextLunar;
-        struct devtm tm = {year, mon, day, 0, 0, 0, week};
-        // 计算次日的农历日期
-        transformTime(transformTimeStruct(&tm) + 86400, &tm);  // +86400秒(1天)
-        LUNAR_SolarToLunar(&nextLunar, tm.tm_year + YEAR0, tm.tm_mon + 1, tm.tm_mday);
+        uint16_t next_year = year;
+        uint8_t next_month = mon;
+        uint8_t next_day = day + 1U;
+        if (next_day > get_last_day(year, mon - 1U)) {
+            next_day = 1U;
+            if (++next_month > 12U) {
+                next_month = 1U;
+                ++next_year;
+            }
+        }
+        LUNAR_SolarToLunar(&nextLunar, next_year, next_month, next_day);
         if (nextLunar.Month == 1 && nextLunar.Date == 1) {
             return calendar_resource_text(CAL_RES_SPECIAL_FESTIVAL_NAMES,
                                           CAL_SPECIAL_NEW_YEARS_EVE,
@@ -1001,6 +1008,35 @@ static void DrawClock(Adafruit_GFX* gfx, const tm_t* tm, const struct Lunar_Date
                    (gui_font_id_t)bottom->font_primary);
 }
 
+/* An application-only update may leave the external UI package absent.
+ * Use a tiny built-in message so the panel does not refresh to blank white.
+ * Column bits are 5x7 glyphs for N, O, D, A and T. */
+static void DrawMissingResources(Adafruit_GFX* gfx, const gui_data_t* data) {
+    static const uint8_t glyphs[5][5] = {
+        {0x7f, 0x06, 0x18, 0x60, 0x7f}, /* N */
+        {0x3e, 0x41, 0x41, 0x41, 0x3e}, /* O */
+        {0x7f, 0x41, 0x41, 0x22, 0x1c}, /* D */
+        {0x7e, 0x09, 0x09, 0x09, 0x7e}, /* A */
+        {0x01, 0x01, 0x7f, 0x01, 0x01}, /* T */
+    };
+    static const uint8_t message[] = {0, 1, 0xff, 2, 3, 4, 3}; /* NO DATA */
+    const int16_t scale = 6;
+    const int16_t text_w = (int16_t)(sizeof(message) * 6U - 1U) * scale;
+    const int16_t x = (GUI_WIDTH(data) - text_w) / 2;
+    const int16_t y = (GUI_HEIGHT(data) - 7 * scale) / 2;
+    GFX_drawRect(gfx, x - 24, y - 24, text_w + 48, 7 * scale + 48, GFX_BLACK);
+    for (unsigned i = 0; i < sizeof(message); ++i) {
+        if (message[i] == 0xffU) continue;
+        for (unsigned col = 0; col < 5U; ++col) {
+            uint8_t bits = glyphs[message[i]][col];
+            for (unsigned row = 0; row < 7U; ++row)
+                if (bits & (1U << row))
+                    GFX_fillRect(gfx, x + (int16_t)(i * 6U + col) * scale,
+                                 y + (int16_t)row * scale, scale, scale, GFX_BLACK);
+        }
+    }
+}
+
 /**
  * @brief 按显示模式绘制完整界面
  *
@@ -1015,7 +1051,7 @@ void DrawGUI(gui_data_t* data, buffer_callback callback, void* callback_data) {
     if (data->week_start > 6) data->week_start = 0;
 
     tm_t tm = {0};
-    struct Lunar_Date Lunar;
+    struct Lunar_Date Lunar = {0};
 
     bool layout_ready = ui_resources_init();
 
@@ -1036,25 +1072,30 @@ void DrawGUI(gui_data_t* data, buffer_callback callback, void* callback_data) {
     else
         GFX_begin(&gfx, GUI_WIDTH(data), GUI_HEIGHT(data), ph);  // 黑白屏幕
 
-    LUNAR_SolarToLunar(&Lunar, tm.tm_year + YEAR0, tm.tm_mon + 1, tm.tm_mday);
+    if (layout_ready)
+        LUNAR_SolarToLunar(&Lunar, tm.tm_year + YEAR0, tm.tm_mon + 1, tm.tm_mday);
     GFX_firstPage(&gfx);
     do {
         // 填充白色背景
         GFX_fillScreen(&gfx, GFX_WHITE);
 
         // 根据显示模式绘制不同界面
-        switch (layout_ready ? data->mode : MODE_PICTURE) {
-            case MODE_CALENDAR:
-                DrawCalendar(&gfx, &tm, &Lunar, data);  // 全屏日历
-                break;
-            case MODE_CLOCK:
-                DrawClock(&gfx, &tm, &Lunar, data);  // 全屏时钟
-                break;
-            case MODE_CLOCK_CALENDAR:
-                DrawClockCalendar_Full(&gfx, &tm, &Lunar, data);  // 分屏模式
-                break;
-            default:
-                break;
+        if (!layout_ready) {
+            DrawMissingResources(&gfx, data);
+        } else {
+            switch (data->mode) {
+                case MODE_CALENDAR:
+                    DrawCalendar(&gfx, &tm, &Lunar, data);  // 全屏日历
+                    break;
+                case MODE_CLOCK:
+                    DrawClock(&gfx, &tm, &Lunar, data);  // 全屏时钟
+                    break;
+                case MODE_CLOCK_CALENDAR:
+                    DrawClockCalendar_Full(&gfx, &tm, &Lunar, data);  // 分屏模式
+                    break;
+                default:
+                    break;
+            }
         }
         // 如果是2025年1月且未同步时间，显示同步提示
         if (layout_ready && (data->mode == MODE_CALENDAR || data->mode == MODE_CLOCK) &&

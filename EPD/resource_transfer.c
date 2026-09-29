@@ -11,6 +11,8 @@ static struct {
     volatile bool pending, running, reply_pending;
 } m;
 
+bool resource_transfer_running(void) { return m.running; }
+
 void resource_transfer_receive(const uint8_t *data, uint16_t length, uint32_t generation)
 {
     if (!data || length < 3 || length > RESOURCE_PACKET_MAX) return;
@@ -31,20 +33,28 @@ void resource_transfer_process(void *context, uint32_t generation, bool connecte
     /* Generation is supplied by the BLE service; an old reply is never sent
      * on a new connection. Mutations already executing may finish, but retry
      * after reconnect starts a fresh transaction and validates persisted data. */
-    if (m.generation != generation || !connected) {
+    if (m.generation != generation || (!connected &&
+        (m.pending || m.reply_pending || m.previous_length || resource_protocol_entered()))) {
         CRITICAL_REGION_ENTER();
+        m.running = true;
         m.generation = generation;
         if (!connected || m.request_generation != generation) m.pending = false;
         m.reply_pending = false;
         m.previous_length = 0;
         CRITICAL_REGION_EXIT();
         resource_protocol_reset();
+        m.running = false;
     }
     if (!connected) return;
-    if (resource_store_active() && (uint32_t)(now - m.last_activity) >= 60U) {
-        resource_protocol_reset();
+    if (resource_protocol_entered() && (uint32_t)(now - m.last_activity) >= 60U) {
+        CRITICAL_REGION_ENTER();
+        m.running = true;
         m.previous_length = 0;
         m.reply_pending = false;
+        m.pending = false; /* A request from the expired session cannot execute. */
+        CRITICAL_REGION_EXIT();
+        resource_protocol_reset();
+        m.running = false;
     }
     if (m.pending && idle) {
         CRITICAL_REGION_ENTER();

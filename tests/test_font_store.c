@@ -142,63 +142,58 @@ static void assert_source(font_store_slot_t slot, uint32_t address, uint32_t len
     assert(value == (uint8_t)(0x30U + slot));
 }
 
-static void install_manifest(uint8_t version, uint8_t* font)
+static uint32_t font_crc32(const uint8_t* data, size_t length)
 {
-    uint32_t address = version == 2U ? 0U : FONT_STORE_PRIMARY_ADDR;
-    uint8_t* raw = mock_flash + address;
-    memset(raw, 0, 60U);
-    write_u32_le(raw, version == 2U ? 0x32545346UL : 0x33545346UL);
-    raw[4] = version;
-    raw[6] = FONT_STORE_SLOT_COUNT;
-    write_u32_le(raw + 8U, 7U);
-    write_u32_le(raw + 12U, 0U);
-    write_u32_le(raw + 16U, 96U);
-    write_u32_le(raw + 20U, font_store_crc32(font, 96U));
-    write_u32_le(raw + 48U, font_store_crc32(raw, 48U));
-    write_u32_le(raw + 52U, 0xA55AA55AUL);
-    write_u32_le(raw + 56U, 0x5AA55AA5UL);
-    memcpy(mock_flash + FONT_STORE_DATA_BASE, font, 96U);
+    return resource_crc32(0xFFFFFFFFUL, data, length) ^ 0xFFFFFFFFUL;
+}
+
+static uint8_t* install_pack(const uint8_t* font, size_t length)
+{
+    uint8_t* payload = &mock_flash[0x18000U + RS_HEADER_SIZE];
+    resource_payload_length = 56U + (uint32_t)length;
+    memset(payload, 0, 56U);
+    write_u32_le(payload, 0x314B5046UL);
+    payload[4] = 1U;
+    payload[6] = FONT_STORE_SLOT_COUNT;
+    write_u32_le(payload + 8U, 56U);
+    write_u32_le(payload + 12U, (uint32_t)length);
+    write_u32_le(payload + 16U, font_crc32(font, length));
+    memcpy(payload + 56U, font, length);
+    return payload;
 }
 
 int main(void)
 {
     uint8_t font[96];
     make_font(font, sizeof(font), FONT_STORE_SLOT_WQY9);
-    assert(font_store_crc32((const uint8_t*)"123456789", 9U) == 0xCBF43926UL);
+    assert(font_crc32((const uint8_t*)"123456789", 9U) == 0xCBF43926UL);
+    memset(mock_flash, 0xFF, sizeof(mock_flash));
     for (uint8_t version = 2U; version <= 3U; version++) {
-        memset(mock_flash, 0xFF, sizeof(mock_flash));
-        install_manifest(version, font);
+        write_u32_le(mock_flash, version == 2U ? 0x32545346UL : 0x33545346UL);
         font_store_host_reset();
-        assert(font_store_init() == NRF_SUCCESS && font_store_ready());
-        assert_source(FONT_STORE_SLOT_WQY9, FONT_STORE_DATA_BASE, sizeof(font));
-        assert(font_store_get_source(FONT_STORE_SLOT_WQY12) == NULL);
-        mock_flash[FONT_STORE_DATA_BASE + 9U] ^= 1U;
-        font_store_host_reset();
-        assert(font_store_init() == NRF_SUCCESS);
+        assert(font_store_init() == NRF_ERROR_NOT_FOUND && !font_store_ready());
         assert(font_store_get_source(FONT_STORE_SLOT_WQY9) == NULL);
     }
 
-    /* A mounted partition takes precedence over an old FST directory. */
-    memset(mock_flash, 0xFF, sizeof(mock_flash));
-    install_manifest(2U, font);
     use_resource_layout = true;
-    resource_payload_length = 56U + 96U;
-    uint8_t* payload = &mock_flash[0x18000U + RS_HEADER_SIZE];
-    memset(payload, 0, 56U);
-    write_u32_le(payload, 0x314B5046UL);
-    payload[4] = 1U;
-    payload[6] = FONT_STORE_SLOT_COUNT;
-    write_u32_le(payload + 8U, 56U);
-    write_u32_le(payload + 12U, 96U);
-    write_u32_le(payload + 16U, font_store_crc32(font, 96U));
-    memcpy(payload + 56U, font, 96U);
+    resource_payload_length = 0U;
+    font_store_host_reset();
+    assert(font_store_init() == NRF_SUCCESS && font_store_ready());
+    assert(font_store_get_source(FONT_STORE_SLOT_WQY9) == NULL);
+
+    uint8_t* payload = install_pack(font, sizeof(font));
     font_store_host_reset();
     assert(font_store_init() == NRF_SUCCESS);
-    assert_source(FONT_STORE_SLOT_WQY9, 0x18000U + RS_HEADER_SIZE + 56U, 96U);
+    assert_source(FONT_STORE_SLOT_WQY9, 0x18000U + RS_HEADER_SIZE + 56U, sizeof(font));
+    assert(font_store_get_source(FONT_STORE_SLOT_WQY12) == NULL);
     payload[16U] ^= 1U;
     font_store_host_reset();
     assert(font_store_init() == NRF_SUCCESS);
     assert(font_store_get_source(FONT_STORE_SLOT_WQY9) == NULL);
-    puts("PASS: legacy FST2/FST3 and partition font reads");
+    install_pack(font, sizeof(font));
+    font_store_host_reset();
+    assert(font_store_init() == NRF_SUCCESS);
+    assert_source(FONT_STORE_SLOT_WQY9, 0x18000U + RS_HEADER_SIZE + 56U, sizeof(font));
+    puts("PASS: ERS font pack, missing/corrupt pack recovery and legacy rejection");
     return 0;
 }

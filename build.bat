@@ -6,7 +6,9 @@ rem Usage: build.bat [clean|build|incremental|test|ota|flash|flash_full|flash_so
 rem No argument builds a full business firmware with external-Flash writes enabled.
 rem The directly flashable full HEX is generated without auditing the Bootloader
 rem signing key.
-rem Firmware compilation defaults to one Make job per logical CPU; set BUILD_JOBS to override it.
+rem Firmware compilation defaults to one Make job for reliable Windows builds.
+rem Set BUILD_JOBS to opt in to parallel compilation. A trailing -jN cannot
+rem override this setting, so build.bat build -j8 remains a one-job build.
 
 pushd "%~dp0" || exit /b 1
 set "ACTION=build"
@@ -84,6 +86,7 @@ goto :collect_args
 :dispatch
 if /I "%ACTION%"=="clean" (
     call :clean
+    if errorlevel 1 goto :failed
     goto :success
 )
 if /I "%ACTION%"=="test" (
@@ -195,7 +198,6 @@ set "PROJECT_ROOT=%CD%"
 set "PROJECT_ROOT=%PROJECT_ROOT:\=/%"
 set "SDK_ROOT=%PROJECT_ROOT%/SDK/17.1.0_ddde560"
 set "TOOLS_ROOT=%PROJECT_ROOT%/tools"
-if not defined BUILD_JOBS set "BUILD_JOBS=%NUMBER_OF_PROCESSORS%"
 if not defined BUILD_JOBS set "BUILD_JOBS=1"
 set "FIRMWARE_PREFIX=_build\nrf52811_xxaa"
 set "FIRMWARE_OUT=%FIRMWARE_PREFIX%.out"
@@ -214,11 +216,12 @@ rem just-finished test process. Retry once and avoid noisy cmd error text.
 rmdir /s /q "_build" >nul 2>nul
 if exist "_build" (
     echo Some previous build files are still in use; retrying cleanup...
-    timeout /t 1 /nobreak >nul
+    powershell -NoProfile -NonInteractive -Command "Start-Sleep -Seconds 1" >nul 2>nul
     rmdir /s /q "_build" >nul 2>nul
 )
 if exist "_build" (
-    echo Warning: locked files remain under _build. Continuing; the next test/build step will report an error if they prevent output from being updated.
+    echo Error: _build could not be removed. Close processes using it or check directory permissions.
+    exit /b 1
 )
 exit /b 0
 
@@ -227,7 +230,7 @@ echo =========================================
 echo Building Make target: nrf52811_xxaa
 echo GCC : %GCC_EXE%
 echo Make: %MAKE_EXE%
-echo Jobs: %BUILD_JOBS%
+echo Jobs: %BUILD_JOBS% ^(set BUILD_JOBS to change; -jN is ignored^)
 echo =========================================
 "%MAKE_EXE%" -j%BUILD_JOBS% -f Makefile.nRF52_linux nrf52811_xxaa ^
     "PROJ_DIR=%PROJECT_ROOT%" ^
@@ -235,7 +238,7 @@ echo =========================================
     "TOOLS_DIR=%TOOLS_ROOT%" ^
     "GNU_INSTALL_ROOT=%GCC_BIN%" ^
     "MAKE=make.exe" ^
-    "PASS_LINKER_INPUT_VIA_FILE=0" %*
+    "PASS_LINKER_INPUT_VIA_FILE=0" %* -j%BUILD_JOBS%
 exit /b %errorlevel%
 
 :ensure_firmware
@@ -261,6 +264,7 @@ exit /b %errorlevel%
 
 :build
 call :clean
+if errorlevel 1 exit /b %errorlevel%
 call :compile %*
 if errorlevel 1 exit /b %errorlevel%
 call :merge_full_firmware
@@ -321,6 +325,7 @@ exit /b 0
 
 :ota
 call :clean
+if errorlevel 1 exit /b %errorlevel%
 call :compile %*
 if errorlevel 1 exit /b %errorlevel%
 echo =========================================

@@ -7,7 +7,6 @@
 
 /* The wire limits are supplied by the service. */
 typedef struct {
-    uint8_t cmd;
     uint8_t data[EPD_CMD_MAX_DATA_LEN];
     uint16_t length;
 } epd_cmd_queue_item_t;
@@ -33,7 +32,6 @@ static inline bool epd_cmd_queue_push(epd_cmd_queue_t *queue,
     CRITICAL_REGION_ENTER();
     if (queue->count < EPD_CMD_QUEUE_SIZE) {
         epd_cmd_queue_item_t *item = &queue->items[queue->tail];
-        item->cmd = data[0];
         item->length = length;
         memcpy(item->data, data, length);
         queue->tail = (queue->tail + 1U) % EPD_CMD_QUEUE_SIZE;

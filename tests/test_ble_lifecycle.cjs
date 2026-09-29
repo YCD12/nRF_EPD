@@ -91,6 +91,40 @@ test('driver setup does not report success after a failed INIT', async () => {
   assert.equal(logs.some(message => message.includes('驱动初始化失败')), true);
 });
 
+test('selecting each GUI mode sends its command while keeping the connection', async () => {
+  const { run, context, logs } = setup();
+  const writes = [];
+  context.capture = data => writes.push(Array.from(data));
+  run(`appVersion = 0x35; lastWeekStartSent = 0;
+    epdCharacteristic = {writeValueWithResponse: async data => capture(data)};`);
+  for (const mode of [1, 2, 3]) {
+    writes.length = 0;
+    assert.equal(await run(`sendTimeCommand(${mode}, 'test mode')`), true);
+    assert.deepEqual(writes.map(p => p[0]), [run('EpdCmd.SYNC_TIME_SILENT'), run('EpdCmd.SET_MODE')]);
+    assert.deepEqual(writes[1], [run('EpdCmd.SET_MODE'), mode]);
+    assert.equal(run('gattServer.connected'), true);
+  }
+  assert.ok(logs.some(message => message.includes('无需断开蓝牙')));
+  assert.ok(!logs.some(message => message.includes('断开连接后刷新')));
+});
+
+test('current page rejects older firmware before sending INIT', async () => {
+  const { run, context, logs } = setup();
+  const writes = [];
+  context.device = { name: 'NRF_EPD_OLD', gatt: {
+    connected: true, disconnect() { this.connected = false; },
+    async getPrimaryService() { return { async getCharacteristic(uuid) {
+      return uuid.includes('0003-') ? { async readValue() { return new DataView(Uint8Array.of(0x36).buffer); } } :
+        { addEventListener() {}, async startNotifications() {}, async writeValueWithResponse(data) { writes.push(data[0]); } };
+    } }; },
+  } };
+  run('bleDevice = device; epdCharacteristic = null;');
+  await run('connect()');
+  assert.deepEqual(writes, []);
+  assert.equal(context.device.gatt.connected, false);
+  assert.ok(logs.some(message => message.includes('0x37')));
+});
+
 test('INIT disconnect stops all subsequent initialization and success UI', async () => {
   const { run, context, elements, logs } = setup();
   const writes = [];
@@ -105,7 +139,7 @@ test('INIT disconnect stops all subsequent initialization and success UI', async
   context.device = { name: 'NRF_EPD_TEST', gatt: {
     connected: true,
     async getPrimaryService() { return { async getCharacteristic(uuid) {
-      return uuid.includes('0003-') ? { async readValue() { return new DataView(Uint8Array.of(0x2e).buffer); } } : characteristic;
+      return uuid.includes('0003-') ? { async readValue() { return new DataView(Uint8Array.of(0x37).buffer); } } : characteristic;
     } }; },
   } };
   run('bleDevice = device; epdCharacteristic = null;');
@@ -167,20 +201,20 @@ test('migration export reads the saved config and rejects stale or changed conne
   assert.equal(exported, null);
 });
 
-test('legacy mode-changing commands invalidate cached migration config', async () => {
-  const commands = [
-    ['CLEAR', ''], ['REFRESH', ''], ['WRITE_IMG', ', [0, 1]'],
-    ['WRITE_BLOCK', ', [0, 0, 1, 0, 0, 1, 0, 0]'], ['SEND_CMD', ', [1]'],
-    ['SEND_DATA', ', [1]'],
-  ];
-  for (const [name, data] of commands) {
-    const { run } = setup();
-    run(`appVersion = CONFIG_READBACK_MIN_FIRMWARE_VERSION - 1; lastDeviceConfig = new Uint8Array(14);
-      lastDeviceConfig[11] = 2;
-      epdCharacteristic = {writeValueWithResponse: async () => {}};`);
-    assert.equal(await run(`write(EpdCmd.${name}${data})`), true, name);
-    assert.equal(run('legacyConfigDirty'), true, name);
-  }
+test('current page uses compact display and CRC image command IDs', () => {
+  const { run } = setup();
+  assert.deepEqual(Array.from(run('[EpdCmd.REFRESH, EpdCmd.SLEEP, EpdCmd.WRITE_BLOCK, EpdCmd.QUERY_STATUS, EpdCmd.RESET_TRANSFER]')),
+                   [0x03, 0x04, 0x30, 0x31, 0x32]);
+  assert.equal(run('EpdCmd.WRITE_IMG'), undefined);
+  assert.equal(run('EpdCmd.SEND_CMD'), undefined);
+  assert.equal(run('EpdCmd.SEND_DATA'), undefined);
+});
+
+test('CRC transfer errors do not fall back to the retired image command', async () => {
+  const { run } = setup();
+  run('BleTransfer.sendImageWithResume = async () => { throw new Error("CRC failed"); };');
+  await assert.rejects(run('writeImageCRC(Uint8Array.of(255))'), /CRC failed/);
+  assert.equal(run('typeof writeImage'), 'undefined');
 });
 
 test('CRC blocks use the shared export lock and never reach GATT during export', async () => {

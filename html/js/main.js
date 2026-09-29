@@ -14,8 +14,8 @@ let configReadToken = 0;
 let migrationExport = null;
 
 // APP版本号 (便于调试)
-const APP_VERSION = '2.0.19';
-const APP_BUILD_DATE = '2026-09-23';
+const APP_VERSION = '2.0.20';
+const APP_BUILD_DATE = '2026-09-29';
 const EPD_DEVICE_NAME_PREFIX = 'NRF_EPD';
 const SCAN_DURATION_MS = 5000;
 const LOG_CONSOLE_STORAGE_KEY = 'epd_log_to_console';
@@ -32,15 +32,14 @@ let internalDisconnectInProgress = false;
 let internalDisconnectSuppressUntil = 0;
 const DFU_PAGE_HANDOFF_KEY = 'epd_dfu_page_handoff';
 const CONFIG_READBACK_MIN_FIRMWARE_VERSION = 0x34;
+const MIN_FIRMWARE_VERSION = 0x37;
 
 const EpdCmd = {
   SET_PINS: 0x00,
   INIT: 0x01,
   CLEAR: 0x02,
-  SEND_CMD: 0x03,
-  SEND_DATA: 0x04,
-  REFRESH: 0x05,
-  SLEEP: 0x06,
+  REFRESH: 0x03,
+  SLEEP: 0x04,
 
   SET_TIME: 0x20,
   SET_WEEK_START: 0x21,
@@ -48,12 +47,9 @@ const EpdCmd = {
   SYNC_TIME_SILENT: 0x23,
   SET_ANNOTATIONS: 0x24,
 
-  WRITE_IMG: 0x30, // v1.6
-
-  // CRC Transfer commands (v1.9+)
-  WRITE_BLOCK: 0x31,
-  QUERY_STATUS: 0x32,
-  RESET_TRANSFER: 0x33,
+  WRITE_BLOCK: 0x30,
+  QUERY_STATUS: 0x31,
+  RESET_TRANSFER: 0x32,
 
   SET_CONFIG: 0x90,
   SYS_RESET: 0x91,
@@ -276,9 +272,7 @@ async function write(cmd, data, withResponse = true, logPayload = true, serializ
     const cachedMode = lastDeviceConfig ? lastDeviceConfig[11] : 0xff;
     const entersPictureMode =
       cmd === EpdCmd.CLEAR || cmd === EpdCmd.REFRESH ||
-      cmd === EpdCmd.WRITE_IMG || cmd === EpdCmd.WRITE_BLOCK ||
-      ((cmd === EpdCmd.SEND_CMD || cmd === EpdCmd.SEND_DATA) &&
-       (cachedMode === 2 || cachedMode === 3));
+      cmd === EpdCmd.WRITE_BLOCK;
     if (appVersion < CONFIG_READBACK_MIN_FIRMWARE_VERSION && lastDeviceConfig && (
         cmd === EpdCmd.SET_CONFIG || cmd === EpdCmd.SET_PINS || cmd === EpdCmd.CFG_ERASE ||
         (entersPictureMode && cachedMode !== 0) ||
@@ -313,45 +307,18 @@ async function write(cmd, data, withResponse = true, logPayload = true, serializ
   return operation;
 }
 
-async function writeImage(data, step = 'bw') {
-  const chunkSize = document.getElementById('mtusize').value - 2;
-  const count = Math.round(data.length / chunkSize);
-  let chunkIdx = 0;
-
-  for (let i = 0; i < data.length; i += chunkSize) {
-    let currentTime = (new Date().getTime() - startTime) / 1000.0;
-    setStatus(`${step == 'bw' ? '黑白' : '颜色'}块: ${chunkIdx + 1}/${count + 1}, 总用时: ${currentTime}s`);
-    const payload = [
-      (step == 'bw' ? 0x0F : 0x00) | (i == 0 ? 0x00 : 0xF0),
-      ...data.slice(i, i + chunkSize),
-    ];
-    await write(EpdCmd.WRITE_IMG, payload, true);
-    chunkIdx++;
-  }
-}
-
-// New CRC-verified image transfer with resume capability
+// CRC-verified image transfer with resume capability
 async function writeImageCRC(data, step = 'bw') {
   const stepName = step === 'bw' ? '黑白' : '颜色';
 
-  try {
-    await BleTransfer.sendImageWithResume(data, step, (sent, total, speedInfo) => {
-      if (speedInfo) {
-        setStatus(`${stepName}块(CRC): ${sent}/${total}, ${BleTransfer.getSpeedString()}, ${speedInfo.elapsed}s`);
-      } else {
-        setStatus(`${stepName}块(CRC): ${sent}/${total}`);
-      }
-    });
-    return true;
-  } catch (e) {
-    console.error('CRC transfer failed:', e);
-    addLog(`CRC传输失败: ${e.message}，回退到普通传输`);
-    if (/512|MTU/i.test(e.message || '')) {
-      throw e;
+  await BleTransfer.sendImageWithResume(data, step, (sent, total, speedInfo) => {
+    if (speedInfo) {
+      setStatus(`${stepName}块(CRC): ${sent}/${total}, ${BleTransfer.getSpeedString()}, ${speedInfo.elapsed}s`);
+    } else {
+      setStatus(`${stepName}块(CRC): ${sent}/${total}`);
     }
-    await writeImage(data, step);
-    return true;
-  }
+  });
+  return true;
 }
 
 async function setDriver() {
@@ -419,7 +386,7 @@ async function sendTimeCommand(mode, modeName) {
   if (await write(EpdCmd.SET_MODE, new Uint8Array([mode]))) {
     addLog(`${modeName}已启用！`);
     addLog(weekStartChanged ? `星期第一天已设置为：${weekDays[weekStart]}` : `星期第一天保持为：${weekDays[weekStart]}`);
-    addLog("屏幕刷新完成前请不要操作。");
+    addLog('模式指令已发送，设备将刷新屏幕，无需断开蓝牙；请等待刷新完成。');
     return true;
   }
   return false;
@@ -627,40 +594,40 @@ async function sendimg() {
     }
   }
 
-  // Use CRC transfer for firmware version >= 0x20
-  const useCRC = (appVersion >= 0x20) && (typeof BleTransfer !== 'undefined');
-  const transferFn = useCRC ? writeImageCRC : writeImage;
-
-  if (useCRC) {
-    addLog("使用CRC校验传输模式");
-  }
-
-  try {
-  if (ditherMode === 'fourColor') {
-    await transferFn(processedData, 'color');
-  } else if (ditherMode === 'threeColor') {
-    const halfLength = Math.floor(processedData.length / 2);
-    const blackWhiteData = processedData.slice(0, halfLength);
-    const redWhiteData = processedData.slice(halfLength);
-    if (epdDriverSelect.value === '08' || epdDriverSelect.value === '09') {
-      await transferFn(convertUC8159(blackWhiteData, redWhiteData), 'bw');
-    } else {
-      await transferFn(blackWhiteData, 'bw');
-      await transferFn(redWhiteData, 'red');
-    }
-  } else if (ditherMode === 'blackWhiteColor') {
-    if (epdDriverSelect.value === '08' || epdDriverSelect.value === '09') {
-      const emptyData = new Uint8Array(processedData.length).fill(0xFF);
-      await transferFn(convertUC8159(processedData, emptyData), 'bw');
-    } else {
-      await transferFn(processedData, 'bw');
-    }
-  } else {
-    addLog("当前固件不支持此颜色模式。");
+  if (typeof BleTransfer === 'undefined') {
+    addLog('CRC 传图模块未加载，请刷新网页后重试');
     updateButtonStatus();
     hideStatusBar();
     return;
   }
+  addLog("使用CRC校验传输模式");
+
+  try {
+    if (ditherMode === 'fourColor') {
+      await writeImageCRC(processedData, 'color');
+    } else if (ditherMode === 'threeColor') {
+      const halfLength = Math.floor(processedData.length / 2);
+      const blackWhiteData = processedData.slice(0, halfLength);
+      const redWhiteData = processedData.slice(halfLength);
+      if (epdDriverSelect.value === '08' || epdDriverSelect.value === '09') {
+        await writeImageCRC(convertUC8159(blackWhiteData, redWhiteData), 'bw');
+      } else {
+        await writeImageCRC(blackWhiteData, 'bw');
+        await writeImageCRC(redWhiteData, 'red');
+      }
+    } else if (ditherMode === 'blackWhiteColor') {
+      if (epdDriverSelect.value === '08' || epdDriverSelect.value === '09') {
+        const emptyData = new Uint8Array(processedData.length).fill(0xFF);
+        await writeImageCRC(convertUC8159(processedData, emptyData), 'bw');
+      } else {
+        await writeImageCRC(processedData, 'bw');
+      }
+    } else {
+      addLog("当前固件不支持此颜色模式。");
+      updateButtonStatus();
+      hideStatusBar();
+      return;
+    }
   } catch (e) {
     addLog(`传图失败: ${e.message || e}`);
     updateButtonStatus();
@@ -1342,19 +1309,11 @@ async function connect() {
       addLog(`固件版本: 0x${appVersion.toString(16)}`);
       addLog(`APP版本: v${APP_VERSION} (${APP_BUILD_DATE})`);
     } catch (e) {
-      console.error(e);
-      appVersion = 0x15;
-      updateFirmwareVersionDisplay(appVersion);
+      throw new Error(`无法读取固件版本，请使用与设备固件匹配的网页：${e.message || e}`);
     }
     ensureConnected();
-
-    if (appVersion < 0x16) {
-      const oldURL = "https://tsl0922.github.io/EPD-nRF5/v1.5";
-      alert("!!!注意!!!\n当前固件版本过低，可能无法正常使用部分功能，建议升级到最新版本。");
-      if (confirm('是否访问旧版本上位机？')) location.href = oldURL;
-      setTimeout(() => {
-        addLog(`如遇到问题，请联系购买商家，可访问旧版本上位机: ${oldURL}`);
-      }, 500);
+    if (appVersion < MIN_FIRMWARE_VERSION) {
+      throw new Error(`当前网页需要固件 0x${MIN_FIRMWARE_VERSION.toString(16)} 及以上；设备为 0x${appVersion.toString(16)}，请使用对应旧版网页`);
     }
 
     try {
@@ -1370,7 +1329,7 @@ async function connect() {
       ensureConnected();
       if (window.ExternalResourceInstaller) window.ExternalResourceInstaller.bind(epdCharacteristic);
 
-      // 兼容未在 CCCD 开启时主动上报电压的旧固件，并遵循协议连接初始化顺序。
+      // INIT 后固件会上报电压，并遵循协议连接初始化顺序。
       if (!await write(EpdCmd.INIT)) {
         throw new Error('连接后初始化失败：INIT 命令未完成');
       }

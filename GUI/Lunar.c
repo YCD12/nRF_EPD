@@ -596,33 +596,6 @@ uint8_t GetJieQiStr(uint16_t myear, uint8_t mmonth, uint8_t mday, uint8_t* day) 
     return JQ;      /* 返回节气索引 */
 }
 
-/******************************************************************************
- * 时间转换相关常量
- ******************************************************************************/
-
-/**
- * 每年的总秒数
- * SEC_PER_YR[0]: 平年秒数 = 365 * 24 * 3600 = 31,536,000
- * SEC_PER_YR[1]: 闰年秒数 = 366 * 24 * 3600 = 31,622,400
- */
-uint32_t SEC_PER_YR[2] = {31536000, 31622400};
-
-/**
- * 每月的总秒数
- * SEC_PER_MT[0][]: 平年各月秒数
- * SEC_PER_MT[1][]: 闰年各月秒数（仅2月不同）
- *
- * 秒数计算: 天数 * 86400
- * 31天 = 2,678,400秒
- * 30天 = 2,592,000秒
- * 29天 = 2,505,600秒
- * 28天 = 2,419,200秒
- */
-uint32_t SEC_PER_MT[2][12] = {
-    {2678400, 2419200, 2678400, 2592000, 2678400, 2592000, 2678400, 2678400, 2592000, 2678400, 2592000, 2678400},  /* 平年 */
-    {2678400, 2505600, 2678400, 2592000, 2678400, 2592000, 2678400, 2678400, 2592000, 2678400, 2592000, 2678400},  /* 闰年 */
-};
-
 #define SECOND_OF_DAY 86400  /* 一天的秒数 = 24 * 60 * 60 */
 
 /******************************************************************************
@@ -666,7 +639,7 @@ int is_leap(int yr) {
  */
 unsigned char day_of_week_get(unsigned char month, unsigned char day, unsigned short year) {
     /* 月份修正表：补偿各月天数差对星期计算的影响 */
-    static const int t[] = {0, 3, 2, 5, 0, 3, 5, 1, 4, 6, 2, 4};
+    static const uint8_t t[] = {0, 3, 2, 5, 0, 3, 5, 1, 4, 6, 2, 4};
     year -= (uint8_t)(month < 3);    /* 1月和2月，年份减1 */
     return (year + year / 4 - year / 100 + year / 400 + t[month - 1] + day) % 7;
 }
@@ -681,68 +654,40 @@ unsigned char day_of_week_get(unsigned char month, unsigned char day, unsigned s
  * @param result 输出参数，存储转换后的时间
  *
  * 【算法流程】
- * 1. 逐年减去当年秒数，直到剩余秒数小于一年
- * 2. 逐月减去当月秒数，直到剩余秒数小于一月
- * 3. 计算日期 = 剩余秒数 / 86400 + 1
- * 4. 计算小时 = (剩余秒数 % 86400) / 3600
- * 5. 计算分钟 = (剩余秒数 % 3600) / 60
- * 6. 计算秒 = 剩余秒数 % 60
- * 7. 计算星期
+ * 先拆出自纪元起的整天和当天秒数，再按公历年/月天数定位日期。
  *
  * 注意: 结果中的tm_year存储的是相对于1900年的偏移量（减去YEAR0后）
  */
 void transformTime(uint32_t unix_time, struct devtm* result) {
-    int leapyr = 0;
-    uint32_t ltime = unix_time;
+    uint32_t days = unix_time / SEC_PER_DY;
+    uint32_t remaining_days = days;
+    uint32_t seconds = unix_time % SEC_PER_DY;
+    uint16_t year = EPOCH_YR;
+    uint8_t month = 0;
 
-    memset(result, 0, sizeof(struct devtm));
-    result->tm_year = EPOCH_YR;    /* 从1970年开始计算 */
-
-    /* 步骤1: 逐年减去秒数，确定年份 */
-    while (1) {
-        if (ltime < SEC_PER_YR[is_leap(result->tm_year)]) {
-            break;    /* 剩余秒数不足一年，退出循环 */
-        }
-        ltime -= SEC_PER_YR[is_leap(result->tm_year)];
-        ++(result->tm_year);
+    for (;;) {
+        uint16_t year_days = (uint16_t)(365U + is_leap(year));
+        if (remaining_days < year_days) break;
+        remaining_days -= year_days;
+        ++year;
+    }
+    uint8_t leap = (uint8_t)is_leap(year);
+    while (month < 11U) {
+        uint8_t month_days = MonthDayMax[month] + (month == 1U ? leap : 0U);
+        if (remaining_days < month_days) break;
+        remaining_days -= month_days;
+        ++month;
     }
 
-    leapyr = is_leap(result->tm_year);    /* 记录当前年是否为闰年 */
-
-    /* 步骤2: 逐月减去秒数，确定月份 */
-    while (1) {
-        if (ltime < SEC_PER_MT[leapyr][result->tm_mon]) break;
-        ltime -= SEC_PER_MT[leapyr][result->tm_mon];
-        ++(result->tm_mon);
-    }
-
-    /* 步骤3: 计算日期 */
-    result->tm_mday = ltime / SEC_PER_DY;
-    ++(result->tm_mday);    /* 日期从1开始 */
-    ltime = ltime % SEC_PER_DY;
-
-    /* 步骤4: 计算小时 */
-    result->tm_hour = ltime / SEC_PER_HR;
-    ltime = ltime % SEC_PER_HR;
-
-    /* 步骤5: 计算分钟和秒 */
-    result->tm_min = ltime / 60;
-    result->tm_sec = ltime % 60;
-
-    /* 步骤6: 计算星期几 */
-    result->tm_wday = day_of_week_get(result->tm_mon + 1, result->tm_mday, result->tm_year);
-
-    /*
-     * 将年份转换为相对于1900年的偏移量（兼容标准C库的tm结构体）
-     */
-    result->tm_year -= YEAR0;
+    result->tm_year = year - YEAR0;
+    result->tm_mon = month;
+    result->tm_mday = (uint8_t)(remaining_days + 1U);
+    result->tm_hour = seconds / SEC_PER_HR;
+    seconds %= SEC_PER_HR;
+    result->tm_min = seconds / 60U;
+    result->tm_sec = seconds % 60U;
+    result->tm_wday = (days + 4U) % 7U; /* 1970-01-01 was Thursday. */
 }
-
-/**
- * 每月天数表
- * 用于日期计算（2月按平年28天，闰年需特殊处理）
- */
-uint8_t map[12] = {31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31};
 
 /**
  * @brief 获取指定月份的最后一天
@@ -754,9 +699,9 @@ uint8_t map[12] = {31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31};
  */
 uint8_t get_last_day(uint16_t year, uint8_t month) {
     if (month % 12 == 1) {    /* 2月 (索引1) */
-        return map[month % 12] + is_leap(year);    /* 闰年2月29天 */
+        return MonthDayMax[month % 12] + is_leap(year);    /* 闰年2月29天 */
     }
-    return map[month % 12];
+    return MonthDayMax[month % 12];
 }
 
 /**

@@ -14,6 +14,8 @@ static uint32_t m_due, m_revision, m_data_crc, m_committed_crc;
 static bool m_committed_valid;
 static calendar_annotations_store_applied_fn m_on_applied;
 
+bool calendar_annotations_store_valid(void) { return m_committed_valid; }
+
 static bool store_reload(void)
 {
     uint16_t capacity = 0U;

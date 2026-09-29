@@ -12,7 +12,11 @@ static uint8_t payload[512];
 static uint32_t payload_length;
 static bool mount_ok = true;
 
-static const ui_component_t canonical[UI_COMPONENT_COUNT - 1U] = {
+typedef struct {
+    uint8_t mode, id, kind, flags, font_primary, font_secondary, font_tertiary, reserved;
+    int16_t x, y, w, h, value0, value1;
+} wire_component_t;
+static const wire_component_t canonical[UI_COMPONENT_COUNT - 1U] = {
     {1,1,1,0,2,1,0,0,10,38,780,38,16,12}, {1,2,1,0,1,N,N,0,10,44,780,32,0,0},
     {1,3,3,0,2,1,0,0,10,84,780,386,0,0}, {2,4,2,0,N,N,N,0,15,45,770,2,0,0},
     {2,5,2,0,N,N,N,0,15,435,770,2,0,0}, {2,6,2,0,N,N,N,0,390,70,1,350,0,0},
@@ -51,7 +55,7 @@ static void make_payload(void)
     put32(payload,0x31524955); put16(payload+4,1); put16(payload+6,19);
     put16(payload+8,800); put16(payload+10,480); put16(payload+12,20);
     for(unsigned i=0;i<19;i++) {
-        const ui_component_t *c=&canonical[i]; uint8_t *r=payload+16+i*20;
+        const wire_component_t *c=&canonical[i]; uint8_t *r=payload+16+i*20;
         r[0]=c->mode;r[1]=c->id;r[2]=c->kind;r[3]=c->flags;
         r[4]=c->font_primary;r[5]=c->font_secondary;r[6]=c->font_tertiary;r[7]=c->reserved;
         put16(r+8,(uint16_t)c->x);put16(r+10,(uint16_t)c->y);

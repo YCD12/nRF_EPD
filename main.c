@@ -40,6 +40,7 @@
 #include "app_scheduler.h"
 #include "app_timer.h"
 #include "main.h"
+#include "epd_resources.h"
 #include "nrf_drv_gpiote.h"
 #include "nrf_drv_wdt.h"
 #include "nrf_log.h"
@@ -115,6 +116,7 @@ static const ble_uuid_t m_adv_uuid = {BLE_UUID_EPD_SVC, EPD_SVC_UUID_TYPE};     
                                                                                         /**< 通用唯一服务标识符 */
 
 BLE_EPD_DEF(m_epd);                                                                     /**< Structure to identify the EPD Service. */
+static volatile bool m_wakeup_armed;
                                                                                         /**< 用于标识EPD服务的结构体 */
 static uint32_t                          m_timestamp = 1735689600;                      /**< Current timestamp. */
                                                                                         /**< 当前时间戳，初始值为2025-01-01 00:00:00 UTC */
@@ -470,6 +472,7 @@ void gpiote_evt_handler(nrf_drv_gpiote_pin_t pin, nrf_gpiote_polarity_t action) 
     nrf_drv_gpiote_in_event_disable(pin);  // 禁用引脚事件
     nrf_drv_gpiote_in_uninit(pin);         // 取消初始化引脚
     nrf_drv_gpiote_uninit();               // 取消初始化GPIOTE模块
+    m_wakeup_armed = false;
 
     advertising_start();  // 开始广播
 }
@@ -481,12 +484,24 @@ void gpiote_evt_handler(nrf_drv_gpiote_pin_t pin, nrf_gpiote_polarity_t action) 
  * @param[in] pin 要配置为唤醒引脚的GPIO引脚号
  */
 static void setup_wakeup_pin(nrf_drv_gpiote_pin_t pin) {
+    if (m_wakeup_armed) return;
     NRF_LOG_DEBUG("Setting up wakeup pin\n");
 
     APP_ERROR_CHECK(nrf_drv_gpiote_init());  // 初始化GPIOTE模块
     nrf_drv_gpiote_in_config_t config = GPIOTE_CONFIG_IN_SENSE_LOTOHI(false);  // 配置为低到高触发
     APP_ERROR_CHECK(nrf_drv_gpiote_in_init(pin, &config, gpiote_evt_handler));  // 初始化引脚并设置处理函数
+    m_wakeup_armed = true;
     nrf_drv_gpiote_in_event_enable(pin, true);  // 启用引脚事件
+}
+
+/* Main only, after the final response leaves the TX queue. Disconnect the
+ * central; the advertising module retains its normal restart/timeout policy. */
+static void disconnect_for_run(void)
+{
+    if (m_conn_handle != BLE_CONN_HANDLE_INVALID) {
+        uint32_t result = sd_ble_gap_disconnect(m_conn_handle, BLE_HCI_REMOTE_USER_TERMINATED_CONNECTION);
+        if (result != NRF_ERROR_INVALID_STATE) APP_ERROR_CHECK(result);
+    }
 }
 
 /**@brief Function for handling advertising events.
@@ -504,6 +519,10 @@ static void on_adv_evt(ble_adv_evt_t ble_adv_evt) {
             // 快速广播模式启动
             break;
         case BLE_ADV_EVT_IDLE:
+            if (!epd_resources_ready() && m_epd.config.display_mode != MODE_PICTURE) {
+                advertising_start(); /* Missing resources must remain repairable. */
+                break;
+            }
             // 广播超时（120秒后）
             NRF_LOG_INFO("advertising timeout\n");
             if (m_epd.config.wakeup_pin != 0xFF) {  // 如果配置了唤醒引脚
@@ -962,12 +981,6 @@ int main(void) {
     APP_ERROR_CHECK(nrf_drv_wdt_channel_alloc(&m_wdt_channel_id));  // 分配看门狗通道
     nrf_drv_wdt_enable();  // 启动看门狗
 
-#if GUI_USE_EXTERNAL_FONTS
-    /* Probe the resource Flash before GUI rendering starts.  If a fixed font
-     * slot is unavailable, gui_set_font() uses its fixed-width placeholder. */
-    (void)GUI_ExternalFontsInit();
-#endif
-
     // 系统初始化序列
     timers_init();            // 初始化定时器模块
     power_management_init();  // 初始化电源管理
@@ -977,6 +990,10 @@ int main(void) {
     gatt_init();              // 初始化GATT（MTU交换等）
     ble_dfu_buttonless_async_svci_init();  // 初始化无按钮DFU的异步SVCI接口
     services_init();          // 初始化服务（EPD服务和DFU服务）
+    /* ble_epd_init() initializes external SPI Flash while loading config.
+     * Mount GUI resources only after that driver is ready, before the first
+     * boot display request and before advertising can connect. */
+    (void)epd_resources_reload();
     advertising_init();       // 初始化广播
     conn_params_init();       // 初始化连接参数
 
@@ -1006,6 +1023,7 @@ int main(void) {
     for (;;) {
         ble_epd_process(&m_epd);
         app_sched_execute();  // 执行调度队列中的事件
+        if (ble_epd_take_offline_request(&m_epd)) disconnect_for_run();
         idle_state_handle();  // 处理空闲状态（喂狗、日志处理、进入低功耗）
     }
 }

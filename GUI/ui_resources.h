@@ -37,14 +37,11 @@ typedef enum {
 } ui_component_kind_t;
 
 typedef struct {
-    uint8_t mode;
-    uint8_t id;
-    uint8_t kind;
-    uint8_t flags;
+    /* Runtime view: fixed IDs/kinds and wire-only flags are validated on load,
+     * then discarded. The external UIR1 record remains 20 bytes. */
     uint8_t font_primary;
     uint8_t font_secondary;
     uint8_t font_tertiary;
-    uint8_t reserved;
     int16_t x;
     int16_t y;
     int16_t w;
@@ -54,6 +51,7 @@ typedef struct {
 } ui_component_t;
 
 bool ui_resources_init(void);
+void ui_resources_invalidate(void);
 bool ui_resources_ready(void);
 uint32_t ui_resources_revision(void);
 const ui_component_t *ui_resource_component(ui_component_id_t id);

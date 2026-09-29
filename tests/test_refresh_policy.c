@@ -170,6 +170,12 @@ static void test_picture_transfer_preempts_clock_refresh(void)
     in.force_update = true;
     out = epd_refresh_schedule(&in);
     assert(!out.should_refresh);
+
+    /* The streamed image is not stored in MCU Flash for a boot redraw. */
+    in.transfer_active = false;
+    in.mode = MODE_PICTURE;
+    out = epd_refresh_schedule(&in);
+    assert(!out.should_refresh);
 }
 
 static void test_kind_full_when_not_clock_or_hw_missing(void)

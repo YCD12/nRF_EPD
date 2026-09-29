@@ -15,6 +15,24 @@ static jmp_buf power_loss;
 static unsigned mutations, reads, depth, executions, sent;
 static bool block_send;
 static uint8_t reply[20];
+static unsigned invalidations, activations, offline_requests;
+static uint16_t activated_partitions;
+static rs_result_t activation_result;
+static bool entry_busy;
+
+static rs_result_t on_resource(void *context, resource_event_t event, uint16_t changed)
+{
+    assert(context == &reply && depth == 0 && resource_protocol_entered());
+    if (event == RESOURCE_ENTER) return entry_busy ? RS_BUSY : RS_OK;
+    if (event == RESOURCE_INVALIDATE) invalidations++;
+    else if (event == RESOURCE_OFFLINE) offline_requests++;
+    else {
+        activations++;
+        activated_partitions = changed;
+        return activation_result;
+    }
+    return RS_OK;
+}
 
 void test_critical_enter(void) { ++depth; }
 void test_critical_exit(void) { assert(depth); --depth; }
@@ -244,6 +262,81 @@ static void test_protocol(void)
     process(3, true, 8);
     assert(reply[3] == RS_INVALID);
 }
+static void test_activation(void)
+{
+    blank();
+    resource_protocol_set_handler(on_resource, &reply);
+    process(4, true, 100);
+    uint8_t enter[] = {0x26, 6, 10, 'M', 'I', 'G', '1'};
+    uint8_t begin[16] = {0x26, 2, 11, 2};
+    uint8_t write[] = {0x26, 3, 12, 0, 0, 0, 0, 42};
+    uint8_t commit[] = {0x26, 4, 13}, leave[] = {0x26, 7, 14}, run[] = {0x26, 8, 15};
+    resource_put_u32(begin + 4, 1);
+    resource_put_u32(begin + 8, crc(write + 7, 1));
+    resource_put_u32(begin + 12, 2);
+
+    entry_busy = true;
+    resource_transfer_receive(enter, sizeof(enter), 4); process(4, true, 99);
+    assert(reply[3] == RS_BUSY && !resource_protocol_entered());
+    entry_busy = false; enter[2]++;
+
+    resource_transfer_receive(enter, sizeof(enter), 4); process(4, true, 100);
+    process(4, true, 159); assert(resource_protocol_entered());
+    process(4, true, 160); assert(!resource_protocol_entered() && !activations);
+    /* Timeout covers ENTER with no BEGIN and idle time after COMMIT. */
+    resource_transfer_receive(enter, sizeof(enter), 4); process(4, true, 161);
+    resource_transfer_receive(begin, sizeof(begin), 4); process(4, true, 162);
+    assert(invalidations == 1);
+    resource_transfer_receive(begin, sizeof(begin), 4); process(4, true, 163);
+    assert(invalidations == 1);
+    resource_transfer_receive(write, sizeof(write), 4); process(4, true, 164);
+    resource_transfer_receive(commit, sizeof(commit), 4); process(4, true, 165);
+    assert(reply[3] == RS_OK && !resource_store_active());
+    process(4, true, 225);
+    assert(!resource_protocol_entered() && activations == 1 && activated_partitions == (1U << 2));
+
+    /* A semantic error must prevent offline mode, including retry after LEAVE. */
+    resource_transfer_receive(enter, sizeof(enter), 4); process(4, true, 226);
+    resource_transfer_receive(begin, sizeof(begin), 4); process(4, true, 227);
+    activation_result = RS_INVALID;
+    resource_transfer_receive(leave, sizeof(leave), 4); process(4, true, 228);
+    assert(reply[3] == RS_INVALID && !resource_protocol_entered());
+    leave[2]++;
+    resource_transfer_receive(leave, sizeof(leave), 4); process(4, true, 228);
+    assert(reply[3] == RS_INVALID && !resource_protocol_entered());
+    resource_transfer_receive(run, sizeof(run), 4); process(4, true, 229);
+    assert(reply[3] == RS_INVALID && offline_requests == 0 && activated_partitions == (1U << 2));
+    activation_result = RS_OK;
+    run[2]++;
+    resource_transfer_receive(run, sizeof(run), 4); process(4, true, 230);
+    assert(reply[3] == RS_OK && offline_requests == 1);
+    unsigned before = activations;
+    resource_transfer_receive(run, sizeof(run), 4); process(4, true, 231);
+    assert(activations == before && offline_requests == 1);
+
+    resource_transfer_receive(enter, sizeof(enter), 4); process(4, true, 232);
+    resource_transfer_receive(begin, sizeof(begin), 4); process(4, true, 233);
+    process(5, false, 234);
+    assert(activations == before + 1 && !resource_store_active() && !resource_protocol_entered());
+    process(5, false, 235);
+    assert(activations == before + 1); /* Disconnected main loop does not keep reloading. */
+    resource_protocol_set_handler(NULL, NULL);
+}
+
+static void test_disconnected_read_cache(void)
+{
+    blank();
+    uint8_t data[] = {7, 8}, actual[2];
+    assert(upload(2, data, sizeof(data)) == RS_OK);
+    process(6, false, 240);
+    uint32_t length;
+    assert(resource_store_open(2, &length) == RS_OK);
+    for (unsigned i = 0; i < 5; ++i) process(6, false, 241 + i);
+    unsigned before = reads;
+    assert(resource_store_read(2, 0, actual, sizeof(actual)) == RS_OK);
+    assert(!memcmp(data, actual, sizeof(data)) && reads == before + 1);
+}
+
 int main(void)
 {
     assert(crc((const uint8_t *)"123456789", 9) == 0xCBF43926UL);
@@ -253,6 +346,8 @@ int main(void)
     test_sector_crossing();
     test_persistent_record();
     test_protocol();
+    test_activation();
+    test_disconnected_read_cache();
     puts("resource store: boundaries, CRC, interrupted erase/program/commit, repair, protocol retries OK");
     return 0;
 }

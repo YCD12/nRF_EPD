@@ -5,23 +5,23 @@
 
 static void test_init_and_write_block_are_urgent(void)
 {
-    assert(epd_cmd_is_urgent(0x01)); /* INIT */
-    assert(epd_cmd_is_urgent(0x31)); /* WRITE_BLOCK */
-    assert(epd_cmd_is_urgent(0x32)); /* QUERY_STATUS */
-    assert(epd_cmd_is_urgent(0x33)); /* RESET_TRANSFER */
-    assert(epd_cmd_is_urgent(0x91)); /* SYS_RESET */
-    assert(epd_cmd_is_urgent(0x92)); /* SYS_SLEEP */
-    assert(epd_cmd_is_urgent(0x99)); /* CFG_ERASE */
+    assert(epd_cmd_is_urgent(EPD_CMD_INIT));
+    assert(epd_cmd_is_urgent(EPD_CMD_WRITE_BLOCK));
+    assert(epd_cmd_is_urgent(EPD_CMD_QUERY_STATUS));
+    assert(epd_cmd_is_urgent(EPD_CMD_RESET_TRANSFER));
+    assert(epd_cmd_is_urgent(EPD_CMD_SYS_RESET));
+    assert(epd_cmd_is_urgent(EPD_CMD_SYS_SLEEP));
+    assert(epd_cmd_is_urgent(EPD_CMD_CFG_ERASE));
 }
 
 static void test_refresh_and_set_time_stay_queued(void)
 {
-    assert(!epd_cmd_is_urgent(0x05)); /* REFRESH: blocking, must stay queued */
-    assert(!epd_cmd_is_urgent(0x20)); /* SET_TIME */
-    assert(!epd_cmd_is_urgent(0x22)); /* SET_MODE */
-    assert(!epd_cmd_is_urgent(0x23)); /* SYNC_TIME_SILENT */
-    assert(!epd_cmd_is_urgent(0x30)); /* WRITE_IMAGE: fallback, queued after INIT */
-    assert(epd_cmd_is_urgent(0x24)); /* SET_ANNOTATIONS: sequential chunks, queue depth is 2 */
+    assert(!epd_cmd_is_urgent(EPD_CMD_REFRESH)); /* Blocking: must stay queued. */
+    assert(!epd_cmd_is_urgent(EPD_CMD_SLEEP));
+    assert(!epd_cmd_is_urgent(EPD_CMD_SET_TIME));
+    assert(!epd_cmd_is_urgent(EPD_CMD_SET_MODE));
+    assert(!epd_cmd_is_urgent(EPD_CMD_SYNC_TIME_SILENT));
+    assert(epd_cmd_is_urgent(EPD_CMD_SET_ANNOTATIONS));
 }
 
 static void test_week_start_is_immediate_so_mode_switch_fits_queue(void)
@@ -33,19 +33,17 @@ static void test_week_start_is_immediate_so_mode_switch_fits_queue(void)
     assert(!epd_cmd_is_urgent(0x21));
     assert(!epd_cmd_is_immediate(0x22));
     assert(!epd_cmd_is_immediate(0x23));
-    assert(!epd_cmd_is_immediate(0x05));
+    assert(!epd_cmd_is_immediate(EPD_CMD_REFRESH));
     assert(epd_cmd_mode_switch_queued_count(true) == 2);
     assert(epd_cmd_mode_switch_queued_count(false) == 2);
 }
 
 static void test_picture_writes_need_a_live_display(void)
 {
-    assert(epd_cmd_needs_display(0x02)); /* CLEAR */
-    assert(epd_cmd_needs_display(0x03)); /* SEND_COMMAND */
-    assert(epd_cmd_needs_display(0x04)); /* SEND_DATA */
-    assert(epd_cmd_needs_display(0x05)); /* REFRESH */
-    assert(epd_cmd_needs_display(0x30)); /* WRITE_IMAGE */
-    assert(epd_cmd_needs_display(0x31)); /* WRITE_BLOCK */
+    assert(epd_cmd_needs_display(EPD_CMD_CLEAR));
+    assert(epd_cmd_needs_display(EPD_CMD_REFRESH));
+    assert(epd_cmd_needs_display(EPD_CMD_WRITE_BLOCK));
+    assert(!epd_cmd_needs_display(EPD_CMD_SLEEP));
     assert(!epd_cmd_needs_display(0x20));
     assert(!epd_cmd_needs_display(0x01)); /* INIT creates the display */
     assert(!epd_cmd_needs_display(0x24)); /* SET_ANNOTATIONS writes FDS, refresh is separate */

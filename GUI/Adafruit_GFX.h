@@ -15,10 +15,10 @@
 
 /* Shared page buffer for the streamed EPD renderer.
  *
- * 1,536 B supports a 15-row mono page or a 7-row three-colour page on
+ * 1,400 B supports a 14-row mono page or a 7-row three-colour page on
  * the 800-pixel panel. Clock OLD data has its own small strip buffer.
  */
-#define GFX_PAGE_BUFFER_SIZE 1536U
+#define GFX_PAGE_BUFFER_SIZE 1400U
 
 // 颜色定义 - RGB565 格式 (16位：5位红色，6位绿色，5位蓝色)
 // Color definitions - RGB565 format (16-bit: 5-bit red, 6-bit green, 5-bit blue)

@@ -21,7 +21,9 @@ epd_refresh_schedule_out_t epd_refresh_schedule(const epd_refresh_schedule_in_t 
     epd_refresh_schedule_out_t out = {false, false};
     bool periodic;
 
-    if (in == NULL || in->low_battery_hold || in->transfer_active) {
+    /* A directly streamed picture has no MCU-side pixels to redraw after reset. */
+    if (in == NULL || in->mode == MODE_PICTURE ||
+        in->low_battery_hold || in->transfer_active) {
         return out;
     }
 

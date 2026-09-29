@@ -48,7 +48,7 @@ void ble_epd_evt_handler(ble_evt_t const* p_ble_evt, void* p_context);
     static ble_epd_t _name; \
     NRF_SDH_BLE_OBSERVER(_name##_obs, BLE_EPD_BLE_OBSERVER_PRIO, ble_epd_evt_handler, &_name)
 
-#define APP_VERSION 0x34  // Confirmed config readback for migration exports
+#define APP_VERSION 0x37  // Current-page protocol IDs: refresh 03, sleep 04, CRC picture 30-32
 
 // EPD 服务的 128 位基础 UUID（自定义服务）
 #define BLE_UUID_EPD_SVC_BASE \
@@ -76,11 +76,14 @@ void ble_epd_evt_handler(ble_evt_t const* p_ble_evt, void* p_context);
  * 3. 刷新等长操作期间仍可接收新命令
  */
 #define EPD_CMD_QUEUE_SIZE 2                       /**< 普通命令队列容量（最多 2 条待处理） */
-#define EPD_CMD_MAX_DATA_LEN BLE_EPD_MAX_DATA_LEN  /**< 单条命令最大数据长度 */
+#define EPD_CMD_MAX_DATA_LEN 16U  /**< 普通控制命令最大长度；图片/标注绕过队列 */
+typedef char epd_config_fits_control_queue[
+    (sizeof(epd_config_t) + 1U <= EPD_CMD_MAX_DATA_LEN) ? 1 : -1];
 
 #include "epd_command_queue.h"
 #include "epd_display_queue.h"
 #include "calendar_annotations_tx.h"
+#include "epd_offline.h"
 
 /**@brief 图像传输上下文（断点续传）
  *
@@ -105,6 +108,7 @@ typedef struct {
     volatile uint16_t conn_handle; /**< 当前连接句柄；未连接为 BLE_CONN_HANDLE_INVALID */
     uint16_t max_data_len;        /**< 可发给对端的最大数据长度（字节） */
     bool is_notification_enabled; /**< 对端是否已开启 RX 特性通知 */
+    epd_offline_t offline;
 
     // EPD 硬件与配置
     const epd_model_t * epd;    /**< 当前 EPD 型号 */
@@ -158,6 +162,8 @@ typedef struct {
  */
 void ble_epd_sleep_prepare(ble_epd_t* p_epd);
 void ble_epd_process(ble_epd_t* p_epd);
+/* Main consumes this only after the final reply has drained from the BLE TX queue. */
+bool ble_epd_take_offline_request(ble_epd_t *p_epd);
 
 /**@brief 初始化 EPD 服务（BLE、配置、驱动）
  *

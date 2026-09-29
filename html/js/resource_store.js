@@ -40,8 +40,10 @@
   }
   function parseStatus(reply) {
     if (reply.length !== 16) throw new Error(`无法读取资源能力：${statusName(reply[3])}（旧固件可能不支持资源协议）`);
-    if (reply[4] !== 1 || reply[5] !== 1 || u32(reply, 12) !== CAPACITY) throw new Error('设备不支持外置 Flash 读写或资源 ABI/容量不兼容');
-    return { code: reply[3], abi: reply[5], active: reply[6], entered: !!reply[7], received: u32(reply, 8), capacity: u32(reply, 12) };
+    if (!(reply[4] & 1) || reply[5] !== 1 || u32(reply, 12) !== CAPACITY) throw new Error('设备不支持外置 Flash 读写或资源 ABI/容量不兼容');
+    return { code: reply[3], abi: reply[5], active: reply[6], entered: !!reply[7],
+      hotReload: !!(reply[4] & 2), offline: !!(reply[4] & 4),
+      received: u32(reply, 8), capacity: u32(reply, 12) };
   }
   function validateTarget(pack, partitions) {
     const p = pack.id === 1 ? { id: 1, type: 1, offset: 0, size: 4096 } : partitions.find(p => p.id === pack.id);
@@ -122,13 +124,17 @@
       const packet = Uint8Array.of(0x26, op, this.token++ & 255, ...body);
       try {
         for (let attempt = 0; attempt < 3; ++attempt) {
-          let timer;
+          let timer, acknowledged;
           try {
             const answer = new Promise((resolve, reject) => {
-              this.pending = { op, token: packet[2], resolve, reject };
+              this.pending = { op, token: packet[2], resolve: reply => { acknowledged = reply; resolve(reply); }, reject };
               timer = setTimeout(() => reject(new Error('资源请求超时')), this.timeout);
             });
-            const result = await Promise.all([answer, Promise.resolve().then(() => this.write(packet))]);
+            const written = Promise.resolve().then(() => this.write(packet)).catch(error => {
+              // RUN_OFFLINE may disconnect GATT after its successful application ACK.
+              if (op !== 8 || !acknowledged || acknowledged[3] !== 0) throw error;
+            });
+            const result = await Promise.all([answer, written]);
             const reply = result[0];
             if (reply[3] !== 0 && !allowStatus) throw Object.assign(new Error(`设备返回：${statusName(reply[3])}`), { device: true });
             return reply;
@@ -140,6 +146,7 @@
     }
     status() { return this.request(0, new Uint8Array(), true); }
     leave() { return this.request(7); }
+    runOffline() { return this.request(8); }
     async read(address, length) {
       if (!Number.isInteger(address) || !Number.isInteger(length) || address < 0 ||
           length < 1 || length > 16 || address + length > 524288) throw new Error('读取范围错误');

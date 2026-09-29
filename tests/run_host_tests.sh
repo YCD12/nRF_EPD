@@ -27,7 +27,7 @@ run test_ui_resources -DUI_RESOURCES_HOST_TEST -IEPD -IGUI \
 run test_resource_store -Itests/font_transfer_stubs -IEPD \
     -ISDK/17.1.0_ddde560/components/libraries/util \
     -ISDK/17.1.0_ddde560/components/softdevice/s112/headers \
-    EPD/resource_store.c EPD/persistent_record.c EPD/resource_protocol.c EPD/resource_transfer.c tests/test_resource_store.c
+    EPD/resource_store.c EPD/resource_crc.c EPD/persistent_record.c EPD/resource_protocol.c EPD/resource_transfer.c tests/test_resource_store.c
 run test_advertising -DSVCALL_AS_NORMAL_FUNCTION -DS112 \
     -Itests/advertising_stubs -Itests/storage_stubs -IEPD \
     -ISDK/17.1.0_ddde560/components/softdevice/s112/headers \
@@ -38,6 +38,7 @@ run test_advertising -DSVCALL_AS_NORMAL_FUNCTION -DS112 \
     SDK/17.1.0_ddde560/components/ble/ble_advertising/ble_advertising.c \
     EPD/epd_advertising.c tests/test_advertising.c
 run test_command_queue -Itests/font_transfer_stubs -IEPD tests/test_command_queue.c
+run test_offline -IEPD tests/test_offline.c
 run test_async_queues -Itests/font_transfer_stubs -IEPD -IGUI \
     -DCALENDAR_ANNOTATIONS_USE_NRF_CRITICAL=1 \
     EPD/calendar_annotations_tx.c GUI/calendar_annotations.c tests/test_async_queues.c
@@ -57,7 +58,7 @@ run test_u8g2_bounds -IGUI GUI/u8g2_font.c tests/test_u8g2_bounds.c
 run test_font_store -I. -IEPD -IGUI \
     -ISDK/17.1.0_ddde560/components/libraries/util \
     -ISDK/17.1.0_ddde560/components/softdevice/s112/headers \
-    -DFONT_STORE_HOST_TEST EPD/font_store.c tests/test_font_store.c
+    -DFONT_STORE_HOST_TEST EPD/font_store.c EPD/resource_crc.c tests/test_font_store.c
 run test_fm25q04b_read -Itests/spi_stubs -I. -IEPD \
     -ISDK/17.1.0_ddde560/components/libraries/util \
     -ISDK/17.1.0_ddde560/components/softdevice/s112/headers \
@@ -87,14 +88,18 @@ run test_uc8179 -IEPD -Itests/stubs -Itools/test/host/shim EPD/UC8179.c tests/uc
 if command -v node >/dev/null 2>&1; then
     node --test tests/test_ble_lifecycle.cjs
     node --test tests/test_resource_web.cjs
+    node --test tests/test_resource_builder.cjs
     node --test tests/test_calendar_annotations_web.cjs
 else
     echo "Node.js unavailable; run node --test tests/test_ble_lifecycle.cjs separately."
 fi
 
 python3 tests/test_font_store_tool.py
+python3 tests/test_protocol_sync.py
 python3 tests/test_resource_pack.py
+python3 tools/export_web_template.py --check
 python3 tests/test_dfu_release.py
 python3 tests/test_service_lifecycle.py
+python3 tests/test_resources_reload.py
 
 echo "HOST_OK"

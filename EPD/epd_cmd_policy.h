@@ -38,10 +38,7 @@ static inline unsigned epd_cmd_mode_switch_queued_count(bool week_changed)
 static inline bool epd_cmd_needs_display(uint8_t cmd)
 {
     return cmd == EPD_CMD_CLEAR ||
-           cmd == EPD_CMD_SEND_COMMAND ||
-           cmd == EPD_CMD_SEND_DATA ||
            cmd == EPD_CMD_REFRESH ||
-           cmd == EPD_CMD_WRITE_IMAGE ||
            cmd == EPD_CMD_WRITE_BLOCK;
 }
 

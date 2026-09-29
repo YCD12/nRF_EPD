@@ -154,11 +154,13 @@ bool calendar_resource_holiday(uint16_t year, uint8_t month, uint8_t day, bool *
     return false;
 }
 
-#if defined(CALENDAR_RESOURCES_HOST_TEST)
-void calendar_resources_host_reset(void)
+void calendar_resources_invalidate(void)
 {
     memset(m_sections, 0, sizeof(m_sections));
     m_year_min = m_year_max = m_holiday_year = 0U;
     m_attempted = m_ready = false;
 }
+
+#if defined(CALENDAR_RESOURCES_HOST_TEST)
+void calendar_resources_host_reset(void) { calendar_resources_invalidate(); }
 #endif

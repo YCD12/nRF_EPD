@@ -979,6 +979,26 @@ body.dark-mode .page-subtitle {
     font-size: 0.9rem;
 }
 
+.resource-editor { margin-top: 1rem; }
+.resource-editor summary { cursor: pointer; padding: .5rem 0; font-weight: 600; }
+.resource-editor > label { display: block; margin-top: .75rem; }
+.resource-editor textarea {
+    box-sizing: border-box;
+    width: 100%;
+    min-height: 12rem;
+    resize: vertical;
+    font: .85rem/1.5 Consolas, monospace;
+}
+.resource-editor canvas {
+    display: block;
+    width: 100%;
+    max-width: 800px;
+    height: auto;
+    margin: .75rem 0;
+    border: 1px solid var(--border-color);
+}
+.resource-editor details label { display: block; margin: .5rem 0; }
+
 .anno-table th,
 .anno-table td {
     border-bottom: 1px solid var(--border-color);

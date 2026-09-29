@@ -29,16 +29,6 @@ void resource_put_u32(uint8_t *p, uint32_t v)
     for (unsigned i = 0; i < 4U; ++i) p[i] = (uint8_t)(v >> (8U * i));
 }
 
-uint32_t resource_crc32(uint32_t crc, const uint8_t *p, size_t n)
-{
-    while (n--) {
-        crc ^= *p++;
-        for (unsigned i = 0; i < 8U; ++i)
-            crc = (crc >> 1) ^ ((crc & 1U) ? 0xEDB88320UL : 0U);
-    }
-    return crc;
-}
-
 static rs_result_t read_flash(uint32_t address, void *data, size_t length)
 {
     return fm25q04b_read(address, data, length) == NRF_SUCCESS ? RS_OK : RS_IO;

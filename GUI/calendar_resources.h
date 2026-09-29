@@ -23,6 +23,7 @@ typedef enum {
 } calendar_special_festival_t;
 
 bool calendar_resources_init(void);
+void calendar_resources_invalidate(void);
 bool calendar_resources_ready(void);
 uint16_t calendar_resources_year_min(void);
 uint16_t calendar_resources_year_max(void);

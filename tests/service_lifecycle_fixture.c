@@ -4,7 +4,11 @@
 #include <string.h>
 #include "epd_refresh_policy.h"
 #include "epd_protocol.h"
+#include "epd_cmd_policy.h"
 #include "EPD_config.h"
+#include "epd_offline.h"
+#include "resource_protocol.h"
+#include "resource_layout.h"
 #define EPD_CMD_QUEUE_SIZE 2U
 #define EPD_CMD_MAX_DATA_LEN 16U
 #include "epd_command_queue.h"
@@ -20,6 +24,7 @@ uint32_t app_sched_event_put(void *data, uint16_t length, app_sched_event_handle
 #define UNUSED_PARAMETER(x) ((void)(x))
 #define BLE_CONN_HANDLE_INVALID 65535U
 #define NRF_ERROR_RESOURCES 19U
+#define NRF_ERROR_INVALID_STATE 8U
 #define EPD_IMAGE_RX_TIMEOUT_S 30U
 typedef unsigned epd_model_id_t;
 typedef struct epd_model epd_model_t;
@@ -28,6 +33,7 @@ struct epd_model { unsigned id; const driver_t *drv; };
 typedef struct { bool transfer_active; uint8_t session_id; } image_transfer_ctx_t;
 typedef struct {
     unsigned conn_handle, connection_generation, max_data_len;
+    epd_offline_t offline;
     bool is_notification_enabled, gpio_connection_ref, disconnect_pending;
     bool init_pending, init_running, init_ack_pending, is_refreshing, force_full_refresh;
     uint8_t init_model, init_token, init_ack_token, init_status, init_prior_commands;
@@ -98,6 +104,20 @@ static unsigned ble_epd_string_send(ble_epd_t *p, uint8_t *data, uint16_t length
     return 0;
 }
 static void app_feed_wdt(void) {}
+static bool resources_ready;
+static unsigned resource_reloads;
+static rs_result_t reload_result = RS_OK;
+static bool epd_resource_idle(const ble_epd_t *p) { (void)p; return true; }
+static void epd_resources_invalidate(void) { resources_ready = false; }
+static bool epd_resources_ready(void) { return resources_ready; }
+static rs_result_t epd_resources_reload(void) {
+    resource_reloads++;
+    resources_ready = reload_result == RS_OK;
+    return reload_result;
+}
+void epd_config_read(epd_config_t *cfg) { *cfg = current->config; }
+static void calendar_annotations_store_init(void) {}
+static bool calendar_annotations_store_valid(void) { return true; }
 static void epd_display_complete(ble_epd_t *p) { (void)p; }
 static void nrf_delay_ms(unsigned ms) { (void)ms; }
 static void sleep_mode_enter(void) { assert(0); }
@@ -181,7 +201,7 @@ int main(void) {
 
     EPD_GPIO_Init(); /* A GUI refresh holds its own reference. */
     current->is_refreshing = true;
-    uint8_t reset[] = {0x33, 7};
+    uint8_t reset[] = {EPD_CMD_RESET_TRANSFER, 7};
     cmd_reset_transfer(current, reset, sizeof(reset));
     assert(busy_abort && current->transfer_ctx.transfer_active);
     finish_refresh(current);
@@ -236,6 +256,28 @@ int main(void) {
     assert(refs == 0 && current->epd == NULL);
     epd_connection_process(current); /* Must not issue SPI after GPIO release. */
     assert(refs == 0 && !current->transfer_ctx.transfer_active);
+    /* An activation that outlives its connection cannot lock the new peer in ACK. */
+    on_connect(current, &event);
+    current->offline.state = EPD_OFFLINE_ACK;
+    sent = ack_calls;
+    assert(resource_notification_send(current, current->connection_generation - 1,
+                                     last_ack, sizeof(last_ack)) == NRF_ERROR_INVALID_STATE);
+    assert(ack_calls == sent && current->offline.state == EPD_ONLINE);
+    assert(resource_notification_send(current, current->connection_generation,
+                                     last_ack, sizeof(last_ack)) == 0);
+    assert(ack_calls == sent + 1);
+
+    /* No second full read between successful LEAVE and RUN_OFFLINE. */
+    assert(epd_resource_event(current, RESOURCE_ACTIVATE, 1U << RS_PART_UI_RESOURCES) == RS_OK);
+    assert(resource_reloads == 1 && resources_ready);
+    assert(epd_resource_event(current, RESOURCE_ACTIVATE, 0) == RS_OK);
+    assert(resource_reloads == 1);
+    assert(epd_resource_event(current, RESOURCE_INVALIDATE, 1U << RS_PART_UI_RESOURCES) == RS_OK);
+    reload_result = RS_INVALID;
+    assert(epd_resource_event(current, RESOURCE_ACTIVATE, 1U << RS_PART_UI_RESOURCES) == RS_INVALID);
+    assert(!resources_ready && resource_reloads == 2);
+    assert(epd_resource_event(current, RESOURCE_ACTIVATE, 0) == RS_INVALID);
+    assert(resource_reloads == 3); /* Failure never enables the cached success path. */
     puts("PASS: real INIT/disconnect/timeout/refresh cleanup and optional GPIO handlers");
     return 0;
 }

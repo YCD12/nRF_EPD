@@ -341,17 +341,11 @@ const uint8_t u8g2_font_helvB18_tn[389] U8G2_FONT_SECTION("u8g2_font_helvB18_tn"
 
 #include "font_store.h"
 
-static uint8_t m_external_fonts_ready;
-
 #endif /* GUI_USE_EXTERNAL_FONTS */
 
 uint8_t GUI_ExternalFontsInit(void) {
 #if GUI_USE_EXTERNAL_FONTS
-    if (m_external_fonts_ready) {
-        return 1U;
-    }
-    m_external_fonts_ready = (font_store_init() == NRF_SUCCESS) ? 1U : 0U;
-    return m_external_fonts_ready;
+    return font_store_init() == NRF_SUCCESS;
 #else
     return 0U;
 #endif
@@ -359,10 +353,6 @@ uint8_t GUI_ExternalFontsInit(void) {
 
 const u8g2_font_source_t* GUI_GetExternalFont(gui_font_id_t font_id) {
 #if GUI_USE_EXTERNAL_FONTS
-    if (!m_external_fonts_ready) {
-        return NULL;
-    }
-
     return font_store_get_source((font_store_slot_t)font_id);
 #else
     (void)font_id;

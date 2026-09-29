@@ -87,6 +87,7 @@
 #include "resource_protocol.h"
 #include "resource_store.h"
 #include "resource_layout.h"
+#include "epd_resources.h"
 
 static void epd_enter_picture_mode(ble_epd_t *p_epd); /* 切图片模式 */
 static void epd_gui_update(void* p_event_data, uint16_t event_size);
@@ -217,12 +218,7 @@ static bool is_urgent_command(uint8_t cmd) {
 
 static bool resource_blocks_display_command(uint8_t cmd)
 {
-    return epd_cmd_needs_display(cmd) ||
-           cmd == EPD_CMD_INIT ||
-           cmd == EPD_CMD_SLEEP ||
-           cmd == EPD_CMD_SET_TIME ||
-           cmd == EPD_CMD_SET_MODE ||
-           cmd == EPD_CMD_SET_ANNOTATIONS;
+    return cmd != EPD_CMD_QUERY_STATUS && cmd != EPD_CMD_SYS_RESET && cmd != EPD_CMD_SYS_SLEEP;
 }
 
 
@@ -405,7 +401,8 @@ static void epd_gui_update(void* p_event_data, uint16_t event_size) {
         !epd_display_queue_begin(&p_epd->display_queue, &requested_timestamp)) return;
     mode = (display_mode_t)p_epd->config.display_mode;
 
-    /* A queued refresh must not contend with an active resource write. */
+    /* Missing external data is handled by the renderer. Only operations that
+     * can concurrently change the panel or resource contents block a refresh. */
     if (resource_protocol_entered() || p_epd->init_pending ||
         p_epd->init_ack_pending || p_epd->disconnect_pending) {
         epd_display_complete(p_epd);
@@ -600,6 +597,7 @@ release_gpio:
  */
 static void on_connect(ble_epd_t* p_epd, ble_evt_t* p_ble_evt) {
     p_epd->conn_handle = p_ble_evt->evt.gap_evt.conn_handle;
+    p_epd->offline.state = EPD_ONLINE;
     /* Main acquires GPIO before accepting display writes. */
 }
 
@@ -616,6 +614,7 @@ static void on_connect(ble_epd_t* p_epd, ble_evt_t* p_ble_evt) {
 static void on_disconnect(ble_epd_t* p_epd, ble_evt_t* p_ble_evt) {
     UNUSED_PARAMETER(p_ble_evt);
     p_epd->conn_handle = BLE_CONN_HANDLE_INVALID;
+    epd_offline_disconnected(&p_epd->offline);
     p_epd->is_notification_enabled = false;
     p_epd->connection_generation++;
     p_epd->config_read_pending = false;
@@ -882,7 +881,7 @@ static void epd_connection_process(ble_epd_t *p_epd)
             p_epd->gpio_connection_ref = false;
         }
         CRITICAL_REGION_ENTER();
-        refresh = p_epd->transfer_ctx.transfer_active;
+        refresh = true; /* Apply time/mode/resource changes after maintenance. */
         memset(&p_epd->transfer_ctx, 0, sizeof(p_epd->transfer_ctx));
         p_epd->disconnect_pending = false;
         CRITICAL_REGION_EXIT();
@@ -915,29 +914,6 @@ static void cmd_clear(ble_epd_t *p_epd, uint8_t *p_data, uint16_t length) /* 清
     }
     epd_enter_picture_mode(p_epd);
     p_epd->epd->drv->clear(p_epd->epd, length > 1 ? p_data[1] : true);
-    app_feed_wdt();
-}
-
-static void cmd_send_command(ble_epd_t *p_epd, uint8_t *p_data, uint16_t length) /* 透传控制器命令 */
-{
-    if (length < 2) return;
-    if (!epd_ensure_display(p_epd)) return;
-    if (epd_is_clock_mode((display_mode_t)p_epd->config.display_mode)) {
-        NRF_LOG_INFO("Switch mode: cmd\n");
-        epd_enter_picture_mode(p_epd);
-    }
-    EPD_WriteCmd(p_data[1]);
-    app_feed_wdt();
-}
-
-static void cmd_send_data(ble_epd_t *p_epd, uint8_t *p_data, uint16_t length) /* 透传控制器数据 */
-{
-    if (!epd_ensure_display(p_epd)) return;
-    if (epd_is_clock_mode((display_mode_t)p_epd->config.display_mode)) {
-        NRF_LOG_INFO("Switch mode: data\n");
-        epd_enter_picture_mode(p_epd);
-    }
-    EPD_WriteData(&p_data[1], length - 1);
     app_feed_wdt();
 }
 
@@ -1112,20 +1088,6 @@ static void cmd_set_mode(ble_epd_t *p_epd, uint8_t *p_data, uint16_t length) /* 
     app_feed_wdt();
 }
 
-static void cmd_write_image(ble_epd_t *p_epd, uint8_t *p_data, uint16_t length) /* 旧版无 CRC 写 RAM */
-{
-    if (length < 3) return;
-    if (epd_picture_write_blocked(p_epd->is_refreshing)) return;
-    if (!epd_ensure_display(p_epd)) return;
-    if (epd_is_clock_mode((display_mode_t)p_epd->config.display_mode)) {
-        NRF_LOG_INFO("Switch mode: img\n");
-    }
-    EPD_ClearBusyAbort();
-    epd_enter_picture_mode(p_epd);
-    p_epd->epd->drv->write_ram(p_epd->epd, p_data[1], &p_data[2], length - 2);
-    app_feed_wdt();
-}
-
 static void cmd_write_block(ble_epd_t *p_epd, uint8_t *p_data, uint16_t length) /* CRC 分块顺序写入 */
 {
     uint16_t block_id;
@@ -1285,12 +1247,11 @@ static void cmd_cfg_erase(ble_epd_t *p_epd, uint8_t *p_data, uint16_t length) /*
  * - 引脚配置 (EPD_CMD_SET_PINS)
  * - 初始化 (EPD_CMD_INIT)
  * - 清屏 (EPD_CMD_CLEAR)
- * - 发送命令/数据 (EPD_CMD_SEND_COMMAND/DATA)
  * - 刷新 (EPD_CMD_REFRESH)
  * - 睡眠 (EPD_CMD_SLEEP)
  * - 设置时间 (EPD_CMD_SET_TIME)
  * - 设置模式 (EPD_CMD_SET_MODE)
- * - 写入图像 (EPD_CMD_WRITE_IMAGE)
+ * - CRC 分块写入图像 (EPD_CMD_WRITE_BLOCK)
  * - 系统控制 (EPD_CMD_SYS_RESET/SLEEP/CFG_ERASE)
  *
  * @param[in] p_epd  EPD服务结构指针
@@ -1299,6 +1260,8 @@ static void cmd_cfg_erase(ble_epd_t *p_epd, uint8_t *p_data, uint16_t length) /*
  */
 static void epd_execute_command(ble_epd_t* p_epd, uint8_t* p_data, uint16_t length) {
     if (p_data == NULL || length == 0) return;
+    if ((resource_protocol_entered() || resource_transfer_running()) &&
+        resource_blocks_display_command(p_data[0])) return;
 
 
     if (!is_bulk_data_command(p_data[0])) {
@@ -1315,8 +1278,6 @@ static void epd_execute_command(ble_epd_t* p_epd, uint8_t* p_data, uint16_t leng
         case EPD_CMD_SET_PINS:        cmd_set_pins(p_epd, p_data, length);        break;
         case EPD_CMD_INIT:            cmd_init(p_epd, p_data, length);            break;
         case EPD_CMD_CLEAR:           cmd_clear(p_epd, p_data, length);           break;
-        case EPD_CMD_SEND_COMMAND:    cmd_send_command(p_epd, p_data, length);    break;
-        case EPD_CMD_SEND_DATA:       cmd_send_data(p_epd, p_data, length);       break;
         case EPD_CMD_REFRESH:         cmd_refresh(p_epd, p_data, length);         break;
         case EPD_CMD_SLEEP:           cmd_sleep(p_epd, p_data, length);           break;
         case EPD_CMD_SET_TIME:        cmd_set_time(p_epd, p_data, length);        break;
@@ -1324,7 +1285,6 @@ static void epd_execute_command(ble_epd_t* p_epd, uint8_t* p_data, uint16_t leng
         case EPD_CMD_SET_WEEK_START:  cmd_set_week_start(p_epd, p_data, length);  break;
         case EPD_CMD_SET_ANNOTATIONS: cmd_set_annotations(p_epd, p_data, length); break;
         case EPD_CMD_SET_MODE:        cmd_set_mode(p_epd, p_data, length);        break;
-        case EPD_CMD_WRITE_IMAGE:     cmd_write_image(p_epd, p_data, length);     break;
         case EPD_CMD_WRITE_BLOCK:     cmd_write_block(p_epd, p_data, length);     break;
         case EPD_CMD_QUERY_STATUS:    cmd_query_status(p_epd, p_data, length);    break;
         case EPD_CMD_RESET_TRANSFER:  cmd_reset_transfer(p_epd, p_data, length);  break;
@@ -1387,9 +1347,15 @@ static uint32_t resource_notification_send(void *context, uint32_t generation,
                                            uint8_t *data, uint16_t length)
 {
     ble_epd_t *p_epd = context;
-    if (p_epd->connection_generation != generation || p_epd->disconnect_pending)
-        return NRF_ERROR_INVALID_STATE;
-    return ble_epd_notification_try_send(p_epd, data, length);
+    uint32_t result = NRF_ERROR_INVALID_STATE;
+    CRITICAL_REGION_ENTER();
+    if (p_epd->connection_generation == generation && !p_epd->disconnect_pending)
+        result = ble_epd_notification_try_send(p_epd, data, length);
+    else if (p_epd->offline.state == EPD_OFFLINE_ACK)
+        /* A disconnect/reconnect during activation cancels the old request. */
+        p_epd->offline.state = EPD_ONLINE;
+    CRITICAL_REGION_EXIT();
+    return result;
 }
 
 static void epd_record_ack_process(ble_epd_t *p_epd)
@@ -1442,12 +1408,71 @@ static void epd_config_readback_process(ble_epd_t *p_epd)
         p_epd->config_read_pending = false;
 }
 
+static bool epd_resource_idle(const ble_epd_t *p_epd)
+{
+    return !p_epd->is_refreshing && !p_epd->init_pending && !p_epd->init_running &&
+           !p_epd->init_ack_pending && !p_epd->cmd_queue.count &&
+           !p_epd->cmd_queue.is_processing && !p_epd->transfer_ctx.transfer_active &&
+           !calendar_annotations_rx_active() && !p_epd->annotations_tx.active &&
+           !calendar_annotations_reload_pending() &&
+           !epd_config_busy() && !calendar_annotations_store_busy();
+}
+
+static rs_result_t epd_resource_event(void *context, resource_event_t event, uint16_t changed)
+{
+    ble_epd_t *p_epd = context;
+    if (event == RESOURCE_ENTER) return epd_resource_idle(p_epd) ? RS_OK : RS_BUSY;
+    if (event == RESOURCE_INVALIDATE) {
+        epd_resources_invalidate();
+        epd_clock_refresh_invalidate();
+        return RS_OK;
+    }
+    if (event == RESOURCE_OFFLINE) {
+        if (!epd_resource_idle(p_epd)) return RS_BUSY;
+        p_epd->offline.state = EPD_OFFLINE_ACK;
+        return RS_OK;
+    }
+    /* A table replacement also changes the record locators. Never keep an old
+     * RAM config/annotation view after installing factory or migrated records. */
+    if (changed & ((1U << RS_PART_PARTITION_TABLE) | (1U << RS_PART_EPD_CONFIG))) {
+        epd_config_t config;
+        epd_config_read(&config);
+        if (!epd_config_pins_valid(&config) || !epd_display_mode_valid(config.display_mode) ||
+            config.week_start > 6U)
+            return RS_INVALID;
+        if (p_epd->epd) { p_epd->epd->drv->sleep(p_epd->epd); p_epd->epd = NULL; }
+        if (p_epd->gpio_connection_ref) { EPD_GPIO_Uninit(); p_epd->gpio_connection_ref = false; }
+        p_epd->config = config;
+        EPD_GPIO_Load(&p_epd->config);
+    }
+    if (changed & ((1U << RS_PART_PARTITION_TABLE) | (1U << RS_PART_CALENDAR_ANNOTATIONS))) {
+        calendar_annotations_store_init();
+        if (!calendar_annotations_store_valid()) return RS_INVALID;
+    }
+    /* LEAVE already validated unchanged resources; RUN_OFFLINE can reuse them. */
+    rs_result_t result = !changed && epd_resources_ready() ? RS_OK : epd_resources_reload();
+    if (result == RS_OK) {
+        p_epd->force_full_refresh = true;
+        epd_clock_refresh_invalidate();
+        if (p_epd->config.display_mode != MODE_PICTURE) epd_display_request(p_epd, timestamp());
+    }
+    /* Direct picture operation does not require installed GUI resources. */
+    return !changed && p_epd->config.display_mode == MODE_PICTURE ? RS_OK : result;
+}
+
+bool ble_epd_take_offline_request(ble_epd_t *p_epd)
+{
+    if (p_epd->offline.state != EPD_OFFLINE_READY || !epd_resource_idle(p_epd)) return false;
+    p_epd->offline.state = EPD_OFFLINE_ACTIVE;
+    return true;
+}
+
 void ble_epd_process(ble_epd_t* p_epd) {
     epd_connection_process(p_epd);
     epd_init_process(p_epd);
     resource_transfer_process(p_epd, p_epd->connection_generation,
         p_epd->conn_handle != BLE_CONN_HANDLE_INVALID && !p_epd->disconnect_pending,
-        !p_epd->is_refreshing, app_uptime_seconds(), resource_notification_send);
+        epd_resource_idle(p_epd), app_uptime_seconds(), resource_notification_send);
     if (p_epd->annotations_rx_abort_requested) {
         (void)calendar_annotations_rx_cancel();
         CRITICAL_REGION_ENTER();
@@ -1455,8 +1480,10 @@ void ble_epd_process(ble_epd_t* p_epd) {
         p_epd->annotations_rx_last_activity = 0U;
         CRITICAL_REGION_EXIT();
     }
-    epd_config_process();
-    calendar_annotations_store_process();
+    if (!resource_protocol_entered()) {
+        epd_config_process();
+        calendar_annotations_store_process();
+    }
     epd_record_ack_process(p_epd);
     epd_config_readback_process(p_epd);
     calendar_annotations_tx_process(&p_epd->annotations_tx, p_epd->max_data_len,
@@ -1480,6 +1507,8 @@ void ble_epd_process(ble_epd_t* p_epd) {
  */
 static void epd_service_on_write(ble_epd_t* p_epd, uint8_t* p_data, uint16_t length) {
     if (p_data == NULL || length == 0) return;
+    if (p_epd->offline.state != EPD_ONLINE &&
+        !(length >= 3U && p_data[0] == EPD_CMD_RESOURCE && p_data[1] == 8U)) return;
     if (p_data[0] == EPD_CMD_GET_CONFIG) {
         if (length == 2U && !p_epd->config_read_pending) {
             p_epd->config_read_token = p_data[1];
@@ -1491,9 +1520,9 @@ static void epd_service_on_write(ble_epd_t* p_epd, uint8_t* p_data, uint16_t len
         resource_transfer_receive(p_data, length, p_epd->connection_generation);
         return;
     }
-    /* Avoid display/SPI commands only while an explicit resource write session
-     * is active. Leaving the session immediately restores normal operation. */
-    if (resource_protocol_entered() && resource_blocks_display_command(p_data[0])) return;
+    /* Resource SPI work and maintenance sessions exclude display/config writes. */
+    if ((resource_protocol_entered() || resource_transfer_running()) &&
+        resource_blocks_display_command(p_data[0])) return;
     if (!is_bulk_data_command(p_data[0])) {
         NRF_LOG_DEBUG("[EPD]: on_write received command 0x%02x, LEN=%d\n", p_data[0], length);
     }
@@ -1597,6 +1626,7 @@ void ble_epd_on_ble_evt(ble_epd_t* p_epd, ble_evt_t* p_ble_evt) {
             break;
 
         case BLE_GATTS_EVT_HVN_TX_COMPLETE:
+            epd_offline_completed(&p_epd->offline, p_ble_evt->evt.gatts_evt.params.hvn_tx_complete.count);
             /* Notification workers use a single non-blocking HVX attempt.
              * Retry only after SoftDevice reports that TX queue space was
              * released, so BLE event handling never sleeps on resources. */
@@ -1730,6 +1760,8 @@ uint32_t ble_epd_init(ble_epd_t* p_epd) {
 
     // 初始化命令队列
     epd_cmd_queue_init(&p_epd->cmd_queue);
+    p_epd->offline = (epd_offline_t){0};
+    resource_protocol_set_handler(epd_resource_event, p_epd);
 
     // 初始化并读取配置
     uint32_t config_err = epd_config_init(&p_epd->config);
@@ -1787,7 +1819,17 @@ uint32_t ble_epd_notification_try_send(ble_epd_t* p_epd,
     hvx_params.p_data = p_string;
     hvx_params.p_len = &length;
     hvx_params.type = BLE_GATT_HVX_NOTIFICATION;
-    return sd_ble_gatts_hvx(p_epd->conn_handle, &hvx_params);
+    uint32_t result;
+    CRITICAL_REGION_ENTER();
+    result = sd_ble_gatts_hvx(p_epd->conn_handle, &hvx_params);
+    if (result == NRF_SUCCESS) {
+        bool final_ack = p_epd->offline.state == EPD_OFFLINE_ACK && length >= 4U &&
+                         p_string[0] == EPD_RSP_RESOURCE && p_string[1] == 8U &&
+                         p_string[3] == RS_OK;
+        epd_offline_queued(&p_epd->offline, final_ack);
+    }
+    CRITICAL_REGION_EXIT();
+    return result;
 }
 
 uint32_t ble_epd_string_send(ble_epd_t* p_epd, uint8_t* p_string, uint16_t length) {

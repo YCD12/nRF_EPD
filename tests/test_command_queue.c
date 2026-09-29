@@ -3,7 +3,7 @@
 #include <stdint.h>
 #include <stdio.h>
 #define BLE_EPD_MAX_DATA_LEN 244U
-#define EPD_CMD_MAX_DATA_LEN BLE_EPD_MAX_DATA_LEN
+#define EPD_CMD_MAX_DATA_LEN 16U
 #define EPD_CMD_QUEUE_SIZE 2U
 #include "epd_command_queue.h"
 
@@ -57,6 +57,8 @@ int main(void) {
     assert(epd_cmd_queue_pop(&queue, &item) && item.data[1] == 9);
     assert(!epd_cmd_queue_pop(&queue, &item));
     queue.is_processing = false;
-    assert(!epd_cmd_queue_push(&queue, a, 245));
+    uint8_t largest_control[EPD_CMD_MAX_DATA_LEN] = {0x90};
+    assert(epd_cmd_queue_push(&queue, largest_control, sizeof(largest_control)));
+    assert(!epd_cmd_queue_push(&queue, largest_control, sizeof(largest_control) + 1U));
     puts("PASS: command queue IRQ ownership, duplicate posts and full-scheduler retry");
 }

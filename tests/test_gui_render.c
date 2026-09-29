@@ -13,6 +13,7 @@ static u8g2_font_source_t sources[3];
 static unsigned reads, pages;
 static unsigned char frame[2][48000];
 static uint16_t origin_x, origin_y;
+void ui_resources_stub_set_available(bool value);
 static int read_font(const void *ctx, uint32_t off, uint8_t *dst, size_t len) {
     unsigned slot = (unsigned)(size_t)ctx;
     assert(off <= sources[slot].length && len <= sources[slot].length - off);
@@ -162,6 +163,17 @@ int main(void) {
         }
     }
     test_calendar_edges();
+    /* A missing external UI package must produce a visible setup screen. */
+    ui_resources_stub_set_available(false);
+    gui_data_t missing = {.mode=MODE_CALENDAR, .color=1, .width=800, .height=480};
+    memset(frame, 255, sizeof(frame));
+    pages = 0;
+    DrawGUI(&missing, capture, NULL);
+    unsigned marked = 0;
+    for (size_t i = 0; i < sizeof(frame[0]); ++i)
+        marked += frame[0][i] != 255U;
+    assert(pages && marked > 100U);
+    ui_resources_stub_set_available(true);
 #ifndef GENERATE_GUI_GOLDEN
     test_clock_strips();
 #else

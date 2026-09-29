@@ -455,6 +455,16 @@
               <FilePath>..\EPD\resource_store.c</FilePath>
             </File>
             <File>
+              <FileName>resource_crc.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\EPD\resource_crc.c</FilePath>
+            </File>
+            <File>
+              <FileName>epd_resources.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\EPD\epd_resources.c</FilePath>
+            </File>
+            <File>
               <FileName>persistent_record.c</FileName>
               <FileType>1</FileType>
               <FilePath>..\EPD\persistent_record.c</FilePath>
@@ -1272,6 +1282,16 @@
               <FileName>resource_store.c</FileName>
               <FileType>1</FileType>
               <FilePath>..\EPD\resource_store.c</FilePath>
+            </File>
+            <File>
+              <FileName>resource_crc.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\EPD\resource_crc.c</FilePath>
+            </File>
+            <File>
+              <FileName>epd_resources.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\EPD\epd_resources.c</FilePath>
             </File>
             <File>
               <FileName>persistent_record.c</FileName>

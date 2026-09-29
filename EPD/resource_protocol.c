@@ -4,15 +4,47 @@
 #include "fm25q04b.h"
 #include <string.h>
 
-static bool m_entered;
+static volatile bool m_entered;
+static uint16_t m_changed;
+static resource_event_handler_t m_handler;
+static void *m_context;
+
+void resource_protocol_set_handler(resource_event_handler_t handler, void *context)
+{
+    m_handler = handler;
+    m_context = context;
+}
+
+static rs_result_t activate(bool force)
+{
+    rs_result_t result = RS_OK;
+    if (m_handler && (m_changed || force))
+        result = m_handler(m_context, RESOURCE_ACTIVATE, m_changed);
+    if (result == RS_OK) m_changed = 0U;
+    return result;
+}
 
 void resource_protocol_reset(void)
 {
-    m_entered = false;
+    bool was_entered = m_entered;
+    m_entered = true; /* Keep ISR-owned display commands out until reload ends. */
     resource_store_abort();
+    if (was_entered) (void)activate(false);
+    m_entered = false;
 }
 
 bool resource_protocol_entered(void) { return m_entered; }
+
+static rs_result_t enter(void)
+{
+    bool previous = m_entered;
+    m_entered = true;
+    /* Recheck after blocking IRQ mutations: work may have arrived since the
+     * main loop's idle check. Failed acquisition keeps the previous session. */
+    rs_result_t result = m_handler ? m_handler(m_context, RESOURCE_ENTER, 0U) : RS_OK;
+    if (result != RS_OK) m_entered = previous;
+    return result;
+}
 
 uint8_t resource_protocol_execute(const uint8_t *q, uint8_t n, uint8_t *a)
 {
@@ -32,7 +64,7 @@ uint8_t resource_protocol_execute(const uint8_t *q, uint8_t n, uint8_t *a)
     case 0: /* Status: mount result, writer capability, ABI, target, received. */
         if (n != 3) break;
         r = resource_store_mount();
-        a[4] = 1U;
+        a[4] = RESOURCE_CAP_WRITE | (m_handler ? RESOURCE_CAP_ACTIVATE | RESOURCE_CAP_OFFLINE : 0U);
         a[5] = RS_ABI;
         a[6] = (uint8_t)resource_store_active();
         a[7] = m_entered;
@@ -48,13 +80,21 @@ uint8_t resource_protocol_execute(const uint8_t *q, uint8_t n, uint8_t *a)
         break;
     case 6: /* Enter an exclusive resource-write session; no erase yet. */
         if (n != 7 || memcmp(q + 3, "MIG1", 4)) break;
-        m_entered = true;
-        r = RS_OK;
+        r = enter();
         break;
     case 2:
         if (!m_entered) { r = RS_WRITE_PROTECTED; break; }
-        if (n == 16) r = resource_store_begin(q[3], resource_get_u32(q + 4),
-                                              resource_get_u32(q + 8), resource_get_u32(q + 12));
+        if (n == 16) {
+            uint16_t changed = q[3] < 16U ? (uint16_t)(1U << q[3]) : 1U;
+            if (resource_store_active()) { r = RS_BUSY; break; }
+            if (m_handler) {
+                r = m_handler(m_context, RESOURCE_INVALIDATE, changed);
+                if (r != RS_OK) break;
+            }
+            m_changed |= changed;
+            r = resource_store_begin(q[3], resource_get_u32(q + 4),
+                                     resource_get_u32(q + 8), resource_get_u32(q + 12));
+        }
         break;
     case 3:
         if (!m_entered) { r = RS_WRITE_PROTECTED; break; }
@@ -67,8 +107,22 @@ uint8_t resource_protocol_execute(const uint8_t *q, uint8_t n, uint8_t *a)
     case 5:
         if (n == 3) { resource_store_abort(); r = RS_OK; }
         break;
-    case 7: /* Leave the write session and resume normal display work. */
-        if (n == 3) { resource_store_abort(); m_entered = false; r = RS_OK; }
+    case 7: /* Leave/abort, then reload consumers before rendering can resume. */
+        if (n == 3) {
+            m_entered = true;
+            resource_store_abort();
+            r = activate(false);
+            m_entered = false;
+        }
+        break;
+    case 8: /* Validate and disconnect; preserve time and the advertising policy. */
+        if (n != 3 || !m_handler) break;
+        if (resource_store_active()) { r = RS_BUSY; break; }
+        r = enter();
+        if (r != RS_OK) break;
+        r = activate(true);
+        if (r == RS_OK) r = m_handler(m_context, RESOURCE_OFFLINE, 0U);
+        m_entered = false;
         break;
     default: break;
     }
