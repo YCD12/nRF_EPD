@@ -59,31 +59,6 @@ static uint32_t get_u32(const uint8_t* p)
            ((uint32_t)p[3] << 24);
 }
 
-static bool font_store_crc32_flash(uint32_t address, uint32_t length,
-                                   uint32_t* out_crc)
-{
-    uint8_t buf[251];
-    uint32_t crc = 0xFFFFFFFFUL;
-
-    if (out_crc == NULL) {
-        return false;
-    }
-
-    while (length > 0U) {
-        size_t chunk = (length > sizeof(buf)) ? sizeof(buf) : length;
-
-        if (fm25q04b_read(address, buf, chunk) != NRF_SUCCESS) {
-            return false;
-        }
-        crc = resource_crc32(crc, buf, chunk);
-        address += (uint32_t)chunk;
-        length -= (uint32_t)chunk;
-        app_feed_wdt();
-    }
-    *out_crc = crc ^ 0xFFFFFFFFUL;
-    return true;
-}
-
 static bool slot_valid(font_store_slot_t slot)
 {
     return slot < FONT_STORE_SLOT_COUNT;
@@ -172,11 +147,9 @@ static bool resource_font_pack_load(void)
     }
     m_data_base = partition.offset + RS_HEADER_SIZE;
     for (uint8_t slot = 0U; slot < FONT_STORE_SLOT_COUNT; slot++) {
-        uint32_t crc;
         font_record_t *record = &m_records[slot];
         if (record->length == 0U) continue;
-        if (!font_store_crc32_flash(record_address(record), record->length, &crc) ||
-            crc != record->crc32 ||
+        if (resource_crc32_flash(record_address(record), record->length, record->crc32) != RS_OK ||
             !validate_font_structure((font_store_slot_t)slot,
                                      record_address(record), record->length)) {
             memset(m_records, 0, sizeof(m_records));

@@ -14,6 +14,8 @@
 static uint8_t mock_flash[MOCK_FLASH_SIZE];
 static bool use_resource_layout;
 static uint32_t resource_payload_length;
+static int read_fail = -1;
+static unsigned watchdog_feeds;
 
 rs_result_t resource_store_mount(void) { return use_resource_layout ? RS_OK : RS_NOT_FOUND; }
 rs_result_t resource_store_find(uint16_t id, rs_partition_t *p)
@@ -45,6 +47,7 @@ rs_result_t resource_store_read(uint16_t id, uint32_t offset, void *data, size_t
 
 void app_feed_wdt(void)
 {
+    ++watchdog_feeds;
 }
 
 ret_code_t fm25q04b_init(void)
@@ -70,6 +73,8 @@ ret_code_t fm25q04b_read(uint32_t address, void* data, size_t length)
     if (address > MOCK_FLASH_SIZE || length > MOCK_FLASH_SIZE - address) {
         return NRF_ERROR_INVALID_ADDR;
     }
+    if (read_fail == 0) return NRF_ERROR_INTERNAL;
+    if (read_fail > 0) --read_fail;
     memcpy(data, &mock_flash[address], length);
     return NRF_SUCCESS;
 }
@@ -183,13 +188,21 @@ int main(void)
 
     uint8_t* payload = install_pack(font, sizeof(font));
     font_store_host_reset();
+    watchdog_feeds = 0;
     assert(font_store_init() == NRF_SUCCESS);
+    assert(watchdog_feeds >= 2); /* Both CRC chunks feed the watchdog. */
     assert_source(FONT_STORE_SLOT_WQY9, 0x18000U + RS_HEADER_SIZE + 56U, sizeof(font));
     assert(font_store_get_source(FONT_STORE_SLOT_WQY12) == NULL);
     payload[16U] ^= 1U;
     font_store_host_reset();
     assert(font_store_init() == NRF_SUCCESS);
     assert(font_store_get_source(FONT_STORE_SLOT_WQY9) == NULL);
+    install_pack(font, sizeof(font));
+    read_fail = 1; /* First CRC chunk succeeds; the second fails. */
+    font_store_host_reset();
+    assert(font_store_init() == NRF_SUCCESS);
+    assert(font_store_get_source(FONT_STORE_SLOT_WQY9) == NULL);
+    read_fail = -1;
     install_pack(font, sizeof(font));
     font_store_host_reset();
     assert(font_store_init() == NRF_SUCCESS);

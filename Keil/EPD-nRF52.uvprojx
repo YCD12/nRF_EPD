@@ -460,6 +460,11 @@
               <FilePath>..\EPD\resource_crc.c</FilePath>
             </File>
             <File>
+              <FileName>resource_crc_flash.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\EPD\resource_crc_flash.c</FilePath>
+            </File>
+            <File>
               <FileName>epd_resources.c</FileName>
               <FileType>1</FileType>
               <FilePath>..\EPD\epd_resources.c</FilePath>
@@ -1287,6 +1292,11 @@
               <FileName>resource_crc.c</FileName>
               <FileType>1</FileType>
               <FilePath>..\EPD\resource_crc.c</FilePath>
+            </File>
+            <File>
+              <FileName>resource_crc_flash.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\EPD\resource_crc_flash.c</FilePath>
             </File>
             <File>
               <FileName>epd_resources.c</FileName>

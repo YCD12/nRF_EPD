@@ -24,10 +24,10 @@ run test_calendar_resources -DCALENDAR_RESOURCES_HOST_TEST -IEPD -IGUI \
     GUI/calendar_resources.c GUI/Lunar.c tests/test_calendar_resources.c
 run test_ui_resources -DUI_RESOURCES_HOST_TEST -IEPD -IGUI \
     GUI/ui_resources.c tests/test_ui_resources.c
-run test_resource_store -Itests/font_transfer_stubs -IEPD \
+run test_resource_store -Itests/font_transfer_stubs -I. -IEPD \
     -ISDK/17.1.0_ddde560/components/libraries/util \
     -ISDK/17.1.0_ddde560/components/softdevice/s112/headers \
-    EPD/resource_store.c EPD/resource_crc.c EPD/persistent_record.c EPD/resource_protocol.c EPD/resource_transfer.c tests/test_resource_store.c
+    EPD/resource_store.c EPD/resource_crc.c EPD/resource_crc_flash.c EPD/persistent_record.c EPD/resource_protocol.c EPD/resource_transfer.c tests/test_resource_store.c
 run test_advertising -DSVCALL_AS_NORMAL_FUNCTION -DS112 \
     -Itests/advertising_stubs -Itests/storage_stubs -IEPD \
     -ISDK/17.1.0_ddde560/components/softdevice/s112/headers \
@@ -58,7 +58,7 @@ run test_u8g2_bounds -IGUI GUI/u8g2_font.c tests/test_u8g2_bounds.c
 run test_font_store -I. -IEPD -IGUI \
     -ISDK/17.1.0_ddde560/components/libraries/util \
     -ISDK/17.1.0_ddde560/components/softdevice/s112/headers \
-    -DFONT_STORE_HOST_TEST EPD/font_store.c EPD/resource_crc.c tests/test_font_store.c
+    -DFONT_STORE_HOST_TEST EPD/font_store.c EPD/resource_crc.c EPD/resource_crc_flash.c tests/test_font_store.c
 run test_fm25q04b_read -Itests/spi_stubs -I. -IEPD \
     -ISDK/17.1.0_ddde560/components/libraries/util \
     -ISDK/17.1.0_ddde560/components/softdevice/s112/headers \
@@ -101,5 +101,6 @@ python3 tools/export_web_template.py --check
 python3 tests/test_dfu_release.py
 python3 tests/test_service_lifecycle.py
 python3 tests/test_resources_reload.py
+python3 tests/test_gui_layout.py
 
 echo "HOST_OK"

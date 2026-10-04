@@ -20,18 +20,18 @@ static inline bool epd_cmd_is_urgent(uint8_t cmd)
            cmd == EPD_CMD_CFG_ERASE;
 }
 
-/* 仅改配置。不得占用 2 槽显示队列：首次切模式会连发 WEEK_START + SILENT + SET_MODE，
- * 否则 SET_MODE 会被挤掉。 */
+/* Configuration writes run in main. Mode/time/week now occupy one atomic slot. */
 static inline bool epd_cmd_is_immediate(uint8_t cmd)
 {
-    return cmd == EPD_CMD_SET_WEEK_START;
+    (void)cmd;
+    return false;
 }
 
 /* 切模式时占用的队列槽数（静默校时 + SET_MODE） */
 static inline unsigned epd_cmd_mode_switch_queued_count(bool week_changed)
 {
     (void)week_changed;
-    return 2U; /* SYNC_TIME_SILENT + SET_MODE */
+    return 1U; /* Atomic SET_MODE */
 }
 
 /* 需要点亮面板、走显示通路的命令 */

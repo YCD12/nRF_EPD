@@ -24,18 +24,16 @@ static void test_refresh_and_set_time_stay_queued(void)
     assert(epd_cmd_is_urgent(EPD_CMD_SET_ANNOTATIONS));
 }
 
-static void test_week_start_is_immediate_so_mode_switch_fits_queue(void)
+static void test_mode_switch_uses_one_ordered_queue_slot(void)
 {
-    /* First mode click sends WEEK_START + SILENT + SET_MODE. Queue depth is 2.
-     * WEEK_START must not take a slot, or SET_MODE is dropped and the screen
-     * stays on the previous picture until the next click. */
-    assert(epd_cmd_is_immediate(0x21));
+    /* The current page sends week/time/mode as one atomic SET_MODE request. */
+    assert(!epd_cmd_is_immediate(0x21));
     assert(!epd_cmd_is_urgent(0x21));
     assert(!epd_cmd_is_immediate(0x22));
     assert(!epd_cmd_is_immediate(0x23));
     assert(!epd_cmd_is_immediate(EPD_CMD_REFRESH));
-    assert(epd_cmd_mode_switch_queued_count(true) == 2);
-    assert(epd_cmd_mode_switch_queued_count(false) == 2);
+    assert(epd_cmd_mode_switch_queued_count(true) == 1);
+    assert(epd_cmd_mode_switch_queued_count(false) == 1);
 }
 
 static void test_picture_writes_need_a_live_display(void)
@@ -106,7 +104,7 @@ int main(void)
 {
     test_init_and_write_block_are_urgent();
     test_refresh_and_set_time_stay_queued();
-    test_week_start_is_immediate_so_mode_switch_fits_queue();
+    test_mode_switch_uses_one_ordered_queue_slot();
     test_picture_writes_need_a_live_display();
     test_write_block_accepts_only_sequential_ids();
     test_write_block_rejects_more_than_512_blocks();

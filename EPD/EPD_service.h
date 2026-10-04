@@ -48,7 +48,7 @@ void ble_epd_evt_handler(ble_evt_t const* p_ble_evt, void* p_context);
     static ble_epd_t _name; \
     NRF_SDH_BLE_OBSERVER(_name##_obs, BLE_EPD_BLE_OBSERVER_PRIO, ble_epd_evt_handler, &_name)
 
-#define APP_VERSION 0x37  // Current-page protocol IDs: refresh 03, sleep 04, CRC picture 30-32
+#define APP_VERSION 0x38  // Atomic mode/time/week request and confirmed application
 
 // EPD 服务的 128 位基础 UUID（自定义服务）
 #define BLE_UUID_EPD_SVC_BASE \
@@ -108,6 +108,9 @@ typedef struct {
     volatile uint16_t conn_handle; /**< 当前连接句柄；未连接为 BLE_CONN_HANDLE_INVALID */
     uint16_t max_data_len;        /**< 可发给对端的最大数据长度（字节） */
     bool is_notification_enabled; /**< 对端是否已开启 RX 特性通知 */
+    volatile uint8_t initial_notify; /**< 1=config, 2=MTU, 3=voltage; retry from main */
+    volatile bool mode_ack_pending;
+    uint8_t mode_ack[4];
     epd_offline_t offline;
 
     // EPD 硬件与配置

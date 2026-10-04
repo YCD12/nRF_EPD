@@ -5,6 +5,8 @@
 #include <string.h>
 #include "epd_cmd_policy.h"
 #include "epd_offline.h"
+#include "epd_protocol.h"
+#include "resource_protocol.h"
 
 #define EPD_CMD_QUEUE_SIZE 2U
 #define EPD_CMD_MAX_DATA_LEN 16U
@@ -19,6 +21,8 @@ typedef struct {
     uint32_t connection_generation;
     bool config_read_pending;
     uint8_t config_read_token;
+    bool mode_ack_pending;
+    uint8_t mode_ack[4];
 } ble_epd_t;
 
 static unsigned immediate_count;
@@ -33,7 +37,7 @@ uint32_t app_sched_event_put(void *data, uint16_t length,
     (void)data; (void)length; (void)worker;
     return 0;
 }
-static bool resource_protocol_entered(void) { return false; }
+bool resource_protocol_entered(void) { return false; }
 static bool resource_transfer_running(void) { return false; }
 static void resource_transfer_receive(uint8_t *data, uint16_t length, uint32_t generation)
 {
@@ -86,5 +90,10 @@ int main(void)
 
     epd_service_on_write(&service, config, sizeof(config));
     assert(service.cmd_queue.count == 1 && service.cmd_queue.items[0].length == sizeof(config));
+    service.cmd_queue.count = EPD_CMD_QUEUE_SIZE;
+    uint8_t mode[] = {EPD_CMD_SET_MODE, 2, 17, 1, 0, 0, 0, 0, 8};
+    epd_service_on_write(&service, mode, sizeof(mode));
+    assert(service.mode_ack_pending && service.mode_ack[0] == EPD_RSP_MODE);
+    assert(service.mode_ack[1] == 17 && service.mode_ack[2] == RS_BUSY);
     puts("PASS: compact display commands queue; CRC/annotation packets bypass small control queue");
 }

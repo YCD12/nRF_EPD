@@ -5,6 +5,7 @@ hardware and service layout. Generated files live beside the other host tests.
 """
 import os
 from pathlib import Path
+import re
 import shlex
 import subprocess
 
@@ -12,7 +13,6 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def function(source, name):
-    import re
     match = re.search(r"(?:static )?(?:void|bool|size_t|uint32_t|rs_result_t) " + name + r"\([^;]+?\{", source)
     assert match, name
     end, depth = match.end(), 1
@@ -27,7 +27,8 @@ handlers = '\n'.join(function(source, name) for name in (
     'epd_append_char', 'epd_append_uint', 'epd_make_prefixed_uint',
     'epd_send_prefixed_uint', 'epd_send_mtu', 'epd_send_time', 'epd_send_voltage',
     'on_connect', 'on_disconnect', 'cmd_init', 'epd_init_process',
-    'epd_connection_process', 'cmd_reset_transfer', 'epd_config_pins_valid', 'cmd_set_pins',
+    'epd_connection_process', 'cmd_reset_transfer', 'epd_config_pins_valid',
+    'epd_config_validate', 'epd_config_apply', 'cmd_set_pins',
     'epd_process_next_command', 'resource_notification_send', 'epd_resource_event'))
 start = source.index('finish_refresh:') + len('finish_refresh:')
 end = source.index('\n}\n', start)
@@ -48,9 +49,46 @@ subprocess.run(shlex.split(os.environ.get('HOST_CC', 'gcc')) +
                cwd=ROOT, check=True)
 subprocess.run([str(exe.resolve())], check=True)
 
+service_header = (ROOT / 'EPD/EPD_service.h').read_text(encoding='utf-8')
+service_types = '\n'.join(re.search(
+    r'typedef struct \{[^{}]+\} ' + name + r';', service_header).group(0)
+    for name in ('image_transfer_ctx_t', 'ble_epd_t'))
+init_handlers = re.search(r'^#define EPD_CFG_52811 .+$', source, re.MULTILINE).group(0)
+init_handlers += '\n' + function(
+    (ROOT / 'EPD/calendar_annotations_tx.c').read_text(encoding='utf-8'),
+    'calendar_annotations_tx_cancel')
+init_handlers += '\n' + '\n'.join(function(source, name) for name in (
+    'epd_append_char', 'epd_append_uint', 'epd_make_prefixed_uint',
+    'epd_config_pins_valid', 'epd_config_validate', 'ble_epd_init',
+    'ble_epd_notification_try_send', 'ble_epd_string_send',
+    'resource_notification_send', 'epd_control_notifications_process'))
+fixture = (ROOT / 'tests/service_init_notify_fixture.c').read_text(encoding='utf-8')
+generated = out / 'service_init_notify_generated.c'
+generated.write_text(fixture.replace('/* PRODUCTION_SERVICE_TYPES */', service_types)
+                     .replace('/* PRODUCTION_HANDLERS */', init_handlers), encoding='utf-8')
+exe = out / ('test_service_init_notify.exe' if os.name == 'nt' else 'test_service_init_notify')
+subprocess.run(shlex.split(os.environ.get('HOST_CC', 'gcc')) +
+               ['-Wall', '-Werror', '-std=c11', '-Itests/font_transfer_stubs', '-IEPD',
+                str(generated), '-o', str(exe)], cwd=ROOT, check=True)
+subprocess.run([str(exe.resolve())], check=True)
+
+config_handlers = '\n'.join(function(source, name) for name in (
+    'epd_config_pins_valid', 'epd_config_validate', 'epd_config_apply',
+    'cmd_set_pins', 'cmd_set_config', 'epd_resource_event'))
+fixture = (ROOT / 'tests/service_config_fixture.c').read_text(encoding='utf-8')
+generated = out / 'service_config_generated.c'
+generated.write_text(fixture.replace('/* PRODUCTION_SERVICE_TYPES */', service_types)
+                     .replace('/* PRODUCTION_HANDLERS */', config_handlers), encoding='utf-8')
+exe = out / ('test_service_config.exe' if os.name == 'nt' else 'test_service_config')
+subprocess.run(shlex.split(os.environ.get('HOST_CC', 'gcc')) +
+               ['-Wall', '-Werror', '-std=c11', '-Itests/font_transfer_stubs', '-IEPD',
+                str(generated), '-o', str(exe)], cwd=ROOT, check=True)
+subprocess.run([str(exe.resolve())], check=True)
+
 refresh_handlers = '\n'.join(function(source, name) for name in (
-    'epd_display_request', 'epd_display_complete', 'epd_update_display_mode',
-    'epd_switch_from_clock_mode', 'cmd_set_mode', 'ble_epd_on_timer', 'epd_gui_update'))
+    'epd_parse_time_payload', 'epd_display_request', 'epd_display_complete',
+    'epd_update_display_mode', 'epd_switch_from_clock_mode', 'epd_mode_ack',
+    'cmd_set_mode', 'ble_epd_on_timer', 'epd_gui_update'))
 refresh_fixture = (ROOT / 'tests/connected_refresh_fixture.c').read_text(encoding='utf-8')
 generated = out / 'connected_refresh_generated.c'
 generated.write_text(refresh_fixture.replace('/* PRODUCTION_HANDLERS */', refresh_handlers), encoding='utf-8')
@@ -60,7 +98,7 @@ subprocess.run(shlex.split(os.environ.get('HOST_CC', 'gcc')) +
                 str(generated), 'EPD/epd_refresh_policy.c', '-o', str(exe)], cwd=ROOT, check=True)
 subprocess.run([str(exe.resolve())], check=True)
 
-ingress = function(source, 'epd_service_on_write')
+ingress = function(source, 'epd_mode_ack') + '\n' + function(source, 'epd_service_on_write')
 fixture = (ROOT / 'tests/command_ingress_fixture.c').read_text(encoding='utf-8')
 generated = out / 'command_ingress_generated.c'
 generated.write_text(fixture.replace('/* PRODUCTION_HANDLERS */', ingress), encoding='utf-8')

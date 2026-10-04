@@ -816,39 +816,12 @@ void GFX_fillScreen(Adafruit_GFX* gfx, uint16_t color) {
 */
 /**************************************************************************/
 void GFX_drawCircle(Adafruit_GFX* gfx, int16_t x0, int16_t y0, int16_t r, uint16_t color) {
-    int16_t f = 1 - r;      // 决策参数 | Decision parameter
-    int16_t ddF_x = 1;      // x方向增量 | Delta for x direction
-    int16_t ddF_y = -2 * r; // y方向增量 | Delta for y direction
-    int16_t x = 0;
-    int16_t y = r;
-
     // 绘制圆的4个基本点（上下左右）| Draw 4 cardinal points
     GFX_drawPixel(gfx, x0, y0 + r, color);  // 底部 | Bottom
     GFX_drawPixel(gfx, x0, y0 - r, color);  // 顶部 | Top
     GFX_drawPixel(gfx, x0 + r, y0, color);  // 右侧 | Right
     GFX_drawPixel(gfx, x0 - r, y0, color);  // 左侧 | Left
-
-    // 利用8对称性绘制圆 | Draw circle using 8-fold symmetry
-    while (x < y) {
-        if (f >= 0) {
-            y--;
-            ddF_y += 2;
-            f += ddF_y;
-        }
-        x++;
-        ddF_x += 2;
-        f += ddF_x;
-
-        // 绘制8个对称点 | Draw 8 symmetric points
-        GFX_drawPixel(gfx, x0 + x, y0 + y, color);  // 第4象限 | Quadrant 4
-        GFX_drawPixel(gfx, x0 - x, y0 + y, color);  // 第3象限 | Quadrant 3
-        GFX_drawPixel(gfx, x0 + x, y0 - y, color);  // 第1象限 | Quadrant 1
-        GFX_drawPixel(gfx, x0 - x, y0 - y, color);  // 第2象限 | Quadrant 2
-        GFX_drawPixel(gfx, x0 + y, y0 + x, color);  // 第4象限（反射）| Quadrant 4 (reflected)
-        GFX_drawPixel(gfx, x0 - y, y0 + x, color);  // 第3象限（反射）| Quadrant 3 (reflected)
-        GFX_drawPixel(gfx, x0 + y, y0 - x, color);  // 第1象限（反射）| Quadrant 1 (reflected)
-        GFX_drawPixel(gfx, x0 - y, y0 - x, color);  // 第2象限（反射）| Quadrant 2 (reflected)
-    }
+    GFX_drawCircleHelper(gfx, x0, y0, r, 0x0f, color);
 }
 
 /**************************************************************************/

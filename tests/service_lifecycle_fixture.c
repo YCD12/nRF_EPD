@@ -1,6 +1,7 @@
 #include <assert.h>
 #include <stdio.h>
 #include <stdint.h>
+#include <stddef.h>
 #include <string.h>
 #include "epd_refresh_policy.h"
 #include "epd_protocol.h"
@@ -27,6 +28,7 @@ uint32_t app_sched_event_put(void *data, uint16_t length, app_sched_event_handle
 #define NRF_ERROR_INVALID_STATE 8U
 #define EPD_IMAGE_RX_TIMEOUT_S 30U
 typedef unsigned epd_model_id_t;
+#define EPD_UC8179_750_BWR 7U
 typedef struct epd_model epd_model_t;
 typedef struct { void (*sleep)(const epd_model_t *); } driver_t;
 struct epd_model { unsigned id; const driver_t *drv; };
@@ -36,6 +38,9 @@ typedef struct {
     epd_offline_t offline;
     bool is_notification_enabled, gpio_connection_ref, disconnect_pending;
     bool init_pending, init_running, init_ack_pending, is_refreshing, force_full_refresh;
+    volatile uint8_t initial_notify;
+    volatile bool mode_ack_pending;
+    uint8_t mode_ack[4];
     uint8_t init_model, init_token, init_ack_token, init_status, init_prior_commands;
     unsigned image_last_activity;
     const epd_model_t *epd;
@@ -60,7 +65,7 @@ static void on_disconnect(ble_epd_t *, ble_evt_t *);
 static void cmd_init(ble_epd_t *, uint8_t *, uint16_t);
 static void panel_sleep(const epd_model_t *p) { (void)p; assert(refs); sleeps++; }
 static const driver_t driver = {panel_sleep};
-static const epd_model_t panel = {9, &driver};
+static const epd_model_t panel = {7, &driver};
 static const epd_model_t *epd_init(epd_model_id_t model) {
     (void)model;
     assert(refs && current->init_running && current->is_refreshing);
@@ -157,7 +162,7 @@ int main(void) {
     assert(refs == 1 && current->gpio_connection_ref);
     current->config = (epd_config_t){.mosi_pin=1, .sclk_pin=2, .cs_pin=3,
         .dc_pin=4, .rst_pin=5, .busy_pin=6, .bs_pin=255, .en_pin=255,
-        .led_pin=255, .wakeup_pin=255, .model_id=9, .display_mode=MODE_CLOCK};
+        .led_pin=255, .wakeup_pin=255, .model_id=7, .display_mode=MODE_CLOCK};
     assert(epd_config_pins_valid(&current->config));
     epd_config_t original = current->config;
     uint8_t pins[] = {0, 255, 2, 3, 4, 5, 6, 255};
@@ -165,7 +170,9 @@ int main(void) {
     assert(memcmp(&original, &current->config, sizeof(original)) == 0 && refs == 1);
     pins[1] = 31;
     cmd_set_pins(current, pins, sizeof(pins));
-    assert(current->config.mosi_pin == 31 && refs == 1);
+    assert(current->config.mosi_pin == 31 && refs == 0 && !current->gpio_connection_ref);
+    epd_connection_process(current);
+    assert(refs == 1 && current->gpio_connection_ref);
     current->config.led_pin = 32;
     assert(!epd_config_pins_valid(&current->config));
     current->config = original;

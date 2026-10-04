@@ -7,6 +7,8 @@ let gattWriteTail = Promise.resolve();
 let connectionGeneration = 0;
 let initWaiter = null;
 let initToken = 0;
+let modeWaiter = null;
+let modeToken = 0;
 let lastDeviceConfig = null;
 let legacyConfigDirty = false;
 let configReadWaiter = null;
@@ -14,7 +16,7 @@ let configReadToken = 0;
 let migrationExport = null;
 
 // APP版本号 (便于调试)
-const APP_VERSION = '2.0.20';
+const APP_VERSION = '2.0.21';
 const APP_BUILD_DATE = '2026-09-29';
 const EPD_DEVICE_NAME_PREFIX = 'NRF_EPD';
 const SCAN_DURATION_MS = 5000;
@@ -32,7 +34,7 @@ let internalDisconnectInProgress = false;
 let internalDisconnectSuppressUntil = 0;
 const DFU_PAGE_HANDOFF_KEY = 'epd_dfu_page_handoff';
 const CONFIG_READBACK_MIN_FIRMWARE_VERSION = 0x34;
-const MIN_FIRMWARE_VERSION = 0x37;
+const MIN_FIRMWARE_VERSION = 0x38;
 
 const EpdCmd = {
   SET_PINS: 0x00,
@@ -181,6 +183,8 @@ function resetVariables() {
   configReadWaiter = null;
   if (initWaiter) initWaiter.resolve(false);
   initWaiter = null;
+  if (modeWaiter) modeWaiter.resolve(false);
+  modeWaiter = null;
   if (window.CalendarAnnotations) window.CalendarAnnotations.cancelCommitWait();
   connectionGeneration++;
   gattWriteTail = Promise.resolve();
@@ -244,7 +248,7 @@ async function write(cmd, data, withResponse = true, logPayload = true, serializ
     addLog("服务不可用，请检查蓝牙连接");
     return false;
   }
-  if (cmd === EpdCmd.INIT) serialize = true;
+  if (cmd === EpdCmd.INIT || cmd === EpdCmd.SET_MODE) serialize = true;
   const characteristic = epdCharacteristic;
   const generation = connectionGeneration;
   let payload = [cmd];
@@ -260,11 +264,19 @@ async function write(cmd, data, withResponse = true, logPayload = true, serializ
       return false;
     }
     let waiter = null;
+    let modeReply = null;
     if (cmd === EpdCmd.INIT && appVersion >= 0x32) {
       waiter = { token: (++initToken & 255), generation };
       waiter.promise = new Promise(resolve => { waiter.resolve = resolve; });
       initWaiter = waiter;
       payload = [cmd, payload.length > 1 ? payload[1] : 0xff, waiter.token];
+    }
+    if (cmd === EpdCmd.SET_MODE) {
+      if (payload.length !== 9) return false;
+      modeReply = { token: (++modeToken & 255), generation, mode: payload[1] };
+      modeReply.promise = new Promise(resolve => { modeReply.resolve = resolve; });
+      modeWaiter = modeReply;
+      payload[2] = modeReply.token;
     }
     if (logPayload) addLog(bytes2hex(payload), '⇑');
     // Legacy firmware has no confirmed readback. Do not export a stale cache
@@ -287,12 +299,14 @@ async function write(cmd, data, withResponse = true, logPayload = true, serializ
       else
         await characteristic.writeValueWithoutResponse(Uint8Array.from(payload));
       if (waiter && !await withTimeout(waiter.promise, 30000, "屏幕初始化确认超时")) return false;
+      if (modeReply && !await withTimeout(modeReply.promise, 45000, "模式应用确认超时")) return false;
     } catch (e) {
       console.error(e);
       if (e.message) addLog("write: " + e.message);
       return false;
     } finally {
       if (waiter && initWaiter === waiter) initWaiter = null;
+      if (modeReply && modeWaiter === modeReply) modeWaiter = null;
     }
     return generation === connectionGeneration && characteristic === epdCharacteristic &&
       !!gattServer && gattServer.connected;
@@ -355,40 +369,17 @@ function buildTimeData(mode = null) {
 async function sendTimeCommand(mode, modeName) {
   const weekStart = getWeekStart();
   const weekDays = ['周日', '周一', '周二', '周三', '周四', '周五', '周六'];
-  let weekStartChanged = false;
-
-  if (appVersion < 0x21) {
-    if (await write(EpdCmd.SET_TIME, buildTimeData(mode))) {
-      addLog(`${modeName}已启用！`);
-      addLog("屏幕刷新完成前请不要操作。");
-      return true;
-    }
-    return false;
-  }
-
-  // 仅在星期第一天变更时才发送，避免不必要的二次刷新。
-  if (lastWeekStartSent !== weekStart) {
-    const weekStartOk = await write(EpdCmd.SET_WEEK_START, new Uint8Array([weekStart]));
-    if (weekStartOk) {
-      lastWeekStartSent = weekStart;
-      weekStartChanged = true;
-    } else {
-      addLog("SET_WEEK_START发送失败，将在下次重试");
-    }
-  } else {
-    addLog(`星期第一天未变化(${weekDays[weekStart]})，跳过设置命令`);
-  }
-
-  const timeOk = await write(EpdCmd.SYNC_TIME_SILENT, buildTimeData());
-  if (!timeOk) {
-    addLog("静默校时失败，仍尝试切换模式");
-  }
-  if (await write(EpdCmd.SET_MODE, new Uint8Array([mode]))) {
-    addLog(`${modeName}已启用！`);
-    addLog(weekStartChanged ? `星期第一天已设置为：${weekDays[weekStart]}` : `星期第一天保持为：${weekDays[weekStart]}`);
-    addLog('模式指令已发送，设备将刷新屏幕，无需断开蓝牙；请等待刷新完成。');
+  const payload = new Uint8Array(8);
+  payload[0] = mode;
+  payload[2] = weekStart;
+  payload.set(buildTimeData(), 3);
+  if (await write(EpdCmd.SET_MODE, payload)) {
+    lastWeekStartSent = weekStart;
+    addLog(`${modeName}已由设备接受，星期第一天为${weekDays[weekStart]}。`);
+    addLog('设备正在刷新屏幕，无需断开蓝牙；请等待刷新完成。');
     return true;
   }
+  addLog(`${modeName}未被设备接受，请稍后重试。`);
   return false;
 }
 
@@ -1049,6 +1040,14 @@ function handleNotify(value) {
         initWaiter.token === data[1]) {
       if (data[2] === 0) document.getElementById('mtusize').value = data[3] | (data[4] << 8);
       initWaiter.resolve(data[2] === 0);
+    }
+    return;
+  }
+
+  if (data.length === 4 && data[0] === 0xAA) {
+    if (modeWaiter && modeWaiter.generation === connectionGeneration &&
+        modeWaiter.token === data[1] && modeWaiter.mode === data[3]) {
+      modeWaiter.resolve(data[2] === 0);
     }
     return;
   }

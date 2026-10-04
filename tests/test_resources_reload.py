@@ -26,7 +26,7 @@ for part in layout['partitions']:
 image = out / 'reload-flash.bin'
 image.write_bytes(flash)
 exe = out / 'test_resources_reload'
-sources = ['EPD/resource_store.c', 'EPD/resource_crc.c', 'EPD/font_store.c',
+sources = ['EPD/resource_store.c', 'EPD/resource_crc.c', 'EPD/resource_crc_flash.c', 'EPD/font_store.c',
            'EPD/epd_resources.c', 'GUI/fonts.c', 'GUI/calendar_resources.c',
            'GUI/ui_resources.c', 'tests/test_resources_reload.c']
 subprocess.run(shlex.split(os.environ.get('HOST_CC', 'gcc')) + [

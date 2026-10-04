@@ -13,6 +13,8 @@ static int cut = -1;
 static size_t prefix;
 static jmp_buf power_loss;
 static unsigned mutations, reads, depth, executions, sent;
+static unsigned watchdog_feeds;
+static int read_fail = -1;
 static bool block_send;
 static uint8_t reply[20];
 static unsigned invalidations, activations, offline_requests;
@@ -36,12 +38,15 @@ static rs_result_t on_resource(void *context, resource_event_t event, uint16_t c
 
 void test_critical_enter(void) { ++depth; }
 void test_critical_exit(void) { assert(depth); --depth; }
+void app_feed_wdt(void) { ++watchdog_feeds; }
 ret_code_t fm25q04b_init(void) { return NRF_SUCCESS; }
 ret_code_t fm25q04b_probe(fm25q04b_jedec_id_t *id) { memset(id, 0, sizeof(*id)); return NRF_SUCCESS; }
 ret_code_t fm25q04b_read(uint32_t at, void *p, size_t n)
 {
     assert(depth == 0 && at <= sizeof(flash) && n <= sizeof(flash) - at);
     ++reads;
+    if (read_fail == 0) return NRF_ERROR_INTERNAL;
+    if (read_fail > 0) --read_fail;
     memcpy(p, flash + at, n);
     return NRF_SUCCESS;
 }
@@ -337,6 +342,104 @@ static void test_disconnected_read_cache(void)
     assert(!memcmp(data, actual, sizeof(data)) && reads == before + 1);
 }
 
+static void test_cache_replacement(void)
+{
+    blank();
+    uint8_t full_table[8 * RS_ENTRY_SIZE] = {0};
+    for (unsigned i = 0; i < 8; ++i) {
+        uint8_t *p = full_table + i * RS_ENTRY_SIZE;
+        p[0] = p[2] = i + 1;
+        p[12] = RS_ABI;
+        resource_put_u32(p + 4, i * 4096);
+        resource_put_u32(p + 8, 4096);
+    }
+    assert(upload(1, full_table, sizeof(full_table)) == RS_OK);
+    uint8_t calendar[] = {0x51, 0x52}, ui[] = {0x61, 0x62}, actual[2];
+    assert(upload(5, calendar, sizeof(calendar)) == RS_OK);
+    assert(upload(6, ui, sizeof(ui)) == RS_OK);
+    uint32_t length;
+    assert(resource_store_open(5, &length) == RS_OK);
+    assert(resource_store_open(6, &length) == RS_OK);
+    unsigned before = reads;
+    assert(resource_store_read(5, 0, actual, sizeof(actual)) == RS_OK);
+    assert(reads == before + 7 && !memcmp(calendar, actual, sizeof(actual)));
+    before = reads;
+    assert(resource_store_read(5, 0, actual, sizeof(actual)) == RS_OK);
+    assert(reads == before + 1); /* The miss replaced the existing metadata slot. */
+
+    assert(resource_store_open(6, &length) == RS_OK);
+    assert(resource_store_read(5, UINT32_MAX, actual, 1) == RS_INVALID);
+    before = reads;
+    assert(resource_store_read(5, 0, actual, sizeof(actual)) == RS_OK);
+    assert(reads == before + 7); /* An invalid range must not install a cache. */
+    flash[4 * 4096 + RS_HEADER_SIZE] ^= 1;
+    assert(resource_store_open(5, &length) == RS_CRC && length == 0);
+    flash[4 * 4096] ^= 1;
+    assert(resource_store_read(5, 0, actual, sizeof(actual)) == RS_NOT_FOUND);
+    flash[4 * 4096] ^= 1;
+    flash[4 * 4096 + RS_HEADER_SIZE] ^= 1;
+    assert(resource_store_open(5, &length) == RS_OK);
+
+    assert(resource_store_mount() == RS_OK);
+    before = reads;
+    assert(resource_store_read(5, 0, actual, sizeof(actual)) == RS_OK);
+    assert(reads == before + 7);
+    resource_store_abort();
+    before = reads;
+    assert(resource_store_read(5, 0, actual, sizeof(actual)) == RS_OK);
+    assert(reads == before + 7);
+    assert(resource_store_begin(6, sizeof(ui), crc(ui, sizeof(ui)), 2) == RS_OK);
+    before = reads;
+    assert(resource_store_read(5, 0, actual, sizeof(actual)) == RS_OK);
+    assert(reads == before + 7);
+    assert(resource_store_write(0, ui, sizeof(ui)) == RS_OK);
+    assert(resource_store_commit() == RS_OK);
+    before = reads;
+    assert(resource_store_read(5, 0, actual, sizeof(actual)) == RS_OK);
+    assert(reads == before + 7);
+
+    /* Table BEGIN has a separate repair path. It must not retain a cached
+     * address, even if the first invalidation write/readback fails. */
+    read_fail = 0;
+    assert(resource_store_begin(1, sizeof(full_table), crc(full_table, sizeof(full_table)), 2) == RS_IO);
+    read_fail = -1;
+    assert(resource_store_read(5, 0, actual, sizeof(actual)) == RS_NOT_FOUND);
+    resource_store_abort();
+    assert(resource_store_read(5, 0, actual, sizeof(actual)) == RS_NOT_FOUND);
+    assert(upload(1, full_table, sizeof(full_table)) == RS_OK);
+    assert(resource_store_open(5, &length) == RS_OK);
+    memcpy(flash + 9 * 4096, flash + 4 * 4096, 4096);
+    resource_put_u32(full_table + 4 * RS_ENTRY_SIZE + 4, 9 * 4096);
+    assert(resource_store_begin(1, sizeof(full_table), crc(full_table, sizeof(full_table)), 3) == RS_OK);
+    assert(resource_store_read(5, 0, actual, sizeof(actual)) == RS_NOT_FOUND);
+    assert(resource_store_write(0, full_table, sizeof(full_table)) == RS_OK);
+    assert(resource_store_commit() == RS_OK);
+    flash[4 * 4096 + RS_HEADER_SIZE] = 0xFF;
+    assert(resource_store_read(5, 0, actual, sizeof(actual)) == RS_OK);
+    assert(!memcmp(calendar, actual, sizeof(actual)));
+}
+
+static void test_flash_crc(void)
+{
+    uint8_t data[129];
+    for (unsigned i = 0; i < sizeof(data); ++i) data[i] = (uint8_t)i;
+    memcpy(flash + 123, data, sizeof(data));
+    unsigned before = reads, fed_before = watchdog_feeds;
+    assert(resource_crc32_flash(123, sizeof(data), crc(data, sizeof(data))) == RS_OK);
+    assert(reads == before + 3 && watchdog_feeds == fed_before + 3);
+    assert(resource_crc32_flash(123, sizeof(data), 0) == RS_CRC);
+    before = reads; fed_before = watchdog_feeds;
+    read_fail = 1;
+    assert(resource_crc32_flash(123, sizeof(data), crc(data, sizeof(data))) == RS_IO);
+    read_fail = -1;
+    assert(reads == before + 2 && watchdog_feeds == fed_before + 1);
+    before = reads;
+    assert(resource_crc32_flash(sizeof(flash), 1, 0) == RS_INVALID);
+    assert(resource_crc32_flash(UINT32_MAX, 2, 0) == RS_INVALID);
+    assert(resource_crc32_flash(sizeof(flash), 0, 0) == RS_OK);
+    assert(reads == before);
+}
+
 int main(void)
 {
     assert(crc((const uint8_t *)"123456789", 9) == 0xCBF43926UL);
@@ -348,6 +451,8 @@ int main(void)
     test_protocol();
     test_activation();
     test_disconnected_read_cache();
-    puts("resource store: boundaries, CRC, interrupted erase/program/commit, repair, protocol retries OK");
+    test_cache_replacement();
+    test_flash_crc();
+    puts("resource store: boundaries, CRC, power loss, repair, retries, cache refill/invalidation and relocation OK");
     return 0;
 }

@@ -34,20 +34,6 @@ static rs_result_t read_flash(uint32_t address, void *data, size_t length)
     return fm25q04b_read(address, data, length) == NRF_SUCCESS ? RS_OK : RS_IO;
 }
 
-static rs_result_t crc_flash(uint32_t address, uint32_t length, uint32_t expected)
-{
-    uint8_t bytes[64];
-    uint32_t crc = UINT32_MAX;
-    while (length) {
-        size_t n = length > sizeof(bytes) ? sizeof(bytes) : length;
-        if (read_flash(address, bytes, n) != RS_OK) return RS_IO;
-        crc = resource_crc32(crc, bytes, n);
-        address += n;
-        length -= n;
-    }
-    return (crc ^ UINT32_MAX) == expected ? RS_OK : RS_CRC;
-}
-
 static rs_result_t entry_read(unsigned index, rs_partition_t *p)
 {
     uint8_t b[RS_ENTRY_SIZE];
@@ -109,6 +95,14 @@ static rs_result_t package_header(uint16_t id, rs_partition_t *partition, uint8_
     return r == RS_OK ? header_read(partition, header) : r;
 }
 
+static void cache_package(uint16_t id, const rs_partition_t *partition, uint32_t length)
+{
+    m_read_cache.partition = *partition;
+    m_read_cache.length = length;
+    m_read_cache.id = id;
+    m_read_cache.valid = true;
+}
+
 rs_result_t resource_store_mount(void)
 {
     uint8_t b[RS_HEADER_SIZE];
@@ -117,7 +111,7 @@ rs_result_t resource_store_mount(void)
     m_count = 0;
     m_read_cache.valid = false;
     rs_result_t r = header_read(&table, b);
-    if (r == RS_OK) r = crc_flash(RS_HEADER_SIZE, resource_get_u32(b + 12), resource_get_u32(b + 16));
+    if (r == RS_OK) r = resource_crc32_flash(RS_HEADER_SIZE, resource_get_u32(b + 12), resource_get_u32(b + 16));
     if (r == RS_OK) r = table_validate(resource_get_u32(b + 12));
     if (r == RS_OK) m_count = resource_get_u32(b + 12) / RS_ENTRY_SIZE;
     return r;
@@ -145,12 +139,9 @@ rs_result_t resource_store_open(uint16_t id, uint32_t *length)
     rs_result_t r = package_header(id, &p, header);
     if (r == RS_OK) {
         uint32_t payload_length = resource_get_u32(header + 12);
-        r = crc_flash(p.offset + RS_HEADER_SIZE, payload_length, resource_get_u32(header + 16));
+        r = resource_crc32_flash(p.offset + RS_HEADER_SIZE, payload_length, resource_get_u32(header + 16));
         if (r == RS_OK) {
-            m_read_cache.partition = p;
-            m_read_cache.length = payload_length;
-            m_read_cache.id = id;
-            m_read_cache.valid = true;
+            cache_package(id, &p, payload_length);
             *length = payload_length;
         }
     }
@@ -188,7 +179,9 @@ rs_result_t resource_store_read(uint16_t id, uint32_t offset, void *data, size_t
     if (r != RS_OK) return r;
     uint32_t n = resource_get_u32(b + 12);
     if (offset > n || length > n - offset) return RS_INVALID;
-    /* Consumers must open (full CRC) once before reading a package. */
+    /* Cache only validated metadata. Consumers must still open (full CRC)
+     * once before using a package; a cache hit never bypasses open(). */
+    cache_package(id, &p, n);
     return read_flash(p.offset + RS_HEADER_SIZE + offset, data, length);
 }
 
@@ -216,6 +209,9 @@ rs_result_t resource_store_begin(uint16_t id, uint32_t length, uint32_t crc, uin
             return RS_WRITE_PROTECTED;
     }
     if (!length || length > p.size - RS_HEADER_SIZE || p.schema != RS_ABI) return RS_INVALID;
+    /* The table's repair path bypasses mount(), so invalidate every accepted
+     * BEGIN before the first write, including an eventual I/O failure. */
+    m_read_cache.valid = false;
     memset(&m_update, 0, sizeof(m_update));
     m_update.partition = p;
     m_update.length = length;
@@ -258,7 +254,7 @@ rs_result_t resource_store_commit(void)
     uint8_t b[RS_HEADER_SIZE], check[RS_HEADER_SIZE];
     if (!m_update.active || m_update.failed || m_update.received != m_update.length) return RS_INVALID;
     uint32_t base = m_update.partition.offset;
-    rs_result_t r = crc_flash(base + RS_HEADER_SIZE, m_update.length, m_update.crc);
+    rs_result_t r = resource_crc32_flash(base + RS_HEADER_SIZE, m_update.length, m_update.crc);
     if (r == RS_OK && m_update.active == RS_PART_PARTITION_TABLE) r = table_validate(m_update.length);
     if (r != RS_OK) return r;
     resource_put_u32(b, RS_MAGIC);

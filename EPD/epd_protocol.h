@@ -30,5 +30,7 @@ enum EPD_CMDS {
 #define EPD_RSP_RESOURCE        0xA7U
 #define EPD_RSP_RECORD_COMMIT   0xA8U /* partition, result, reserved, revision, data CRC */
 #define EPD_RSP_CONFIG          0xA9U /* token, result, epd_config_t (14 bytes) */
+#define EPD_RSP_MODE            0xAAU /* token, result (RS_*), requested mode */
+#define EPD_MODE_REQUEST_SIZE   9U   /* cmd, mode, token, week, UTC BE32, timezone int8 hours */
 
 #endif

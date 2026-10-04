@@ -95,17 +95,51 @@ test('selecting each GUI mode sends its command while keeping the connection', a
   const { run, context, logs } = setup();
   const writes = [];
   context.capture = data => writes.push(Array.from(data));
-  run(`appVersion = 0x35; lastWeekStartSent = 0;
-    epdCharacteristic = {writeValueWithResponse: async data => capture(data)};`);
+  run(`appVersion = 0x38; lastWeekStartSent = 0;
+    epdCharacteristic = {writeValueWithResponse: async data => {
+      capture(data);
+      if (data[0] === EpdCmd.SET_MODE)
+        handleNotify(new DataView(Uint8Array.of(0xaa, data[2], 0, data[1]).buffer));
+    }};`);
   for (const mode of [1, 2, 3]) {
     writes.length = 0;
     assert.equal(await run(`sendTimeCommand(${mode}, 'test mode')`), true);
-    assert.deepEqual(writes.map(p => p[0]), [run('EpdCmd.SYNC_TIME_SILENT'), run('EpdCmd.SET_MODE')]);
-    assert.deepEqual(writes[1], [run('EpdCmd.SET_MODE'), mode]);
+    assert.deepEqual(writes.map(p => p[0]), [run('EpdCmd.SET_MODE')]);
+    assert.equal(writes[0].length, 9);
+    assert.equal(writes[0][1], mode);
     assert.equal(run('gattServer.connected'), true);
   }
   assert.ok(logs.some(message => message.includes('无需断开蓝牙')));
   assert.ok(!logs.some(message => message.includes('断开连接后刷新')));
+});
+
+test('mode write waits for matching ACK and reports busy or disconnect', async () => {
+  const { run, context } = setup();
+  const writes = [];
+  context.capture = data => writes.push(Array.from(data));
+  run('appVersion = 0x38; epdCharacteristic = {writeValueWithResponse: async data => capture(data)};');
+  let settled = false;
+  const first = run('write(EpdCmd.SET_MODE, [2, 0, 1, 0, 0, 0, 1, 8])')
+    .then(result => { settled = true; return result; });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(writes.length, 1);
+  assert.equal(settled, false);
+  const token = writes[0][2];
+  run(`handleNotify(new DataView(Uint8Array.of(0xaa, ${(token + 1) & 255}, 0, 2).buffer))`);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(settled, false);
+  run(`handleNotify(new DataView(Uint8Array.of(0xaa, ${token}, 0, 2).buffer))`);
+  assert.equal(await first, true);
+
+  const second = run('write(EpdCmd.SET_MODE, [3, 0, 1, 0, 0, 0, 2, 8])');
+  await new Promise(resolve => setImmediate(resolve));
+  run(`handleNotify(new DataView(Uint8Array.of(0xaa, ${writes[1][2]}, 2, 3).buffer))`);
+  assert.equal(await second, false);
+
+  const third = run('write(EpdCmd.SET_MODE, [1, 0, 1, 0, 0, 0, 3, 8])');
+  await new Promise(resolve => setImmediate(resolve));
+  run('resetVariables()');
+  assert.equal(await third, false);
 });
 
 test('current page rejects older firmware before sending INIT', async () => {
@@ -114,7 +148,7 @@ test('current page rejects older firmware before sending INIT', async () => {
   context.device = { name: 'NRF_EPD_OLD', gatt: {
     connected: true, disconnect() { this.connected = false; },
     async getPrimaryService() { return { async getCharacteristic(uuid) {
-      return uuid.includes('0003-') ? { async readValue() { return new DataView(Uint8Array.of(0x36).buffer); } } :
+      return uuid.includes('0003-') ? { async readValue() { return new DataView(Uint8Array.of(0x37).buffer); } } :
         { addEventListener() {}, async startNotifications() {}, async writeValueWithResponse(data) { writes.push(data[0]); } };
     } }; },
   } };
@@ -122,7 +156,7 @@ test('current page rejects older firmware before sending INIT', async () => {
   await run('connect()');
   assert.deepEqual(writes, []);
   assert.equal(context.device.gatt.connected, false);
-  assert.ok(logs.some(message => message.includes('0x37')));
+  assert.ok(logs.some(message => message.includes('0x38')));
 });
 
 test('INIT disconnect stops all subsequent initialization and success UI', async () => {
@@ -139,7 +173,7 @@ test('INIT disconnect stops all subsequent initialization and success UI', async
   context.device = { name: 'NRF_EPD_TEST', gatt: {
     connected: true,
     async getPrimaryService() { return { async getCharacteristic(uuid) {
-      return uuid.includes('0003-') ? { async readValue() { return new DataView(Uint8Array.of(0x37).buffer); } } : characteristic;
+      return uuid.includes('0003-') ? { async readValue() { return new DataView(Uint8Array.of(0x38).buffer); } } : characteristic;
     } }; },
   } };
   run('bleDevice = device; epdCharacteristic = null;');

@@ -337,7 +337,6 @@ void sleep_mode_enter(void) {
 static void services_init(void) {
     // Initialize EPD Service.
     // 初始化EPD服务
-    memset(&m_epd, 0, sizeof(ble_epd_t));  // 清零EPD服务结构体
     APP_ERROR_CHECK(ble_epd_init(&m_epd));  // 初始化EPD服务
 
     // 初始化无按钮DFU服务

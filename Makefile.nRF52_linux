@@ -100,6 +100,7 @@ SRC_FILES += \
   $(PROJ_DIR)/EPD/fm25q04b.c \
   $(PROJ_DIR)/EPD/resource_store.c \
   $(PROJ_DIR)/EPD/resource_crc.c \
+  $(PROJ_DIR)/EPD/resource_crc_flash.c \
   $(PROJ_DIR)/EPD/epd_resources.c \
   $(PROJ_DIR)/EPD/persistent_record.c \
   $(PROJ_DIR)/EPD/resource_protocol.c \

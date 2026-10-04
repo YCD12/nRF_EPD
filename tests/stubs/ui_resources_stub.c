@@ -2,7 +2,7 @@
 
 #define N 0xFFU
 
-static const ui_component_t components[UI_COMPONENT_COUNT - 1U] = {
+static ui_component_t components[UI_COMPONENT_COUNT - 1U] = {
     {2,1,0,10,38,780,38,16,12},
     {1,N,N,10,44,780,32,0,0},
     {2,1,0,10,84,780,386,0,0},
@@ -52,3 +52,8 @@ bool ui_resources_clock_geom(bool fullscreen, uint16_t screen_w, uint16_t screen
 
 void ui_resources_stub_set_revision(uint32_t value) { revision = value; }
 void ui_resources_stub_set_available(bool value) { available = value; }
+
+void ui_resources_stub_set_component(ui_component_id_t id, const ui_component_t *value)
+{
+    if (id > 0 && id < UI_COMPONENT_COUNT && value) components[id - 1U] = *value;
+}

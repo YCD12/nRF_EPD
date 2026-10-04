@@ -41,6 +41,8 @@ void resource_store_abort(void);
 uint16_t resource_store_active(void);
 uint32_t resource_store_received(void);
 uint32_t resource_crc32(uint32_t crc, const uint8_t *data, size_t length);
+/* Validate a physical Flash range using a bounded 64-byte scratch buffer. */
+rs_result_t resource_crc32_flash(uint32_t address, uint32_t length, uint32_t expected);
 uint32_t resource_get_u32(const uint8_t *p);
 void resource_put_u32(uint8_t *p, uint32_t value);
 

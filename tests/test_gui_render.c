@@ -7,12 +7,14 @@
 #include "calendar_annotations.h"
 #include "epd_clock_refresh.h"
 #include "clock_layout.h"
+#include "ui_resources.h"
 
 static unsigned char fonts[3][16384];
 static u8g2_font_source_t sources[3];
 static unsigned reads, pages;
 static unsigned char frame[2][48000];
 static uint16_t origin_x, origin_y;
+static bool missing_fonts;
 void ui_resources_stub_set_available(bool value);
 static int read_font(const void *ctx, uint32_t off, uint8_t *dst, size_t len) {
     unsigned slot = (unsigned)(size_t)ctx;
@@ -21,7 +23,7 @@ static int read_font(const void *ctx, uint32_t off, uint8_t *dst, size_t len) {
     reads++;
     return 0;
 }
-const u8g2_font_source_t *GUI_GetExternalFont(gui_font_id_t id) { return &sources[id]; }
+const u8g2_font_source_t *GUI_GetExternalFont(gui_font_id_t id) { return missing_fonts ? NULL : &sources[id]; }
 const gui_font_metrics_t *GUI_GetFontMetrics(gui_font_id_t id) { return &font_slot_geometry[id]; }
 void app_feed_wdt(void) {}
 static void capture(void *ctx, uint8_t *black, uint8_t *color,
@@ -142,6 +144,88 @@ static void test_calendar_edges(void) {
         }
     }
 }
+#ifdef GUI_LAYOUT_REFERENCE
+void DrawGUI_Unclipped(gui_data_t *data, buffer_callback callback, void *context);
+void ui_resources_stub_set_component(ui_component_id_t id, const ui_component_t *value);
+
+static void move_text(ui_component_id_t id, int16_t y, int16_t second,
+                      uint8_t primary, uint8_t secondary, uint8_t tertiary)
+{
+    ui_component_t c = *ui_resource_component(id);
+    c.y = y;
+    c.h = 1; /* Legal groups need not contain their text's two baselines. */
+    c.value0 = second;
+    c.font_primary = primary;
+    c.font_secondary = secondary;
+    c.font_tertiary = tertiary;
+    ui_resources_stub_set_component(id, &c);
+}
+
+static void test_moved_layouts(void)
+{
+    static unsigned char reference[2][48000];
+    ui_component_t saved[UI_COMPONENT_COUNT - 1U];
+    for (unsigned id = 1; id < UI_COMPONENT_COUNT; ++id)
+        saved[id - 1U] = *ui_resource_component((ui_component_id_t)id);
+    for (unsigned variant = 0; variant < 3; ++variant) {
+        /* Vary slots as well as baselines. Case 0 reproduces the former clock
+         * header bug (text at 100/122 while its line stays at y=68). Other
+         * cases cross page edges and put the lower footer far beyond y+h. */
+        int16_t y = variant == 0 ? 100 : variant == 1 ? 217 : 14;
+        int16_t second = variant == 0 ? 122 : variant == 1 ? 301 : 55;
+        uint8_t p = variant == 1 ? GUI_FONT_WQY9 : GUI_FONT_HELVB18;
+        uint8_t s = variant == 2 ? GUI_FONT_HELVB18 : GUI_FONT_WQY12;
+        uint8_t t = variant == 1 ? GUI_FONT_WQY12 : GUI_FONT_WQY9;
+        move_text(UI_COMP_CLOCK_HEADER, y, second, p, s, t);
+        move_text(UI_COMP_SPLIT_LEFT_HEADER, y, second, p, s, 0xffU);
+        move_text(UI_COMP_CLOCK_BOTTOM_INFO, 329, 477 - (int16_t)variant,
+                  s, 0xffU, 0xffU);
+        move_text(UI_COMP_SPLIT_BOTTOM_INFO, 329, 477 - (int16_t)variant,
+                  s, 0xffU, 0xffU);
+        move_text(UI_COMP_CAL_HEADER, y, second, p, s, t);
+        move_text(UI_COMP_SPLIT_RIGHT_HEADER, y, second, t, 0xffU, 0xffU);
+        for (unsigned id = UI_COMP_CAL_WEEK; id <= UI_COMP_SPLIT_WEEK; id += 6U) {
+            ui_component_t c = *ui_resource_component((ui_component_id_t)id);
+            c.y = 160 + (int16_t)variant;
+            c.h = variant == 1 ? 1 : 32;
+            c.font_primary = s;
+            ui_resources_stub_set_component((ui_component_id_t)id, &c);
+        }
+        for (unsigned absent = 0; absent < 2; ++absent) {
+            missing_fonts = absent != 0;
+            for (unsigned mode = 1; mode <= 3; ++mode) {
+                for (unsigned color = 1; color <= 2; ++color) {
+                    gui_data_t data = {.mode=mode, .color=color, .width=800, .height=480,
+                        .timestamp=1789347600U, .week_start=6, .temperature=-12,
+                        .voltage_mv=2900, .ssid="NRF_EPD_LONG_NAME"};
+                    memset(frame, 255, sizeof(frame));
+                    DrawGUI_Unclipped(&data, capture, NULL);
+                    memcpy(reference, frame, sizeof(reference));
+                    memset(frame, 255, sizeof(frame));
+                    DrawGUI(&data, capture, NULL);
+                    if (memcmp(reference, frame, sizeof(reference)) != 0) {
+                        fprintf(stderr, "layout mismatch variant=%u missing=%u mode=%u color=%u\n",
+                                variant, absent, mode, color);
+                        for (unsigned plane=0; plane<2; ++plane)
+                            for (unsigned i=0; i<48000; ++i)
+                                if (reference[plane][i] != frame[plane][i]) {
+                                    fprintf(stderr, "first difference: plane=%u x=%u y=%u expected=%02x got=%02x\n",
+                                            plane,(i%100)*8,i/100,reference[plane][i],frame[plane][i]);
+                                    goto mismatch;
+                                }
+                        mismatch:
+                        assert(0);
+                    }
+                }
+            }
+        }
+    }
+    missing_fonts = false;
+    for (unsigned id = 1; id < UI_COMPONENT_COUNT; ++id)
+        ui_resources_stub_set_component((ui_component_id_t)id, &saved[id - 1U]);
+    puts("PASS: shifted headers/footers/voltage/week rows match uncullled reference, including missing fonts");
+}
+#endif
 int main(void) {
     const char *paths[] = {"tools/dist/u8g2_font_wqy9_t_lunar.bin", "tools/dist/u8g2_font_wqy12_t_lunar.bin", "tools/dist/u8g2_font_helvB18_tn.bin"};
     for (unsigned i = 0; i < 3; i++) {
@@ -163,6 +247,9 @@ int main(void) {
         }
     }
     test_calendar_edges();
+#ifdef GUI_LAYOUT_REFERENCE
+    test_moved_layouts();
+#endif
     /* A missing external UI package must produce a visible setup screen. */
     ui_resources_stub_set_available(false);
     gui_data_t missing = {.mode=MODE_CALENDAR, .color=1, .width=800, .height=480};

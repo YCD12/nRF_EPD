@@ -4,6 +4,8 @@
 #include <string.h>
 #include "EPD_config.h"
 #include "epd_cmd_policy.h"
+#include "epd_protocol.h"
+#include "resource_protocol.h"
 #include "epd_display_queue.h"
 #include "epd_refresh_policy.h"
 #include "epd_battery_policy.h"
@@ -30,6 +32,7 @@ typedef struct {
 struct epd_model { const driver_t *drv; uint16_t color, width, height; };
 typedef struct {
     uint16_t conn_handle;
+    uint32_t connection_generation;
     epd_config_t config;
     epd_display_queue_t display_queue;
     struct { bool transfer_active; } transfer_ctx;
@@ -37,6 +40,8 @@ typedef struct {
     bool init_pending, init_ack_pending, disconnect_pending, gpio_connection_ref;
     bool is_refreshing, force_full_refresh, low_battery_screen_active;
     bool annotations_rx_abort_requested;
+    bool mode_ack_pending;
+    uint8_t mode_ack[4];
     uint32_t annotations_rx_last_activity, last_refresh_start, last_full_clear;
 } ble_epd_t;
 typedef struct { uint16_t voltage_mv; bool critical, skip; } battery_guard_result_t;
@@ -80,7 +85,7 @@ static void EPD_ClearBusyAbort(void) {}
 static bool EPD_BusyAbortRequested(void) { return false; }
 static void UC8179_ClearBusyTimeout(void) {}
 static bool UC8179_HadBusyTimeout(void) { return false; }
-static bool resource_protocol_entered(void) { return entered; }
+bool resource_protocol_entered(void) { return entered; }
 bool epd_resources_ready(void) { return resources_ready; }
 static void epd_clock_refresh_invalidate(void) { clock_valid = false; }
 static bool epd_clock_refresh_is_valid(void) { return clock_valid; }
@@ -88,6 +93,7 @@ static void app_feed_wdt(void) {}
 static void nrf_delay_ms(unsigned ms) { (void)ms; }
 static void sleep_mode_enter(void) { assert(!"unexpected system sleep"); }
 static uint32_t timestamp(void) { return now; }
+static void set_timestamp(uint32_t value) { now = value; }
 static uint32_t app_uptime_seconds(void) { return now; }
 static uint16_t EPD_ReadVoltageAndCache(void) { return 3300U; }
 static bool calendar_annotations_rx_active(void) { return false; }
@@ -120,7 +126,9 @@ void ble_epd_on_timer(ble_epd_t *, uint32_t, bool);
 
 static void select_mode(ble_epd_t *p, uint8_t mode)
 {
-    uint8_t command[] = {EPD_CMD_SET_MODE, mode};
+    uint8_t command[] = {EPD_CMD_SET_MODE, mode, 1, p->config.week_start,
+        (uint8_t)(now >> 24), (uint8_t)(now >> 16),
+        (uint8_t)(now >> 8), (uint8_t)now, 0};
     cmd_set_mode(p, command, sizeof(command));
     drain();
 }
@@ -141,6 +149,14 @@ int main(void)
     unsigned before = full_refreshes + partial_refreshes;
     select_mode(&p, MODE_CLOCK);
     assert(full_refreshes + partial_refreshes == before + 1 && saves == 3);
+    uint8_t atomic_mode[] = {EPD_CMD_SET_MODE, MODE_CLOCK, 37, 2, 0, 0, 7, 208, 0};
+    cmd_set_mode(&p, atomic_mode, sizeof(atomic_mode));
+    drain();
+    assert(now == 2000U && p.config.week_start == 2U && saves == 4U);
+    assert(p.mode_ack_pending && p.mode_ack[1] == 37U && p.mode_ack[2] == RS_OK);
+    uint8_t obsolete_mode[] = {EPD_CMD_SET_MODE, MODE_CALENDAR};
+    cmd_set_mode(&p, obsolete_mode, sizeof(obsolete_mode));
+    assert(p.config.display_mode == MODE_CLOCK && now == 2000U);
     now = 1020;
     before = partial_refreshes;
     ble_epd_on_timer(&p, now, false);
