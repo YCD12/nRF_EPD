@@ -113,9 +113,9 @@ static bool resources_ready;
 static unsigned resource_reloads;
 static rs_result_t reload_result = RS_OK;
 static bool epd_resource_idle(const ble_epd_t *p) { (void)p; return true; }
-static void epd_resources_invalidate(void) { resources_ready = false; }
+static void epd_resources_invalidate_partitions(uint16_t changed) { (void)changed; resources_ready = false; }
 static bool epd_resources_ready(void) { return resources_ready; }
-static rs_result_t epd_resources_reload(void) {
+static rs_result_t epd_resources_apply(void) {
     resource_reloads++;
     resources_ready = reload_result == RS_OK;
     return reload_result;

@@ -92,7 +92,7 @@
 
 static void epd_enter_picture_mode(ble_epd_t *p_epd); /* 切图片模式 */
 static void epd_gui_update(void* p_event_data, uint16_t event_size);
-static void epd_mode_ack(ble_epd_t *p_epd, const uint8_t *data, uint16_t length,
+static void epd_command_ack(ble_epd_t *p_epd, const uint8_t *data, uint16_t length,
                          uint8_t result);
 uint32_t ble_epd_notification_try_send(ble_epd_t* p_epd, uint8_t* data, uint16_t length);
 
@@ -942,24 +942,51 @@ static void epd_connection_process(ble_epd_t *p_epd)
     }
 }
 
-static void cmd_clear(ble_epd_t *p_epd, uint8_t *p_data, uint16_t length) /* 清屏并进图片模式 */
+/* MODE and display completion share one reliable control-notification slot.
+ * The client waits for the matching token before issuing another operation. */
+static void epd_command_ack(ble_epd_t *p_epd, const uint8_t *data, uint16_t length,
+                            uint8_t result)
 {
-    if (!epd_ensure_display(p_epd)) return;
-    if (epd_is_clock_mode((display_mode_t)p_epd->config.display_mode)) {
-        NRF_LOG_INFO("Switch mode: clear\n");
-    }
-    epd_enter_picture_mode(p_epd);
-    p_epd->epd->drv->clear(p_epd->epd, length > 1 ? p_data[1] : true);
+    if (length < 3U || (data[0] != EPD_CMD_SET_MODE &&
+        data[0] != EPD_CMD_CLEAR && data[0] != EPD_CMD_REFRESH)) return;
+    bool mode = data[0] == EPD_CMD_SET_MODE;
+    CRITICAL_REGION_ENTER();
+    p_epd->mode_ack[0] = mode ? EPD_RSP_MODE : EPD_RSP_DISPLAY;
+    p_epd->mode_ack[1] = data[2];
+    p_epd->mode_ack[2] = result;
+    p_epd->mode_ack[3] = mode ? data[1] : data[0];
+    p_epd->mode_ack_pending = true;
+    CRITICAL_REGION_EXIT();
 }
 
-static void cmd_refresh(ble_epd_t *p_epd, uint8_t *p_data, uint16_t length) /* 刷新显存到屏幕 */
+static void cmd_display(ble_epd_t *p_epd, uint8_t *data, uint16_t length)
 {
-    (void)p_data; (void)length;
-    if (!epd_ensure_display(p_epd)) return;
+    uint32_t generation = p_epd->connection_generation;
+    rs_result_t result = RS_OK;
+    if (length > 3U) {
+        epd_command_ack(p_epd, data, length, RS_INVALID);
+        return;
+    }
     EPD_ClearBusyAbort();
-    epd_enter_picture_mode(p_epd);
-    p_epd->epd->drv->refresh(p_epd->epd);
-    p_epd->transfer_ctx.transfer_active = false;
+    UC8179_ClearBusyTimeout();
+    if (!epd_ensure_display(p_epd) || EPD_BusyAbortRequested() || UC8179_HadBusyTimeout() ||
+        p_epd->epd->drv == NULL ||
+        (data[0] == EPD_CMD_CLEAR ? p_epd->epd->drv->clear == NULL :
+                                  p_epd->epd->drv->refresh == NULL)) result = RS_IO;
+    else {
+        epd_enter_picture_mode(p_epd);
+        if (data[0] == EPD_CMD_CLEAR)
+            p_epd->epd->drv->clear(p_epd->epd, length > 1U ? data[1] : true);
+        else {
+            p_epd->epd->drv->refresh(p_epd->epd);
+            p_epd->transfer_ctx.transfer_active = false;
+        }
+        if (EPD_BusyAbortRequested() || UC8179_HadBusyTimeout()) result = RS_IO;
+    }
+    CRITICAL_REGION_ENTER();
+    if (generation == p_epd->connection_generation && !p_epd->disconnect_pending)
+        epd_command_ack(p_epd, data, length, result);
+    CRITICAL_REGION_EXIT();
 }
 
 static void cmd_sleep(ble_epd_t *p_epd, uint8_t *p_data, uint16_t length) /* 面板睡眠 */
@@ -1098,19 +1125,6 @@ static void cmd_set_annotations(ble_epd_t *p_epd, uint8_t *p_data, uint16_t leng
 }
 
 
-static void epd_mode_ack(ble_epd_t *p_epd, const uint8_t *data, uint16_t length,
-                         uint8_t result)
-{
-    if (length < 3U) return;
-    CRITICAL_REGION_ENTER();
-    p_epd->mode_ack[0] = EPD_RSP_MODE;
-    p_epd->mode_ack[1] = data[2];
-    p_epd->mode_ack[2] = result;
-    p_epd->mode_ack[3] = data[1];
-    p_epd->mode_ack_pending = true;
-    CRITICAL_REGION_EXIT();
-}
-
 static void cmd_set_mode(ble_epd_t *p_epd, uint8_t *p_data, uint16_t length) /* 切显示模式并立刻刷新 */
 {
     if (length < 2) return;
@@ -1118,7 +1132,7 @@ static void cmd_set_mode(ble_epd_t *p_epd, uint8_t *p_data, uint16_t length) /* 
     if (length != EPD_MODE_REQUEST_SIZE ||
         !epd_display_mode_valid(p_data[1]) ||
         p_data[3] > 6U) {
-        epd_mode_ack(p_epd, p_data, length, RS_INVALID);
+        epd_command_ack(p_epd, p_data, length, RS_INVALID);
         return;
     }
     set_timestamp(epd_parse_time_payload(p_data + 3, 6U));
@@ -1138,7 +1152,7 @@ static void cmd_set_mode(ble_epd_t *p_epd, uint8_t *p_data, uint16_t length) /* 
         ble_epd_on_timer(p_epd, timestamp(), true);
     }
     if (generation == p_epd->connection_generation && !p_epd->disconnect_pending)
-        epd_mode_ack(p_epd, p_data, length, RS_OK);
+        epd_command_ack(p_epd, p_data, length, RS_OK);
 }
 
 static void cmd_write_block(ble_epd_t *p_epd, uint8_t *p_data, uint16_t length) /* CRC 分块顺序写入 */
@@ -1305,8 +1319,7 @@ static void epd_execute_command(ble_epd_t* p_epd, uint8_t* p_data, uint16_t leng
     if (p_data == NULL || length == 0) return;
     if ((resource_protocol_entered() || resource_transfer_running()) &&
         resource_blocks_display_command(p_data[0])) {
-        if (p_data[0] == EPD_CMD_SET_MODE)
-            epd_mode_ack(p_epd, p_data, length, RS_BUSY);
+        epd_command_ack(p_epd, p_data, length, RS_BUSY);
         return;
     }
 
@@ -1324,8 +1337,8 @@ static void epd_execute_command(ble_epd_t* p_epd, uint8_t* p_data, uint16_t leng
     switch (p_data[0]) {
         case EPD_CMD_SET_PINS:        cmd_set_pins(p_epd, p_data, length);        break;
         case EPD_CMD_INIT:            cmd_init(p_epd, p_data, length);            break;
-        case EPD_CMD_CLEAR:           cmd_clear(p_epd, p_data, length);           break;
-        case EPD_CMD_REFRESH:         cmd_refresh(p_epd, p_data, length);         break;
+        case EPD_CMD_CLEAR:
+        case EPD_CMD_REFRESH:         cmd_display(p_epd, p_data, length);         break;
         case EPD_CMD_SLEEP:           cmd_sleep(p_epd, p_data, length);           break;
         case EPD_CMD_SET_TIME:        cmd_set_time(p_epd, p_data, length);        break;
         case EPD_CMD_SYNC_TIME_SILENT: cmd_sync_time_silent(p_epd, p_data, length); break;
@@ -1518,7 +1531,7 @@ static rs_result_t epd_resource_event(void *context, resource_event_t event, uin
     ble_epd_t *p_epd = context;
     if (event == RESOURCE_ENTER) return epd_resource_idle(p_epd) ? RS_OK : RS_BUSY;
     if (event == RESOURCE_INVALIDATE) {
-        epd_resources_invalidate();
+        epd_resources_invalidate_partitions(changed);
         epd_clock_refresh_invalidate();
         return RS_OK;
     }
@@ -1539,7 +1552,7 @@ static rs_result_t epd_resource_event(void *context, resource_event_t event, uin
         if (!calendar_annotations_store_valid()) return RS_INVALID;
     }
     /* LEAVE already validated unchanged resources; RUN_OFFLINE can reuse them. */
-    rs_result_t result = !changed && epd_resources_ready() ? RS_OK : epd_resources_reload();
+    rs_result_t result = !changed && epd_resources_ready() ? RS_OK : epd_resources_apply();
     if (result == RS_OK) {
         p_epd->force_full_refresh = true;
         epd_clock_refresh_invalidate();
@@ -1559,6 +1572,7 @@ bool ble_epd_take_offline_request(ble_epd_t *p_epd)
 void ble_epd_process(ble_epd_t* p_epd) {
     epd_connection_process(p_epd);
     epd_init_process(p_epd);
+    resource_protocol_set_data_limit(p_epd->max_data_len);
     resource_transfer_process(p_epd, p_epd->connection_generation,
         p_epd->conn_handle != BLE_CONN_HANDLE_INVALID && !p_epd->disconnect_pending,
         epd_resource_idle(p_epd), app_uptime_seconds(), resource_notification_send);
@@ -1613,7 +1627,7 @@ static void epd_service_on_write(ble_epd_t* p_epd, uint8_t* p_data, uint16_t len
     /* Resource SPI work and maintenance sessions exclude display/config writes. */
     if ((resource_protocol_entered() || resource_transfer_running()) &&
         resource_blocks_display_command(p_data[0])) {
-        if (p_data[0] == EPD_CMD_SET_MODE) epd_mode_ack(p_epd, p_data, length, RS_BUSY);
+        epd_command_ack(p_epd, p_data, length, RS_BUSY);
         return;
     }
     if (!is_bulk_data_command(p_data[0])) {
@@ -1636,8 +1650,8 @@ static void epd_service_on_write(ble_epd_t* p_epd, uint8_t* p_data, uint16_t len
 
     if (epd_cmd_queue_push(&p_epd->cmd_queue, p_data, length)) {
         epd_cmd_queue_schedule(&p_epd->cmd_queue, p_epd, epd_process_next_command);
-    } else if (p_data[0] == EPD_CMD_SET_MODE) {
-        epd_mode_ack(p_epd, p_data, length, RS_BUSY);
+    } else {
+        epd_command_ack(p_epd, p_data, length, RS_BUSY);
     }
 }
 

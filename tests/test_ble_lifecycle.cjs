@@ -91,6 +91,112 @@ test('driver setup does not report success after a failed INIT', async () => {
   assert.equal(logs.some(message => message.includes('驱动初始化失败')), true);
 });
 
+test('display operation waits for matching completion, rejects BUSY, and cancels on disconnect', async () => {
+  const { run, context } = setup();
+  const packets = [];
+  context.capture = data => packets.push(Array.from(data));
+  run(`appVersion = 0x39; epdCharacteristic = {writeValueWithResponse: async data => capture(data)};`);
+  const work = run('runDeviceOperation("image", owner => write(EpdCmd.REFRESH, null, true, false, true, owner))');
+  await new Promise(setImmediate);
+  const token = packets[0][2];
+  assert.equal(run('DeviceOperations.current.kind'), 'image');
+  for (const reply of [[0xab, token + 1, 0, 3], [0xab, token, 0, 2], [0xab, token, 0]]) {
+    run(`handleNotify(new DataView(Uint8Array.of(${reply}).buffer))`);
+    assert.equal(run('DeviceOperations.current.kind'), 'image');
+  }
+  assert.equal(await run('sendTimeCommand(1, "calendar")'), false);
+  run(`handleNotify(new DataView(Uint8Array.of(0xab, ${token}, 0, 3).buffer))`);
+  assert.equal(await work, true);
+  assert.equal(run('DeviceOperations.current'), null);
+  run(`epdCharacteristic.writeValueWithResponse = async data => {
+    capture(data); handleNotify(new DataView(Uint8Array.of(0xab, data[2], 2, data[0]).buffer));
+  };`);
+  assert.equal(await run('write(EpdCmd.CLEAR)'), false);
+  assert.equal(packets.at(-1)[1], 1); // Preserve the legacy refresh=true default.
+  run('epdCharacteristic.writeValueWithResponse = async () => {};');
+  const pending = run('write(EpdCmd.CLEAR, [0])');
+  await new Promise(setImmediate);
+  run('resetVariables()');
+  assert.equal(await pending, false);
+  assert.equal(run('displayWaiter'), null);
+  run(`appVersion = 0x38; gattServer = {connected:true};
+    epdCharacteristic = {writeValueWithResponse: async data => capture(data)};`);
+  assert.equal(await run('write(EpdCmd.REFRESH)'), true);
+  assert.deepEqual(packets.at(-1), [3]);
+});
+
+test('device operation owns all writes and stale completion cannot release a new operation', async () => {
+  const { run, context } = setup();
+  const writes = [];
+  context.capture = data => writes.push(Array.from(data));
+  run(`epdCharacteristic = {writeValueWithResponse: async data => capture(data)};
+    globalThis.oldOwner = DeviceOperations.begin('image');`);
+  assert.equal(await run('write(EpdCmd.SYNC_TIME_SILENT, [0])'), false);
+  assert.equal(await run('sendTimeCommand(1, "calendar")'), false);
+  assert.equal(writes.length, 0);
+  assert.equal(await run('write(EpdCmd.SYNC_TIME_SILENT, [0], true, false, true, oldOwner)'), true);
+  run(`resetVariables(); gattServer = {connected:true};
+    epdCharacteristic = {writeValueWithResponse: async data => capture(data)};
+    globalThis.newOwner = DeviceOperations.begin('resources'); DeviceOperations.end(oldOwner);`);
+  assert.equal(run('DeviceOperations.current === newOwner'), true);
+  assert.equal(await run('write(EpdCmd.SYNC_TIME_SILENT, [0], true, false, true, oldOwner)'), false);
+  assert.equal(writes.length, 1);
+  run('DeviceOperations.end(newOwner)');
+});
+
+test('image status rejects old sessions, wrong totals and truncated notifications; cancellation settles its waiter', async () => {
+  const { run } = setup();
+  run(`bleDevice = {gatt:{connected:true}}; epdCharacteristic = {writeValueWithResponse: async () => {}};
+    BleTransfer.sessionId = 42; BleTransfer.expectedBlocks = 3; BleTransfer.logLevel = 0;`);
+  const pending = run('BleTransfer.queryStatus(1000)');
+  await new Promise(setImmediate);
+  for (const bytes of [[0xa1,3,0,3,0,41,1], [0xa1,4,0,4,0,42,1], [0xa1,3,0,4,0,42,1], [0xa1,3,0], [0xa1,3,0,3,0,42,0]]) {
+    run(`BleTransfer.handleNotification(Uint8Array.of(${bytes}))`);
+    assert.equal(run('BleTransfer.pendingStatus'), null);
+  }
+  run('BleTransfer.handleNotification(Uint8Array.of(0xa1,3,0,3,0,42,1))');
+  assert.equal((await pending).received, 3);
+  const cancelled = run('BleTransfer.queryStatus(1000)');
+  run('resetVariables()');
+  assert.equal(await cancelled, null);
+});
+
+test('image packets fit MTU 23 and consecutive layers use distinct sessions', async () => {
+  const { run, context } = setup();
+  const packets = [];
+  context.capture = data => packets.push(Array.from(data));
+  run('document.getElementById("mtusize").value = 20');
+  run(`bleDevice = {gatt:{connected:true}}; BleTransfer.logLevel = 0; BleTransfer.BATCH_DELAY_MS = 0;
+    epdCharacteristic = {writeValueWithResponse: async data => {
+      capture(data);
+      if (data[0] === EpdCmd.QUERY_STATUS) BleTransfer.handleNotification(Uint8Array.of(
+        0xa1, BleTransfer.expectedBlocks, 0, BleTransfer.expectedBlocks, 0, BleTransfer.sessionId, 1));
+    }, writeValueWithoutResponse: async data => capture(data)};`);
+  assert.equal(await run('BleTransfer.sendImageWithResume(new Uint8Array(25), "bw")'), true);
+  const first = run('BleTransfer.sessionId');
+  assert.equal(await run('BleTransfer.sendImageWithResume(new Uint8Array(25), "red")'), true);
+  assert.notEqual(run('BleTransfer.sessionId'), first);
+  assert.ok(packets.every(p => p.length <= 20));
+  assert.deepEqual(packets.filter(p => p[0] === 0x30).map(p => p.length), [20, 20, 9, 20, 20, 9]);
+});
+
+test('disconnect during image reset delay never sends blocks to the replacement connection', async () => {
+  const { run, context } = setup();
+  const packets = [];
+  context.capture = data => packets.push(Array.from(data));
+  run(`bleDevice = {gatt:{connected:true}}; BleTransfer.logLevel = 0;
+    epdCharacteristic = {writeValueWithResponse: async data => capture(data)};`);
+  const work = run('runDeviceOperation("image", owner => BleTransfer.sendImageWithResume(new Uint8Array(20), "bw", null, owner))');
+  await new Promise(setImmediate);
+  run(`resetVariables(); gattServer = {connected:true}; bleDevice = {gatt:{connected:true}};
+    epdCharacteristic = {writeValueWithResponse: async data => capture(data)};
+    globalThis.owner = DeviceOperations.begin('resources');`);
+  assert.equal(await work, false);
+  assert.equal(run('DeviceOperations.current === owner'), true);
+  assert.deepEqual(packets.map(p => p[0]), [0x32]);
+  run('DeviceOperations.end(owner)');
+});
+
 test('selecting each GUI mode sends its command while keeping the connection', async () => {
   const { run, context, logs } = setup();
   const writes = [];

@@ -584,6 +584,7 @@ BLE 连接、真实墨水屏刷新、电源与低电量行为，仍然需要在�
 
 - 开发说明：[docs/develop.md](docs/develop.md)
 - BLE 协议：[docs/ble-protocol.md](docs/ble-protocol.md)
+- Flash 与网页优化实现及验证：[docs/flash-web-optimization-20261001.md](docs/flash-web-optimization-20261001.md)
 - SoftDevice 安全刷写说明：[docs/flash_softdevice_safe_refactor_summary.md](docs/flash_softdevice_safe_refactor_summary.md)
 - 应用工程：`Keil/EPD-nRF52.uvprojx`
 - Bootloader 工程：`Keil/DFU-nRF52.uvprojx`

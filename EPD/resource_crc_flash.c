@@ -4,7 +4,7 @@
 
 rs_result_t resource_crc32_flash(uint32_t address, uint32_t length, uint32_t expected)
 {
-    uint8_t bytes[64];
+    uint8_t bytes[FM25Q04B_PAGE_SIZE];
     uint32_t crc = UINT32_MAX;
     if (address > FM25Q04B_SIZE_BYTES || length > FM25Q04B_SIZE_BYTES - address)
         return RS_INVALID;

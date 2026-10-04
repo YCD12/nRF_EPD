@@ -27,6 +27,12 @@
 #error "At least one GUI font source must be enabled"
 #endif
 
+/* Rendering already shares GFX's static page buffer and runs serially in main.
+ * Share its context too: the font caches must not consume both the full-frame
+ * worker's stack frame and a nested clock-only refresh frame. GFX_begin resets
+ * this context before every render, including external-font revision state. */
+static Adafruit_GFX m_gui_gfx;
+
 /* Page culling is independent of the external layout's decorative lines. */
 static bool gui_page_hits(const Adafruit_GFX *gfx, int32_t top, int32_t bottom)
 {
@@ -1003,7 +1009,7 @@ static void DrawMissingResources(Adafruit_GFX* gfx, const gui_data_t* data) {
  * @param callback       分页缓冲回调
  * @param callback_data  回调用户数据
  *
- * 支持黑白/三色/四色；按堆大小分页。
+ * 支持黑白/三色/四色；使用静态缓冲分页，入口仅可串行调用。
  */
 void DrawGUI(gui_data_t* data, buffer_callback callback, void* callback_data) {
     // 验证一周起始日参数
@@ -1017,43 +1023,43 @@ void DrawGUI(gui_data_t* data, buffer_callback callback, void* callback_data) {
     // 将UNIX时间戳转换为tm结构
     transformTime(data->timestamp, &tm);
 
-    Adafruit_GFX gfx;
+    Adafruit_GFX *gfx = &m_gui_gfx;
     /* Static page buffer; page sizing must not depend on the heap reserve. */
     int16_t ph = 0;
 
     // 根据颜色模式初始化GFX
     if (data->color == 2)
-        GFX_begin_3c(&gfx, GUI_WIDTH(data), GUI_HEIGHT(data), ph);  // 三色屏幕
+        GFX_begin_3c(gfx, GUI_WIDTH(data), GUI_HEIGHT(data), ph);  // 三色屏幕
 #if !GFX_FIXED_BWR_PANEL
     else if (data->color == 3)
-        GFX_begin_4c(&gfx, GUI_WIDTH(data), GUI_HEIGHT(data), ph);  // 四色屏幕
+        GFX_begin_4c(gfx, GUI_WIDTH(data), GUI_HEIGHT(data), ph);  // 四色屏幕
 #endif
     else
-        GFX_begin(&gfx, GUI_WIDTH(data), GUI_HEIGHT(data), ph);  // 黑白屏幕
+        GFX_begin(gfx, GUI_WIDTH(data), GUI_HEIGHT(data), ph);  // 黑白屏幕
 
     if (layout_ready)
         LUNAR_SolarToLunar(&Lunar, tm.tm_year + YEAR0, tm.tm_mon + 1, tm.tm_mday);
     /* Components draw their own backgrounds; text state must not depend on
      * whether an earlier, nonintersecting page happened to visit a month cell. */
-    GFX_setFontMode(&gfx, 1);
-    GFX_firstPage(&gfx);
+    GFX_setFontMode(gfx, 1);
+    GFX_firstPage(gfx);
     do {
         // 填充白色背景
-        GFX_fillScreen(&gfx, GFX_WHITE);
+        GFX_fillScreen(gfx, GFX_WHITE);
 
         // 根据显示模式绘制不同界面
         if (!layout_ready) {
-            DrawMissingResources(&gfx, data);
+            DrawMissingResources(gfx, data);
         } else {
             switch (data->mode) {
                 case MODE_CALENDAR:
-                    DrawCalendar(&gfx, &tm, &Lunar, data);  // 全屏日历
+                    DrawCalendar(gfx, &tm, &Lunar, data);  // 全屏日历
                     break;
                 case MODE_CLOCK:
-                    DrawClock(&gfx, &tm, &Lunar, data);  // 全屏时钟
+                    DrawClock(gfx, &tm, &Lunar, data);  // 全屏时钟
                     break;
                 case MODE_CLOCK_CALENDAR:
-                    DrawClockCalendar_Full(&gfx, &tm, &Lunar, data);  // 分屏模式
+                    DrawClockCalendar_Full(gfx, &tm, &Lunar, data);  // 分屏模式
                     break;
                 default:
                     break;
@@ -1062,11 +1068,11 @@ void DrawGUI(gui_data_t* data, buffer_callback callback, void* callback_data) {
         // 如果是2025年1月且未同步时间，显示同步提示
         if (layout_ready && (data->mode == MODE_CALENDAR || data->mode == MODE_CLOCK) &&
             (tm.tm_year + YEAR0 == 2025 && tm.tm_mon + 1 == 1)) {
-            DrawTimeSyncTip(&gfx, data);
+            DrawTimeSyncTip(gfx, data);
         }
-    } while (GFX_nextPage(&gfx, callback, callback_data));  // 分页绘制
+    } while (GFX_nextPage(gfx, callback, callback_data));  // 分页绘制
 
-    GFX_end(&gfx);
+    GFX_end(gfx);
 }
 
 /**
@@ -1090,22 +1096,22 @@ void DrawGUI_ClockOnly(const gui_data_t* data, buffer_callback callback, void* c
 
     transformTime(data->timestamp, &tm);
 
-    Adafruit_GFX gfx;
+    Adafruit_GFX *gfx = &m_gui_gfx;
     /* 页高 0：GFX_begin 使用静态页缓冲 */
-    GFX_begin(&gfx, geom.canvas_w, geom.canvas_h, 0);
-    GFX_setWindow(&gfx, s_time_window_x, s_time_window_y, s_time_window_w, s_time_window_h);
+    GFX_begin(gfx, geom.canvas_w, geom.canvas_h, 0);
+    GFX_setWindow(gfx, s_time_window_x, s_time_window_y, s_time_window_w, s_time_window_h);
 
-    GFX_firstPage(&gfx);
+    GFX_firstPage(gfx);
     do {
-        GFX_fillScreen(&gfx, GFX_WHITE);
-        DrawTime(&gfx, &tm,
+        GFX_fillScreen(gfx, GFX_WHITE);
+        DrawTime(gfx, &tm,
                  (int16_t)clock_hhmm_local_x_gap(geom.canvas_w, geom.cS, geom.nD,
                                                  geom.span_gap),
                  (int16_t)clock_hhmm_local_y(geom.canvas_h, geom.cS),
                  geom.cS, geom.nD);
-    } while (GFX_nextPage(&gfx, callback, callback_data));
+    } while (GFX_nextPage(gfx, callback, callback_data));
 
-    GFX_end(&gfx);
+    GFX_end(gfx);
 }
 
 /* 画布局部窗 → 屏幕矩形，并记下 ClockOnly 窗口。 */

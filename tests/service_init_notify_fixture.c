@@ -256,6 +256,14 @@ static void test_control_retry(void)
     hvx_result = NRF_SUCCESS;
     epd_control_notifications_process(&p);
     assert(!p.mode_ack_pending && sent_length == 4U && sent_data[1] == 9U);
+    p.mode_ack_pending = true;
+    memcpy(p.mode_ack, (uint8_t[]){EPD_RSP_DISPLAY, 10U, RS_IO, EPD_CMD_REFRESH}, 4U);
+    hvx_result = NRF_ERROR_RESOURCES;
+    epd_control_notifications_process(&p);
+    assert(p.mode_ack_pending);
+    hvx_result = NRF_SUCCESS;
+    epd_control_notifications_process(&p);
+    assert(!p.mode_ack_pending && sent_length == 4U && sent_data[0] == EPD_RSP_DISPLAY && sent_data[1] == 10U);
     p.initial_notify = 1U;
     p.mode_ack_pending = true;
     p.is_notification_enabled = false;

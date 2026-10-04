@@ -169,7 +169,7 @@ static uint8_t* install_pack(const uint8_t* font, size_t length)
 
 int main(void)
 {
-    uint8_t font[96];
+    uint8_t font[300];
     make_font(font, sizeof(font), FONT_STORE_SLOT_WQY9);
     assert(font_crc32((const uint8_t*)"123456789", 9U) == 0xCBF43926UL);
     memset(mock_flash, 0xFF, sizeof(mock_flash));

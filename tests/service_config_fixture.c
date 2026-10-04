@@ -53,9 +53,9 @@ static void ble_epd_on_timer(ble_epd_t *p, unsigned ts, bool force)
 }
 static void epd_display_request(ble_epd_t *p, unsigned ts) { (void)p; assert(ts == timestamp()); requests++; }
 static bool epd_resource_idle(const ble_epd_t *p) { (void)p; return true; }
-static void epd_resources_invalidate(void) {}
+static void epd_resources_invalidate_partitions(uint16_t changed) { (void)changed; }
 static bool epd_resources_ready(void) { return true; }
-static rs_result_t epd_resources_reload(void) { reloads++; return RS_OK; }
+static rs_result_t epd_resources_apply(void) { reloads++; return RS_OK; }
 static void calendar_annotations_store_init(void) {}
 static bool calendar_annotations_store_valid(void) { return true; }
 

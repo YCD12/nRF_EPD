@@ -9,15 +9,55 @@ let initWaiter = null;
 let initToken = 0;
 let modeWaiter = null;
 let modeToken = 0;
+let displayWaiter = null;
+let displayToken = 0;
 let lastDeviceConfig = null;
 let legacyConfigDirty = false;
 let configReadWaiter = null;
 let configReadToken = 0;
 let migrationExport = null;
 
+// An operation owns the complete request/ACK sequence, across individual GATT writes.
+const DeviceOperations = {
+  current: null,
+  begin(kind) {
+    if (this.current) throw new Error('设备操作进行中，请等待完成');
+    const operation = { kind, generation: connectionGeneration, characteristic: epdCharacteristic };
+    this.current = operation;
+    this.update();
+    return operation;
+  },
+  assert(operation) {
+    if (!operation || this.current !== operation || operation.generation !== connectionGeneration ||
+        operation.characteristic !== epdCharacteristic) throw new Error('设备操作已取消或连接已变化');
+  },
+  end(operation) {
+    if (this.current === operation) { this.current = null; this.update(); }
+  },
+  update() {
+    updateButtonStatus();
+    if (window.ExternalResourceInstaller?.controls) window.ExternalResourceInstaller.controls();
+  },
+};
+globalThis.DeviceOperations = window.DeviceOperations = DeviceOperations;
+
+async function runDeviceOperation(kind, action, parent = null) {
+  let operation;
+  try {
+    operation = parent || DeviceOperations.begin(kind);
+    DeviceOperations.assert(operation);
+    return await action(operation);
+  } catch (error) {
+    if (!operation || DeviceOperations.current === operation) addLog(error.message || String(error));
+    return false;
+  } finally {
+    if (!parent && operation) DeviceOperations.end(operation);
+  }
+}
+
 // APP版本号 (便于调试)
-const APP_VERSION = '2.0.21';
-const APP_BUILD_DATE = '2026-09-29';
+const APP_VERSION = '2.0.22';
+const APP_BUILD_DATE = '2026-10-01';
 const EPD_DEVICE_NAME_PREFIX = 'NRF_EPD';
 const SCAN_DURATION_MS = 5000;
 const LOG_CONSOLE_STORAGE_KEY = 'epd_log_to_console';
@@ -98,7 +138,7 @@ function bytes2hex(data) {
     }, "");
 }
 
-async function readMigrationConfig() {
+async function readMigrationConfig(owner = null) {
   if (appVersion < CONFIG_READBACK_MIN_FIRMWARE_VERSION) {
     if (legacyConfigDirty) throw new Error('旧固件配置已修改，请等待保存完成后断开重连，再导出备份');
     return Uint8Array.from(lastDeviceConfig);
@@ -107,7 +147,7 @@ async function readMigrationConfig() {
   waiter.promise = new Promise(resolve => { waiter.resolve = resolve; });
   configReadWaiter = waiter;
   try {
-    if (!await write(EpdCmd.GET_CONFIG, [waiter.token])) throw new Error('配置读取请求失败');
+    if (!await write(EpdCmd.GET_CONFIG, [waiter.token], true, true, true, owner)) throw new Error('配置读取请求失败');
     const config = await withTimeout(waiter.promise, 30000, '配置读取确认超时');
     if (!config) throw new Error('配置尚未成功保存，未生成迁移备份');
     return config;
@@ -117,6 +157,10 @@ async function readMigrationConfig() {
 }
 
 async function exportMigrationBundle() {
+  return runDeviceOperation('export', exportMigrationOperation);
+}
+
+async function exportMigrationOperation(owner) {
   if (migrationExport) return false;
   if (!epdCharacteristic || !gattServer || !gattServer.connected || !lastDeviceConfig) {
     addLog('请先连接设备并等待配置读取完成');
@@ -131,9 +175,9 @@ async function exportMigrationBundle() {
   try {
     await gattWriteTail;
     checkConnection();
-    const config = await readMigrationConfig();
+    const config = await readMigrationConfig(owner);
     checkConnection();
-    if (!window.CalendarAnnotations || !await window.CalendarAnnotations.loadFromDevice())
+    if (!window.CalendarAnnotations || !await window.CalendarAnnotations.loadFromDevice(owner))
       throw new Error('标注读取失败，未生成迁移备份');
     checkConnection();
     const annotations = window.CalendarAnnotations.pack();
@@ -178,6 +222,8 @@ async function withTimeout(promise, timeoutMs, timeoutMessage) {
 }
 
 function resetVariables() {
+  DeviceOperations.current = null;
+  if (typeof BleTransfer !== 'undefined') BleTransfer.cancel();
   if (window.ExternalResourceInstaller) window.ExternalResourceInstaller.disconnect();
   if (configReadWaiter) configReadWaiter.resolve(null);
   configReadWaiter = null;
@@ -185,7 +231,12 @@ function resetVariables() {
   initWaiter = null;
   if (modeWaiter) modeWaiter.resolve(false);
   modeWaiter = null;
-  if (window.CalendarAnnotations) window.CalendarAnnotations.cancelCommitWait();
+  if (displayWaiter) displayWaiter.resolve(false);
+  displayWaiter = null;
+  if (window.CalendarAnnotations) {
+    window.CalendarAnnotations.cancelCommitWait();
+    if (window.CalendarAnnotations.cancelLoad) window.CalendarAnnotations.cancelLoad();
+  }
   connectionGeneration++;
   gattWriteTail = Promise.resolve();
   gattServer = null;
@@ -194,6 +245,8 @@ function resetVariables() {
   appVersion = null;
   lastDeviceConfig = null;
   legacyConfigDirty = false;
+  const status = document.getElementById('status');
+  if (status?.parentElement) { status.parentElement.style.display = 'none'; status.operation = null; }
   document.getElementById('mtusize').value = 20;
 }
 
@@ -234,8 +287,11 @@ function updateBatteryVoltageDisplay(voltageMv = null, fallbackText = '未连接
   }
 }
 
-async function write(cmd, data, withResponse = true, logPayload = true, serialize = true) {
-  if (window.ExternalResourceInstaller && window.ExternalResourceInstaller.busy() && cmd !== 0x26) {
+async function write(cmd, data, withResponse = true, logPayload = true, serialize = true, owner = null) {
+  const allowed = () => (!DeviceOperations.current || DeviceOperations.current === owner) &&
+    (!owner || (DeviceOperations.current === owner && owner.generation === connectionGeneration));
+  if (!allowed()) { addLog('设备操作进行中，请等待完成'); return false; }
+  if (window.ExternalResourceInstaller && window.ExternalResourceInstaller.busy() && cmd !== 0x26 && !owner) {
     addLog('外置 Flash 正在更新，请等待完成');
     return false;
   }
@@ -248,7 +304,8 @@ async function write(cmd, data, withResponse = true, logPayload = true, serializ
     addLog("服务不可用，请检查蓝牙连接");
     return false;
   }
-  if (cmd === EpdCmd.INIT || cmd === EpdCmd.SET_MODE) serialize = true;
+  const confirmDisplay = appVersion >= 0x39 && (cmd === EpdCmd.CLEAR || cmd === EpdCmd.REFRESH);
+  if (cmd === EpdCmd.INIT || cmd === EpdCmd.SET_MODE || confirmDisplay) serialize = true;
   const characteristic = epdCharacteristic;
   const generation = connectionGeneration;
   let payload = [cmd];
@@ -258,13 +315,14 @@ async function write(cmd, data, withResponse = true, logPayload = true, serializ
     payload.push(...data)
   }
   const operationBody = async () => {
-    if (generation !== connectionGeneration || characteristic !== epdCharacteristic ||
+    if (!allowed() || generation !== connectionGeneration || characteristic !== epdCharacteristic ||
         !gattServer || !gattServer.connected) {
       addLog("服务已变更，放弃过期的蓝牙写入");
       return false;
     }
     let waiter = null;
     let modeReply = null;
+    let displayReply = null;
     if (cmd === EpdCmd.INIT && appVersion >= 0x32) {
       waiter = { token: (++initToken & 255), generation };
       waiter.promise = new Promise(resolve => { waiter.resolve = resolve; });
@@ -277,6 +335,13 @@ async function write(cmd, data, withResponse = true, logPayload = true, serializ
       modeReply.promise = new Promise(resolve => { modeReply.resolve = resolve; });
       modeWaiter = modeReply;
       payload[2] = modeReply.token;
+    }
+    if (confirmDisplay) {
+      if (payload.length > 2) return false;
+      displayReply = { token: (++displayToken & 255), generation, command: cmd };
+      displayReply.promise = new Promise(resolve => { displayReply.resolve = resolve; });
+      displayWaiter = displayReply;
+      payload = [cmd, payload.length > 1 ? payload[1] : (cmd === EpdCmd.CLEAR ? 1 : 0), displayReply.token];
     }
     if (logPayload) addLog(bytes2hex(payload), '⇑');
     // Legacy firmware has no confirmed readback. Do not export a stale cache
@@ -300,6 +365,7 @@ async function write(cmd, data, withResponse = true, logPayload = true, serializ
         await characteristic.writeValueWithoutResponse(Uint8Array.from(payload));
       if (waiter && !await withTimeout(waiter.promise, 30000, "屏幕初始化确认超时")) return false;
       if (modeReply && !await withTimeout(modeReply.promise, 45000, "模式应用确认超时")) return false;
+      if (displayReply && !await withTimeout(displayReply.promise, 90000, "屏幕刷新确认超时")) return false;
     } catch (e) {
       console.error(e);
       if (e.message) addLog("write: " + e.message);
@@ -307,6 +373,7 @@ async function write(cmd, data, withResponse = true, logPayload = true, serializ
     } finally {
       if (waiter && initWaiter === waiter) initWaiter = null;
       if (modeReply && modeWaiter === modeReply) modeWaiter = null;
+      if (displayReply && displayWaiter === displayReply) displayWaiter = null;
     }
     return generation === connectionGeneration && characteristic === epdCharacteristic &&
       !!gattServer && gattServer.connected;
@@ -321,28 +388,29 @@ async function write(cmd, data, withResponse = true, logPayload = true, serializ
   return operation;
 }
 
-// CRC-verified image transfer with resume capability
-async function writeImageCRC(data, step = 'bw') {
+// CRC-verified image transfer; a failed sequential stream restarts its layer.
+async function writeImageCRC(data, step = 'bw', owner = null) {
   const stepName = step === 'bw' ? '黑白' : '颜色';
 
   await BleTransfer.sendImageWithResume(data, step, (sent, total, speedInfo) => {
+    if (owner) DeviceOperations.assert(owner);
     if (speedInfo) {
       setStatus(`${stepName}块(CRC): ${sent}/${total}, ${BleTransfer.getSpeedString()}, ${speedInfo.elapsed}s`);
     } else {
       setStatus(`${stepName}块(CRC): ${sent}/${total}`);
     }
-  });
+  }, owner);
   return true;
 }
 
 async function setDriver() {
   if (!confirm('确认设置驱动配置？此操作将重新初始化屏幕。')) return;
-  if (!await write(EpdCmd.SET_PINS, document.getElementById("epdpins").value) ||
-      !await write(EpdCmd.INIT, document.getElementById("epddriver").value)) {
-    addLog("驱动初始化失败，请检查连接和引脚配置");
-    return;
-  }
-  addLog("驱动配置已设置");
+  return runDeviceOperation('control', async owner => {
+    const ok = await write(EpdCmd.SET_PINS, document.getElementById("epdpins").value, true, true, true, owner) &&
+      await write(EpdCmd.INIT, document.getElementById("epddriver").value, true, true, true, owner);
+    DeviceOperations.assert(owner);
+    addLog(ok ? "驱动配置已设置" : "驱动初始化失败，请检查连接和引脚配置");
+  });
 }
 
 // 辅助函数：获取星期第一天设置
@@ -367,13 +435,17 @@ function buildTimeData(mode = null) {
 
 // 辅助函数：发送时间同步命令
 async function sendTimeCommand(mode, modeName) {
+  return runDeviceOperation('mode', owner => sendModeOperation(mode, modeName, owner));
+}
+
+async function sendModeOperation(mode, modeName, owner) {
   const weekStart = getWeekStart();
   const weekDays = ['周日', '周一', '周二', '周三', '周四', '周五', '周六'];
   const payload = new Uint8Array(8);
   payload[0] = mode;
   payload[2] = weekStart;
   payload.set(buildTimeData(), 3);
-  if (await write(EpdCmd.SET_MODE, payload)) {
+  if (await write(EpdCmd.SET_MODE, payload, true, true, true, owner)) {
     lastWeekStartSent = weekStart;
     addLog(`${modeName}已由设备接受，星期第一天为${weekDays[weekStart]}。`);
     addLog('设备正在刷新屏幕，无需断开蓝牙；请等待刷新完成。');
@@ -404,13 +476,13 @@ async function waitForNegotiatedMtu(timeoutMs = 2000) {
   return currentMtuValue() >= EPD_MIN_DATA_LEN_FOR_FULL_PLANE;
 }
 
-async function syncTimeOnConnect() {
+async function syncTimeOnConnect(owner = null) {
   if (appVersion < 0x21) {
     addLog('当前固件不支持静默校时，已跳过自动时间同步');
     return false;
   }
 
-  const ok = await write(EpdCmd.SYNC_TIME_SILENT, buildTimeData());
+  const ok = await write(EpdCmd.SYNC_TIME_SILENT, buildTimeData(), true, true, true, owner);
   addLog(ok ? '已自动同步当前时间到设备' : '自动时间同步失败');
   return ok;
 }
@@ -441,9 +513,11 @@ async function syncTimeLegacy() {
 
 async function clearScreen() {
   if (confirm('确认清除屏幕内容?')) {
-    await write(EpdCmd.CLEAR);
-    addLog("清屏指令已发送！");
-    addLog("屏幕刷新完成前请不要操作。");
+    return runDeviceOperation('control', async owner => {
+      if (!await write(EpdCmd.CLEAR, null, true, true, true, owner)) return false;
+      DeviceOperations.assert(owner);
+      addLog(appVersion >= 0x39 ? '设备已确认清屏完成。' : '清屏指令已发送，请等待屏幕刷新完成。');
+    });
   }
 }
 
@@ -452,8 +526,9 @@ async function sendcmd() {
   if (cmdTXT == '') return;
   if (!confirm('确认发送命令？此操作可能影响设备状态。')) return;
   const bytes = hex2bytes(cmdTXT);
-  await write(bytes[0], bytes.length > 1 ? bytes.slice(1) : null);
-  addLog("命令已发送");
+  return runDeviceOperation('control', async owner => {
+    if (await write(bytes[0], bytes.length > 1 ? bytes.slice(1) : null, true, true, true, owner)) addLog("命令已发送");
+  });
 }
 
 function convertUC8159(blackWhiteData, redWhiteData) {
@@ -484,6 +559,10 @@ function convertUC8159(blackWhiteData, redWhiteData) {
 }
 
 async function sendimg() {
+  return runDeviceOperation('image', sendImageOperation);
+}
+
+async function sendImageOperation(owner) {
   if (cropManager.isCropMode()) {
     alert("请先完成图片裁剪！发送已取消。");
     return;
@@ -527,9 +606,10 @@ async function sendimg() {
 
   startTime = new Date().getTime();
   const status = document.getElementById("status");
+  status.operation = owner;
   status.parentElement.style.display = "block";
   const hideStatusBar = () => {
-    status.parentElement.style.display = "none";
+    if (owner.generation === connectionGeneration && status.operation === owner) status.parentElement.style.display = "none";
   };
 
   let imageData;
@@ -569,9 +649,11 @@ async function sendimg() {
 
   updateButtonStatus(true);
 
-  if (!await waitForNegotiatedMtu()) {
+  const mtuReady = await waitForNegotiatedMtu();
+  DeviceOperations.assert(owner);
+  if (!mtuReady) {
     addLog("尚未收到MTU，发送一次INIT用于协商（不作为常规传图步骤）");
-    if (!await write(EpdCmd.INIT, epdDriverSelect.value)) {
+    if (!await write(EpdCmd.INIT, epdDriverSelect.value, true, true, true, owner)) {
       addLog("屏幕初始化失败，取消发送");
       updateButtonStatus();
       hideStatusBar();
@@ -595,23 +677,23 @@ async function sendimg() {
 
   try {
     if (ditherMode === 'fourColor') {
-      await writeImageCRC(processedData, 'color');
+      await writeImageCRC(processedData, 'color', owner);
     } else if (ditherMode === 'threeColor') {
       const halfLength = Math.floor(processedData.length / 2);
       const blackWhiteData = processedData.slice(0, halfLength);
       const redWhiteData = processedData.slice(halfLength);
       if (epdDriverSelect.value === '08' || epdDriverSelect.value === '09') {
-        await writeImageCRC(convertUC8159(blackWhiteData, redWhiteData), 'bw');
+        await writeImageCRC(convertUC8159(blackWhiteData, redWhiteData), 'bw', owner);
       } else {
-        await writeImageCRC(blackWhiteData, 'bw');
-        await writeImageCRC(redWhiteData, 'red');
+        await writeImageCRC(blackWhiteData, 'bw', owner);
+        await writeImageCRC(redWhiteData, 'red', owner);
       }
     } else if (ditherMode === 'blackWhiteColor') {
       if (epdDriverSelect.value === '08' || epdDriverSelect.value === '09') {
         const emptyData = new Uint8Array(processedData.length).fill(0xFF);
-        await writeImageCRC(convertUC8159(processedData, emptyData), 'bw');
+        await writeImageCRC(convertUC8159(processedData, emptyData), 'bw', owner);
       } else {
-        await writeImageCRC(processedData, 'bw');
+        await writeImageCRC(processedData, 'bw', owner);
       }
     } else {
       addLog("当前固件不支持此颜色模式。");
@@ -620,13 +702,17 @@ async function sendimg() {
       return;
     }
   } catch (e) {
+    if (DeviceOperations.current !== owner) return;
     addLog(`传图失败: ${e.message || e}`);
     updateButtonStatus();
     hideStatusBar();
     return;
   }
 
-  const refreshOk = await write(EpdCmd.REFRESH);
+  DeviceOperations.assert(owner);
+  setStatus('图片数据已校验，等待屏幕刷新完成…');
+  const refreshOk = await write(EpdCmd.REFRESH, null, true, true, true, owner);
+  DeviceOperations.assert(owner);
   updateButtonStatus();
   const isConnectedNow = !!(gattServer && gattServer.connected && bleDevice && bleDevice.gatt && bleDevice.gatt.connected);
   if (!refreshOk) {
@@ -642,9 +728,10 @@ async function sendimg() {
   }
 
   const sendTime = (new Date().getTime() - startTime) / 1000.0;
-  addLog(`发送完成！耗时: ${sendTime}s`);
-  setStatus(`发送完成！耗时: ${sendTime}s`);
-  addLog("屏幕刷新完成前请不要操作。");
+  const completion = appVersion >= 0x39 ? '图片刷新完成' : '图片发送完成';
+  addLog(`${completion}！总耗时: ${sendTime}s`);
+  setStatus(`${completion}！总耗时: ${sendTime}s`);
+  if (appVersion < 0x39) addLog("屏幕刷新完成前请不要操作。");
   if (!isConnectedNow) {
     const disconnectedTip = '图片已发送，设备连接已断开，请点击“重连”继续操作。';
     addLog(disconnectedTip);
@@ -702,7 +789,7 @@ function downloadDataArray() {
 
 function updateButtonStatus(forceDisabled = false) {
   const connected = gattServer != null && gattServer.connected;
-  const status = forceDisabled ? 'disabled' : (connected ? null : 'disabled');
+  const status = forceDisabled || DeviceOperations.current ? 'disabled' : (connected ? null : 'disabled');
   document.getElementById("reconnectbutton").disabled = !bleDevice || connected || isConnecting;
   document.getElementById("sendcmdbutton").disabled = status;
   document.getElementById("calendarmodebutton").disabled = status;
@@ -710,6 +797,9 @@ function updateButtonStatus(forceDisabled = false) {
   document.getElementById("clearscreenbutton").disabled = status;
   document.getElementById("sendimgbutton").disabled = status;
   document.getElementById("setDriverbutton").disabled = status;
+  const clock = document.getElementById('legacyclockbutton');
+  if (clock) clock.disabled = status;
+  for (const button of document.querySelectorAll('[data-device-operation]')) button.disabled = !!status;
 }
 
 function disconnect() {
@@ -1052,6 +1142,15 @@ function handleNotify(value) {
     return;
   }
 
+  if (data.length === 4 && data[0] === 0xAB) {
+    if (displayWaiter && displayWaiter.generation === connectionGeneration &&
+        displayWaiter.token === data[1] && displayWaiter.command === data[3]) {
+      if (data[2] !== 0) addLog(`设备刷新失败（状态 ${data[2]}），请检查屏幕或稍后重试`);
+      displayWaiter.resolve(data[2] === 0);
+    }
+    return;
+  }
+
   // Route CRC transfer responses to BleTransfer module
   if (data.length >= 1 && (data[0] === 0xA0 || data[0] === 0xA1)) {
     if (typeof BleTransfer !== 'undefined') {
@@ -1166,6 +1265,7 @@ function handleNotify(value) {
 }
 
 async function connect() {
+  let setupOperation = null;
   if (isConnecting) {
     addLog('连接流程进行中，请稍候...');
     return;
@@ -1294,6 +1394,7 @@ async function connect() {
 
     const connectedCharacteristic = epdCharacteristic;
     const generation = connectionGeneration;
+    setupOperation = DeviceOperations.begin('connecting');
     const ensureConnected = () => {
       if (generation !== connectionGeneration || targetDevice !== bleDevice ||
           connectedCharacteristic !== epdCharacteristic || !gattServer || !gattServer.connected) {
@@ -1329,7 +1430,7 @@ async function connect() {
       if (window.ExternalResourceInstaller) window.ExternalResourceInstaller.bind(epdCharacteristic);
 
       // INIT 后固件会上报电压，并遵循协议连接初始化顺序。
-      if (!await write(EpdCmd.INIT)) {
+      if (!await write(EpdCmd.INIT, null, true, true, true, setupOperation)) {
         throw new Error('连接后初始化失败：INIT 命令未完成');
       }
     } catch (e) {
@@ -1338,7 +1439,7 @@ async function connect() {
     }
 
     ensureConnected();
-    const timeSynced = await syncTimeOnConnect();
+    const timeSynced = await syncTimeOnConnect(setupOperation);
     ensureConnected();
     if (appVersion >= 0x21 && !timeSynced) throw new Error('连接后自动时间同步失败');
     if (await waitForNegotiatedMtu()) {
@@ -1353,11 +1454,11 @@ async function connect() {
       BleTransfer.init();
     }
     if (window.CalendarAnnotations && appVersion >= 0x29) {
-      await window.CalendarAnnotations.loadFromDevice();
+      await window.CalendarAnnotations.loadFromDevice(setupOperation);
       ensureConnected();
     }
     if (window.ExternalResourceInstaller && appVersion >= 0x34) {
-      await window.ExternalResourceInstaller.refresh();
+      await window.ExternalResourceInstaller.refresh(setupOperation);
       ensureConnected();
     }
 
@@ -1381,6 +1482,7 @@ async function connect() {
     }
   } finally {
     isConnecting = false;
+    if (setupOperation) DeviceOperations.end(setupOperation);
     updateButtonStatus();
   }
 }

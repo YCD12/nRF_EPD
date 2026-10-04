@@ -24,9 +24,10 @@ function statusBytes(token, code = 0) {
   const b = new Uint8Array(16); b.set([0xa7, 0, token, code, 1, 1]);
   new DataView(b.buffer).setUint32(12, 524288, true); return b;
 }
-function deviceClient({ table = tableBytes(), status = null } = {}) {
+function deviceClient({ table = tableBytes(), status = null, dataLength = 20, bufferedReply = null } = {}) {
   const memory = new Uint8Array(524288).fill(255), packets = [];
   memory.set(table); memory.set(packageBytes(), 4096);
+  let payloadLength = 0;
   const client = new ResourceClient(async p => {
     packets.push(p);
     let a = Uint8Array.of(0xa7, p[1], p[2], 0);
@@ -35,8 +36,16 @@ function deviceClient({ table = tableBytes(), status = null } = {}) {
       const at = new DataView(p.buffer).getUint32(3, true);
       a = Uint8Array.of(...a, ...memory.subarray(at, at + p[7]));
     }
+    if (p[1] === 2) payloadLength = new DataView(p.buffer).getUint32(4, true);
+    if (p[1] === 10) {
+      const accepted = new DataView(p.buffer).getUint32(3, true) + p.length - 7;
+      const durable = accepted === payloadLength ? accepted : Math.max(0, Math.floor((accepted + 32) / 256) * 256 - 32);
+      a = new Uint8Array(12); a.set([0xa7, 10, p[2], 0]);
+      const v = new DataView(a.buffer); v.setUint32(4, accepted, true); v.setUint32(8, durable, true);
+      if (bufferedReply) a = bufferedReply(a, p);
+    }
     client.receive(a);
-  });
+  }, 5000, () => dataLength);
   return { client, packets, memory };
 }
 function packageBytes() {
@@ -179,6 +188,77 @@ test('lost ACK retries identical packet and token', async () => {
   }, 5);
   await client.request(4);
   assert.deepEqual(packets[0], packets[1]);
+});
+
+test('large resource packets require capability and negotiated data length, buffered progress is durable', async () => {
+  for (const [caps, mtu, chunk] of [[1, 244, 13], [0x39, 20, 13], [0x39, 100, 93], [0x39, 244, 237]]) {
+    const status = statusBytes(0); status[4] = caps;
+    const { client, packets, memory } = deviceClient({ status, dataLength: mtu });
+    const payload = Uint8Array.from({ length: 500 }, (_, i) => i & 255);
+    const progress = [];
+    await client.upload(wrap(2, payload), (...p) => progress.push(p), parseTable(parsePackage(tableBytes())));
+    const writes = packets.filter(p => p[1] === (caps & 32 ? 10 : 3));
+    assert.equal(writes.length, Math.ceil(payload.length / chunk));
+    assert.ok(writes.every(p => p.length <= chunk + 7));
+    assert.deepEqual(progress.at(-1), [500, 500, 500]);
+    if (caps & 32) assert.ok(progress.some(p => p[2] < p[0]));
+    assert.deepEqual(await client.readRange(32, 500), memory.slice(32, 532));
+    const readLimit = caps & 8 ? mtu - 4 : 16;
+    assert.equal(packets.filter(p => p[1] === 1).length, Math.ceil(500 / readLimit));
+  }
+});
+
+test('buffered ACK must confirm accepted bytes and a fully durable tail before COMMIT', async () => {
+  for (const corrupt of [
+    a => a.slice(0, 4),
+    a => { new DataView(a.buffer).setUint32(4, 1, true); return a; },
+    a => { new DataView(a.buffer).setUint32(8, 501, true); return a; },
+    a => { new DataView(a.buffer).setUint32(8, 0, true); return a; },
+  ]) {
+    const status = statusBytes(0); status[4] = 0x39;
+    const { client, packets } = deviceClient({ status, dataLength: 244, bufferedReply: corrupt });
+    await assert.rejects(client.upload(wrap(2, new Uint8Array(500)), () => {}, parseTable(parsePackage(tableBytes()))));
+    assert.ok(!packets.some(p => p[1] === 4));
+  }
+});
+
+test('verified metadata distinguishes corrupt content from transport and storage failures', async () => {
+  let code = 0;
+  const client = new ResourceClient(async p => {
+    const a = new Uint8Array(code ? 4 : 16); a.set([0xa7, p[1], p[2], code]);
+    if (!code) { const v = new DataView(a.buffer); v.setUint32(4, 7, true); v.setUint32(8, 500, true); v.setUint32(12, 1234, true); }
+    client.receive(a);
+  });
+  client.capabilities = { verify: true };
+  assert.deepEqual(await client.inspect(7), { code: 0, revision: 7, length: 500, crc: 1234 });
+  code = 3; assert.deepEqual(await client.inspect(7), { code: 3 });
+  code = 5; await assert.rejects(client.inspect(7), /校验失败/);
+  code = 2; await assert.rejects(client.inspect(7), /校验失败/);
+});
+
+test('installer skips CRC-verified identical resources, repairs corruption, and supports forced rewrite', async () => {
+  const uploads = [], inspected = [];
+  let corrupted = false;
+  class Client {
+    status() { const b = statusBytes(0); b[4] = 0x3f; return b; }
+    partitions() { return parseTable(parsePackage(tableBytes())); }
+    inspect(id) {
+      inspected.push(id);
+      const pack = completeBundle().map(p => parsePackage(p.bytes)).find(p => p.id === id);
+      if (!pack || (corrupted && id === 7)) return { code: 3 };
+      return { code: 0, revision: 1, length: pack.payload.length, crc: pack.crc };
+    }
+    async upload(bytes) { uploads.push(parsePackage(bytes).id); }
+    async leave() {}
+    disconnect() {}
+  }
+  const { installer, node } = installerFixture(Client);
+  await installer.loadBundle(completeBundle(), 'test'); installer.bind({});
+  await installer.install(); assert.deepEqual(uploads, []); assert.deepEqual(inspected.slice(0, 3), [5, 6, 7]);
+  corrupted = true;
+  await installer.install(); assert.deepEqual(uploads, [7]);
+  uploads.length = 0; node('externalResourceForce').checked = true;
+  await installer.install(); assert.deepEqual(uploads, [5, 6, 7]);
 });
 
 test('capability flags accept hot reload and offline mode while retaining legacy support', async () => {

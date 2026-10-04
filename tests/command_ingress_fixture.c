@@ -95,5 +95,8 @@ int main(void)
     epd_service_on_write(&service, mode, sizeof(mode));
     assert(service.mode_ack_pending && service.mode_ack[0] == EPD_RSP_MODE);
     assert(service.mode_ack[1] == 17 && service.mode_ack[2] == RS_BUSY);
+    uint8_t display[] = {EPD_CMD_REFRESH, 0, 18};
+    epd_service_on_write(&service, display, sizeof(display));
+    assert(service.mode_ack[0] == EPD_RSP_DISPLAY && service.mode_ack[1] == 18 && service.mode_ack[2] == RS_BUSY);
     puts("PASS: compact display commands queue; CRC/annotation packets bypass small control queue");
 }

@@ -87,7 +87,7 @@ subprocess.run([str(exe.resolve())], check=True)
 
 refresh_handlers = '\n'.join(function(source, name) for name in (
     'epd_parse_time_payload', 'epd_display_request', 'epd_display_complete',
-    'epd_update_display_mode', 'epd_switch_from_clock_mode', 'epd_mode_ack',
+    'epd_update_display_mode', 'epd_switch_from_clock_mode', 'epd_command_ack',
     'cmd_set_mode', 'ble_epd_on_timer', 'epd_gui_update'))
 refresh_fixture = (ROOT / 'tests/connected_refresh_fixture.c').read_text(encoding='utf-8')
 generated = out / 'connected_refresh_generated.c'
@@ -98,7 +98,17 @@ subprocess.run(shlex.split(os.environ.get('HOST_CC', 'gcc')) +
                 str(generated), 'EPD/epd_refresh_policy.c', '-o', str(exe)], cwd=ROOT, check=True)
 subprocess.run([str(exe.resolve())], check=True)
 
-ingress = function(source, 'epd_mode_ack') + '\n' + function(source, 'epd_service_on_write')
+display = function(source, 'epd_command_ack') + '\n' + function(source, 'cmd_display')
+fixture = (ROOT / 'tests/display_completion_fixture.c').read_text(encoding='utf-8')
+generated = out / 'display_completion_generated.c'
+generated.write_text(fixture.replace('/* PRODUCTION_HANDLERS */', display), encoding='utf-8')
+exe = out / ('test_display_completion.exe' if os.name == 'nt' else 'test_display_completion')
+subprocess.run(shlex.split(os.environ.get('HOST_CC', 'gcc')) +
+               ['-Wall', '-Werror', '-std=c11', '-IEPD', str(generated), '-o', str(exe)],
+               cwd=ROOT, check=True)
+subprocess.run([str(exe.resolve())], check=True)
+
+ingress = function(source, 'epd_command_ack') + '\n' + function(source, 'epd_service_on_write')
 fixture = (ROOT / 'tests/command_ingress_fixture.c').read_text(encoding='utf-8')
 generated = out / 'command_ingress_generated.c'
 generated.write_text(fixture.replace('/* PRODUCTION_HANDLERS */', ingress), encoding='utf-8')

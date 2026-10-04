@@ -16,7 +16,7 @@ static unsigned mutations, reads, depth, executions, sent;
 static unsigned watchdog_feeds;
 static int read_fail = -1;
 static bool block_send;
-static uint8_t reply[20];
+static uint8_t reply[RESOURCE_PACKET_MAX];
 static unsigned invalidations, activations, offline_requests;
 static uint16_t activated_partitions;
 static rs_result_t activation_result;
@@ -140,7 +140,7 @@ static void test_boundaries(void)
     table[16] = 1;
     assert(upload(1, table, sizeof(table)) == RS_INVALID); /* duplicate ID */
 }
-static void test_power_loss(unsigned id)
+static void test_power_loss(unsigned id, bool buffered)
 {
     uint8_t old[40], next[40], actual[40];
     memset(old, 0x11, sizeof(old));
@@ -156,7 +156,16 @@ static void test_power_loss(unsigned id)
             prefix = bytes == 49 ? 4096 : bytes;
             cut = step;
             if (setjmp(power_loss) == 0) {
-                (void)upload(id, id == 1 ? table : next, id == 1 ? sizeof(table) : sizeof(next));
+                const uint8_t *data = id == 1 ? table : next;
+                size_t n = id == 1 ? sizeof(table) : sizeof(next);
+                if (!buffered) (void)upload(id, data, n);
+                else if (resource_store_begin(id, n, crc(data, n), 2) == RS_OK) {
+                    assert(resource_store_buffered_write(0, data, 13) == RS_OK);
+                    assert(resource_store_received() == 0 && resource_store_accepted() == 13);
+                    assert(resource_store_commit() == RS_INVALID);
+                    assert(resource_store_buffered_write(13, data + 13, n - 13) == RS_OK);
+                    (void)resource_store_commit();
+                }
             } else ++interruptions;
             cut = -1;
             reboot();
@@ -218,7 +227,7 @@ static void test_persistent_record(void)
 static uint32_t send_reply(void *context, uint32_t generation, uint8_t *p, uint16_t n)
 {
     (void)context;
-    assert(generation && depth == 0 && n <= 20);
+    assert(generation && depth == 0 && n <= RESOURCE_PACKET_MAX);
     ++executions;
     if (block_send) return NRF_ERROR_RESOURCES;
     memcpy(reply, p, n);
@@ -421,7 +430,7 @@ static void test_cache_replacement(void)
 
 static void test_flash_crc(void)
 {
-    uint8_t data[129];
+    uint8_t data[513];
     for (unsigned i = 0; i < sizeof(data); ++i) data[i] = (uint8_t)i;
     memcpy(flash + 123, data, sizeof(data));
     unsigned before = reads, fed_before = watchdog_feeds;
@@ -440,12 +449,95 @@ static void test_flash_crc(void)
     assert(reads == before);
 }
 
+static void test_buffered_pages(void)
+{
+    blank();
+    resource_put_u32(table + 16 + 8, 8192);
+    resource_put_u32(table + 32 + 4, 12288);
+    resource_put_u32(table + 32 + 8, sizeof(flash) - 12288);
+    assert(upload(1, table, sizeof(table)) == RS_OK);
+    uint8_t data[5000], actual[5000];
+    for (unsigned i = 0; i < sizeof(data); ++i) data[i] = (uint8_t)(i * 17U);
+    flash[12288] = 0x73;
+    assert(resource_store_begin(2, sizeof(data), crc(data, sizeof(data)), 3) == RS_OK);
+    unsigned before = mutations;
+    for (unsigned at = 0; at < sizeof(data);) {
+        unsigned n = sizeof(data) - at;
+        if (n > 237) n = 237;
+        assert(resource_store_buffered_write(at, data + at, n) == RS_OK);
+        unsigned changed = mutations;
+        /* A lost ACK can retry bytes spanning both Flash and the partial page. */
+        assert(resource_store_buffered_write(at, data + at, n) == RS_OK);
+        assert(mutations == changed);
+        data[at] ^= 1;
+        assert(resource_store_buffered_write(at, data + at, n) == RS_INVALID);
+        data[at] ^= 1;
+        assert(resource_store_write(at, data + at, n) == RS_INVALID);
+        at += n;
+        assert(resource_store_accepted() == at);
+        unsigned durable = at == sizeof(data) ? at : ((at + 32) / 256) * 256 - 32;
+        assert(resource_store_received() == durable);
+    }
+    assert(mutations == before + 20 + 1); /* 20 pages and one subsequent sector erase. */
+    assert(resource_store_commit() == RS_OK && flash[12288] == 0x73);
+    uint32_t length;
+    assert(resource_store_open(2, &length) == RS_OK && length == sizeof(data));
+    assert(resource_store_read(2, 0, actual, sizeof(actual)) == RS_OK);
+    assert(!memcmp(actual, data, sizeof(data)));
+    /* Disconnect loses only the accepted RAM tail, never exposes an incomplete package. */
+    assert(resource_store_begin(2, sizeof(data), crc(data, sizeof(data)), 4) == RS_OK);
+    assert(resource_store_buffered_write(0, data, 13) == RS_OK);
+    reboot();
+    assert(resource_store_open(2, &length) != RS_OK);
+    assert(!resource_store_active() && !resource_store_accepted());
+}
+
+static void test_large_protocol(void)
+{
+    blank();
+    resource_protocol_set_handler(NULL, NULL);
+    uint8_t q[RESOURCE_PACKET_MAX] = {0x26, 1, 20, 0, 0, 0, 0, 240};
+    resource_protocol_set_data_limit(20);
+    assert(resource_protocol_execute(q, 8, reply) == 4 && reply[3] == RS_INVALID);
+    resource_protocol_set_data_limit(244);
+    assert(resource_protocol_execute(q, 8, reply) == 244 && reply[3] == RS_OK);
+    q[7] = 241;
+    assert(resource_protocol_execute(q, 8, reply) == 4 && reply[3] == RS_INVALID);
+    q[1] = 0;
+    assert(resource_protocol_execute(q, 3, reply) == 16 && (reply[4] & 0x38) == 0x38);
+    uint8_t enter[] = {0x26, 6, 21, 'M', 'I', 'G', '1'};
+    resource_protocol_execute(enter, sizeof(enter), reply);
+    q[1] = 2; q[3] = 2;
+    uint8_t data[237]; memset(data, 0x38, sizeof(data));
+    resource_put_u32(q + 4, sizeof(data)); resource_put_u32(q + 8, crc(data, sizeof(data)));
+    resource_put_u32(q + 12, 7);
+    resource_protocol_execute(q, 16, reply); assert(reply[3] == RS_OK);
+    q[1] = 10; resource_put_u32(q + 3, 0); memcpy(q + 7, data, sizeof(data));
+    resource_protocol_set_data_limit(20);
+    resource_protocol_execute(q, sizeof(q), reply); assert(reply[3] == RS_INVALID);
+    resource_protocol_set_data_limit(244);
+    assert(resource_protocol_execute(q, sizeof(q), reply) == 12 && reply[3] == RS_OK);
+    assert(resource_get_u32(reply + 4) == 237 && resource_get_u32(reply + 8) == 237);
+    q[1] = 9; q[3] = 2;
+    resource_protocol_execute(q, 4, reply); assert(reply[3] == RS_BUSY);
+    q[1] = 4; resource_protocol_execute(q, 3, reply); assert(reply[3] == RS_OK);
+    q[1] = 9;
+    assert(resource_protocol_execute(q, 4, reply) == 16 && reply[3] == RS_OK);
+    assert(resource_get_u32(reply + 4) == 7 && resource_get_u32(reply + 8) == 237);
+    assert(resource_get_u32(reply + 12) == crc(data, sizeof(data)));
+    flash[4096 + 32 + 17] ^= 1;
+    assert(resource_protocol_execute(q, 4, reply) == 4 && reply[3] == RS_CRC);
+    resource_protocol_reset(); resource_protocol_set_data_limit(20);
+}
+
 int main(void)
 {
     assert(crc((const uint8_t *)"123456789", 9) == 0xCBF43926UL);
     test_boundaries();
-    test_power_loss(1);
-    test_power_loss(2);
+    test_power_loss(1, false);
+    test_power_loss(2, false);
+    test_power_loss(1, true);
+    test_power_loss(2, true);
     test_sector_crossing();
     test_persistent_record();
     test_protocol();
@@ -453,6 +545,8 @@ int main(void)
     test_disconnected_read_cache();
     test_cache_replacement();
     test_flash_crc();
+    test_buffered_pages();
+    test_large_protocol();
     puts("resource store: boundaries, CRC, power loss, repair, retries, cache refill/invalidation and relocation OK");
     return 0;
 }

@@ -15,6 +15,9 @@ static struct {
     rs_partition_t partition;
     uint32_t length, crc, revision, received, erased_end;
     uint16_t active;
+    uint16_t buffered;
+    uint8_t write_mode;
+    uint8_t page[FM25Q04B_PAGE_SIZE];
     bool failed;
 } m_update;
 
@@ -227,27 +230,71 @@ rs_result_t resource_store_begin(uint16_t id, uint32_t length, uint32_t crc, uin
     return RS_OK;
 }
 
-rs_result_t resource_store_write(uint32_t offset, const uint8_t *data, size_t length)
+static rs_result_t compare_received(uint32_t offset, const uint8_t *data, size_t length)
 {
-    if (!m_update.active || m_update.failed || !data || !length ||
-        offset > m_update.length || length > m_update.length - offset) return RS_INVALID;
-    uint32_t address = m_update.partition.offset + RS_HEADER_SIZE + offset;
-    if (offset != m_update.received) {
-        /* A lost ACK may cause a retransmit. Accept only identical durable bytes. */
-        uint8_t check[20];
-        if (offset >= m_update.received || length > m_update.received - offset || length > sizeof(check))
-            return RS_INVALID;
-        if (read_flash(address, check, length) != RS_OK) return fail_io();
-        return memcmp(data, check, length) ? RS_INVALID : RS_OK;
+    uint8_t check[64];
+    uint32_t durable = m_update.received - m_update.buffered;
+    if (offset > m_update.received || length > m_update.received - offset) return RS_INVALID;
+    while (length) {
+        size_t n = length > sizeof(check) ? sizeof(check) : length;
+        if (offset < durable) {
+            if (n > durable - offset) n = durable - offset;
+            if (read_flash(m_update.partition.offset + RS_HEADER_SIZE + offset, check, n) != RS_OK)
+                return fail_io();
+            if (memcmp(check, data, n)) return RS_INVALID;
+        } else if (memcmp(m_update.page + offset - durable, data, n)) return RS_INVALID;
+        offset += n; data += n; length -= n;
     }
+    return RS_OK;
+}
+
+static rs_result_t program_data(uint32_t offset, const uint8_t *data, size_t length)
+{
+    uint32_t address = m_update.partition.offset + RS_HEADER_SIZE + offset;
     while (address + length > m_update.erased_end) {
         if (fm25q04b_erase_sector(m_update.erased_end) != NRF_SUCCESS) return fail_io();
         m_update.erased_end += RS_SECTOR_SIZE;
     }
-    if (fm25q04b_write(address, data, length) != NRF_SUCCESS) return fail_io();
-    m_update.received += length;
+    return fm25q04b_write(address, data, length) == NRF_SUCCESS ? RS_OK : fail_io();
+}
+
+static rs_result_t write_data(uint32_t offset, const uint8_t *data, size_t length, bool buffered)
+{
+    if (!m_update.active || m_update.failed || !data || !length ||
+        offset > m_update.length || length > m_update.length - offset) return RS_INVALID;
+    uint8_t mode = buffered ? 2U : 1U;
+    if (m_update.write_mode && m_update.write_mode != mode) return RS_INVALID;
+    if (offset != m_update.received) return compare_received(offset, data, length);
+    m_update.write_mode = mode;
+    if (!buffered) {
+        rs_result_t r = program_data(offset, data, length);
+        if (r == RS_OK) m_update.received += length;
+        return r;
+    }
+    while (length) {
+        uint32_t durable = m_update.received - m_update.buffered;
+        size_t capacity = FM25Q04B_PAGE_SIZE -
+            ((m_update.partition.offset + RS_HEADER_SIZE + durable) % FM25Q04B_PAGE_SIZE);
+        size_t n = capacity - m_update.buffered;
+        if (n > length) n = length;
+        memcpy(m_update.page + m_update.buffered, data, n);
+        m_update.buffered += n;
+        m_update.received += n;
+        data += n; length -= n;
+        if (m_update.buffered == capacity || m_update.received == m_update.length) {
+            rs_result_t r = program_data(durable, m_update.page, m_update.buffered);
+            if (r != RS_OK) return r;
+            m_update.buffered = 0;
+        }
+    }
     return RS_OK;
 }
+
+rs_result_t resource_store_write(uint32_t offset, const uint8_t *data, size_t length)
+{ return write_data(offset, data, length, false); }
+
+rs_result_t resource_store_buffered_write(uint32_t offset, const uint8_t *data, size_t length)
+{ return write_data(offset, data, length, true); }
 
 rs_result_t resource_store_commit(void)
 {
@@ -281,4 +328,5 @@ void resource_store_abort(void)
     m_read_cache.valid = false;
 }
 uint16_t resource_store_active(void) { return m_update.active; }
-uint32_t resource_store_received(void) { return m_update.received; }
+uint32_t resource_store_received(void) { return m_update.received - m_update.buffered; }
+uint32_t resource_store_accepted(void) { return m_update.received; }

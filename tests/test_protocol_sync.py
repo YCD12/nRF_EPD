@@ -26,5 +26,5 @@ assert all(name not in fw_ids and name not in web_ids for name in
 
 fw_version = int(re.search(r"#define APP_VERSION\s+(0x[0-9a-fA-F]+)", service).group(1), 16)
 web_min = int(re.search(r"const MIN_FIRMWARE_VERSION\s*=\s*(0x[0-9a-fA-F]+)", web).group(1), 16)
-assert fw_version == web_min == 0x38
+assert fw_version == 0x39 and web_min == 0x38
 print("PASS: firmware/web command IDs and minimum version match")

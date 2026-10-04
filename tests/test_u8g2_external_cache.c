@@ -140,12 +140,42 @@ static void test_external_font_reloads_invalid_header_for_same_source(void) {
     assert(mock.calls == 3U); /* failed initial header + successful reload */
 }
 
+static void test_source_switch_and_revision(void) {
+    uint8_t a[512], b[512];
+    make_font(a, sizeof(a), 237);
+    make_font(b, sizeof(b), 0);
+    b[23] = 'B';
+    mock_font_t ma = {a, sizeof(a), 0, 0, 0}, mb = {b, sizeof(b), 0, 0, 0};
+    u8g2_font_source_t sa = {NULL, sizeof(a), mock_read, &ma, 1};
+    u8g2_font_source_t sb = {NULL, sizeof(b), mock_read, &mb, 1};
+    u8g2_font_t ctx = {0};
+    u8g2_SetExternalFont(&ctx, &sa);
+    assert(u8g2_IsGlyph(&ctx, 'A'));
+    u8g2_SetExternalFont(&ctx, &sb);
+    assert(!u8g2_IsGlyph(&ctx, 'A') && u8g2_IsGlyph(&ctx, 'B'));
+    u8g2_SetExternalFont(&ctx, &sa);
+    assert(u8g2_IsGlyph(&ctx, 'A'));
+    /* Same reader/context/length can now contain a different resource. */
+    a[260] = 'B'; ++sa.revision;
+    u8g2_SetExternalFont(&ctx, &sa);
+    assert(!u8g2_IsGlyph(&ctx, 'A') && u8g2_IsGlyph(&ctx, 'B'));
+    /* Force source-slot eviction, then return to the other original font. */
+    for (unsigned i = 0; i < 5; ++i) {
+        ++sa.revision;
+        u8g2_SetExternalFont(&ctx, &sa);
+        assert(u8g2_IsGlyph(&ctx, 'B'));
+    }
+    u8g2_SetExternalFont(&ctx, &sb);
+    assert(!u8g2_IsGlyph(&ctx, 'A') && u8g2_IsGlyph(&ctx, 'B'));
+}
+
 int main(void) {
     test_external_font_uses_one_block();
     test_external_font_refills_on_block_boundary();
     test_external_font_retries_transient_read_error();
     test_external_font_retries_multiple_transient_errors();
     test_external_font_reloads_invalid_header_for_same_source();
+    test_source_switch_and_revision();
     puts("PASS: u8g2 external font block cache and retry");
     return 0;
 }

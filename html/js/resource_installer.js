@@ -44,11 +44,37 @@
 
   function controls() {
     const connected = !!client;
-    $('externalResourceInstall').disabled = running || !connected || !bundle;
-    $('externalResourceRefresh').disabled = running || !connected;
-    $('externalResourceFolder').disabled = running;
+    const busy = running || !!root.DeviceOperations?.current;
+    $('externalResourceInstall').disabled = busy || !connected || !bundle;
+    $('externalResourceRefresh').disabled = busy || !connected;
+    $('externalResourceFolder').disabled = busy;
+    if ($('externalResourceForce')) $('externalResourceForce').disabled = busy;
     const offline = $('externalResourceOffline');
-    if (offline) offline.disabled = running || !connected || !offlineSupported;
+    if (offline) offline.disabled = busy || !connected || !offlineSupported;
+  }
+
+  async function task(action, parent = null) {
+    const session = client;
+    if (running || !session) return;
+    let owner;
+    try {
+      owner = parent || root.DeviceOperations?.begin('resources');
+      if (owner) root.DeviceOperations.assert(owner);
+      session.owner = owner;
+      return await action();
+    } catch (error) {
+      if (client === session) report(error.message, true);
+    } finally {
+      if (session.owner === owner) session.owner = null;
+      if (!parent && owner) root.DeviceOperations.end(owner);
+    }
+  }
+
+  async function deviceWrite(session, connection, bytes) {
+    if (typeof root.write === 'function') {
+      if (!await root.write(bytes[0], bytes.subarray(1), true, false, true, session.owner))
+        throw new Error('蓝牙写入未完成');
+    } else await connection.writeValueWithResponse(bytes);
   }
 
   function bind(nextCharacteristic) {
@@ -58,11 +84,12 @@
     installationCompleted = false;
     offlineSupported = false; completionMessage = '';
     const token = ++binding;
-    client = new api.ResourceClient(bytes => {
+    const session = new api.ResourceClient(bytes => {
       if (token !== binding || characteristic !== nextCharacteristic)
         throw new Error('蓝牙连接已变化');
-      return nextCharacteristic.writeValueWithResponse(bytes);
-    });
+      return deviceWrite(session, nextCharacteristic, bytes);
+    }, 5000, () => typeof root.currentMtuValue === 'function' ? root.currentMtuValue() : 20);
+    client = session;
     controls();
   }
 
@@ -101,13 +128,20 @@
         const moduleLines = [];
         for (const partition of partitions) {
           const title = names[partition.id] || `分区 ${partition.id}`;
-          try {
-            const info = api.parseHeader(await session.readRange(partition.offset, 32), partition);
-            used.set(partition.id, 32 + info.length);
-            moduleLines.push(`${title}：版本 ${info.revision}`);
-          } catch (_) {
-            used.set(partition.id, 0);
-            moduleLines.push(`${title}：未安装`);
+          if (status.verify) {
+            const info = await session.inspect(partition.id);
+            used.set(partition.id, info.code === 0 ? 32 + info.length : 0);
+            moduleLines.push(`${title}：${info.code === 0 ? `版本 ${info.revision} · 已校验` : api.statusName(info.code)}`);
+          } else {
+            const header = await session.readRange(partition.offset, 32);
+            try {
+              const info = api.parseHeader(header, partition);
+              used.set(partition.id, 32 + info.length);
+              moduleLines.push(`${title}：版本 ${info.revision}`);
+            } catch (error) {
+              used.set(partition.id, 0);
+              moduleLines.push(`${title}：${error.message}`);
+            }
           }
         }
         ensureCurrent(session);
@@ -128,7 +162,8 @@
     return { status, partitions: null };
   }
 
-  async function refresh() {
+  async function refresh(parent = null) { return task(refreshOperation, parent); }
+  async function refreshOperation() {
     if (running) return;
     const session = client;
     running = true; controls();
@@ -137,7 +172,8 @@
     finally { if (client === session) { running = false; controls(); } }
   }
 
-  async function install() {
+  async function install() { return task(installOperation); }
+  async function installOperation() {
     if (running) return;
     if (!client) return report('请先连接设备', true);
     if (!bundle) return report('请先选择资源目录', true);
@@ -155,7 +191,19 @@
         ensureCurrent(session);
       }
       const initializing = current.status.code === 4;
-      const packages = api.installationPlan(selected, current.status.code, current.partitions);
+      let packages = api.installationPlan(selected, current.status.code, current.partitions);
+      if (!initializing && current.status.verify && !$('externalResourceForce')?.checked) {
+        const changed = [];
+        report('正在校验设备资源，跳过未变化的内容…');
+        for (const item of packages) {
+          const info = await session.inspect(item.pack.id);
+          ensureCurrent(session);
+          if (info.code !== 0 || info.length !== item.pack.payload.length || info.crc !== item.pack.crc)
+            changed.push(item);
+          else report(`${names[item.pack.id]}内容一致，已跳过`);
+        }
+        packages = changed;
+      }
       const total = packages.reduce((sum, item) => sum + item.pack.payload.length, 0);
       let completedBytes = 0;
       for (let i = 0; i < packages.length; ++i) {
@@ -165,17 +213,25 @@
         report(`正在写入 ${i + 1}/${packages.length}：${title}`);
         entered = true;
         ensureCurrent(session);
-        await session.upload(item.bytes, n => {
+        let lastProgress = 0;
+        await session.upload(item.bytes, (n, size, durable = n) => {
           if (client !== session) return;
-          const done = completedBytes + n;
+          const now = Date.now();
+          if (n !== size && now - lastProgress < 100) return;
+          lastProgress = now;
+          const done = completedBytes + durable;
           progress.value = done / total;
-          $('externalResourceStatus').textContent = `正在写入 ${i + 1}/${packages.length}：${title} · ${Math.round(done * 100 / total)}%`;
+          $('externalResourceStatus').textContent = n === size ? `${title}已写入，正在校验并提交…` :
+            `正在写入 ${i + 1}/${packages.length}：${title} · ${Math.round(done * 100 / total)}%`;
         }, current.partitions);
         completedBytes += item.pack.payload.length;
         if (item.pack.id === 1) current.partitions = selected.partitions;
       }
       ensureCurrent(session);
-      await session.leave();
+      if (entered) {
+        report('资源已提交，正在应用…');
+        await session.leave();
+      }
       ensureCurrent(session);
       entered = false;
       progress.value = 1;
@@ -184,13 +240,13 @@
       installationCompleted = true;
       if (current.status.hotReload) {
         completionMessage = '资源已应用，设备已断开连接。';
-        report('资源已校验并应用，设备将刷新屏幕，无需断开连接。');
+        report(packages.length ? '资源已校验并应用，设备将刷新屏幕，无需断开连接。' : '设备资源内容一致，无需写入。');
         if (current.status.offline && $('externalResourceAutoOffline')?.checked)
           await enterOffline(session, connection);
       } else {
         report(initializing ? '外置 Flash 初始化完成，设备正在重启。' : '外置 Flash 资源更新完成，设备正在重启。');
         completionMessage = '资源已写入，设备已重启，请重新连接。';
-        try { await connection.writeValueWithResponse(Uint8Array.of(0x91)); }
+        try { await deviceWrite(session, connection, Uint8Array.of(0x91)); }
         catch (_) { /* Legacy reset may close GATT before the write settles. */ }
       }
     } catch (error) {
@@ -207,7 +263,7 @@
     ensureCurrent(session);
     const token = binding;
     if (typeof root.buildTimeData === 'function')
-      await connection.writeValueWithResponse(Uint8Array.of(0x23, ...root.buildTimeData()));
+      await deviceWrite(session, connection, Uint8Array.of(0x23, ...root.buildTimeData()));
     ensureCurrent(session);
     report('正在应用数据并断开连接…');
     await session.runOffline();
@@ -217,7 +273,8 @@
     report(completionMessage);
   }
 
-  async function runOffline() {
+  async function runOffline() { return task(offlineOperation); }
+  async function offlineOperation() {
     if (running || !client) return;
     const session = client, connection = characteristic;
     running = true; controls();
@@ -341,5 +398,5 @@
 
   controls();
   root.ExternalResourceInstaller = { bind, disconnect, notification, refresh, install, runOffline,
-    loadBundle, getBundle: () => bundle, busy: () => running };
+    loadBundle, controls, getBundle: () => bundle, busy: () => running };
 })(globalThis);

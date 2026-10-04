@@ -3,22 +3,35 @@
 #include "fonts.h"
 #include "calendar_resources.h"
 #include "ui_resources.h"
+#include "resource_layout.h"
 
 static bool m_ready;
 
 void epd_resources_invalidate(void)
 {
+    epd_resources_invalidate_partitions(UINT16_MAX);
+}
+
+void epd_resources_invalidate_partitions(uint16_t changed)
+{
+    if (changed & (1U << RS_PART_PARTITION_TABLE)) changed = UINT16_MAX;
     m_ready = false;
 #if GUI_USE_EXTERNAL_FONTS
-    font_store_invalidate();
+    if (changed & (1U << RS_PART_FONTS)) font_store_invalidate();
 #endif
-    calendar_resources_invalidate();
-    ui_resources_invalidate();
+    if (changed & (1U << RS_PART_CALENDAR_RESOURCES)) calendar_resources_invalidate();
+    if (changed & (1U << RS_PART_UI_RESOURCES)) ui_resources_invalidate();
 }
 
 rs_result_t epd_resources_reload(void)
 {
     epd_resources_invalidate();
+    return epd_resources_apply();
+}
+
+rs_result_t epd_resources_apply(void)
+{
+    m_ready = false;
     rs_result_t result = resource_store_mount();
     if (result != RS_OK) return result;
 #if GUI_USE_EXTERNAL_FONTS

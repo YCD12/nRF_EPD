@@ -74,19 +74,18 @@
 
 #define U8G2_FONT_SECTION(name) U8X8_FONT_SECTION(name)
 
-/* External font reads are performed in blocks by u8g2.  FM25Q04B accepts at
- * most 251 data bytes in one SPI transfer (255-byte driver limit minus the
- * four-byte read header), so matching that size avoids splitting every cache
- * miss into two physical reads. */
+/* Match the external Flash driver's 256-byte read chunk so each refill uses
+ * one SPIM transaction. Glyph offsets survive switches among the UI fonts. */
 #ifndef U8G2_FONT_CACHE_SIZE
-#define U8G2_FONT_CACHE_SIZE 251U
+#define U8G2_FONT_CACHE_SIZE 256U
 #endif
 
 /* Keep a few recently resolved code points so width measurement and drawing
  * do not rescan a large external Unicode lookup table for the same glyph. */
 #ifndef U8G2_GLYPH_CACHE_SIZE
-#define U8G2_GLYPH_CACHE_SIZE 4U
+#define U8G2_GLYPH_CACHE_SIZE 16U
 #endif
+#define U8G2_GLYPH_SOURCE_CACHE_SIZE 3U
 
 typedef int (*u8g2_font_read_fn_t)(const void* context,
                                    uint32_t offset,
@@ -201,6 +200,9 @@ typedef struct _u8g2_font_t {
     uint32_t glyph_cache_offset[U8G2_GLYPH_CACHE_SIZE];
     uint8_t glyph_cache_valid[U8G2_GLYPH_CACHE_SIZE];
     uint8_t glyph_cache_next;
+    uint8_t glyph_cache_source[U8G2_GLYPH_CACHE_SIZE];
+    u8g2_font_source_t glyph_sources[U8G2_GLYPH_SOURCE_CACHE_SIZE];
+    uint8_t glyph_source, glyph_source_next;
     uint32_t glyph_cache_end[U8G2_GLYPH_CACHE_SIZE];
     uint32_t glyph_end_offset;
 

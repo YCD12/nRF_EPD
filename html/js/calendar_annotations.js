@@ -349,6 +349,7 @@ const CalendarAnnotations = {
       return true;
     }
     if (data.length < this.NOTIFY_HDR || data[0] !== this.NOTIFY) return false;
+    if (!this._resolveLoad) return true;
     const offset = data[1] | (data[2] << 8);
     const total = data[3] | (data[4] << 8);
     const slice = data.subarray(this.NOTIFY_HDR);
@@ -384,43 +385,70 @@ const CalendarAnnotations = {
     return true;
   },
 
-  async loadFromDevice() {
+  deviceTask(action, parent = null) {
+    return typeof runDeviceOperation === 'function' ? runDeviceOperation('annotations', action, parent) : action(null);
+  },
+
+  cancelLoad() {
+    clearTimeout(this._loadTimer);
+    this.finishLoad(false);
+    this._rx = null;
+    this._loadPromise = null;
+  },
+
+  async loadFromDevice(parent = null) {
     if (!this.requireDevice()) return false;
     if (typeof appVersion === 'number' && appVersion < 0x29) {
       addLog('当前固件不支持回读标注，请升级到 0x29 或更高');
       return false;
     }
     if (this._loadPromise) return this._loadPromise;
-    this._loadPromise = this._loadFromDeviceOnce().finally(() => {
-      this._loadPromise = null;
+    const pending = this.deviceTask(owner => this._loadFromDeviceOnce(owner), parent).finally(() => {
+      if (this._loadPromise === pending) this._loadPromise = null;
     });
-    return this._loadPromise;
+    this._loadPromise = pending;
+    return pending;
   },
 
-  async _loadFromDeviceOnce() {
+  async _loadFromDeviceOnce(owner) {
     this._rx = null;
+    let resolveLoad, timer;
     const done = new Promise((resolve) => {
       let settled = false;
-      this._resolveLoad = (ok) => {
+      resolveLoad = this._resolveLoad = (ok) => {
         if (settled) return;
         settled = true;
         resolve(ok);
       };
-      setTimeout(() => this.finishLoad(false), 4000);
+      timer = this._loadTimer = setTimeout(() => {
+        if (this._resolveLoad === resolveLoad) this.finishLoad(false);
+      }, 4000);
     });
-    const okWrite = await write(EpdCmd.SET_ANNOTATIONS, new Uint8Array([2]));
-    if (!okWrite) {
-      this.finishLoad(false);
-      addLog('请求回读失败');
-      return false;
+    try {
+      const okWrite = await write(EpdCmd.SET_ANNOTATIONS, new Uint8Array([2]), true, true, true, owner);
+      if (owner) DeviceOperations.assert(owner);
+      if (!okWrite) {
+        if (this._resolveLoad === resolveLoad) this.finishLoad(false);
+        addLog('请求回读失败');
+        return false;
+      }
+      const ok = await done;
+      if (owner) DeviceOperations.assert(owner);
+      if (ok) addLog(`已从设备读回 ${this.annotations.length} 条日期标注`);
+      else addLog('回读超时或数据无效');
+      return ok;
+    } finally {
+      clearTimeout(timer);
+      if (this._loadTimer === timer) this._loadTimer = null;
+      if (this._resolveLoad === resolveLoad) this.finishLoad(false);
     }
-    const ok = await done;
-    if (ok) addLog(`已从设备读回 ${this.annotations.length} 条日期标注`);
-    else addLog('回读超时或数据无效');
-    return ok;
   },
 
   async save() {
+    return this.deviceTask(owner => this.saveOperation(owner));
+  },
+
+  async saveOperation(owner) {
     if (!this.requireDevice()) return;
     if (typeof appVersion === 'number' && appVersion < 0x28) {
       addLog('当前固件不支持日期标注，请升级到 0x28 或更高');
@@ -451,7 +479,8 @@ const CalendarAnnotations = {
       payload[3] = bytes.length & 0xff;
       payload[4] = (bytes.length >> 8) & 0xff;
       payload.set(slice, 5);
-      const ok = await write(EpdCmd.SET_ANNOTATIONS, payload);
+      const ok = await write(EpdCmd.SET_ANNOTATIONS, payload, true, true, true, owner);
+      if (owner) DeviceOperations.assert(owner);
       if (!ok) {
         this.cancelCommitWait();
         addLog('标注分片发送失败');
@@ -463,17 +492,22 @@ const CalendarAnnotations = {
         addLog('设备未确认标注已写入外置 Flash，请重试');
         return;
       }
+      if (owner) DeviceOperations.assert(owner);
       addLog(`已保存 ${this.annotations.length} 条日期标注到外置 Flash`);
     } else {
       addLog(`已下发 ${this.annotations.length} 条日期标注`);
     }
     if (!durable && typeof appVersion === 'number' && appVersion >= 0x29) {
-      const verified = await this.loadFromDevice();
+      const verified = await this.loadFromDevice(owner);
       if (!verified) addLog('保存后回读失败，请再读一次核对');
     }
   },
 
   async clearDevice() {
+    return this.deviceTask(owner => this.clearOperation(owner));
+  },
+
+  async clearOperation(owner) {
     if (!this.requireDevice()) return;
     const empty = new Uint8Array(this.HEADER_SIZE);
     const view = new DataView(empty.buffer);
@@ -482,12 +516,14 @@ const CalendarAnnotations = {
     empty[5] = this.RECORD_SIZE;
     const durable = typeof appVersion === 'number' && appVersion >= 0x33;
     const committed = durable ? this.waitForCommit(empty) : null;
-    const ok = await write(EpdCmd.SET_ANNOTATIONS, new Uint8Array([1]));
+    const ok = await write(EpdCmd.SET_ANNOTATIONS, new Uint8Array([1]), true, true, true, owner);
+    if (owner) DeviceOperations.assert(owner);
     if (ok) {
       if (durable && !await committed) {
         addLog('设备未确认清除结果已写入外置 Flash，请重试');
         return;
       }
+      if (owner) DeviceOperations.assert(owner);
       this.annotations = [];
       this.persist();
       this.render();

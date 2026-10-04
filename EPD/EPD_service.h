@@ -48,7 +48,7 @@ void ble_epd_evt_handler(ble_evt_t const* p_ble_evt, void* p_context);
     static ble_epd_t _name; \
     NRF_SDH_BLE_OBSERVER(_name##_obs, BLE_EPD_BLE_OBSERVER_PRIO, ble_epd_evt_handler, &_name)
 
-#define APP_VERSION 0x38  // Atomic mode/time/week request and confirmed application
+#define APP_VERSION 0x39  // Buffered resource transfer and confirmed display completion
 
 // EPD 服务的 128 位基础 UUID（自定义服务）
 #define BLE_UUID_EPD_SVC_BASE \
@@ -85,7 +85,7 @@ typedef char epd_config_fits_control_queue[
 #include "calendar_annotations_tx.h"
 #include "epd_offline.h"
 
-/**@brief 图像传输上下文（断点续传）
+/**@brief 图像顺序传输上下文（失败后整层重传）
  *
  * - 每块 CRC 校验
  * - 顺序流：出现空洞则从 0 重传
@@ -110,7 +110,7 @@ typedef struct {
     bool is_notification_enabled; /**< 对端是否已开启 RX 特性通知 */
     volatile uint8_t initial_notify; /**< 1=config, 2=MTU, 3=voltage; retry from main */
     volatile bool mode_ack_pending;
-    uint8_t mode_ack[4];
+    uint8_t mode_ack[4]; /* Shared MODE / CLEAR / REFRESH completion slot. */
     epd_offline_t offline;
 
     // EPD 硬件与配置
@@ -152,7 +152,7 @@ typedef struct {
     epd_cmd_queue_t cmd_queue; /**< 顺序执行命令队列 */
 
     // 图像传输
-    image_transfer_ctx_t transfer_ctx; /**< CRC 校验与断点续传上下文 */
+    image_transfer_ctx_t transfer_ctx; /**< CRC 校验与顺序接收进度 */
 
 } ble_epd_t;
 

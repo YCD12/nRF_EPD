@@ -54,9 +54,33 @@ static void u8g2_font_cache_reset(u8g2_font_t* u8g2) {
     u8g2->font_cache_length = 0;
     u8g2->font_read_error = 0;
     u8g2->glyph_cache_next = 0U;
+    u8g2->glyph_source = u8g2->glyph_source_next = 0U;
+    memset(u8g2->glyph_sources, 0, sizeof(u8g2->glyph_sources));
     for (i = 0U; i < U8G2_GLYPH_CACHE_SIZE; i++) {
         u8g2->glyph_cache_valid[i] = 0U;
     }
+}
+
+/* Keep lookup results across the three common font switches in calendar cells.
+ * Only offsets survive a switch; the byte cache always belongs to the active
+ * source. Revision/length/reader changes evict the previous source's offsets. */
+static void u8g2_select_glyph_source(u8g2_font_t *u8g2, const u8g2_font_source_t *source)
+{
+    for (uint8_t i = 0; i < U8G2_GLYPH_SOURCE_CACHE_SIZE; ++i) {
+        const u8g2_font_source_t *cached = &u8g2->glyph_sources[i];
+        if (cached->read == source->read && cached->context == source->context &&
+            cached->data == source->data && cached->length == source->length &&
+            cached->revision == source->revision) {
+            u8g2->glyph_source = i;
+            return;
+        }
+    }
+    uint8_t slot = u8g2->glyph_source_next;
+    u8g2->glyph_source_next = (slot + 1U) % U8G2_GLYPH_SOURCE_CACHE_SIZE;
+    u8g2->glyph_source = slot;
+    u8g2->glyph_sources[slot] = *source;
+    for (uint8_t i = 0; i < U8G2_GLYPH_CACHE_SIZE; ++i)
+        if (u8g2->glyph_cache_source[i] == slot) u8g2->glyph_cache_valid[i] = 0;
 }
 
 static void u8g2_apply_placeholder_metrics(u8g2_font_t* u8g2,
@@ -666,6 +690,7 @@ static uint32_t u8g2_font_find_glyph(u8g2_font_t* u8g2, uint16_t encoding) {
 
     for (i = 0U; i < U8G2_GLYPH_CACHE_SIZE; i++) {
         if (u8g2->glyph_cache_valid[i] &&
+            u8g2->glyph_cache_source[i] == u8g2->glyph_source &&
             u8g2->glyph_cache_encoding[i] == encoding) {
             u8g2->glyph_end_offset = u8g2->glyph_cache_end[i];
             return u8g2->glyph_cache_offset[i];
@@ -682,6 +707,7 @@ static uint32_t u8g2_font_find_glyph(u8g2_font_t* u8g2, uint16_t encoding) {
                 u8g2->glyph_cache_offset[cache_slot] = glyph_offset;
                 u8g2->glyph_cache_end[cache_slot] = u8g2->glyph_end_offset;
                 u8g2->glyph_cache_valid[cache_slot] = 1U;
+                u8g2->glyph_cache_source[cache_slot] = u8g2->glyph_source;
                 u8g2->glyph_cache_next =
                     (uint8_t)((cache_slot + 1U) % U8G2_GLYPH_CACHE_SIZE);
             }
@@ -859,7 +885,9 @@ void u8g2_SetExternalFont(u8g2_font_t* u8g2, const u8g2_font_source_t* source) {
     u8g2->placeholder_enabled = 0;
     u8g2->font_info_valid = 0U;
     u8g2->font_info = (u8g2_font_info_t){0};
-    u8g2_font_cache_reset(u8g2);
+    u8g2->font_cache_valid = 0;
+    u8g2->font_read_error = 0;
+    u8g2_select_glyph_source(u8g2, source);
     u8g2_read_font_info(u8g2);
 }
 

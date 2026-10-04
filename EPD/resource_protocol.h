@@ -3,11 +3,14 @@
 #include <stdbool.h>
 #include "resource_store.h"
 
-#define RESOURCE_PACKET_MAX 20U
+#define RESOURCE_PACKET_MAX 244U
 enum {
     RESOURCE_CAP_WRITE = 1U,
     RESOURCE_CAP_ACTIVATE = 2U,
-    RESOURCE_CAP_OFFLINE = 4U
+    RESOURCE_CAP_OFFLINE = 4U,
+    RESOURCE_CAP_LARGE_PACKETS = 8U,
+    RESOURCE_CAP_VERIFY = 16U,
+    RESOURCE_CAP_BUFFERED_WRITE = 32U
 };
 typedef enum { RESOURCE_ENTER, RESOURCE_INVALIDATE, RESOURCE_ACTIVATE, RESOURCE_OFFLINE } resource_event_t;
 typedef rs_result_t (*resource_event_handler_t)(void *context, resource_event_t event,
@@ -18,4 +21,6 @@ void resource_protocol_set_handler(resource_event_handler_t handler, void *conte
 uint8_t resource_protocol_execute(const uint8_t *request, uint8_t length, uint8_t *reply);
 void resource_protocol_reset(void);
 bool resource_protocol_entered(void);
+/* ATT value length, not MTU. Starts at 20; service supplies the current link limit. */
+void resource_protocol_set_data_limit(uint16_t length);
 #endif

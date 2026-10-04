@@ -5,7 +5,7 @@
 
 #include "nrf_assert.h"
 #include "nrf_delay.h"
-#include "nrf_drv_spi.h"
+#include "nrfx_spim.h"
 #include "nrf_log.h"
 #include "main.h"
 
@@ -34,20 +34,14 @@
 #define FM25Q04B_STATUS2_PROTECT_MASK 0x40
 #define FM25Q04B_STATUS2_SRP1_MASK    0x01
 
-/*
- * Maximum data payload per SPI transfer. nrf_drv_spi_transfer takes uint8_t
- * lengths (max 255); the read/write header is always 4 bytes, so usable
- * payload = 255 - 4 = 251 bytes. Exceeding this silently truncates the length
- * to its low byte and returns NRF_SUCCESS with unread/unwritten data.
- * fm25q04b_read splits larger requests and fm25q04b_write caps each page
- * program to this value.
- */
-#define FM25Q04B_SPI_PAYLOAD_MAX      251U
+/* nRF52811 SPIM has a 14-bit MAXCNT. Use nrfx directly so the legacy
+ * uint8_t transfer length cannot truncate a complete 4+256-byte page. */
+#define FM25Q04B_SPI_PAYLOAD_MAX      FM25Q04B_PAGE_SIZE
 #define FM25Q04B_READ_CHUNK_MAX       FM25Q04B_SPI_PAYLOAD_MAX
 #define FM25Q04B_ERASE_TIMEOUT_MS     5000U
 #define FM25Q04B_PROGRAM_TIMEOUT_MS   1000U
 
-static const nrf_drv_spi_t m_fm25q04b_spi = NRF_DRV_SPI_INSTANCE(FM25Q04B_SPI_INSTANCE);
+static const nrfx_spim_t m_fm25q04b_spi = NRFX_SPIM_INSTANCE(FM25Q04B_SPI_INSTANCE);
 static bool m_fm25q04b_initialized;
 static bool m_fm25q04b_sleeping;
 
@@ -72,7 +66,8 @@ static ret_code_t fm25q04b_transfer_raw(const uint8_t* tx_data,
     if (!m_fm25q04b_initialized) {
         return NRF_ERROR_INVALID_STATE;
     }
-    return nrf_drv_spi_transfer(&m_fm25q04b_spi, tx_data, tx_len, rx_data, rx_len);
+    nrfx_spim_xfer_desc_t transfer = NRFX_SPIM_XFER_TRX(tx_data, tx_len, rx_data, rx_len);
+    return nrfx_spim_xfer(&m_fm25q04b_spi, &transfer, 0);
 }
 
 static ret_code_t fm25q04b_transfer(const uint8_t* tx_data,
@@ -231,7 +226,7 @@ static ret_code_t fm25q04b_page_program(uint32_t address, const uint8_t* data, s
 }
 
 ret_code_t fm25q04b_init(void) {
-    nrf_drv_spi_config_t spi_config = NRF_DRV_SPI_DEFAULT_CONFIG;
+    nrfx_spim_config_t spi_config = NRFX_SPIM_DEFAULT_CONFIG;
     ret_code_t ret;
 
     if (m_fm25q04b_initialized) {
@@ -242,12 +237,12 @@ ret_code_t fm25q04b_init(void) {
     spi_config.miso_pin = FM25Q04B_MISO_PIN;
     spi_config.sck_pin = FM25Q04B_SCK_PIN;
     spi_config.mosi_pin = FM25Q04B_MOSI_PIN;
-    spi_config.frequency = NRF_DRV_SPI_FREQ_8M;
-    spi_config.mode = NRF_DRV_SPI_MODE_0;
-    spi_config.bit_order = NRF_DRV_SPI_BIT_ORDER_MSB_FIRST;
+    spi_config.frequency = NRF_SPIM_FREQ_8M;
+    spi_config.mode = NRF_SPIM_MODE_0;
+    spi_config.bit_order = NRF_SPIM_BIT_ORDER_MSB_FIRST;
     spi_config.orc = 0xFFU;
 
-    ret = nrf_drv_spi_init(&m_fm25q04b_spi, &spi_config, NULL, NULL);
+    ret = nrfx_spim_init(&m_fm25q04b_spi, &spi_config, NULL, NULL);
     if (ret != NRF_SUCCESS) {
         return ret;
     }
@@ -256,7 +251,7 @@ ret_code_t fm25q04b_init(void) {
     m_fm25q04b_sleeping = false;
     ret = fm25q04b_release_powerdown();
     if (ret != NRF_SUCCESS) {
-        nrf_drv_spi_uninit(&m_fm25q04b_spi);
+        nrfx_spim_uninit(&m_fm25q04b_spi);
         m_fm25q04b_initialized = false;
         m_fm25q04b_sleeping = false;
         return ret;
@@ -264,7 +259,7 @@ ret_code_t fm25q04b_init(void) {
 
     ret = fm25q04b_clear_block_protection();
     if (ret != NRF_SUCCESS) {
-        nrf_drv_spi_uninit(&m_fm25q04b_spi);
+        nrfx_spim_uninit(&m_fm25q04b_spi);
         m_fm25q04b_initialized = false;
         m_fm25q04b_sleeping = false;
         return ret;
@@ -403,9 +398,10 @@ static ret_code_t fm25q04b_read_status(uint8_t* status) {
 static ret_code_t fm25q04b_wait_ready(uint32_t timeout_ms) {
     uint8_t status = 0xFF;
     ret_code_t ret;
-    uint8_t feed_ticks = 0;
+    uint32_t remaining_us = timeout_ms * 1000U;
+    uint32_t delay_us = 50U, feed_us = 0U;
 
-    while (timeout_ms-- > 0) {
+    while (remaining_us > 0) {
         ret = fm25q04b_read_status(&status);
         if (ret != NRF_SUCCESS) {
             return ret;
@@ -413,11 +409,18 @@ static ret_code_t fm25q04b_wait_ready(uint32_t timeout_ms) {
         if ((status & FM25Q04B_STATUS_WIP_MASK) == 0) {
             return NRF_SUCCESS;
         }
-        if (++feed_ticks >= 16U) {
+        uint32_t wait_us = delay_us < remaining_us ? delay_us : remaining_us;
+        nrf_delay_us(wait_us);
+        remaining_us -= wait_us;
+        feed_us += wait_us;
+        if (feed_us >= 16000U) {
             app_feed_wdt();
-            feed_ticks = 0;
+            feed_us = 0U;
         }
-        nrf_delay_ms(1);
+        if (delay_us < 1000U) {
+            delay_us *= 2U;
+            if (delay_us > 1000U) delay_us = 1000U;
+        }
     }
 
     NRF_LOG_ERROR("FM25Q04B busy timeout, status=0x%02x", status);

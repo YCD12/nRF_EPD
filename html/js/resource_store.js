@@ -43,6 +43,7 @@
     if (!(reply[4] & 1) || reply[5] !== 1 || u32(reply, 12) !== CAPACITY) throw new Error('设备不支持外置 Flash 读写或资源 ABI/容量不兼容');
     return { code: reply[3], abi: reply[5], active: reply[6], entered: !!reply[7],
       hotReload: !!(reply[4] & 2), offline: !!(reply[4] & 4),
+      largePackets: !!(reply[4] & 8), verify: !!(reply[4] & 16), buffered: !!(reply[4] & 32),
       received: u32(reply, 8), capacity: u32(reply, 12) };
   }
   function validateTarget(pack, partitions) {
@@ -103,9 +104,14 @@
     return packages;
   }
   class ResourceClient {
-    constructor(write, timeout = 5000) {
+    constructor(write, timeout = 5000, dataLength = () => 20) {
       this.write = write; this.timeout = timeout; this.token = 0;
       this.pending = null; this.busy = false; this.closed = false;
+      this.dataLength = dataLength; this.capabilities = null;
+    }
+    packetLimit() {
+      const n = Number(typeof this.dataLength === 'function' ? this.dataLength() : this.dataLength);
+      return this.capabilities?.largePackets && Number.isInteger(n) ? Math.max(20, Math.min(244, n)) : 20;
     }
     receive(bytes) {
       const p = this.pending;
@@ -119,7 +125,7 @@
       this.pending = null;
     }
     async request(op, body = new Uint8Array(), allowStatus = false) {
-      if (this.closed || this.busy || body.length > 17) throw new Error('连接不可用或请求正在执行');
+      if (this.closed || this.busy || body.length > this.packetLimit() - 3) throw new Error('连接不可用或请求正在执行');
       this.busy = true;
       const packet = Uint8Array.of(0x26, op, this.token++ & 255, ...body);
       try {
@@ -136,7 +142,7 @@
             });
             const result = await Promise.all([answer, written]);
             const reply = result[0];
-            if (reply[3] !== 0 && !allowStatus) throw Object.assign(new Error(`设备返回：${statusName(reply[3])}`), { device: true });
+            if (reply[3] !== 0 && !allowStatus) throw Object.assign(new Error(`设备返回：${statusName(reply[3])}`), { device: true, code: reply[3] });
             return reply;
           } catch (error) {
             if (this.closed || error.device || attempt === 2) throw error;
@@ -144,12 +150,26 @@
         }
       } finally { this.busy = false; }
     }
-    status() { return this.request(0, new Uint8Array(), true); }
+    async status() {
+      const reply = await this.request(0, new Uint8Array(), true);
+      this.capabilities = parseStatus(reply);
+      return reply;
+    }
+    async inspect(partition) {
+      if (!this.capabilities?.verify) return null;
+      const reply = await this.request(9, Uint8Array.of(partition), true);
+      if (reply[3] !== 0) {
+        if ([1, 3, 4, 6].includes(reply[3])) return { code: reply[3] };
+        throw new Error(`资源校验失败：${statusName(reply[3])}`);
+      }
+      if (reply.length !== 16) throw new Error('资源校验响应长度错误');
+      return { code: 0, revision: u32(reply, 4), length: u32(reply, 8), crc: u32(reply, 12) };
+    }
     leave() { return this.request(7); }
     runOffline() { return this.request(8); }
     async read(address, length) {
       if (!Number.isInteger(address) || !Number.isInteger(length) || address < 0 ||
-          length < 1 || length > 16 || address + length > 524288) throw new Error('读取范围错误');
+          length < 1 || length > this.packetLimit() - 4 || address + length > 524288) throw new Error('读取范围错误');
       const body = new Uint8Array(5);
       put32(body, 0, address); body[4] = length;
       const reply = await this.request(1, body);
@@ -159,10 +179,12 @@
     async readRange(address, length, progress = () => {}) {
       if (!Number.isInteger(address) || !Number.isInteger(length) || address < 0 || length < 1 || address + length > CAPACITY) throw new Error('读取范围错误');
       const data = new Uint8Array(length);
-      for (let at = 0; at < data.length; at += 16) {
-        const n = Math.min(16, data.length - at);
+      let reported = 0;
+      for (let at = 0; at < data.length;) {
+        const n = Math.min(this.packetLimit() - 4, data.length - at);
         data.set(await this.read(address + at, n), at);
-        if ((at + n) % 256 === 0 || at + n === length) progress(at + n, data.length);
+        at += n;
+        if (at - reported >= 256 || at === length) { progress(at, data.length); reported = at; }
       }
       return data;
     }
@@ -189,12 +211,22 @@
       begin[0] = pack.id;
       put32(begin, 1, pack.payload.length); put32(begin, 5, pack.crc); put32(begin, 9, pack.revision);
       await this.request(2, begin);
-      for (let at = 0; at < pack.payload.length; at += 13) {
-        const part = pack.payload.subarray(at, at + 13);
+      const buffered = status.buffered;
+      let durable = 0;
+      for (let at = 0; at < pack.payload.length;) {
+        const part = pack.payload.subarray(at, at + this.packetLimit() - 7);
         const body = new Uint8Array(4 + part.length);
         put32(body, 0, at); body.set(part, 4);
-        await this.request(3, body); progress(at + part.length, pack.payload.length);
+        const reply = await this.request(buffered ? 10 : 3, body);
+        at += part.length;
+        if (buffered) {
+          if (reply.length !== 12 || u32(reply, 4) !== at || u32(reply, 8) < durable || u32(reply, 8) > at)
+            throw new Error('资源写入进度确认错误');
+          durable = u32(reply, 8);
+        } else durable = at;
+        progress(at, pack.payload.length, durable);
       }
+      if (durable !== pack.payload.length) throw new Error('资源尾页尚未写入 Flash');
       await this.request(4);
     }
   }
