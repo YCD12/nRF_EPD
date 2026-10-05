@@ -26,9 +26,7 @@
       check('no glyph header', bytes[8] === 0 && bytes[15] === 0);
       check('first label 休', bytes[16 + 5] === 3);
       check('second flags large red corner', bytes[32 + 4] === (1 | (2 << 1) | (2 << 3) | (1 << 5)));
-      let rejected = false;
-      try { CalendarAnnotations.assertLabel('生'); } catch (e) { rejected = true; }
-      check('rejects missing glyph 生', rejected);
+      check('accepts labels requiring generated glyphs', CalendarAnnotations.assertLabel('生日') === '生日');
       check('allows 休', CalendarAnnotations.assertLabel('休') === '休');
       const unpacked = CalendarAnnotations.unpack(bytes);
       check('unpack count', unpacked.length === 2);

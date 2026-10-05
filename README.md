@@ -395,7 +395,9 @@ build-external-resources.bat 3 output\resources-r3 "" calendar-2027.json
 当前业务固件直接支持查看、导出和更新分区资源；新版分区固件停用旧版 BIN 字库入口，字体改用 `fonts.ers`。
 BIN 为原始备份，不能直接作为 ERS 上传；列表的包头校验不代表载荷 CRC 已校验。
 
-“编辑并生成设备资源”支持加载默认模板或完整资源工程，在浏览器内修改日历、节日/休班表、文字和 19 个固定 UI 组件，生成 CAL1/UIR1/FPK1 对应的 ERS 包。可选替换三个兼容的 u8g2 字模 `.bin`，也可下载单个 ERS 或导出完整 JSON 工程。JSON 仅用于网页编辑，设备只读取二进制资源。默认年份为 2025–2027；扩展年份须提供相应计算表，新增汉字须有字模。模板与命令行生成器的同步检查为 `python tools/export_web_template.py --check`。
+“编辑并生成设备资源”支持加载默认模板或完整资源工程，在浏览器内修改日历、节日/休班表、文字和 19 个固定 UI 组件，生成 CAL1/UIR1/FPK1 对应的 ERS 包。可选替换三个兼容的 u8g2 字模 `.bin`，也可下载单个 ERS 或导出完整 JSON 工程。新增文字缺字时，网页使用浏览器可用字体生成字模并合并到字体包。JSON 仅用于网页编辑，设备只读取二进制资源。默认年份为 2025–2027；扩展年份须提供相应计算表。模板与命令行生成器的同步检查为 `python tools/export_web_template.py --check`。
+
+保存日期标注时，网页会检查设备实际字库，为缺字生成对应字模并写入外置 Flash，字体应用成功后继续保存标注。该能力提供通用的字模生成和设备安装接口，后续文字功能可复用；当前支持 Unicode BMP，标注标签仍最多 9 个 UTF-8 字节。使用与接口说明见[网页按需补充外置字库](docs/web-font-generation.md)。
 
 固件 `0x35` 起，写入完成后直接校验并应用资源，保留设备时间。网页切换日历、分屏时钟、全屏时钟后，设备保持蓝牙连接也会刷新；资源维护会话、传图及屏幕初始化期间保留显示互斥。资源更新页面可选择完成后自动断连，也可单独点击“应用并断开连接”，断连不是刷新的前提。断开后设备继续运行，蓝牙按原策略间歇广播。广播间隔、超时和唤醒配置沿用原逻辑，资源应用不关闭蓝牙广播。单张图片继续直传屏幕 RAM；这里没有加入图片轮播存储。
 
@@ -584,6 +586,7 @@ BLE 连接、真实墨水屏刷新、电源与低电量行为，仍然需要在�
 
 - 开发说明：[docs/develop.md](docs/develop.md)
 - BLE 协议：[docs/ble-protocol.md](docs/ble-protocol.md)
+- 网页按需补充外置字库：[docs/web-font-generation.md](docs/web-font-generation.md)
 - Flash 与网页优化实现及验证：[docs/flash-web-optimization-20261001.md](docs/flash-web-optimization-20261001.md)
 - SoftDevice 安全刷写说明：[docs/flash_softdevice_safe_refactor_summary.md](docs/flash_softdevice_safe_refactor_summary.md)
 - 应用工程：`Keil/EPD-nRF52.uvprojx`

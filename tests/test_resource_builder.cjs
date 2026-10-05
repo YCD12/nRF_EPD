@@ -95,6 +95,8 @@ function editorFixture() {
     async loadBundle(entries) { current = store.prepareBundle(entries); context.ExternalResourceEditor.load(current); },
   };
   const context = { EPDResourceBuilder: builder, EPDResourceStore: store, ExternalResourceInstaller: installer,
+    EPDWebFonts: { extendFonts: (fonts, requests) => require('../html/js/font_builder.js').extendFonts(fonts, requests,
+      { rasterize: async () => ({ width: 2, height: 2, x: 0, y: 0, advance: 3, pixels: Uint8Array.of(1,0,0,1) }) }) },
     Uint8Array, Blob, setTimeout: fn => fn(), btoa: b => Buffer.from(b, 'binary').toString('base64'),
     document: { getElementById: node, createElement: () => ({ click() {} }) },
     URL: { createObjectURL: blob => { saved = blob; return 'blob:test'; }, revokeObjectURL() {} } };
@@ -112,6 +114,8 @@ test('editor loads, previews, generates, exports a complete reusable project and
   const result = await f.editor.generate();
   assert.equal(result.packages.length, 6);
   assert.equal(builder.open(result).calendar.solar_festivals[0].name, '新年');
+  assert.equal(builder.validateFont(builder.open(result).fonts[0], 0).has('新'.codePointAt(0)), true);
+  assert.equal(builder.validateFont(builder.open(result).fonts[1], 1).has('新'.codePointAt(0)), true);
   await f.editor.exportProject();
   const project = JSON.parse(await f.saved().text());
   assert.equal(project.format, 'EPD-RESOURCE-PROJECT-1');

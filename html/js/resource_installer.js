@@ -270,6 +270,31 @@
     return true;
   }
 
+  function markResourcesChanged() {
+    if (readbackData) { readbackData.stale = true; renderReadback(); }
+    if (deviceSnapshot) { deviceSnapshot.stale = true; renderUsage(); renderVersions(); }
+  }
+
+  async function ensureFonts(requests, parent = null, progress = () => {}) {
+    const session = client;
+    if (running || !session) throw new Error('设备资源连接不可用或正在执行其他任务');
+    if (!root.EPDFontSync) throw new Error('网页字体模块未加载，请刷新页面');
+    const owner = parent || root.DeviceOperations?.begin('fonts');
+    try {
+      if (owner) root.DeviceOperations.assert(owner);
+      session.owner = owner;
+      running = true; controls();
+      return await root.EPDFontSync.ensure(session, requests, {
+        assertCurrent: () => { ensureCurrent(session); if (owner) root.DeviceOperations.assert(owner); },
+        progress, onWrite: markResourcesChanged
+      });
+    } finally {
+      if (session.owner === owner) session.owner = null;
+      if (session === client) { running = false; controls(); }
+      if (!parent && owner) root.DeviceOperations.end(owner);
+    }
+  }
+
   async function readStatus(silent = false, session = client) {
     ensureCurrent(session);
     const status = api.parseStatus(await session.status());
@@ -459,6 +484,28 @@
       }
       const initializing = current.status.code === 4;
       let packages = api.installationPlan(selected, current.status.code, current.partitions);
+      if (!initializing && root.EPDFontSync) {
+        const fontItem = packages.find(item => item.pack.id === 7);
+        if (fontItem) {
+          const fontPartition = current.partitions.find(item => item.id === 7);
+          const info = await session.inspect(7);
+          ensureCurrent(session);
+          // Invalid/missing old fonts can be repaired from the incoming pack.
+          // Transport failures propagate so a read failure never loses glyphs.
+          if (!info || info.code === 0) {
+            report('正在保留设备已补充的字模…');
+            const installed = await session.readPackage(fontPartition);
+            ensureCurrent(session);
+            const retained = root.EPDFontSync.preserve(fontItem.bytes, installed, current.partitions);
+            if (retained.repair) report('设备字体格式无效，将使用所选字体资源修复');
+            if (retained.added.length) {
+              packages = packages.map(item => item === fontItem
+                ? { ...item, bytes: retained.bytes, pack: api.parsePackage(retained.bytes) } : item);
+              report(`保留了 ${retained.added.length} 个设备字模`);
+            }
+          }
+        }
+      }
       if (!initializing && current.status.verify && !$('externalResourceForce')?.checked) {
         const changed = [];
         report('正在校验设备资源，跳过未变化的内容…');
@@ -653,5 +700,5 @@
   renderBundle(); renderUsage(); renderVersions(); renderReadback();
   controls();
   root.ExternalResourceInstaller = { bind, disconnect, notification, refresh, readback, saveReadback, install, runOffline,
-    loadBundle, controls, getBundle: () => bundle, busy: () => running };
+    ensureFonts, loadBundle, controls, getBundle: () => bundle, busy: () => running };
 })(globalThis);

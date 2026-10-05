@@ -15,7 +15,7 @@
     $('resourceLayoutSource').value = JSON.stringify(model.ui, null, 2);
     for (let i = 0; i < 3; ++i) $('resourceFont' + i).value = '';
     preview();
-    report('资源已载入，可编辑后生成。计算表仅覆盖所列年份；新增文字还需要对应字模。');
+    report('资源已载入，可编辑后生成。新增文字的缺失字模会自动生成。');
   }
   function editModel() {
     if (!base) throw new Error('请先加载默认模板或选择资源目录');
@@ -49,20 +49,22 @@
         return file ? new Uint8Array(await file.arrayBuffer()) : font;
       }));
       if (base !== selectedBase) throw new Error('资源目录已变化，请重新生成');
-      next.fonts = fonts;
-      const result = builder.build(selectedBase, next);
-      const missing = new Set();
-      const glyphs = fonts.slice(0, 2).map((font, i) => builder.validateFont(font, i));
+      builder.encodeCalendar(next.calendar); builder.encodeUI(next.ui);
+      let text = '';
       function checkText(value) {
         if (typeof value === 'string') {
-          for (const char of value) if (char.trim() && glyphs.some(set => !set.has(char.codePointAt(0)))) missing.add(char);
+          text += value;
         } else if (Array.isArray(value)) value.forEach(checkText);
         else if (value && typeof value === 'object') Object.values(value).forEach(checkText);
       }
       checkText(next.calendar);
+      const extended = await root.EPDWebFonts.extendFonts(fonts, [{ slot: 0, text }, { slot: 1, text }]);
+      if (base !== selectedBase || root.ExternalResourceInstaller.busy()) throw new Error('资源或设备任务已变化，请重新生成');
+      next.fonts = extended.fonts;
+      const result = builder.build(selectedBase, next);
       await root.ExternalResourceInstaller.loadBundle(result.packages, '网页生成的资源');
       report(`已生成 ${result.total} 字节，可一键烧录或下载。` +
-        (missing.size ? ` 字体缺字：${Array.from(missing).join('')}；设备会显示占位符，请补充相应字模。` : ''));
+        (extended.added.length ? ` 已补充 ${extended.added.length} 个字模。` : ''));
       return result;
     } catch (error) { report(error.message, true); return null; }
   }

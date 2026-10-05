@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="zh-CN">
+<meta charset="utf-8">
+<title>Browser font rasterization smoke test</title>
+<pre id="out">running</pre>
+<script src="../html/js/resource_store.js"></script>
+<script src="../html/js/resource_builder.js"></script>
+<script src="../html/js/font_builder.js"></script>
+<script>
+(async () => {
+  const out = document.getElementById('out'), evidence = [];
+  const check = (name, valid) => { if (!valid) throw new Error(name); };
+  try {
+    const template = await (await fetch('../html/resources/default-project.json')).json();
+    const bundle = EPDResourceStore.prepareBundle(template.files.map(file => ({
+      name: file.name, bytes: Uint8Array.from(atob(file.base64), char => char.charCodeAt(0))
+    })));
+    const { fonts } = EPDResourceBuilder.open(bundle);
+    for (const slot of [0, 1]) {
+      for (const char of '生日会') {
+        const code = char.codePointAt(0), header = fonts[slot].slice(0, 23);
+        const glyph = await EPDWebFonts.rasterizeGlyph(code, slot, header);
+        const record = EPDWebFonts.encodeGlyph(header, code, glyph);
+        const decoded = EPDWebFonts.decodeGlyph(header, code, record);
+        check(`${char} metrics round trip`, ['width', 'height', 'x', 'y', 'advance']
+          .every(key => glyph[key] === decoded[key]));
+        check(`${char} pixels round trip`, glyph.pixels.every((pixel, i) => pixel === decoded.pixels[i]));
+        check(`${char} has ink`, glyph.pixels.some(pixel => pixel === 1));
+        evidence.push({ char, code, slot, width: glyph.width, height: glyph.height,
+          x: glyph.x, y: glyph.y, advance: glyph.advance, recordBytes: record.length,
+          inkPixels: glyph.pixels.reduce((sum, pixel) => sum + pixel, 0),
+          pixels: Array.from(glyph.pixels) });
+      }
+    }
+    const requests = [0, 1].map(slot => ({ slot, text: '生日会' }));
+    const generated = await EPDWebFonts.extendFonts(fonts, requests);
+    check('all characters present after generation', EPDWebFonts.gatherMissing(generated.fonts, requests).length === 0);
+    const pack = EPDResourceBuilder.encodeFonts(generated.fonts);
+    EPDResourceBuilder.decodeFonts(pack);
+    let unsupportedReason = '';
+    try { await EPDWebFonts.rasterizeGlyph(0x0378, 0, fonts[0].slice(0, 23)); }
+    catch (error) { unsupportedReason = error.message; }
+    check('notdef glyph rejected', /不支持|缺字/.test(unsupportedReason));
+    out.textContent = 'PASS: real Canvas Chinese fonts, compact metrics and codec round trip\n' +
+      JSON.stringify({ browser: navigator.userAgent, generated: generated.added,
+        packBytes: pack.length, packBase64: btoa(String.fromCharCode(...pack)), unsupportedReason, evidence }, null, 2);
+  } catch (error) {
+    out.textContent = 'FAIL: ' + error.message + '\n' + JSON.stringify(evidence, null, 2);
+  }
+})().catch(error => { document.getElementById('out').textContent = 'FAIL: ' + error.stack; });
+</script>
+</html>

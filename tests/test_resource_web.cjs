@@ -413,6 +413,80 @@ function installerFixture(Client = ResourceClient, fetch) {
     select: files => listeners.get('externalResourceFolder:change')({ target: { files } }) };
 }
 
+test('font synchronization keeps the parent operation owner and propagates failures', async () => {
+  let session;
+  class Client { constructor() { session = this; } disconnect() { this.closed = true; } }
+  const { installer, context } = installerFixture(Client);
+  installer.bind({});
+  const owner = {};
+  context.DeviceOperations = { current: owner, assert: value => assert.equal(value, owner), end() { throw new Error('must retain parent'); } };
+  context.EPDFontSync = { ensure: async (client, requests, options) => {
+    assert.equal(client, session); assert.equal(client.owner, owner);
+    assert.equal(installer.busy(), true); options.assertCurrent();
+    throw new Error('font load failed');
+  } };
+  await assert.rejects(installer.ensureFonts([{ slot: 0, text: '生' }], owner), /font load failed/);
+  assert.equal(installer.busy(), false);
+  assert.equal(session.owner, null);
+  assert.equal(context.DeviceOperations.current, owner);
+  installer.disconnect();
+  await assert.rejects(installer.ensureFonts([{ slot: 0, text: '生' }], owner), /连接不可用/);
+});
+
+test('late font synchronization cannot unlock a newer connection operation', async () => {
+  class Client { disconnect() {} }
+  const { installer, context } = installerFixture(Client);
+  const started = deferred(), release = deferred(), owner = {};
+  installer.bind({});
+  context.DeviceOperations = { current: owner, assert: value => {
+    if (value !== context.DeviceOperations.current) throw new Error('operation changed');
+  } };
+  context.EPDFontSync = { ensure: async (client, requests, options) => {
+    started.resolve(); await release.promise; options.assertCurrent(); return { changed: false, added: [] };
+  } };
+  const old = installer.ensureFonts([{ slot: 0, text: '生' }], owner);
+  await started.promise;
+  installer.bind({});
+  const currentOwner = context.DeviceOperations.current = {};
+  release.resolve();
+  await assert.rejects(old, /连接已变化/);
+  assert.equal(context.DeviceOperations.current, currentOwner);
+});
+
+test('regular resource installation merges actual device-only glyphs into the incoming font pack', async () => {
+  const builder = require('../html/js/resource_builder.js'), glyphs = require('../html/js/font_builder.js');
+  const sync = require('../html/js/font_sync.js');
+  const template = require('../html/resources/default-project.json');
+  const entries = template.files.map(f => ({ name: f.name, bytes: new Uint8Array(Buffer.from(f.base64, 'base64')) }));
+  const base = prepareBundle(entries), fonts = builder.open(base).fonts;
+  const generated = await glyphs.extendFonts(fonts, [{ slot: 0, text: '生' }], {
+    rasterize: async () => ({ width: 2, height: 2, x: 0, y: 0, advance: 3, pixels: Uint8Array.of(1,0,0,1) })
+  });
+  const installed = new Map(base.packages.map(p => [p.pack.id, p.bytes]));
+  installed.set(7, builder.wrap(7, builder.encodeFonts(generated.fonts), 2));
+  const incomingFonts = fonts.map(f => f.slice()); incomingFonts[1][0] = 100;
+  const incoming = entries.map(entry => parsePackage(entry.bytes).id === 7
+    ? { ...entry, bytes: builder.wrap(7, builder.encodeFonts(incomingFonts), 3) } : entry);
+  const uploads = [];
+  class Client {
+    status() { const b = statusBytes(0); b[4] = 0x13; return b; }
+    partitions() { return base.partitions; }
+    inspect(id) { const pack = parsePackage(installed.get(id)); return { code: 0, revision: pack.revision, crc: pack.crc, length: pack.payload.length }; }
+    readPackage(partition) { return installed.get(partition.id); }
+    upload(bytes) { uploads.push(bytes); installed.set(parsePackage(bytes).id, bytes); }
+    leave() {}
+    disconnect() {}
+  }
+  const { installer, context } = installerFixture(Client);
+  context.EPDFontSync = sync;
+  await installer.loadBundle(incoming);
+  installer.bind({}); await installer.install();
+  assert.equal(uploads.length, 1);
+  const written = builder.decodeFonts(parsePackage(uploads[0]).payload);
+  assert.equal(builder.validateFont(written[0], 0).has('生'.codePointAt(0)), true);
+  assert.equal(written[1][0], 100);
+});
+
 test('offline application ACK remains authoritative if the final GATT write closes', async () => {
   const client = new ResourceClient(async packet => {
     client.receive(Uint8Array.of(0xa7, 8, packet[2], 0));

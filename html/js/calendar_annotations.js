@@ -18,21 +18,6 @@ const CalendarAnnotations = {
   COLOR_RED: 2,
   POS_BELOW: 0,
   POS_CORNER: 1,
-  /* Characters compiled into u8g2_font_wqy9/12_t_lunar. */
-  FONT_CHARS:
-    '正月二月三月四月五月六月七月八月九月十月冬月腊月闰' +
-    '初一廿二三十' +
-    '星期一二三四五六日周' +
-    '猴鸡狗猪鼠牛虎兔龙蛇马羊' +
-    '庚辛壬癸甲乙丙丁戊己' +
-    '申酉戌亥子丑寅卯辰巳午未' +
-    '小寒大寒立春雨水惊蛰春分清明谷雨立夏小满芒种夏至' +
-    '小暑大暑立秋处暑白露秋分寒露霜降立冬小雪大雪冬至' +
-    '年月日离还有天℃' +
-    '元旦节情人节妇女节植树节愚人节劳动节青年节儿童节建党节建军节教师节国庆节' +
-    '母亲节父亲节万圣节感恩节平安夜圣诞节' +
-    '春节元宵节龙抬头端午节七夕节中元节中秋节重阳节寒衣节腊八节除夕' +
-    '休班',
 
   annotations: [],
   _commitWaiter: null,
@@ -73,12 +58,6 @@ const CalendarAnnotations = {
     return new TextEncoder().encode(text || '').length;
   },
 
-  fontHasChar(ch) {
-    const code = ch.codePointAt(0);
-    if (code >= 0x20 && code <= 0x7e) return true;
-    return this.FONT_CHARS.indexOf(ch) >= 0;
-  },
-
   selectedPosition() {
     const select = document.getElementById('calendarAnnotationPosition');
     return Number(select ? select.value : 0) === this.POS_CORNER ? this.POS_CORNER : this.POS_BELOW;
@@ -100,11 +79,23 @@ const CalendarAnnotations = {
       throw new Error(`短标签最多 ${this.MAX_LABEL_BYTES} 个 UTF-8 字节（中文最多 3 个）`);
     }
     for (const ch of normalized) {
-      if (!this.fontHasChar(ch)) {
-        throw new Error(`“${ch}”不在机内日历字库中，请改用节日/农历/休班等已有汉字，或英文字母`);
-      }
+      const code = ch.codePointAt(0);
+      if (code < 0x20 || (code >= 0x7f && code <= 0x9f) ||
+          code > 0xffff || (code >= 0xd800 && code <= 0xdfff))
+        throw new Error(`“${ch}”暂不支持，请使用基本平面的文字，避免控制字符或表情`);
     }
     return normalized;
+  },
+
+  fontRequests() {
+    const texts = ['', ''];
+    for (const item of this.annotations) {
+      const text = this.assertLabel(item.label || '');
+      if (/[a-z]/i.test(text) || item.fontSize === this.FONT_SMALL) texts[0] += text;
+      else if (item.fontSize === this.FONT_LARGE) texts[1] += text;
+      else { texts[0] += text; texts[1] += text; }
+    }
+    return texts.map((text, slot) => ({ slot, text })).filter(item => item.text);
   },
 
   packFlags(item) {
@@ -658,8 +649,17 @@ const CalendarAnnotations = {
     let bytes;
     try {
       bytes = this.pack();
+      const requests = this.fontRequests();
+      if (requests.length) {
+        if (typeof ExternalResourceInstaller === 'undefined' || typeof ExternalResourceInstaller.ensureFonts !== 'function')
+          throw new Error('网页字体模块未加载，请刷新页面后重试');
+        const result = await ExternalResourceInstaller.ensureFonts(requests, owner, message => this.report(message));
+        if (owner) DeviceOperations.assert(owner);
+        if (result.changed) addLog(`已补充 ${result.added.length} 个字模并加载到设备`);
+      }
     } catch (e) {
-      addLog(e.message);
+      if (owner && DeviceOperations.current !== owner) return;
+      this.report(e.message, true);
       return;
     }
     const durable = typeof appVersion === 'number' && appVersion >= 0x33;
@@ -689,7 +689,7 @@ const CalendarAnnotations = {
         return;
       }
       if (owner) DeviceOperations.assert(owner);
-      addLog(`已保存 ${this.annotations.length} 条日期标注到外置 Flash`);
+      this.report(`已保存 ${new DataView(bytes.buffer).getUint16(6, true)} 条日期标注到外置 Flash`);
     } else {
       addLog(`已下发 ${this.annotations.length} 条日期标注`);
     }

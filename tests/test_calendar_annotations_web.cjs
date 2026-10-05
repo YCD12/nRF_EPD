@@ -39,6 +39,55 @@ test('device failure does not become a successful save confirmation', async () =
   assert.equal(await completion, false);
 });
 
+test('new labels accept missing BMP glyphs and reject unsupported encodings', () => {
+  const annotations = load();
+  assert.equal(annotations.assertLabel('生日会'), '生日会');
+  for (const text of ['😀', '\ud800', 'a\u0000b', '1234567890']) assert.throws(() => annotations.assertLabel(text));
+});
+
+test('font requests follow device letter fallback and cover both sizes for follow mode', () => {
+  const annotations = load();
+  annotations.annotations = [
+    { label: '生日', fontSize: 0 }, { label: '聚', fontSize: 12 },
+    { label: 'A会', fontSize: 12 }, { label: '约', fontSize: 9 }, { label: '' }
+  ];
+  assert.deepEqual(JSON.parse(JSON.stringify(annotations.fontRequests())), [
+    { slot: 0, text: '生日A会约' }, { slot: 1, text: '生日聚' }
+  ]);
+});
+
+test('font load completes under the annotation owner before any annotation write or commit timer', async () => {
+  const calls = [], owner = {};
+  let annotations;
+  annotations = load({ appVersion: 0x39, epdCharacteristic: {}, EpdCmd: { SET_ANNOTATIONS: 0x24 }, addLog() {},
+    document: { getElementById: () => null }, DeviceOperations: { current: owner, assert: value => assert.equal(value, owner) },
+    ExternalResourceInstaller: { ensureFonts: async (requests, value) => {
+      assert.equal(value, owner); assert.equal(annotations._commitWaiter, null);
+      calls.push('font-loaded'); return { changed: true, added: [{ slot: 0, codePoint: 0x751f }] };
+    } },
+    write: async () => { calls.push('annotation'); annotations.handleNotification(ack(0, annotations.crc32(annotations.pack()))); return true; }
+  });
+  annotations.annotations = [{ date: '2026-10-05', label: '生', fontSize: 9 }];
+  await annotations.saveOperation(owner);
+  assert.equal(calls[0], 'font-loaded');
+  assert.ok(calls.slice(1).every(call => call === 'annotation'));
+  assert.equal(annotations._commitWaiter, null);
+});
+
+test('font failure prevents annotation writes and reports a retryable failure', async () => {
+  const messages = [], calls = [];
+  const annotations = load({ appVersion: 0x39, epdCharacteristic: {}, EpdCmd: { SET_ANNOTATIONS: 0x24 },
+    document: { getElementById: () => null }, addLog: message => messages.push(message),
+    ExternalResourceInstaller: { ensureFonts: async () => { throw new Error('字体加载失败'); } },
+    write: async () => { calls.push('annotation'); return true; }
+  });
+  annotations.annotations = [{ date: '2026-10-05', label: '生' }];
+  await annotations.saveOperation(null);
+  assert.deepEqual(calls, []);
+  assert.equal(annotations._commitWaiter, null);
+  assert.match(messages.at(-1), /字体加载失败/);
+});
+
 test('late cancelled annotation request cannot settle or cancel a replacement read', async () => {
   let completeOldWrite, writes = 0;
   const annotations = load({ addLog() {}, EpdCmd: {SET_ANNOTATIONS: 0x24},
@@ -371,10 +420,10 @@ test('list entries use text nodes, four cells and named edit and delete buttons'
 test('label failures and record limits report locally without replacing existing records', () => {
   const { annotations, elements, field } = editorFixture();
   field('calendarAnnotationDate', '2026-10-05');
-  field('calendarAnnotationLabel', '生', 'input');
+  field('calendarAnnotationLabel', '😀', 'input');
   annotations.addOrUpdate();
   assert.equal(annotations.annotations.length, 0);
-  assert.match(elements.calendarAnnotationStatus.textContent, /不在机内日历字库/);
+  assert.match(elements.calendarAnnotationStatus.textContent, /暂不支持/);
   field('calendarAnnotationLabel', '休', 'input');
   annotations.annotations = Array.from({ length: 64 }, (_, index) => ({
     date: `2026-${String(1 + Math.floor(index / 28)).padStart(2, '0')}-${String(1 + index % 28).padStart(2, '0')}`,

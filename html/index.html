@@ -310,7 +310,7 @@
 				<table class="anno-table"><caption class="sr-only">已添加的日期标注</caption><thead><tr><th scope="col">日期</th><th scope="col">标注内容</th><th scope="col">显示设置</th><th scope="col">操作</th></tr></thead><tbody id="calendarAnnotationsList"></tbody></table>
 			</div>
 			<details class="help-details annotation-management"><summary>备份与管理</summary><p class="dfu-hint">升级旧设备前，可导出配置和日期标注作为迁移备份。</p><div class="annotation-management-actions"><button data-device-operation type="button" class="secondary" onclick="exportMigrationBundle()">导出迁移备份</button><button data-device-operation type="button" class="danger" onclick="CalendarAnnotations.clearDevice()">清除设备标注</button></div></details>
-			<details class="help-details annotation-rules"><summary>标注显示规则</summary><ul><li>短标签最多 9 个字节，通常可输入 3 个汉字或 9 个英文字母；汉字需包含在设备日历字库中。</li><li>标签显示在日期下方时，会替换该日的节日或农历文字，并显示红点；带有「休／班」标记的日期，红点改到左上角。</li><li>标签显示在右上角时，保留节日和农历；标签留空时仅显示红点。</li><li>当日日期下方为红色背景，请使用白色或黑色标签；红字会与背景重合。</li><li>英文字母使用小号字库；白色标签在白色背景上可能不明显。</li></ul><p class="dfu-hint">连接设备后自动读取标注。较新固件会在外置 Flash 写入确认后提示保存成功；红点避让「休／班」需更新设备固件；旧固件的右上角位置与读取功能取决于支持情况。</p></details>
+			<details class="help-details annotation-rules"><summary>标注显示规则</summary><ul><li>短标签最多 9 个字节，通常可输入 3 个汉字或 9 个英文字母；缺失字模会在保存时由网页生成并写入设备。</li><li>标签显示在日期下方时，会替换该日的节日或农历文字，并显示红点；带有「休／班」标记的日期，红点改到左上角。</li><li>标签显示在右上角时，保留节日和农历；标签留空时仅显示红点。</li><li>当日日期下方为红色背景，请使用白色或黑色标签；红字会与背景重合。</li><li>英文字母使用小号字库；白色标签在白色背景上可能不明显。</li></ul><p class="dfu-hint">连接设备后自动读取标注。较新固件会在外置 Flash 写入确认后提示保存成功；红点避让「休／班」需更新设备固件；旧固件的右上角位置与读取功能取决于支持情况。</p></details>
 		</section>
 		<section id="externalResources" class="section">
 			<div class="section-heading"><div><p class="section-kicker">04 / RESOURCES</p><h2>设备资源</h2></div><span class="device-badge">日历 · 布局 · 字体</span></div>
@@ -358,7 +358,7 @@
 					<button type="button" onclick="ExternalResourceEditor.exportProject()">导出完整工程</button>
 				</div>
 				<label for="resourceCalendarSource">日历数据：节日、休班日期、文字与年份计算表</label>
-				<p class="dfu-hint">holidays 中 work=false 表示休假，true 表示补班。修改年份范围时须提供相应农历和节气计算表；默认模板覆盖 2025–2027，休班表为 2026 年。新增文字需有对应字模。</p>
+				<p class="dfu-hint">holidays 中 work=false 表示休假，true 表示补班。修改年份范围时须提供相应农历和节气计算表；默认模板覆盖 2025–2027，休班表为 2026 年。新增文字的缺失字模会由网页自动生成。</p>
 				<textarea id="resourceCalendarSource" rows="12" spellcheck="false" aria-label="日历资源 JSON"></textarea>
 				<label for="resourceLayoutSource">布局：19 个固定组件的坐标、尺寸和字体槽位</label>
 				<textarea id="resourceLayoutSource" rows="12" spellcheck="false" aria-label="布局资源 JSON"></textarea>
@@ -414,12 +414,14 @@
 	<script src="js/paint_schedule.js?v=20261005b"></script>
 	<script type="text/javascript" src="js/crop.js?v=20261005a"></script>
 	<script type="text/javascript" src="js/ble_transfer.js?v=20260922a"></script>
-	<script type="text/javascript" src="js/calendar_annotations.js?v=20261005d"></script>
+	<script type="text/javascript" src="js/calendar_annotations.js?v=20261005e"></script>
 	<script type="text/javascript" src="js/resource_store.js?v=20260928a"></script>
 	<script src="js/resource_archive.js?v=20261004a"></script>
 	<script type="text/javascript" src="js/resource_builder.js?v=20260928a"></script>
-	<script type="text/javascript" src="js/resource_installer.js?v=20261004c"></script>
-	<script type="text/javascript" src="js/resource_editor.js?v=20260928a"></script>
+	<script src="js/font_builder.js?v=20261005a"></script>
+	<script src="js/font_sync.js?v=20261005a"></script>
+	<script type="text/javascript" src="js/resource_installer.js?v=20261005a"></script>
+	<script type="text/javascript" src="js/resource_editor.js?v=20261005a"></script>
 	<script type="text/javascript" src="js/console_ui.js?v=20261005a"></script>
 	<script type="text/javascript" src="js/main.js?v=20261005a"></script>
 	<script src="js/site_statistics.js?v=20261004a"></script>

@@ -89,6 +89,8 @@ if command -v node >/dev/null 2>&1; then
     node --test tests/test_ble_lifecycle.cjs
     node --test tests/test_resource_web.cjs
     node --test tests/test_resource_builder.cjs
+    node --test tests/test_font_builder.cjs
+    node --test tests/test_font_sync.cjs
     node --test tests/test_calendar_annotations_web.cjs
 else
     echo "Node.js unavailable; run node --test tests/test_ble_lifecycle.cjs separately."
@@ -101,6 +103,7 @@ python3 tools/export_web_template.py --check
 python3 tests/test_dfu_release.py
 python3 tests/test_service_lifecycle.py
 python3 tests/test_resources_reload.py
+python3 tests/test_dynamic_font.py
 python3 tests/test_gui_layout.py
 
 echo "HOST_OK"
