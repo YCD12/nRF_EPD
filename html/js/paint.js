@@ -3,32 +3,30 @@ class PaintManager {
     this.canvas = canvas;
     this.ctx = ctx;
     this.painting = false;
-    this.lastX = 0;
-    this.lastY = 0;
-    this.brushColor = "#000000";
+    this.lastX = null;
+    this.lastY = null;
+    this.brushColor = '#000000';
     this.brushSize = 2;
+    this.eraserSize = 16;
     this.currentTool = null;
     this.textElements = [];
     this.lineSegments = [];
+    this.todoItems = [];
     this.isTextPlacementMode = false;
-    this.draggingCanvasContext = null;
+    this.isTodoPlacementMode = false;
     this.selectedTextElement = null;
+    this.selectedEditingText = null;
+    this.selectedTodoItem = null;
     this.isDraggingText = false;
     this.dragOffsetX = 0;
     this.dragOffsetY = 0;
+    this.dragChanged = false;
     this.textBold = false;
     this.textItalic = false;
-    this.selectedEditingText = null; // For re-editing existing text elements
-    this.todoItems = [];
-    this.isTodoPlacementMode = false;
-    this.selectedTodoItem = null;
     this.todoBold = false;
     this.todoItalic = false;
     this.todoColor = '#000000';
-    this.showTodoDeleteButtons = true; // Toggle for showing/hiding delete buttons
-
-    // Schedule (timetable) properties
-    this.scheduleData = null; // 2D array to store schedule data
+    this.scheduleData = null;
     this.scheduleDays = 5;
     this.scheduleClasses = 6;
     this.scheduleFontFamily = 'SimHei';
@@ -39,1320 +37,943 @@ class PaintManager {
     this.scheduleCellWidth = 60;
     this.scheduleCellHeight = 35;
     this.weekDays = ['周一', '周二', '周三', '周四', '周五', '周六', '周日'];
-    this.selectedScheduleCell = null; // For editing schedule cells
-    this.showScheduleCellIndicator = true; // Toggle for showing/hiding cell selection indicator
-    this.scheduleCellFontSizes = null; // 2D array for per-cell font sizes
-
-    // Brush cursor indicator
+    this.selectedScheduleCell = null;
+    this.showScheduleCellIndicator = false;
+    this.scheduleCellFontSizes = null;
     this.brushCursor = null;
-
-    // Undo/Redo functionality
+    this.selectionOverlay = null;
+    this.baseImageData = null;
+    this.baseImageUrl = null;
     this.historyStack = [];
     this.historyStep = -1;
-    this.MAX_HISTORY = 25; // 降低历史记录上限，防止手机端内存溢出 (50 -> 25)
-
-    // Bind event handlers
-    this.startPaint = this.startPaint.bind(this);
-    this.paint = this.paint.bind(this);
-    this.endPaint = this.endPaint.bind(this);
-    this.handleCanvasClick = this.handleCanvasClick.bind(this);
-    this.onTouchStart = this.onTouchStart.bind(this);
-    this.onTouchMove = this.onTouchMove.bind(this);
-    this.onTouchEnd = this.onTouchEnd.bind(this);
-    this.handleKeyboard = this.handleKeyboard.bind(this);
-    this.updateBrushCursor = this.updateBrushCursor.bind(this);
-    this.hideBrushCursor = this.hideBrushCursor.bind(this);
+    this.MAX_HISTORY = 25;
+    this.workspaceRevision = 0;
+    this.renderOrder = 0;
+    this.touchActive = false;
+    this.suppressMouseUntil = 0;
+    ['startPaint', 'paint', 'endPaint', 'handleCanvasClick', 'onTouchStart', 'onTouchMove',
+      'onTouchEnd', 'handleKeyboard', 'updateBrushCursor', 'hideBrushCursor'].forEach(name => {
+      this[name] = this[name].bind(this);
+    });
   }
 
-  saveToHistory() {
-    // Remove any states after current step (when user drew something after undoing)
-    this.historyStack = this.historyStack.slice(0, this.historyStep + 1);
+  element(id) { return document.getElementById(id); }
 
-    // Save current canvas state along with text and line data
-    const canvasState = {
-      imageData: this.ctx.getImageData(0, 0, this.canvas.width, this.canvas.height),
+  value(id, fallback = '') {
+    const input = this.element(id);
+    return input ? input.value : fallback;
+  }
+
+  number(value, min, max, fallback) {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) && String(value).trim() !== ''
+      ? Math.min(max, Math.max(min, parsed)) : fallback;
+  }
+
+  inputNumber(id, min, max, fallback) {
+    const value = this.number(this.value(id), min, max, fallback);
+    const input = this.element(id);
+    if (input) input.value = value;
+    return value;
+  }
+
+  setFontInput(id, family) {
+    const select = this.element(id);
+    if (!select) return;
+    if (select.options && !Array.from(select.options).some(option => option.value === family)) {
+      const option = document.createElement('option');
+      option.value = family; option.textContent = family;
+      select.appendChild(option);
+    }
+    select.value = family;
+  }
+
+  assignRenderOrders() {
+    const items = [...this.lineSegments, ...this.textElements, ...this.todoItems];
+    this.renderOrder = items.reduce((maximum, item) => Math.max(maximum, Number.isFinite(item.renderOrder) ? item.renderOrder : 0), 0);
+    // Preserve the original layering of old editable caches.
+    items.forEach(item => { if (!Number.isFinite(item.renderOrder)) item.renderOrder = ++this.renderOrder; });
+  }
+
+  report(message, error = false) {
+    const status = this.element('paint-tool-status');
+    if (status) {
+      status.textContent = message;
+      status.classList.toggle('error', error);
+    }
+  }
+
+  isCropMode() { return this.canvas.parentNode.classList.contains('crop-mode'); }
+
+  captureBaseImage() {
+    this.baseImageData = this.ctx.getImageData(0, 0, this.canvas.width, this.canvas.height);
+    this.baseImageUrl = null;
+    this.workspaceRevision++;
+  }
+
+  resetBaseImage() {
+    this.baseImageData = null;
+    this.baseImageUrl = null;
+    this.workspaceRevision++;
+  }
+
+  drawBaseImage() {
+    this.ctx.save();
+    this.ctx.setTransform(1, 0, 0, 1, 0, 0);
+    this.ctx.fillStyle = '#ffffff';
+    this.ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
+    if (this.baseImageData) {
+      if (this.baseImageData.width === this.canvas.width && this.baseImageData.height === this.canvas.height) {
+        this.ctx.putImageData(this.baseImageData, 0, 0);
+      } else {
+        const baseCanvas = document.createElement('canvas');
+        baseCanvas.width = this.baseImageData.width;
+        baseCanvas.height = this.baseImageData.height;
+        baseCanvas.getContext('2d').putImageData(this.baseImageData, 0, 0);
+        this.ctx.drawImage(baseCanvas, 0, 0, this.canvas.width, this.canvas.height);
+      }
+    }
+    this.ctx.restore();
+  }
+
+  scheduleSnapshot() {
+    if (typeof this.captureScheduleState === 'function') return this.captureScheduleState();
+    const state = {};
+    ['scheduleData', 'scheduleDays', 'scheduleClasses', 'scheduleFontFamily', 'scheduleFontSize',
+      'scheduleColor', 'scheduleStartX', 'scheduleStartY', 'scheduleCellWidth', 'scheduleCellHeight',
+      'scheduleCellFontSizes'].forEach(key => { state[key] = this[key]; });
+    return JSON.parse(JSON.stringify(state));
+  }
+
+  applyScheduleSnapshot(state) {
+    if (typeof this.restoreScheduleState === 'function') this.restoreScheduleState(state);
+    else if (state) Object.assign(this, JSON.parse(JSON.stringify(state)));
+  }
+
+  saveToHistory(persist = true, renderTodos = true) {
+    this.workspaceRevision++;
+    this.historyStack = this.historyStack.slice(0, this.historyStep + 1);
+    this.historyStack.push({
+      width: this.canvas.width, height: this.canvas.height,
+      baseImageData: this.baseImageData,
       textElements: JSON.parse(JSON.stringify(this.textElements)),
       lineSegments: JSON.parse(JSON.stringify(this.lineSegments)),
       todoItems: JSON.parse(JSON.stringify(this.todoItems)),
-      scheduleData: this.scheduleData ? JSON.parse(JSON.stringify(this.scheduleData)) : null
-    };
-
-    this.historyStack.push(canvasState);
-    this.historyStep++;
-
-    // Limit history size
-    if (this.historyStack.length > this.MAX_HISTORY) {
-      this.historyStack.shift();
-      this.historyStep--;
-    }
-
+      schedule: this.scheduleSnapshot(),
+      orientation: typeof captureCanvasOrientation === 'function' ? captureCanvasOrientation() : 0
+    });
+    if (this.historyStack.length > this.MAX_HISTORY) this.historyStack.shift();
+    this.historyStep = this.historyStack.length - 1;
     this.updateUndoRedoButtons();
-
-    // Auto-save to localStorage
-    this.saveCanvasToLocalStorage();
+    if (renderTodos) this.renderTodoList();
+    if (persist) this.saveCanvasToLocalStorage();
   }
 
   saveCanvasToLocalStorage() {
     try {
-      // 使用压缩的数据格式避免超出配额
-      const canvasData = {
-        // 使用canvas.toDataURL代替原始imageData，更节省空间
-        imageDataUrl: this.canvas.toDataURL('image/png', 0.8),
-        textElements: this.textElements,
-        lineSegments: this.lineSegments.slice(-100), // 只保留最近100个线段
-        todoItems: this.todoItems,
-        scheduleData: this.scheduleData,
-        width: this.canvas.width,
-        height: this.canvas.height
-      };
-      localStorage.setItem('canvasState', JSON.stringify(canvasData));
-    } catch (e) {
-      if (e.name === 'QuotaExceededError') {
-        // 空间不足时，清理旧数据后重试
-        console.warn('localStorage quota exceeded, clearing old data...');
-        try {
-          localStorage.removeItem('canvasState');
-          // 简化存储，只保存必要元素
-          const minimalData = {
-            textElements: this.textElements,
-            todoItems: this.todoItems,
-            scheduleData: this.scheduleData,
-            width: this.canvas.width,
-            height: this.canvas.height
-          };
-          localStorage.setItem('canvasState', JSON.stringify(minimalData));
-        } catch (e2) {
-          console.error('Failed to save minimal canvas data:', e2);
-        }
-      } else {
-        console.error('Failed to save canvas to localStorage:', e);
+      if (this.baseImageData && !this.baseImageUrl) {
+        const baseCanvas = document.createElement('canvas');
+        baseCanvas.width = this.baseImageData.width;
+        baseCanvas.height = this.baseImageData.height;
+        baseCanvas.getContext('2d').putImageData(this.baseImageData, 0, 0);
+        this.baseImageUrl = baseCanvas.toDataURL('image/png');
       }
+      localStorage.setItem('canvasState', JSON.stringify({
+        version: 2, baseDataUrl: this.baseImageUrl,
+        textElements: this.textElements, lineSegments: this.lineSegments,
+        todoItems: this.todoItems, schedule: this.scheduleSnapshot(),
+        width: this.canvas.width, height: this.canvas.height,
+        orientation: typeof captureCanvasOrientation === 'function' ? captureCanvasOrientation() : 0
+      }));
+    } catch (error) {
+      // Keep the last complete cache if the browser storage quota is exhausted.
+      this.report('当前画布可继续编辑；浏览器缓存空间不足，请及时保存图片。', true);
     }
   }
 
   loadCanvasFromLocalStorage() {
     try {
-      const savedData = localStorage.getItem('canvasState');
-      if (!savedData) return false;
-
-      const canvasData = JSON.parse(savedData);
-
-      // Verify dimensions match
-      if (canvasData.width !== this.canvas.width || canvasData.height !== this.canvas.height) {
-        return false;
-      }
-
-      // Restore image data - support both new and old format
-      if (canvasData.imageDataUrl) {
-        // 新格式：使用DataURL
-        return new Promise((resolve) => {
-          const img = new Image();
-          img.onload = () => {
-            this.ctx.drawImage(img, 0, 0);
-            // Restore elements
-            this.textElements = canvasData.textElements || [];
-            this.lineSegments = canvasData.lineSegments || [];
-            this.todoItems = canvasData.todoItems || [];
-            this.scheduleData = canvasData.scheduleData || null;
-            this.saveToHistory();
-            resolve(true);
+      const raw = localStorage.getItem('canvasState');
+      if (!raw) return false;
+      const data = JSON.parse(raw);
+      if (!Number.isInteger(data.width) || !Number.isInteger(data.height) || data.width < 1 || data.height < 1 ||
+          data.width > 4096 || data.height > 4096 || data.width * data.height > 16000000) return false;
+      if (data.version !== 2 && (data.width !== this.canvas.width || data.height !== this.canvas.height)) return false;
+      const revision = this.workspaceRevision;
+      const restore = () => {
+        if (revision !== this.workspaceRevision) return false;
+        this.canvas.width = data.width;
+        this.canvas.height = data.height;
+        // Legacy caches store the composed image. Restore it as one bitmap to avoid duplicate text.
+        const editable = data.version === 2 || (!data.imageDataUrl && !data.imageData);
+        this.textElements = editable && Array.isArray(data.textElements) ? data.textElements : [];
+        this.lineSegments = editable && Array.isArray(data.lineSegments) ? data.lineSegments : [];
+        this.todoItems = editable && Array.isArray(data.todoItems) ? data.todoItems : [];
+        this.assignRenderOrders();
+        this.applyScheduleSnapshot(data.schedule || (editable ? { scheduleData: data.scheduleData || null } : { scheduleData: null }));
+        this.cancelTextPlacement();
+        this.syncUI();
+        this.redrawAll();
+        if (typeof restoreCanvasOrientation === 'function') restoreCanvasOrientation(data.orientation || 0);
+        this.historyStack = []; this.historyStep = -1;
+        this.saveToHistory();
+        return true;
+      };
+      const imageUrl = data.version === 2 ? data.baseDataUrl : data.imageDataUrl;
+      if (imageUrl) {
+        return new Promise(resolve => {
+          const image = new Image();
+          image.onload = () => {
+            if (revision !== this.workspaceRevision) { resolve(false); return; }
+            try {
+              const baseCanvas = document.createElement('canvas');
+              baseCanvas.width = data.width; baseCanvas.height = data.height;
+              const baseContext = baseCanvas.getContext('2d');
+              baseContext.drawImage(image, 0, 0, data.width, data.height);
+              this.baseImageData = baseContext.getImageData(0, 0, data.width, data.height);
+              this.baseImageUrl = imageUrl;
+              resolve(restore());
+            } catch (error) { resolve(false); }
           };
-          img.onerror = () => resolve(false);
-          img.src = canvasData.imageDataUrl;
+          image.onerror = () => resolve(false);
+          image.src = imageUrl;
         });
-      } else if (canvasData.imageData) {
-        // 旧格式：使用原始像素数据
-        const imageArray = canvasData.imageData.split(',').map(Number);
-        const imageData = this.ctx.createImageData(this.canvas.width, this.canvas.height);
-        imageData.data.set(imageArray);
-        this.ctx.putImageData(imageData, 0, 0);
       }
-      // 简化格式：无图像数据
-
-      // Restore elements
-      this.textElements = canvasData.textElements || [];
-      this.lineSegments = canvasData.lineSegments || [];
-      this.todoItems = canvasData.todoItems || [];
-      this.scheduleData = canvasData.scheduleData || null;
-
-      this.saveToHistory();
-      return true;
-    } catch (e) {
-      console.error('Failed to load canvas from localStorage:', e);
-      return false;
-    }
+      if (data.imageData) {
+        const pixels = this.ctx.createImageData(this.canvas.width, this.canvas.height);
+        pixels.data.set(data.imageData.split(',').map(Number));
+        this.baseImageData = pixels;
+      }
+      return restore();
+    } catch (error) { return false; }
   }
 
   clearCanvasCache() {
-    try {
-      localStorage.removeItem('canvasState');
-    } catch (e) {
-      console.error('Failed to clear canvas cache:', e);
-    }
+    try { localStorage.removeItem('canvasState'); } catch (error) { /* Storage can be disabled. */ }
   }
 
   undo() {
-    if (this.historyStep > 0) {
-      this.historyStep--;
-      this.restoreFromHistory();
-    }
+    if (this.historyStep > 0) { this.historyStep--; this.restoreFromHistory(); }
   }
 
   redo() {
-    if (this.historyStep < this.historyStack.length - 1) {
-      this.historyStep++;
-      this.restoreFromHistory();
-    }
+    if (this.historyStep < this.historyStack.length - 1) { this.historyStep++; this.restoreFromHistory(); }
   }
 
   restoreFromHistory() {
-    if (this.historyStep >= 0 && this.historyStep < this.historyStack.length) {
-      const state = this.historyStack[this.historyStep];
-
-      // Restore canvas image
-      this.ctx.putImageData(state.imageData, 0, 0);
-
-      // Restore text and line data
-      this.textElements = JSON.parse(JSON.stringify(state.textElements));
-      this.lineSegments = JSON.parse(JSON.stringify(state.lineSegments));
-      this.todoItems = JSON.parse(JSON.stringify(state.todoItems || []));
-      this.scheduleData = state.scheduleData ? JSON.parse(JSON.stringify(state.scheduleData)) : null;
-
-      this.updateUndoRedoButtons();
-    }
+    const state = this.historyStack[this.historyStep];
+    if (!state) return;
+    this.workspaceRevision++;
+    this.canvas.width = state.width;
+    this.canvas.height = state.height;
+    this.baseImageData = state.baseImageData;
+    this.baseImageUrl = null;
+    this.textElements = JSON.parse(JSON.stringify(state.textElements));
+    this.lineSegments = JSON.parse(JSON.stringify(state.lineSegments));
+    this.todoItems = JSON.parse(JSON.stringify(state.todoItems));
+    this.assignRenderOrders();
+    this.cancelTextPlacement();
+    this.applyScheduleSnapshot(state.schedule);
+    this.syncUI();
+    this.redrawAll();
+    this.updateUndoRedoButtons();
+    if (typeof restoreCanvasOrientation === 'function') restoreCanvasOrientation(state.orientation || 0);
+    else if (typeof updateOrientationBadge === 'function') updateOrientationBadge();
+    this.saveCanvasToLocalStorage();
   }
 
   updateUndoRedoButtons() {
-    const undoBtn = document.getElementById('undo-btn');
-    const redoBtn = document.getElementById('redo-btn');
+    const undo = this.element('undo-btn');
+    const redo = this.element('redo-btn');
+    if (undo) undo.disabled = this.historyStep <= 0;
+    if (redo) redo.disabled = this.historyStep >= this.historyStack.length - 1;
+  }
 
-    if (undoBtn) {
-      undoBtn.disabled = this.historyStep <= 0;
-    }
-
-    if (redoBtn) {
-      redoBtn.disabled = this.historyStep >= this.historyStack.length - 1;
-    }
+  syncUI() {
+    this.renderTodoList();
+    this.updateTextEditingUI();
+    if (typeof this.syncScheduleUI === 'function') this.syncScheduleUI();
+    this.updateBrushPreview();
   }
 
   initPaintTools() {
-    document.getElementById('brush-mode').addEventListener('click', async () => {
-      if (this.currentTool === 'brush') {
-        this.setActiveTool(null, '');
-      } else {
-        await this.loadCanvasFromLocalStorage();
-        this.scheduleData = null; // 切回普通模式时清除课表
-        this.setActiveTool('brush', '画笔模式');
-        this.brushColor = document.getElementById('brush-color').value;
-        this.redrawAll();
-      }
+    const bind = (id, event, listener) => {
+      const element = this.element(id);
+      if (element) element.addEventListener(event, listener);
+    };
+    ['brush', 'eraser', 'text', 'todo'].forEach(tool => {
+      bind(`${tool}-mode`, 'click', () => this.setActiveTool(this.currentTool === tool ? null : tool));
     });
-
-    document.getElementById('eraser-mode').addEventListener('click', async () => {
-      if (this.currentTool === 'eraser') {
-        this.setActiveTool(null, '');
-      } else {
-        await this.loadCanvasFromLocalStorage();
-        this.scheduleData = null; // 切回普通模式时清除课表
-        this.setActiveTool('eraser', '橡皮擦');
-        this.brushColor = "#FFFFFF";
-        this.redrawAll();
-      }
+    bind('brush-color', 'input', e => { this.brushColor = e.target.value; this.updateBrushPreview(); });
+    ['brush', 'eraser'].forEach(tool => {
+      bind(`${tool}-size`, 'input', () => {
+        this[`${tool}Size`] = this.number(this.value(`${tool}-size`), 1, 100, tool === 'brush' ? 2 : 16);
+        this.updateBrushPreview();
+      });
+      bind(`${tool}-size`, 'change', () => {
+        this[`${tool}Size`] = this.inputNumber(`${tool}-size`, 1, 100, tool === 'brush' ? 2 : 16);
+        this.updateBrushPreview();
+      });
     });
-
-    document.getElementById('text-mode').addEventListener('click', async () => {
-      if (this.currentTool === 'text') {
-        this.setActiveTool(null, '');
-      } else {
-        await this.loadCanvasFromLocalStorage();
-        this.scheduleData = null; // 切回普通模式时清除课表
-        this.setActiveTool('text', '插入文字');
-        this.brushColor = document.getElementById('brush-color').value;
-        this.redrawAll();
-      }
+    document.querySelectorAll('[data-brush-size]').forEach(button => {
+      button.addEventListener('click', () => {
+        const tool = this.currentTool === 'eraser' ? 'eraser' : 'brush';
+        this[`${tool}Size`] = this.number(button.dataset.brushSize, 1, 100, 2);
+        if (this.element(`${tool}-size`)) this.element(`${tool}-size`).value = this[`${tool}Size`];
+        this.updateBrushPreview();
+      });
     });
-
-    document.getElementById('brush-color').addEventListener('change', (e) => {
-      this.brushColor = e.target.value;
+    ['text', 'todo'].forEach(type => {
+      ['bold', 'italic'].forEach(style => {
+        bind(`${type}-${style}`, 'click', () => {
+          const property = type + style[0].toUpperCase() + style.slice(1);
+          this[property] = !this[property];
+          this.updateToggle(`${type}-${style}`, this[property]);
+        });
+      });
     });
-
-    document.getElementById('brush-size').addEventListener('input', (e) => {
-      this.brushSize = parseInt(e.target.value);
-      this.updateBrushCursorSize();
-    });
-
-    document.getElementById('add-text-btn').addEventListener('click', () => this.startTextPlacement());
-
-    document.getElementById('todo-mode').addEventListener('click', async () => {
-      if (this.currentTool === 'todo') {
-        this.setActiveTool(null, '');
-      } else {
-        // Load cached canvas data if available
-        await this.loadCanvasFromLocalStorage();
-        this.scheduleData = null; // 切回待办模式时清除课表
-        this.setActiveTool('todo', '添加待办项');
-        this.brushColor = document.getElementById('brush-color').value;
-        this.redrawAll();
-      }
-    });
-
-    document.getElementById('add-todo-btn').addEventListener('click', () => this.startTodoPlacement());
-
-    document.getElementById('schedule-mode').addEventListener('click', async () => {
-      if (this.currentTool === 'schedule') {
-        this.setActiveTool(null, '');
-      } else {
-        // Load cached schedule data if available
-        await this.loadScheduleFromLocalStorage();
-        this.setActiveTool('schedule', '生成课表');
-      }
-    });
-
-    document.getElementById('create-schedule-btn').addEventListener('click', () => this.createSchedule());
-
-    document.getElementById('toggle-schedule-cell-indicator-btn').addEventListener('click', () => {
-      this.showScheduleCellIndicator = !this.showScheduleCellIndicator;
-      document.getElementById('toggle-schedule-cell-indicator-btn').classList.toggle('primary', this.showScheduleCellIndicator);
-      if (this.scheduleData) {
-        this.redrawAll();
-      }
-    });
-
-    document.getElementById('schedule-input-confirm-btn').addEventListener('click', () => this.confirmScheduleInput());
-    document.getElementById('schedule-input-cancel-btn').addEventListener('click', () => this.cancelScheduleInput());
-
-    // Schedule font size adjustment buttons (context-aware: per-cell when selected, global otherwise)
-    document.getElementById('schedule-font-increase-btn').addEventListener('click', () => {
-      if (this.selectedScheduleCell && this.scheduleCellFontSizes) {
-        const { row, col } = this.selectedScheduleCell;
-        this.scheduleCellFontSizes[row][col] = Math.min(this.scheduleCellFontSizes[row][col] + 1, 32);
-        document.getElementById('schedule-font-size').value = this.scheduleCellFontSizes[row][col];
-        this.redrawAll();
-        this.saveScheduleToLocalStorage();
-      } else {
-        this.scheduleFontSize = Math.min(this.scheduleFontSize + 1, 32);
-        document.getElementById('schedule-font-size').value = this.scheduleFontSize;
-        if (this.scheduleData) {
-          this.calculateScheduleDimensions();
-          this.redrawAll();
-        }
-      }
-    });
-
-    document.getElementById('schedule-font-decrease-btn').addEventListener('click', () => {
-      if (this.selectedScheduleCell && this.scheduleCellFontSizes) {
-        const { row, col } = this.selectedScheduleCell;
-        this.scheduleCellFontSizes[row][col] = Math.max(this.scheduleCellFontSizes[row][col] - 1, 6);
-        document.getElementById('schedule-font-size').value = this.scheduleCellFontSizes[row][col];
-        this.redrawAll();
-        this.saveScheduleToLocalStorage();
-      } else {
-        this.scheduleFontSize = Math.max(this.scheduleFontSize - 1, 8);
-        document.getElementById('schedule-font-size').value = this.scheduleFontSize;
-        if (this.scheduleData) {
-          this.calculateScheduleDimensions();
-          this.redrawAll();
-        }
-      }
-    });
-
-    // Schedule font size input change
-    document.getElementById('schedule-font-size').addEventListener('change', (e) => {
-      const val = parseInt(e.target.value);
-      if (this.selectedScheduleCell && this.scheduleCellFontSizes) {
-        const { row, col } = this.selectedScheduleCell;
-        this.scheduleCellFontSizes[row][col] = Math.max(6, Math.min(32, val));
-        this.redrawAll();
-        this.saveScheduleToLocalStorage();
-      } else {
-        this.scheduleFontSize = val;
-        if (this.scheduleData) {
-          this.calculateScheduleDimensions();
-          this.redrawAll();
-        }
-      }
-    });
-
-    // Schedule move buttons
-    document.getElementById('schedule-move-up-btn').addEventListener('click', () => {
-      this.scheduleStartY = Math.max(this.scheduleStartY - 10, 5);
-      if (this.scheduleData) this.redrawAll();
-    });
-
-    document.getElementById('schedule-move-down-btn').addEventListener('click', () => {
-      const maxY = this.canvas.height - (this.scheduleClasses + 1) * this.scheduleCellHeight - 5;
-      this.scheduleStartY = Math.min(this.scheduleStartY + 10, maxY);
-      if (this.scheduleData) this.redrawAll();
-    });
-
-    document.getElementById('schedule-move-left-btn').addEventListener('click', () => {
-      this.scheduleStartX = Math.max(this.scheduleStartX - 10, 5);
-      if (this.scheduleData) this.redrawAll();
-    });
-
-    document.getElementById('schedule-move-right-btn').addEventListener('click', () => {
-      const maxX = this.canvas.width - (this.scheduleDays + 1) * this.scheduleCellWidth - 5;
-      this.scheduleStartX = Math.min(this.scheduleStartX + 10, maxX);
-      if (this.scheduleData) this.redrawAll();
-    });
-
-    // Schedule zoom buttons
-    document.getElementById('schedule-zoom-in-btn').addEventListener('click', () => {
-      this.scheduleCellWidth = Math.min(this.scheduleCellWidth + 5, 200);
-      this.scheduleCellHeight = Math.min(this.scheduleCellHeight + 5, 100);
-      if (this.scheduleData) this.redrawAll();
-    });
-
-    document.getElementById('schedule-zoom-out-btn').addEventListener('click', () => {
-      this.scheduleCellWidth = Math.max(this.scheduleCellWidth - 5, 30);
-      this.scheduleCellHeight = Math.max(this.scheduleCellHeight - 5, 20);
-      if (this.scheduleData) this.redrawAll();
-    });
-
-    // Add event listeners for bold and italic buttons
-    document.getElementById('text-bold').addEventListener('click', () => {
-      this.textBold = !this.textBold;
-      document.getElementById('text-bold').classList.toggle('primary', this.textBold);
-    });
-
-    document.getElementById('text-italic').addEventListener('click', () => {
-      this.textItalic = !this.textItalic;
-      document.getElementById('text-italic').classList.toggle('primary', this.textItalic);
-    });
-
-    // Add event listeners for todo bold and italic buttons
-    document.getElementById('todo-bold').addEventListener('click', () => {
-      this.todoBold = !this.todoBold;
-      document.getElementById('todo-bold').classList.toggle('primary', this.todoBold);
-    });
-
-    document.getElementById('todo-italic').addEventListener('click', () => {
-      this.todoItalic = !this.todoItalic;
-      document.getElementById('todo-italic').classList.toggle('primary', this.todoItalic);
-    });
-
-    document.getElementById('todo-color').addEventListener('change', (e) => {
-      this.todoColor = e.target.value;
-    });
-
-    document.getElementById('toggle-todo-delete-btn').addEventListener('click', () => {
-      this.showTodoDeleteButtons = !this.showTodoDeleteButtons;
-      document.getElementById('toggle-todo-delete-btn').classList.toggle('primary', this.showTodoDeleteButtons);
-      // Redraw all todo items with the new visibility state
-      this.redrawAll();
-    });
-
-    // Add undo/redo button listeners
-    document.getElementById('undo-btn').addEventListener('click', () => this.undo());
-    document.getElementById('redo-btn').addEventListener('click', () => this.redo());
-
+    bind('todo-color', 'input', e => { this.todoColor = e.target.value; });
+    bind('add-text-btn', 'click', () => this.startTextPlacement());
+    bind('cancel-text-btn', 'click', () => { this.cancelTextPlacement(); this.updateTextEditingUI(); this.report('已取消文字编辑。'); });
+    bind('delete-text-btn', 'click', () => this.deleteSelectedText());
+    bind('add-todo-btn', 'click', () => this.startTodoPlacement());
+    bind('cancel-todo-btn', 'click', () => { this.cancelTodoPlacement(); this.report('已取消待办编辑。'); });
+    bind('todo-align-btn', 'click', () => this.alignTodoItems());
+    bind('clear-completed-todo-btn', 'click', () => this.clearCompletedTodos());
+    bind('undo-btn', 'click', () => this.undo());
+    bind('redo-btn', 'click', () => this.redo());
+    if (typeof this.initScheduleTools === 'function') this.initScheduleTools();
     this.canvas.addEventListener('mousedown', this.startPaint);
     this.canvas.addEventListener('mousemove', this.paint);
     this.canvas.addEventListener('mouseup', this.endPaint);
     this.canvas.addEventListener('mouseleave', this.endPaint);
     this.canvas.addEventListener('click', this.handleCanvasClick);
-
-    // Touch support (Set passive: false to allow preventDefault for scrolling prevention)
     this.canvas.addEventListener('touchstart', this.onTouchStart, { passive: false });
     this.canvas.addEventListener('touchmove', this.onTouchMove, { passive: false });
     this.canvas.addEventListener('touchend', this.onTouchEnd, { passive: false });
-
-    // Keyboard shortcuts for undo/redo
+    this.canvas.addEventListener('touchcancel', this.onTouchEnd, { passive: false });
     document.addEventListener('keydown', this.handleKeyboard);
-
-    // Mouse move for brush cursor
     this.canvas.addEventListener('mouseenter', this.updateBrushCursor);
     this.canvas.addEventListener('mousemove', this.updateBrushCursor);
-
-    // Create brush cursor element
     this.createBrushCursor();
-
-    // Initialize history with blank canvas state
-    this.saveToHistory();
+    this.createSelectionOverlay();
+    this.setActiveTool(null);
+    this.syncUI();
+    this.saveToHistory(false);
+    const initialRevision = this.workspaceRevision;
+    const restoreLegacySchedule = async success => {
+      if (success || this.workspaceRevision !== initialRevision) return;
+      if (typeof this.loadScheduleFromLocalStorage === 'function') {
+        const restoredSchedule = await this.loadScheduleFromLocalStorage();
+        if (restoredSchedule) {
+          this.syncUI(); this.redrawAll();
+          this.historyStack = []; this.historyStep = -1;
+          this.saveToHistory();
+        }
+      }
+    };
+    // Restore once at startup; changing tools never reloads or erases the workspace.
+    const restored = this.loadCanvasFromLocalStorage();
+    if (restored && typeof restored.then === 'function') {
+      restored.then(restoreLegacySchedule);
+    } else if (!restored) restoreLegacySchedule(false);
   }
 
   handleKeyboard(e) {
-    // Ctrl+Z or Cmd+Z for undo
-    if ((e.ctrlKey || e.metaKey) && e.key === 'z' && !e.shiftKey) {
-      e.preventDefault();
-      this.undo();
+    const target = e.target;
+    if (target && (target.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(target.tagName))) return;
+    const key = String(e.key).toLowerCase();
+    if ((e.ctrlKey || e.metaKey) && key === 'z' && !e.shiftKey) {
+      e.preventDefault(); this.undo();
+    } else if ((e.ctrlKey || e.metaKey) && (key === 'y' || (key === 'z' && e.shiftKey))) {
+      e.preventDefault(); this.redo();
+    } else if (key === 'escape') {
+      this.cancelTextPlacement(); this.updateTextEditingUI();
+      if (this.selectedScheduleCell && typeof this.cancelScheduleInput === 'function') this.cancelScheduleInput();
+      this.report('已取消当前选择。');
     }
-    // Ctrl+Y or Ctrl+Shift+Z or Cmd+Shift+Z for redo
-    else if ((e.ctrlKey || e.metaKey) && (e.key === 'y' || (e.shiftKey && e.key === 'z'))) {
-      e.preventDefault();
-      this.redo();
-    }
+  }
+
+  updateToggle(id, active) {
+    const button = this.element(id);
+    if (button) { button.classList.toggle('primary', active); button.setAttribute('aria-pressed', String(active)); }
   }
 
   setActiveTool(tool, title) {
-    setCanvasTitle(title);
-    this.currentTool = tool;
-
-    this.canvas.parentNode.classList.toggle('brush-mode', this.currentTool === 'brush');
-    this.canvas.parentNode.classList.toggle('eraser-mode', this.currentTool === 'eraser');
-    this.canvas.parentNode.classList.toggle('text-mode', this.currentTool === 'text');
-    this.canvas.parentNode.classList.toggle('todo-mode', this.currentTool === 'todo');
-    this.canvas.parentNode.classList.toggle('schedule-mode', this.currentTool === 'schedule');
-
-    document.getElementById('brush-mode').classList.toggle('active', this.currentTool === 'brush');
-    document.getElementById('eraser-mode').classList.toggle('active', this.currentTool === 'eraser');
-    document.getElementById('text-mode').classList.toggle('active', this.currentTool === 'text');
-    document.getElementById('todo-mode').classList.toggle('active', this.currentTool === 'todo');
-    document.getElementById('schedule-mode').classList.toggle('active', this.currentTool === 'schedule');
-
-    document.getElementById('brush-color').disabled = this.currentTool === 'eraser' || this.currentTool === 'todo' || this.currentTool === 'schedule';
-    document.getElementById('brush-size').disabled = this.currentTool === 'text' || this.currentTool === 'todo' || this.currentTool === 'schedule';
-
-    document.getElementById('undo-btn').classList.toggle('hide', this.currentTool === null);
-    document.getElementById('redo-btn').classList.toggle('hide', this.currentTool === null);
-
-    // Cancel any pending text placement
+    this.endPaint();
     this.cancelTextPlacement();
+    this.currentTool = tool;
+    const hints = {
+      brush: '按住并拖动绘画；轻点画布可画圆点。',
+      eraser: '按住并拖动擦为白色，画笔颜色和粗细会保留。',
+      text: '输入文字后点击画布放置；点击已有文字可编辑，拖动可调整位置。',
+      todo: '每行输入一项，点击画布放置整组；点击方框切换完成状态，拖动文字调整位置。',
+      schedule: '创建课表后点击单元格编辑，可批量填入课程。'
+    };
+    ['brush', 'eraser', 'text', 'todo', 'schedule'].forEach(name => {
+      this.canvas.parentNode.classList.toggle(`${name}-mode`, tool === name);
+      const button = this.element(`${name}-mode`);
+      if (button) { button.classList.toggle('active', tool === name); button.setAttribute('aria-pressed', String(tool === name)); }
+    });
+    const hint = this.element('paint-tool-hint');
+    if (hint) hint.textContent = hints[tool] || '选择工具，为图片添加笔迹、文字、待办或课表。';
+    if (typeof setCanvasTitle === 'function') setCanvasTitle(title || ({ brush: '画笔', eraser: '橡皮擦', text: '添加文字', todo: '待办清单', schedule: '课程表' }[tool] || ''));
+    ['undo-btn', 'redo-btn'].forEach(id => this.element(id)?.classList.remove('hide'));
+    this.updateTextEditingUI();
+    this.renderTodoList();
+    this.updateBrushPreview();
+    this.updateSelectionOverlay();
+    this.report('');
   }
 
   createBrushCursor() {
-    // Create a div element to show as brush cursor
     this.brushCursor = document.createElement('div');
     this.brushCursor.id = 'brush-cursor';
-    this.brushCursor.style.position = 'fixed';
-    this.brushCursor.style.border = '2px solid rgba(0, 0, 0, 0.5)';
-    this.brushCursor.style.borderRadius = '50%';
-    this.brushCursor.style.pointerEvents = 'none';
-    this.brushCursor.style.display = 'none';
-    this.brushCursor.style.zIndex = '10000';
-    this.brushCursor.style.transform = 'translate(-50%, -50%)';
-    this.brushCursor.style.willChange = 'transform';
-    this.brushCursor.style.left = '0';
-    this.brushCursor.style.top = '0';
+    Object.assign(this.brushCursor.style, { position: 'fixed', border: '1px solid white', borderRadius: '50%',
+      pointerEvents: 'none', display: 'none', zIndex: '10000', transform: 'translate(-50%, -50%)',
+      boxShadow: '0 0 0 1px black, inset 0 0 0 1px black', boxSizing: 'border-box' });
     document.body.appendChild(this.brushCursor);
     this.updateBrushCursorSize();
+  }
 
-    // For requestAnimationFrame throttling
-    this.cursorUpdateScheduled = false;
-    this.pendingCursorX = 0;
-    this.pendingCursorY = 0;
+  updateBrushPreview() {
+    this.updateBrushCursorSize();
+    const preview = this.element('brush-preview');
+    if (preview) {
+      const size = this.currentTool === 'eraser' ? this.eraserSize : this.brushSize;
+      preview.style.setProperty('--brush-size', `${Math.min(size, 42)}px`);
+      preview.style.setProperty('--brush-color', this.currentTool === 'eraser' ? '#ffffff' : this.brushColor);
+      preview.setAttribute('aria-label', `${this.currentTool === 'eraser' ? '橡皮' : '画笔'}直径 ${size} 像素`);
+    }
+    document.querySelectorAll('[data-brush-size]').forEach(button => {
+      const active = Number(button.dataset.brushSize) === (this.currentTool === 'eraser' ? this.eraserSize : this.brushSize);
+      button.classList.toggle('active', active); button.setAttribute('aria-pressed', String(active));
+    });
   }
 
   updateBrushCursorSize() {
     if (!this.brushCursor) return;
-
     const rect = this.canvas.getBoundingClientRect();
-    const scaleX = rect.width / this.canvas.width;
-    const scaleY = rect.height / this.canvas.height;
-    const scale = Math.min(scaleX, scaleY);
-
-    const size = this.brushSize * scale;
-    this.brushCursor.style.width = size + 'px';
-    this.brushCursor.style.height = size + 'px';
+    const size = (this.currentTool === 'eraser' ? this.eraserSize : this.brushSize) * Math.min(rect.width / this.canvas.width, rect.height / this.canvas.height);
+    this.brushCursor.style.width = `${Math.max(1, size)}px`;
+    this.brushCursor.style.height = `${Math.max(1, size)}px`;
   }
 
   updateBrushCursor(e) {
-    if (!this.brushCursor) return;
-
-    if (this.currentTool === 'brush' || this.currentTool === 'eraser') {
-      // Check if mouse is within canvas bounds
-      const rect = this.canvas.getBoundingClientRect();
-      const isInCanvas = e.clientX >= rect.left &&
-        e.clientX <= rect.right &&
-        e.clientY >= rect.top &&
-        e.clientY <= rect.bottom;
-
-      if (isInCanvas) {
-        this.brushCursor.style.display = 'block';
-        this.canvas.style.cursor = 'none';
-
-        // Store the pending position
-        this.pendingCursorX = e.clientX;
-        this.pendingCursorY = e.clientY;
-
-        // Schedule update using requestAnimationFrame for smooth movement
-        if (!this.cursorUpdateScheduled) {
-          this.cursorUpdateScheduled = true;
-          requestAnimationFrame(() => {
-            this.brushCursor.style.transform = `translate(${this.pendingCursorX}px, ${this.pendingCursorY}px) translate(-50%, -50%)`;
-            this.cursorUpdateScheduled = false;
-          });
-        }
-
-        // Update color to match brush or show white for eraser (only needs to happen once or when tool changes)
-        if (this.currentTool === 'eraser') {
-          if (this.brushCursor.getAttribute('data-tool') !== 'eraser') {
-            this.brushCursor.style.border = '2px solid rgba(255, 0, 0, 0.7)';
-            this.brushCursor.style.backgroundColor = 'rgba(255, 255, 255, 0.2)';
-            this.brushCursor.style.boxShadow = 'none';
-            this.brushCursor.setAttribute('data-tool', 'eraser');
-          }
-        } else {
-          if (this.brushCursor.getAttribute('data-tool') !== 'brush') {
-            // Use a contrasting border - white with black outline for visibility
-            this.brushCursor.style.border = '1px solid white';
-            this.brushCursor.style.boxShadow = '0 0 0 1px black, inset 0 0 0 1px black';
-            this.brushCursor.style.backgroundColor = 'transparent';
-            this.brushCursor.setAttribute('data-tool', 'brush');
-          }
-        }
-      } else {
-        // Hide cursor when outside canvas
-        this.brushCursor.style.display = 'none';
-      }
-    }
+    if (!this.brushCursor || this.touchActive || this.isCropMode() || !['brush', 'eraser'].includes(this.currentTool)) { this.hideBrushCursor(); return; }
+    this.updateBrushCursorSize();
+    this.brushCursor.style.display = 'block';
+    this.brushCursor.style.left = `${e.clientX}px`;
+    this.brushCursor.style.top = `${e.clientY}px`;
+    this.canvas.style.cursor = 'none';
   }
 
   hideBrushCursor() {
-    if (this.brushCursor) {
-      this.brushCursor.style.display = 'none';
-    }
-    this.canvas.style.cursor = 'default';
+    if (this.brushCursor) this.brushCursor.style.display = 'none';
+    this.canvas.style.cursor = '';
+  }
+
+  createSelectionOverlay() {
+    this.selectionOverlay = document.createElement('div');
+    this.selectionOverlay.id = 'paint-selection';
+    this.selectionOverlay.setAttribute('aria-hidden', 'true');
+    Object.assign(this.selectionOverlay.style, { position: 'absolute', border: '1px dashed #2563eb', pointerEvents: 'none', display: 'none', zIndex: '2', boxSizing: 'border-box' });
+    this.canvas.parentNode.appendChild(this.selectionOverlay);
+  }
+
+  updateSelectionOverlay() {
+    if (!this.selectionOverlay) return;
+    const selected = this.currentTool === 'text' ? this.selectedEditingText : this.currentTool === 'todo' ? this.selectedTodoItem : null;
+    if (!selected || this.isCropMode()) { this.selectionOverlay.style.display = 'none'; return; }
+    const bounds = this.getTextBounds(selected, selected.text, this.currentTool === 'todo');
+    const rect = this.canvas.getBoundingClientRect();
+    const parent = this.canvas.parentNode.getBoundingClientRect();
+    const scaleX = rect.width / this.canvas.width;
+    const scaleY = rect.height / this.canvas.height;
+    Object.assign(this.selectionOverlay.style, { display: 'block',
+      left: `${rect.left - parent.left + bounds.minX * scaleX - 3}px`,
+      top: `${rect.top - parent.top + bounds.minY * scaleY - 3}px`,
+      width: `${(bounds.maxX - bounds.minX) * scaleX + 6}px`,
+      height: `${(bounds.maxY - bounds.minY) * scaleY + 6}px` });
+  }
+
+  prepareExport() {
+    this.endPaint();
+    this.redrawAll();
+    if (this.selectionOverlay) this.selectionOverlay.style.display = 'none';
+    if (typeof this.hideScheduleSelection === 'function') this.hideScheduleSelection();
+  }
+
+  canvasPoint(e) {
+    const rect = this.canvas.getBoundingClientRect();
+    return { x: this.number((e.clientX - rect.left) * this.canvas.width / rect.width, 0, this.canvas.width - 1, 0),
+      y: this.number((e.clientY - rect.top) * this.canvas.height / rect.height, 0, this.canvas.height - 1, 0) };
   }
 
   startPaint(e) {
-    if (!this.currentTool) return;
-
-    if (this.currentTool === 'text') {
-      // Check if we're clicking on a text element to drag/edit
-      const textElement = this.findTextElementAt(e);
-      if (textElement) {
-        // Select for editing: populate UI fields
-        this.selectedEditingText = textElement;
-        document.getElementById('text-input').value = textElement.text;
-        const fontMatch = textElement.font.match(/(\d+)px\s+(.*)/);
-        if (fontMatch) {
-          document.getElementById('font-size').value = fontMatch[1];
-          document.getElementById('font-family').value = fontMatch[2];
-        }
-        this.textBold = /bold/.test(textElement.font);
-        this.textItalic = /italic/.test(textElement.font);
-        document.getElementById('text-bold').classList.toggle('primary', this.textBold);
-        document.getElementById('text-italic').classList.toggle('primary', this.textItalic);
-        document.getElementById('brush-color').value = textElement.color;
-        this.brushColor = textElement.color;
-        document.getElementById('add-text-btn').textContent = '更新文字';
-        this.redrawAll();
-
-        // Allow dragging
-        this.isDraggingText = true;
-        this.selectedTextElement = textElement;
-
-        // Save current canvas state for dragging
-        this.draggingCanvasContext = this.ctx.getImageData(0, 0, this.canvas.width, this.canvas.height);
-
-        const rect = this.canvas.getBoundingClientRect();
-        const scaleX = this.canvas.width / rect.width;
-        const scaleY = this.canvas.height / rect.height;
-        const x = (e.clientX - rect.left) * scaleX;
-        const y = (e.clientY - rect.top) * scaleY;
-
-        // Calculate offset for smooth dragging
-        this.dragOffsetX = textElement.x - x;
-        this.dragOffsetY = textElement.y - y;
-
-        return; // Don't start drawing
-      }
-    } else if (this.currentTool === 'todo') {
-      // Check if we're clicking on a delete button first
-      const deleteButtonTodo = this.findTodoDeleteButtonAt(e);
-      if (deleteButtonTodo) {
-        this.deleteTodoItem(deleteButtonTodo);
-        return;
-      }
-
-      // Check if we're clicking on a todo item to drag
-      const todoItem = this.findTodoItemAt(e);
-      if (todoItem) {
-        this.isDraggingText = true;
-        this.selectedTodoItem = todoItem;
-
-        // Save current canvas state for dragging
-        this.draggingCanvasContext = this.ctx.getImageData(0, 0, this.canvas.width, this.canvas.height);
-
-        const rect = this.canvas.getBoundingClientRect();
-        const scaleX = this.canvas.width / rect.width;
-        const scaleY = this.canvas.height / rect.height;
-        const x = (e.clientX - rect.left) * scaleX;
-        const y = (e.clientY - rect.top) * scaleY;
-
-        // Calculate offset for smooth dragging
-        this.dragOffsetX = todoItem.x - x;
-        this.dragOffsetY = todoItem.y - y;
-
-        return; // Don't place new todo
-      }
-    } else if (this.currentTool === 'schedule') {
-      // Schedule mode - don't paint, handle through handleCanvasClick
-      return;
-    } else {
-      this.painting = true;
-      this.draw(e);
+    if (this.isCropMode() || (!this.touchActive && Date.now() < this.suppressMouseUntil) || !this.currentTool || (e.button !== undefined && e.button !== 0)) return;
+    if (this.isTextPlacementMode || this.isTodoPlacementMode) return;
+    if (['brush', 'eraser'].includes(this.currentTool)) {
+      this.workspaceRevision++;
+      this.painting = true; this.lastX = null; this.lastY = null; this.draw(e); return;
     }
+    if (this.currentTool === 'schedule') { this.scheduleDragStart?.(e); return; }
+    const item = this.currentTool === 'text' ? this.findTextElementAt(e) : this.findTodoItemAt(e);
+    if (!item) return;
+    if (this.currentTool === 'todo' && this.isTodoCheckboxAt(item, e)) {
+      this.toggleTodo(item); this.skipNextCanvasClick = true; return;
+    }
+    if (this.currentTool === 'text') this.selectText(item);
+    else { this.selectedTodoItem = item; this.renderTodoList(); }
+    const point = this.canvasPoint(e);
+    this.selectedTextElement = this.currentTool === 'text' ? item : null;
+    this.dragOffsetX = item.x - point.x; this.dragOffsetY = item.y - point.y;
+    this.isDraggingText = true; this.dragChanged = false;
+    this.workspaceRevision++;
+    this.updateSelectionOverlay();
   }
 
   endPaint() {
-    if (this.isDraggingText) {
-      // After dragging text or todo, redraw all elements to clean up old positions
-      this.redrawAll();
-      this.saveToHistory(); // Save state after dragging
-    } else if (this.painting) {
-      this.saveToHistory(); // Save state after drawing
+    if (this.currentTool === 'schedule') this.scheduleDragEnd?.();
+    if (this.painting || (this.isDraggingText && this.dragChanged)) {
+      this.redrawAll(); this.saveToHistory();
     }
-    this.painting = false;
-    this.isDraggingText = false;
-    this.lastX = 0;
-    this.lastY = 0;
-
+    this.painting = false; this.isDraggingText = false;
+    this.lastX = null; this.lastY = null;
     this.hideBrushCursor();
   }
 
   paint(e) {
-    if (!this.currentTool) return;
-
-    if (this.currentTool === 'text') {
-      if (this.isDraggingText && this.selectedTextElement) {
-        this.dragText(e);
-      }
-    } else if (this.currentTool === 'todo') {
-      if (this.isDraggingText && this.selectedTodoItem) {
-        this.dragTodo(e);
-      }
-    } else {
-      if (this.painting) {
-        this.draw(e);
-      }
-    }
+    if (this.isCropMode() || (!this.touchActive && Date.now() < this.suppressMouseUntil)) return;
+    if (this.painting) this.draw(e);
+    else if (this.isDraggingText && this.currentTool === 'text') this.dragText(e);
+    else if (this.isDraggingText && this.currentTool === 'todo') this.dragTodo(e);
+    else if (this.currentTool === 'schedule') this.scheduleDragMove?.(e);
   }
 
   draw(e) {
-    const rect = this.canvas.getBoundingClientRect();
-    const scaleX = this.canvas.width / rect.width;
-    const scaleY = this.canvas.height / rect.height;
-    const x = (e.clientX - rect.left) * scaleX;
-    const y = (e.clientY - rect.top) * scaleY;
+    const { x, y } = this.canvasPoint(e);
+    const color = this.currentTool === 'eraser' ? '#FFFFFF' : this.brushColor;
+    const size = this.currentTool === 'eraser' ? this.eraserSize : this.brushSize;
+    const segment = this.lastX === null ? { type: 'dot', x, y, color, size }
+      : { type: 'line', x1: this.lastX, y1: this.lastY, x2: x, y2: y, color, size };
+    this.lineSegments.push(segment);
+    segment.renderOrder = ++this.renderOrder;
+    this.drawSegment(segment);
+    this.lastX = x; this.lastY = y;
+  }
 
-    this.ctx.lineJoin = 'round';
-    this.ctx.lineCap = 'round';
-    this.ctx.strokeStyle = this.brushColor;
-    this.ctx.lineWidth = this.brushSize;
-
+  drawSegment(segment) {
+    this.ctx.save();
+    this.ctx.lineJoin = 'round'; this.ctx.lineCap = 'round';
+    this.ctx.strokeStyle = segment.color; this.ctx.fillStyle = segment.color; this.ctx.lineWidth = segment.size;
     this.ctx.beginPath();
-
-    if (this.lastX === 0 && this.lastY === 0) {
-      // For the first point, just do a dot
-      this.ctx.moveTo(x, y);
-      this.ctx.lineTo(x + 0.1, y + 0.1);
-
-      // Store the dot for redrawing
-      this.lineSegments.push({
-        type: 'dot',
-        x: x,
-        y: y,
-        color: this.brushColor,
-        size: this.brushSize
-      });
-    } else {
-      // Connect to the previous point
-      this.ctx.moveTo(this.lastX, this.lastY);
-      this.ctx.lineTo(x, y);
-
-      // Store the line segment for redrawing
-      this.lineSegments.push({
-        type: 'line',
-        x1: this.lastX,
-        y1: this.lastY,
-        x2: x,
-        y2: y,
-        color: this.brushColor,
-        size: this.brushSize
-      });
-    }
-
-    this.ctx.stroke();
-
-    this.lastX = x;
-    this.lastY = y;
+    if (segment.type === 'dot') {
+      this.ctx.arc(segment.x, segment.y, segment.size / 2, 0, Math.PI * 2); this.ctx.fill();
+    } else { this.ctx.moveTo(segment.x1, segment.y1); this.ctx.lineTo(segment.x2, segment.y2); this.ctx.stroke(); }
+    this.ctx.restore();
   }
 
   handleCanvasClick(e) {
-    if (this.currentTool === 'text' && this.isTextPlacementMode) {
-      this.placeText(e);
-    } else if (this.currentTool === 'text' && !this.isTextPlacementMode) {
-      // Click on empty area → deselect editing text
-      if (this.selectedEditingText && !this.findTextElementAt(e)) {
-        this.deselectEditingText();
-      }
-    } else if (this.currentTool === 'todo' && this.isTodoPlacementMode) {
-      this.placeTodo(e);
-    } else if (this.currentTool === 'schedule') {
-      // Handle schedule cell click for editing
+    if (this.isCropMode() || (!this.touchActive && Date.now() < this.suppressMouseUntil)) return;
+    if (this.skipNextCanvasClick) { this.skipNextCanvasClick = false; return; }
+    if (this.currentTool === 'text' && this.isTextPlacementMode) this.placeText(e);
+    else if (this.currentTool === 'todo' && this.isTodoPlacementMode) this.placeTodo(e);
+    else if (this.currentTool === 'text' && this.selectedEditingText && !this.findTextElementAt(e)) this.deselectEditingText();
+    else if (this.currentTool === 'schedule') {
       const cell = this.getScheduleCellAt(e);
-      if (cell) {
-        this.selectedScheduleCell = cell;
-        const currentText = this.scheduleData[cell.row][cell.col];
-        document.getElementById('schedule-input').value = currentText;
-        document.getElementById('schedule-input').focus();
-        // Show per-cell font size in the global font size input
-        if (this.scheduleCellFontSizes) {
-          document.getElementById('schedule-font-size').value = this.scheduleCellFontSizes[cell.row][cell.col];
-        }
-        // Redraw to show selection indicator
-        this.redrawAll();
-        // Show the input area
-        const allScheduleTools = document.querySelectorAll('.schedule-tools');
-        if (allScheduleTools.length > 2) {
-          allScheduleTools[2].style.display = 'flex';
-        }
-      }
+      if (typeof this.selectScheduleCell === 'function') this.selectScheduleCell(cell);
     }
   }
 
   onTouchStart(e) {
-    e.preventDefault();
-    const touch = e.touches[0];
-
-    // If in placement mode or schedule mode, handle as a click
-    const isPlacementMode = (this.currentTool === 'text' && this.isTextPlacementMode) ||
-      (this.currentTool === 'todo' && this.isTodoPlacementMode) ||
-      (this.currentTool === 'schedule');
-
-    if (isPlacementMode) {
-      const mouseEvent = new MouseEvent('click', {
-        clientX: touch.clientX,
-        clientY: touch.clientY,
-        bubbles: true,
-        cancelable: true
-      });
-      this.canvas.dispatchEvent(mouseEvent);
-      return;
-    }
-
-    // Otherwise handle as normal drawing/dragging
-    const mouseEvent = new MouseEvent('mousedown', {
-      clientX: touch.clientX,
-      clientY: touch.clientY,
-      bubbles: true,
-      cancelable: true
-    });
-    this.canvas.dispatchEvent(mouseEvent);
+    if (!this.currentTool || this.isCropMode() || e.touches.length !== 1) return;
+    e.preventDefault(); this.touchActive = true; this.suppressMouseUntil = Date.now() + 800;
+    const point = e.touches[0];
+    if (this.isTextPlacementMode || this.isTodoPlacementMode || this.currentTool === 'schedule') this.handleCanvasClick(point);
+    else this.startPaint(point);
   }
 
   onTouchMove(e) {
-    e.preventDefault();
-    const touch = e.touches[0];
-    const mouseEvent = new MouseEvent('mousemove', {
-      clientX: touch.clientX,
-      clientY: touch.clientY
-    });
-    this.canvas.dispatchEvent(mouseEvent);
+    if (!this.touchActive || !e.touches.length) return;
+    e.preventDefault(); this.paint(e.touches[0]);
   }
 
   onTouchEnd(e) {
-    e.preventDefault();
-    this.endPaint();
+    if (!this.touchActive) return;
+    e.preventDefault(); this.endPaint(); this.touchActive = false;
+    this.suppressMouseUntil = Date.now() + 800;
+    this.skipNextCanvasClick = false;
   }
 
-  dragText(e) {
-    const rect = this.canvas.getBoundingClientRect();
-    const scaleX = this.canvas.width / rect.width;
-    const scaleY = this.canvas.height / rect.height;
-    const x = (e.clientX - rect.left) * scaleX;
-    const y = (e.clientY - rect.top) * scaleY;
-
-    // Update text position with offset
-    this.selectedTextElement.x = x + this.dragOffsetX;
-    this.selectedTextElement.y = y + this.dragOffsetY;
-
-    // Restore the saved canvas state (with all other elements)
-    if (this.draggingCanvasContext) {
-      this.ctx.putImageData(this.draggingCanvasContext, 0, 0);
-    }
-
-    // Redraw all other text elements (except the one being dragged)
-    this.textElements.forEach(item => {
-      if (item !== this.selectedTextElement) {
-        const m = this.getItemTransformMatrix(item);
-        this.ctx.save();
-        this.ctx.translate(item.x, item.y);
-        this.ctx.transform(m.a, m.b, m.c, m.d, 0, 0);
-        this.ctx.font = item.font;
-        this.ctx.fillStyle = item.color;
-        this.ctx.fillText(item.text, 0, 0);
-        this.ctx.restore();
-      }
-    });
-
-    // Redraw all todo items
-    this.redrawTodoItems();
-
-    // Draw the dragged text element on top
-    const m = this.getItemTransformMatrix(this.selectedTextElement);
-    this.ctx.save();
-    this.ctx.translate(this.selectedTextElement.x, this.selectedTextElement.y);
-    this.ctx.transform(m.a, m.b, m.c, m.d, 0, 0);
-    this.ctx.font = this.selectedTextElement.font;
-    this.ctx.fillStyle = this.selectedTextElement.color;
-    this.ctx.fillText(this.selectedTextElement.text, 0, 0);
-    this.ctx.restore();
+  dragItem(item, e) {
+    if (!item) return;
+    const { x, y } = this.canvasPoint(e);
+    const nextX = this.number(x + this.dragOffsetX, 0, this.canvas.width - 1, item.x);
+    const nextY = this.number(y + this.dragOffsetY, 0, this.canvas.height - 1, item.y);
+    if (item.x === nextX && item.y === nextY) return;
+    item.x = nextX; item.y = nextY; this.dragChanged = true;
+    this.redrawAll();
   }
 
-  dragTodo(e) {
-    const rect = this.canvas.getBoundingClientRect();
-    const scaleX = this.canvas.width / rect.width;
-    const scaleY = this.canvas.height / rect.height;
-    const x = (e.clientX - rect.left) * scaleX;
-    const y = (e.clientY - rect.top) * scaleY;
+  dragText(e) { this.dragItem(this.selectedTextElement, e); }
+  dragTodo(e) { this.dragItem(this.selectedTodoItem, e); }
 
-    // Update todo position with offset
-    this.selectedTodoItem.x = x + this.dragOffsetX;
-    this.selectedTodoItem.y = y + this.dragOffsetY;
-
-    // Restore the saved canvas state (with all other elements)
-    if (this.draggingCanvasContext) {
-      this.ctx.putImageData(this.draggingCanvasContext, 0, 0);
-    }
-
-    // Redraw all other todo items (except the one being dragged)
-    this.todoItems.forEach(item => {
-      if (item !== this.selectedTodoItem) {
-        this.drawTodoItem(item);
-      }
-    });
-
-    // Draw the dragged todo item on top
-    this.drawTodoItem(this.selectedTodoItem);
+  getItemTransformMatrix(item) {
+    return { a: Number.isFinite(item?.a) ? item.a : 1, b: Number.isFinite(item?.b) ? item.b : 0,
+      c: Number.isFinite(item?.c) ? item.c : 0, d: Number.isFinite(item?.d) ? item.d : 1 };
   }
 
-  findTextElementAt(e) {
-    const rect = this.canvas.getBoundingClientRect();
-    const scaleX = this.canvas.width / rect.width;
-    const scaleY = this.canvas.height / rect.height;
-    const x = (e.clientX - rect.left) * scaleX;
-    const y = (e.clientY - rect.top) * scaleY;
+  transformLocalPoint(item, x, y) {
+    const m = this.getItemTransformMatrix(item);
+    return { x: item.x + m.a * x + m.c * y, y: item.y + m.b * x + m.d * y };
+  }
 
-    // Search through text elements in reverse order (top-most first)
-    for (let i = this.textElements.length - 1; i >= 0; i--) {
-      const text = this.textElements[i];
-      const bounds = this.getTextBounds(text, text.text);
+  localPoint(item, point) {
+    const m = this.getItemTransformMatrix(item);
+    const determinant = m.a * m.d - m.b * m.c;
+    if (Math.abs(determinant) < 0.00001) return { x: Infinity, y: Infinity };
+    const x = point.x - item.x, y = point.y - item.y;
+    return { x: (m.d * x - m.c * y) / determinant, y: (-m.b * x + m.a * y) / determinant };
+  }
 
-      // Check if click is within text bounds (allowing for some margin)
-      const margin = 5;
-      if (x >= bounds.minX - margin &&
-        x <= bounds.maxX + margin &&
-        y >= bounds.minY - margin &&
-        y <= bounds.maxY + margin) {
-        return text;
-      }
+  textLayout(item, text = item.text, todo = false) {
+    this.ctx.font = item.font;
+    const size = Number(item.font.match(/([\d.]+)px/)?.[1]) || 16;
+    const lines = String(text || '').split('\n');
+    const width = Math.max(0, ...lines.map(line => this.ctx.measureText(line).width));
+    const lineHeight = size * this.number(item.lineHeight, 1, 3, 1.35);
+    const offset = todo ? size * 1.4 : 0;
+    const left = todo ? 0 : item.align === 'center' ? -width / 2 : item.align === 'right' ? -width : 0;
+    return { lines, size, width, lineHeight, offset, left, right: left + width + offset,
+      top: -size, bottom: Math.max(size * 0.25, (lines.length - 1) * lineHeight + size * 0.25) };
+  }
+
+  getTextBounds(item, text, todo = false) {
+    const layout = this.textLayout(item, text, todo);
+    const corners = [[layout.left, layout.top], [layout.right, layout.top], [layout.right, layout.bottom], [layout.left, layout.bottom]]
+      .map(([x, y]) => this.transformLocalPoint(item, x, y));
+    return { minX: Math.min(...corners.map(p => p.x)), maxX: Math.max(...corners.map(p => p.x)),
+      minY: Math.min(...corners.map(p => p.y)), maxY: Math.max(...corners.map(p => p.y)), textWidth: layout.width };
+  }
+
+  findItemAt(items, e, todo = false) {
+    const point = this.canvasPoint(e);
+    for (let index = items.length - 1; index >= 0; index--) {
+      const item = items[index], local = this.localPoint(item, point), bounds = this.textLayout(item, item.text, todo);
+      if (local.x >= bounds.left - 4 && local.x <= bounds.right + 4 && local.y >= bounds.top - 4 && local.y <= bounds.bottom + 4) return item;
     }
-
     return null;
   }
 
-  findTodoItemAt(e) {
-    const rect = this.canvas.getBoundingClientRect();
-    const scaleX = this.canvas.width / rect.width;
-    const scaleY = this.canvas.height / rect.height;
-    const x = (e.clientX - rect.left) * scaleX;
-    const y = (e.clientY - rect.top) * scaleY;
+  findTextElementAt(e) { return this.findItemAt(this.textElements, e); }
+  findTodoItemAt(e) { return this.findItemAt(this.todoItems, e, true); }
+  findTodoDeleteButtonAt() { return null; }
 
-    // Search through todo items in reverse order (top-most first)
-    for (let i = this.todoItems.length - 1; i >= 0; i--) {
-      const todo = this.todoItems[i];
-      const bounds = this.getTextBounds(todo, todo.text);
-
-      // Check if click is within todo bounds (allowing for some margin)
-      const margin = 5;
-      if (x >= bounds.minX - margin &&
-        x <= bounds.maxX + margin &&
-        y >= bounds.minY - margin &&
-        y <= bounds.maxY + margin) {
-        return todo;
-      }
-    }
-
-    return null;
-  }
-
-  findTodoDeleteButtonAt(e) {
-    const rect = this.canvas.getBoundingClientRect();
-    const scaleX = this.canvas.width / rect.width;
-    const scaleY = this.canvas.height / rect.height;
-    const x = (e.clientX - rect.left) * scaleX;
-    const y = (e.clientY - rect.top) * scaleY;
-
-    // Search through todo items in reverse order (top-most first)
-    for (let i = this.todoItems.length - 1; i >= 0; i--) {
-      const todo = this.todoItems[i];
-
-      if (!Number.isFinite(todo.deleteButtonCenterX) ||
-        !Number.isFinite(todo.deleteButtonCenterY) ||
-        !Number.isFinite(todo.deleteButtonHitRadius)) {
-        continue;
-      }
-
-      const dx = x - todo.deleteButtonCenterX;
-      const dy = y - todo.deleteButtonCenterY;
-      if (dx * dx + dy * dy <= todo.deleteButtonHitRadius * todo.deleteButtonHitRadius) {
-        return todo;
-      }
-    }
-
-    return null;
-  }
-
-  deleteTodoItem(todoItem) {
-    const index = this.todoItems.indexOf(todoItem);
-    if (index > -1) {
-      this.todoItems.splice(index, 1);
-      // Redraw canvas to remove the deleted todo item
-      this.redrawAll();
-      this.saveToHistory();
-    }
+  isTodoCheckboxAt(item, e) {
+    const point = this.localPoint(item, this.canvasPoint(e));
+    const size = this.textLayout(item).size;
+    return point.x >= -3 && point.x <= size + 3 && point.y >= -size - 3 && point.y <= size * 0.15 + 3;
   }
 
   redrawAll() {
-    // Clear canvas to white background
-    this.ctx.fillStyle = 'white';
-    this.ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
+    this.drawBaseImage();
+    this.drawSchedule();
+    const layers = [...this.lineSegments.map(item => ({ item, draw: this.drawSegment })),
+      ...this.textElements.map(item => ({ item, draw: this.drawTextItem })),
+      ...this.todoItems.map(item => ({ item, draw: this.drawTodoItem }))];
+    layers.sort((a, b) => (a.item.renderOrder || 0) - (b.item.renderOrder || 0));
+    layers.forEach(({ item, draw }) => draw.call(this, item));
+    this.updateSelectionOverlay();
+    if (typeof this.updateScheduleSelection === 'function') this.updateScheduleSelection();
+  }
 
-    // Redraw all elements in order
-    this.redrawLineSegments();
-    this.redrawTextElements();
-    this.redrawTodoItems();
-    this.drawSchedule(); // Redraw schedule if it exists
+  textConfiguration() {
+    return { font: `${this.textItalic ? 'italic ' : ''}${this.textBold ? 'bold ' : ''}${this.inputNumber('font-size', 6, 100, 20)}px ${this.value('font-family', 'Microsoft YaHei')}`,
+      color: this.value('text-color', this.brushColor), align: this.value('text-align', 'left'),
+      lineHeight: this.inputNumber('text-line-height', 1, 3, 1.35) };
   }
 
   startTextPlacement() {
-    // If editing an existing text element, update it
-    if (this.selectedEditingText) {
-      this.updateSelectedText();
-      return;
-    }
-
-    const text = document.getElementById('text-input').value.trim();
-    if (!text) {
-      alert('请输入文字内容');
-      return;
-    }
-
+    if (this.selectedEditingText) { this.updateSelectedText(); return; }
+    if (!this.value('text-input').trim()) { this.report('请输入文字内容，可使用换行排版。', true); this.element('text-input')?.focus(); return; }
+    if (this.currentTool !== 'text') this.setActiveTool('text');
+    this.textConfiguration();
+    this.workspaceRevision++;
     this.isTextPlacementMode = true;
-
-    // Add visual feedback
-    setCanvasTitle('点击画布放置文字');
     this.canvas.classList.add('text-placement-mode');
+    this.report('点击画布放置文字；取消可返回编辑。');
   }
 
   cancelTextPlacement() {
     this.isTextPlacementMode = false;
     this.isTodoPlacementMode = false;
-    this.canvas.classList.remove('text-placement-mode');
-
-    // reset dragging state
     this.isDraggingText = false;
-    this.dragOffsetX = 0;
-    this.dragOffsetY = 0;
     this.selectedTextElement = null;
+    this.selectedEditingText = null;
     this.selectedTodoItem = null;
-    this.draggingCanvasContext = null;
+    this.todoEditing = false;
+    const addTodo = this.element('add-todo-btn');
+    if (addTodo) addTodo.textContent = '添加待办';
+    this.canvas.classList.remove('text-placement-mode');
+    this.updateSelectionOverlay();
+  }
 
-    // Deselect editing text
-    if (this.selectedEditingText) {
-      this.selectedEditingText = null;
-      document.getElementById('text-input').value = '';
-      document.getElementById('add-text-btn').textContent = '添加文字';
+  updateTextEditingUI() {
+    const add = this.element('add-text-btn');
+    if (add) add.textContent = this.selectedEditingText ? '更新文字' : '添加文字';
+    const remove = this.element('delete-text-btn');
+    if (remove) remove.disabled = !this.selectedEditingText;
+    this.updateToggle('text-bold', this.textBold); this.updateToggle('text-italic', this.textItalic);
+  }
+
+  selectText(item) {
+    this.selectedEditingText = item;
+    if (this.element('text-input')) this.element('text-input').value = item.text;
+    const match = item.font.match(/([\d.]+)px\s+(.*)/);
+    if (match) {
+      if (this.element('font-size')) this.element('font-size').value = match[1];
+      this.setFontInput('font-family', match[2]);
     }
+    this.textBold = /bold/.test(item.font); this.textItalic = /italic/.test(item.font);
+    ['text-color', 'text-align', 'text-line-height'].forEach(id => {
+      const input = this.element(id);
+      if (input) input.value = id === 'text-color' ? item.color : id === 'text-align' ? item.align || 'left' : item.lineHeight || 1.35;
+    });
+    this.updateTextEditingUI(); this.updateSelectionOverlay();
+    this.report('已选中文字，可修改内容或拖动位置。');
   }
 
   updateSelectedText() {
     if (!this.selectedEditingText) return;
-
-    const text = document.getElementById('text-input').value;
-    const fontFamily = document.getElementById('font-family').value;
-    const fontSize = document.getElementById('font-size').value;
-
-    let fontStyle = '';
-    if (this.textItalic) fontStyle += 'italic ';
-    if (this.textBold) fontStyle += 'bold ';
-
-    this.selectedEditingText.text = text;
-    this.selectedEditingText.font = `${fontStyle}${fontSize}px ${fontFamily}`;
-    this.selectedEditingText.color = this.brushColor;
-
-    // Remove if text is empty
-    if (!text.trim()) {
-      const index = this.textElements.indexOf(this.selectedEditingText);
-      if (index > -1) this.textElements.splice(index, 1);
-    }
-
-    this.redrawAll();
-    this.saveToHistory();
-    this.deselectEditingText();
+    if (!this.value('text-input').trim()) { this.report('文字内容不能为空；需要移除时请点击删除。', true); return; }
+    Object.assign(this.selectedEditingText, this.textConfiguration(), { text: this.value('text-input') });
+    this.selectedEditingText.renderOrder = ++this.renderOrder;
+    this.redrawAll(); this.saveToHistory(); this.report('文字已更新。');
   }
 
-  getItemTransformMatrix(item) {
-    return {
-      a: item && Number.isFinite(item.a) ? item.a : 1,
-      b: item && Number.isFinite(item.b) ? item.b : 0,
-      c: item && Number.isFinite(item.c) ? item.c : 0,
-      d: item && Number.isFinite(item.d) ? item.d : 1
-    };
-  }
-
-  transformLocalPoint(item, localX, localY) {
-    const m = this.getItemTransformMatrix(item);
-    return {
-      x: item.x + m.a * localX + m.c * localY,
-      y: item.y + m.b * localX + m.d * localY
-    };
-  }
-
-  getTextBounds(item, text) {
-    this.ctx.font = item.font;
-    const textWidth = this.ctx.measureText(text).width;
-    const fontSizeMatch = item.font.match(/(\d+)px/);
-    const textHeight = (fontSizeMatch ? parseInt(fontSizeMatch[1]) : 14) * 1.2;
-    const corners = [
-      this.transformLocalPoint(item, 0, -textHeight),
-      this.transformLocalPoint(item, textWidth, -textHeight),
-      this.transformLocalPoint(item, textWidth, 0),
-      this.transformLocalPoint(item, 0, 0)
-    ];
-    const xs = corners.map(p => p.x);
-    const ys = corners.map(p => p.y);
-    return {
-      minX: Math.min(...xs),
-      maxX: Math.max(...xs),
-      minY: Math.min(...ys),
-      maxY: Math.max(...ys),
-      textWidth
-    };
+  deleteSelectedText() {
+    const index = this.textElements.indexOf(this.selectedEditingText);
+    if (index < 0) return;
+    this.textElements.splice(index, 1); this.cancelTextPlacement(); this.updateTextEditingUI();
+    if (this.element('text-input')) this.element('text-input').value = '';
+    this.redrawAll(); this.saveToHistory(); this.report('已删除选中文字。');
   }
 
   deselectEditingText() {
-    this.selectedEditingText = null;
-    document.getElementById('text-input').value = '';
-    document.getElementById('add-text-btn').textContent = '添加文字';
-    this.redrawAll();
+    this.selectedEditingText = null; this.selectedTextElement = null;
+    this.updateTextEditingUI(); this.updateSelectionOverlay();
   }
 
   placeText(e) {
-    const rect = this.canvas.getBoundingClientRect();
-    const scaleX = this.canvas.width / rect.width;
-    const scaleY = this.canvas.height / rect.height;
-    const x = (e.clientX - rect.left) * scaleX;
-    const y = (e.clientY - rect.top) * scaleY;
-
-    const text = document.getElementById('text-input').value;
-    const fontFamily = document.getElementById('font-family').value;
-    const fontSize = document.getElementById('font-size').value;
-
-    // Build font style string
-    let fontStyle = '';
-    if (this.textItalic) fontStyle += 'italic ';
-    if (this.textBold) fontStyle += 'bold ';
-
-    // Create a new text element
-    const newText = {
-      text: text,
-      x: x,
-      y: y,
-      font: `${fontStyle}${fontSize}px ${fontFamily}`,
-      color: this.brushColor,
-      a: 1,
-      b: 0,
-      c: 0,
-      d: 1
-    };
-
-    // Add to our list of text elements
-    this.textElements.push(newText);
-
-    // Select this text element for immediate dragging
-    this.selectedTextElement = newText;
-    this.draggingCanvasContext = this.ctx.getImageData(0, 0, this.canvas.width, this.canvas.height);
-
-    // Draw text on canvas
-    this.ctx.font = newText.font;
-    this.ctx.fillStyle = newText.color;
-    this.ctx.fillText(newText.text, newText.x, newText.y);
-
-    // Save to history after placing text
-    this.saveToHistory();
-
-    // Reset
-    document.getElementById('text-input').value = '';
-    this.isTextPlacementMode = false;
-    this.canvas.classList.remove('text-placement-mode');
-    setCanvasTitle('拖动新添加文字可调整位置');
-  }
-
-  redrawTextElements() {
-    // Redraw all text elements after dithering
-    this.textElements.forEach(item => {
-      const m = this.getItemTransformMatrix(item);
-      this.ctx.save();
-      this.ctx.translate(item.x, item.y);
-      this.ctx.transform(m.a, m.b, m.c, m.d, 0, 0);
-      this.ctx.font = item.font;
-      this.ctx.fillStyle = item.color;
-      this.ctx.fillText(item.text, 0, 0);
-      this.ctx.restore();
-    });
-
-    // Draw selection indicator for editing text
-    if (this.selectedEditingText) {
-      const item = this.selectedEditingText;
-      const bounds = this.getTextBounds(item, item.text);
-      const padding = 4;
-      this.ctx.strokeStyle = '#0000FF';
-      this.ctx.lineWidth = 1;
-      this.ctx.setLineDash([4, 3]);
-      this.ctx.strokeRect(
-        bounds.minX - padding,
-        bounds.minY - padding,
-        (bounds.maxX - bounds.minX) + padding * 2,
-        (bounds.maxY - bounds.minY) + padding * 2
-      );
-      this.ctx.setLineDash([]);
+    const text = this.value('text-input');
+    if (!text.trim()) { this.cancelTextPlacement(); this.report('请输入文字内容。', true); return; }
+    const point = this.canvasPoint(e), configuration = this.textConfiguration();
+    const size = Number(configuration.font.match(/([\d.]+)px/)?.[1]) || 24;
+    const item = { text, x: point.x, y: Math.max(size, point.y), ...configuration, a: 1, b: 0, c: 0, d: 1, renderOrder: ++this.renderOrder };
+    const layout = this.textLayout(item);
+    if (layout.width > this.canvas.width - 4 || layout.bottom - layout.top > this.canvas.height - 4) {
+      this.report('文字超出画布，请减小字号、行距或使用换行排版。', true); return;
     }
+    item.x = Math.max(2 - layout.left, Math.min(item.x, this.canvas.width - 2 - layout.right));
+    item.y = Math.max(2 - layout.top, Math.min(item.y, this.canvas.height - 2 - layout.bottom));
+    this.textElements.push(item);
+    this.isTextPlacementMode = false; this.canvas.classList.remove('text-placement-mode');
+    this.selectText(item); this.redrawAll(); this.saveToHistory();
+    this.report('文字已放置，可拖动或继续编辑。');
   }
 
-  redrawLineSegments() {
-    // Redraw all line segments after dithering
-    this.lineSegments.forEach(segment => {
-      this.ctx.lineJoin = 'round';
-      this.ctx.lineCap = 'round';
-      this.ctx.strokeStyle = segment.color;
-      this.ctx.lineWidth = segment.size;
-      this.ctx.beginPath();
+  drawTextItem(item) {
+    const m = this.getItemTransformMatrix(item), layout = this.textLayout(item);
+    this.ctx.save(); this.ctx.translate(item.x, item.y); this.ctx.transform(m.a, m.b, m.c, m.d, 0, 0);
+    this.ctx.font = item.font; this.ctx.fillStyle = item.color;
+    this.ctx.textAlign = ['left', 'center', 'right'].includes(item.align) ? item.align : 'left';
+    this.ctx.textBaseline = 'alphabetic';
+    layout.lines.forEach((line, index) => this.ctx.fillText(line, 0, index * layout.lineHeight));
+    this.ctx.restore();
+  }
 
-      if (segment.type === 'dot') {
-        this.ctx.moveTo(segment.x, segment.y);
-        this.ctx.lineTo(segment.x + 0.1, segment.y + 0.1);
-      } else {
-        this.ctx.moveTo(segment.x1, segment.y1);
-        this.ctx.lineTo(segment.x2, segment.y2);
-      }
+  redrawTextElements() { this.textElements.forEach(item => this.drawTextItem(item)); }
+  redrawLineSegments() { this.lineSegments.forEach(segment => this.drawSegment(segment)); }
 
-      this.ctx.stroke();
-    });
+  todoConfiguration() {
+    return { font: `${this.todoItalic ? 'italic ' : ''}${this.todoBold ? 'bold ' : ''}${this.inputNumber('todo-font-size', 6, 100, 18)}px ${this.value('todo-font-family', 'Microsoft YaHei')}`,
+      color: this.value('todo-color', this.todoColor), lineHeight: 1.35 };
   }
 
   startTodoPlacement() {
-    const todo = document.getElementById('todo-input').value.trim();
-    if (!todo) {
-      alert('请输入待办项内容');
-      return;
+    const lines = this.value('todo-input').split(/\r?\n/).map(line => line.trim()).filter(Boolean);
+    if (!lines.length) { this.report('请输入待办内容，每行一项。', true); this.element('todo-input')?.focus(); return; }
+    if (this.selectedTodoItem && this.todoEditing) {
+      if (lines.length > 1) { this.report('编辑单项待办时请保留一行；取消编辑后可批量添加。', true); return; }
+      Object.assign(this.selectedTodoItem, this.todoConfiguration(), { text: lines[0] });
+      this.selectedTodoItem.renderOrder = ++this.renderOrder;
+      this.redrawAll(); this.saveToHistory(); this.cancelTodoPlacement(); this.report('待办已更新。'); return;
     }
-
-    this.isTodoPlacementMode = true;
-
-    // Add visual feedback
-    setCanvasTitle('点击画布放置待办项');
-    this.canvas.classList.add('text-placement-mode');
+    if (this.currentTool !== 'todo') this.setActiveTool('todo');
+    this.todoConfiguration();
+    this.workspaceRevision++;
+    this.isTodoPlacementMode = true; this.canvas.classList.add('text-placement-mode');
+    this.report(`点击画布放置 ${lines.length} 项待办；每项方框可切换完成状态。`);
   }
 
   placeTodo(e) {
-    const rect = this.canvas.getBoundingClientRect();
-    const scaleX = this.canvas.width / rect.width;
-    const scaleY = this.canvas.height / rect.height;
-    const x = (e.clientX - rect.left) * scaleX;
-    const y = (e.clientY - rect.top) * scaleY;
-
-    const todo = document.getElementById('todo-input').value;
-    const fontSize = document.getElementById('todo-font-size').value;
-    const fontFamily = document.getElementById('todo-font-family').value;
-
-    // Build font style string with bold and italic
-    let fontStyle = '';
-    if (this.todoItalic) fontStyle += 'italic ';
-    if (this.todoBold) fontStyle += 'bold ';
-    fontStyle += `${fontSize}px ${fontFamily}`;
-
-    // Create a new todo item
-    const newTodo = {
-      text: todo,
-      x: x,
-      y: y,
-      font: fontStyle,
-      color: this.todoColor,
-      completed: false,
-      a: 1,
-      b: 0,
-      c: 0,
-      d: 1
-    };
-
-    // Add to our list of todo items
-    this.todoItems.push(newTodo);
-
-    // Select this todo item for immediate dragging
-    this.selectedTodoItem = newTodo;
-    this.draggingCanvasContext = this.ctx.getImageData(0, 0, this.canvas.width, this.canvas.height);
-
-    // Draw todo on canvas
-    this.drawTodoItem(newTodo);
-
-    // Save to history after placing todo
-    this.saveToHistory();
-
-    // Reset
-    document.getElementById('todo-input').value = '';
-    this.isTodoPlacementMode = false;
-    this.canvas.classList.remove('text-placement-mode');
-    setCanvasTitle('拖动新添加待办项可调整位置');
+    const lines = this.value('todo-input').split(/\r?\n/).map(line => line.trim()).filter(Boolean);
+    if (!lines.length) { this.cancelTodoPlacement(); return; }
+    const configuration = this.todoConfiguration(), point = this.canvasPoint(e);
+    const size = Number(configuration.font.match(/([\d.]+)px/)?.[1]) || 20;
+    this.ctx.font = configuration.font;
+    const width = Math.max(...lines.map(text => this.ctx.measureText(text).width)) + size * 1.4;
+    if (width > this.canvas.width - 4) {
+      this.report('待办内容超出画布宽度，请减小字号或缩短单项内容。', true); return;
+    }
+    point.x = Math.min(point.x, this.canvas.width - width - 2);
+    const spacing = size * this.inputNumber('todo-spacing', 1.2, 3, 1.6);
+    if (Math.max(size, point.y) + (lines.length - 1) * spacing + size * 0.25 > this.canvas.height) {
+      this.report('剩余高度不足以放下清单，请减小字号、行距或选择更靠上的位置。', true); return;
+    }
+    const items = lines.map((text, index) => ({ text, x: point.x, y: Math.max(size, point.y) + index * spacing,
+      ...configuration, completed: false, a: 1, b: 0, c: 0, d: 1, renderOrder: ++this.renderOrder }));
+    this.todoItems.push(...items);
+    this.cancelTodoPlacement();
+    if (this.element('todo-input')) this.element('todo-input').value = '';
+    this.redrawAll(); this.saveToHistory(); this.report(`已添加 ${items.length} 项待办。`);
   }
 
-  drawTodoItem(todoItem) {
-    const m = this.getItemTransformMatrix(todoItem);
-    this.ctx.save();
-    this.ctx.translate(todoItem.x, todoItem.y);
-    this.ctx.transform(m.a, m.b, m.c, m.d, 0, 0);
+  cancelTodoPlacement() {
+    this.isTodoPlacementMode = false; this.todoEditing = false; this.selectedTodoItem = null;
+    this.canvas.classList.remove('text-placement-mode');
+    const add = this.element('add-todo-btn'); if (add) add.textContent = '添加待办';
+    this.updateSelectionOverlay(); this.renderTodoList();
+  }
 
-    // Draw todo text
-    this.ctx.font = todoItem.font;
-    this.ctx.fillStyle = todoItem.color;
-    this.ctx.fillText(todoItem.text, 0, 0);
-
-    // Only draw delete button if showTodoDeleteButtons is true
-    if (this.showTodoDeleteButtons) {
-      // Calculate delete button position
-      const textWidth = this.ctx.measureText(todoItem.text).width;
-      const deleteButtonX = textWidth + 5;
-      const deleteButtonY = 0;
-      const deleteButtonSize = 12;
-
-      // Draw delete button "×"
-      this.ctx.font = 'bold 14px Arial';
-      this.ctx.fillStyle = '#FF6B6B';
-      this.ctx.fillText('×', deleteButtonX, deleteButtonY);
-
-      // Store transformed delete button center for hit detection
-      const hitPoint = this.transformLocalPoint(todoItem, deleteButtonX + 2, -deleteButtonSize / 2);
-      todoItem.deleteButtonCenterX = hitPoint.x;
-      todoItem.deleteButtonCenterY = hitPoint.y;
-      todoItem.deleteButtonHitRadius = 10;
-    } else {
-      todoItem.deleteButtonCenterX = null;
-      todoItem.deleteButtonCenterY = null;
-      todoItem.deleteButtonHitRadius = null;
+  editTodoItem(item) {
+    if (this.currentTool !== 'todo') this.setActiveTool('todo');
+    this.selectedTodoItem = item; this.todoEditing = true;
+    const match = item.font.match(/([\d.]+)px\s+(.*)/);
+    if (this.element('todo-input')) this.element('todo-input').value = item.text;
+    if (match) {
+      if (this.element('todo-font-size')) this.element('todo-font-size').value = match[1];
+      this.setFontInput('todo-font-family', match[2]);
     }
+    this.todoBold = /bold/.test(item.font); this.todoItalic = /italic/.test(item.font);
+    this.todoColor = item.color;
+    if (this.element('todo-color')) this.element('todo-color').value = item.color;
+    this.updateToggle('todo-bold', this.todoBold); this.updateToggle('todo-italic', this.todoItalic);
+    if (this.element('add-todo-btn')) this.element('add-todo-btn').textContent = '更新待办';
+    this.element('todo-input')?.focus(); this.updateSelectionOverlay(); this.renderTodoList();
+    this.report('已选中待办，可修改内容和样式。');
+  }
 
-    // Draw strikethrough if completed
-    if (todoItem.completed) {
-      const textWidth = this.ctx.measureText(todoItem.text).width;
-      this.ctx.strokeStyle = '#000000';
-      this.ctx.lineWidth = 1;
-      this.ctx.beginPath();
-      this.ctx.moveTo(0, -4);
-      this.ctx.lineTo(textWidth, -4);
-      this.ctx.stroke();
+  toggleTodo(item) {
+    item.completed = !item.completed; this.redrawAll(); this.saveToHistory();
+  }
+
+  deleteTodoItem(item) {
+    const index = this.todoItems.indexOf(item); if (index < 0) return;
+    this.todoItems.splice(index, 1);
+    if (this.selectedTodoItem === item) this.cancelTodoPlacement();
+    this.redrawAll(); this.saveToHistory(); this.report('已删除待办。');
+  }
+
+  moveTodoItem(item, delta) {
+    const index = this.todoItems.indexOf(item), target = index + delta;
+    if (index < 0 || target < 0 || target >= this.todoItems.length) return;
+    const other = this.todoItems[target];
+    [item.x, other.x] = [other.x, item.x]; [item.y, other.y] = [other.y, item.y];
+    [this.todoItems[index], this.todoItems[target]] = [other, item];
+    this.redrawAll(); this.saveToHistory();
+  }
+
+  clearCompletedTodos() {
+    const count = this.todoItems.filter(item => item.completed).length;
+    if (!count) { this.report('没有已完成的待办。'); return; }
+    this.todoItems = this.todoItems.filter(item => !item.completed);
+    if (this.selectedTodoItem?.completed) this.cancelTodoPlacement();
+    this.redrawAll(); this.saveToHistory(); this.report(`已清理 ${count} 项已完成待办。`);
+  }
+
+  alignTodoItems() {
+    if (!this.todoItems.length) return;
+    const first = this.todoItems[0], spacing = this.inputNumber('todo-spacing', 1.2, 3, 1.6);
+    const sizes = this.todoItems.map(item => this.textLayout(item).size);
+    const startY = Math.max(first.y, sizes[0]);
+    const height = sizes.slice(0, -1).reduce((sum, size, index) => sum + Math.max(size, sizes[index + 1]) * spacing, 0) + sizes.at(-1) * 0.25;
+    if (startY + height > this.canvas.height) { this.report('画布高度不足，请减小行距或将第一项向上移动。', true); return; }
+    let y = startY;
+    this.todoItems.forEach((item, index) => {
+      item.x = first.x; item.y = y; item.a = 1; item.b = 0; item.c = 0; item.d = 1;
+      y += Math.max(sizes[index], sizes[index + 1] || sizes[index]) * spacing;
+    });
+    this.redrawAll(); this.saveToHistory(); this.report('待办已按当前顺序对齐。');
+  }
+
+  renderTodoList() {
+    const summary = this.element('todo-summary'), list = this.element('todo-list');
+    const completed = this.todoItems.filter(item => item.completed).length;
+    if (summary) summary.textContent = this.todoItems.length ? `${this.todoItems.length} 项 · 已完成 ${completed} 项` : '0 项待办';
+    const clear = this.element('clear-completed-todo-btn'); if (clear) clear.disabled = !completed;
+    const align = this.element('todo-align-btn'); if (align) align.disabled = this.todoItems.length < 2;
+    if (!list) return;
+    const signature = JSON.stringify([this.todoItems.map(item => [item.text, item.completed]), this.todoItems.indexOf(this.selectedTodoItem)]);
+    const sameReferences = this.renderedTodoItems && this.renderedTodoItems.length === this.todoItems.length &&
+      this.todoItems.every((item, index) => item === this.renderedTodoItems[index]);
+    if (signature === this.todoListSignature && sameReferences) return;
+    this.todoListSignature = signature;
+    this.renderedTodoItems = this.todoItems.slice();
+    list.replaceChildren();
+    if (!this.todoItems.length) {
+      const empty = document.createElement('p'); empty.className = 'todo-editor-empty';
+      empty.textContent = '每行输入一项，批量放置清单；也可在这里编辑、排序与勾选完成。';
+      list.appendChild(empty);
+    }
+    this.todoItems.forEach((item, index) => {
+      const row = document.createElement('div'); row.className = 'todo-editor-row';
+      row.classList.toggle('completed', item.completed); row.classList.toggle('selected', item === this.selectedTodoItem);
+      const checkbox = document.createElement('input'); checkbox.type = 'checkbox'; checkbox.checked = item.completed;
+      checkbox.setAttribute('aria-label', `${item.completed ? '恢复' : '完成'}待办：${item.text}`);
+      checkbox.addEventListener('change', () => this.toggleTodo(item));
+      const content = document.createElement('input'); content.type = 'text'; content.value = item.text; content.className = 'todo-list-text';
+      content.setAttribute('aria-label', `第 ${index + 1} 项待办内容`);
+      content.addEventListener('change', () => {
+        if (!content.value.trim()) { content.value = item.text; this.report('待办内容不能为空；可使用删除按钮移除。', true); return; }
+        item.text = content.value.trim(); item.renderOrder = ++this.renderOrder;
+        this.redrawAll();
+        this.todoListSignature = JSON.stringify([this.todoItems.map(todo => [todo.text, todo.completed]), this.todoItems.indexOf(this.selectedTodoItem)]);
+        // Keep this row in the DOM so the button clicked immediately after editing still receives its click.
+        this.saveToHistory(true, false);
+      });
+      row.append(checkbox, content);
+      const actions = document.createElement('div'); actions.className = 'todo-row-actions';
+      [['上移', () => this.moveTodoItem(item, -1), index === 0], ['下移', () => this.moveTodoItem(item, 1), index === this.todoItems.length - 1],
+        ['编辑', () => this.editTodoItem(item), false], ['删除', () => this.deleteTodoItem(item), false]].forEach(([label, action, disabled]) => {
+        const button = document.createElement('button'); button.type = 'button'; button.className = 'secondary'; button.textContent = label;
+        button.disabled = disabled; button.setAttribute('aria-label', `${label}第 ${index + 1} 项待办`);
+        button.addEventListener('click', action); actions.appendChild(button);
+      });
+      row.appendChild(actions); list.appendChild(row);
+    });
+  }
+
+  drawTodoItem(item) {
+    const m = this.getItemTransformMatrix(item), layout = this.textLayout(item);
+    const size = layout.size, box = size * 0.8, offset = size * 1.4;
+    this.ctx.save(); this.ctx.translate(item.x, item.y); this.ctx.transform(m.a, m.b, m.c, m.d, 0, 0);
+    this.ctx.strokeStyle = item.color; this.ctx.fillStyle = item.color; this.ctx.lineWidth = Math.max(1, size / 14);
+    this.ctx.strokeRect(0, -box, box, box);
+    if (item.completed) {
+      this.ctx.beginPath(); this.ctx.moveTo(box * 0.2, -box * 0.5); this.ctx.lineTo(box * 0.42, -box * 0.22);
+      this.ctx.lineTo(box * 0.82, -box * 0.8); this.ctx.stroke();
+    }
+    this.ctx.font = item.font; this.ctx.textAlign = 'left'; this.ctx.textBaseline = 'alphabetic';
+    this.ctx.fillText(item.text, offset, 0);
+    if (item.completed) {
+      this.ctx.beginPath(); this.ctx.moveTo(offset, -size * 0.35); this.ctx.lineTo(offset + this.ctx.measureText(item.text).width, -size * 0.35); this.ctx.stroke();
     }
     this.ctx.restore();
   }
 
-  redrawTodoItems() {
-    // Redraw all todo items
-    this.todoItems.forEach(item => {
-      this.drawTodoItem(item);
-    });
-  }
+  redrawTodoItems() { this.todoItems.forEach(item => this.drawTodoItem(item)); }
 
   createSchedule() {
     // Get schedule configuration from form inputs
@@ -1689,83 +1310,43 @@ class PaintManager {
       return { ...segment, x1: p1.x, y1: p1.y, x2: p2.x, y2: p2.y };
     });
 
-    if (this.scheduleData) {
-      const oldRows = this.scheduleData.length;
-      const oldCols = this.scheduleData[0].length;
-      const oldTableWidth = oldCols * this.scheduleCellWidth;
-      const oldTableHeight = oldRows * this.scheduleCellHeight;
-
-      const mapScheduleCell = (row, col) => {
-        if (transformType === 'rotate90') {
-          return { row: col, col: oldRows - 1 - row };
-        }
-        if (transformType === 'mirror') {
-          return { row, col: oldCols - 1 - col };
-        }
-        if (transformType === 'flip') {
-          return { row: oldRows - 1 - row, col };
-        }
-        return { row, col };
-      };
-
-      const newRows = transformType === 'rotate90' ? oldCols : oldRows;
-      const newCols = transformType === 'rotate90' ? oldRows : oldCols;
-      const newScheduleData = Array.from({ length: newRows }, () => Array(newCols).fill(''));
-      const newCellFontSizes = Array.from({ length: newRows }, () => Array(newCols).fill(this.scheduleFontSize));
-
-      for (let row = 0; row < oldRows; row++) {
-        for (let col = 0; col < oldCols; col++) {
-          const mapped = mapScheduleCell(row, col);
-          newScheduleData[mapped.row][mapped.col] = this.scheduleData[row][col];
-          if (this.scheduleCellFontSizes && this.scheduleCellFontSizes[row]) {
-            newCellFontSizes[mapped.row][mapped.col] = this.scheduleCellFontSizes[row][col];
-          }
-        }
-      }
-
-      this.scheduleData = newScheduleData;
-      this.scheduleCellFontSizes = newCellFontSizes;
-      this.scheduleClasses = newRows - 1;
-      this.scheduleDays = newCols - 1;
-
-      if (transformType === 'rotate90') {
-        const oldStartX = this.scheduleStartX;
-        const oldStartY = this.scheduleStartY;
-        const oldCellWidth = this.scheduleCellWidth;
-        const oldCellHeight = this.scheduleCellHeight;
-        this.scheduleCellWidth = oldCellHeight;
-        this.scheduleCellHeight = oldCellWidth;
-        this.scheduleStartX = oldHeight - (oldStartY + oldTableHeight);
-        this.scheduleStartY = oldStartX;
-      } else if (transformType === 'mirror') {
-        this.scheduleStartX = oldWidth - (this.scheduleStartX + oldTableWidth);
-      } else if (transformType === 'flip') {
-        this.scheduleStartY = oldHeight - (this.scheduleStartY + oldTableHeight);
-      }
-
-      if (this.selectedScheduleCell) {
-        const mapped = mapScheduleCell(this.selectedScheduleCell.row, this.selectedScheduleCell.col);
-        this.selectedScheduleCell = { row: mapped.row, col: mapped.col };
-      }
-
-      // Keep schedule in visible area after transforms.
-      const newTableWidth = newCols * this.scheduleCellWidth;
-      const newTableHeight = newRows * this.scheduleCellHeight;
-      this.scheduleStartX = Math.max(0, Math.min(this.scheduleStartX, newWidth - newTableWidth));
-      this.scheduleStartY = Math.max(0, Math.min(this.scheduleStartY, newHeight - newTableHeight));
-      this.saveScheduleToLocalStorage();
+    if (this.scheduleData && typeof this.transformSchedule === 'function') {
+      this.transformSchedule(transformType, oldWidth, oldHeight, newWidth, newHeight);
     }
 
     this.selectedTextElement = originalSelectedTextElement ? (textElementMap.get(originalSelectedTextElement) || null) : null;
     this.selectedEditingText = originalSelectedEditingText ? (textElementMap.get(originalSelectedEditingText) || null) : null;
     this.selectedTodoItem = originalSelectedTodoItem ? (todoItemMap.get(originalSelectedTodoItem) || null) : null;
+    this.syncUI();
+  }
+
+  resizeElements(oldWidth, oldHeight, newWidth, newHeight) {
+    const scaleX = newWidth / oldWidth, scaleY = newHeight / oldHeight;
+    [...this.textElements, ...this.todoItems].forEach(item => {
+      const matrix = this.getItemTransformMatrix(item);
+      item.x *= scaleX; item.y *= scaleY;
+      Object.assign(item, { a: matrix.a * scaleX, b: matrix.b * scaleY,
+        c: matrix.c * scaleX, d: matrix.d * scaleY });
+    });
+    this.lineSegments.forEach(segment => {
+      if (segment.type === 'dot') { segment.x *= scaleX; segment.y *= scaleY; }
+      else { segment.x1 *= scaleX; segment.x2 *= scaleX; segment.y1 *= scaleY; segment.y2 *= scaleY; }
+      segment.size *= (scaleX + scaleY) / 2;
+    });
+    this.workspaceRevision++;
+    this.updateSelectionOverlay();
   }
 
   clearElements() {
     this.textElements = [];
     this.lineSegments = [];
     this.todoItems = [];
-    this.scheduleData = null; // Clear schedule data
-    this.scheduleCellFontSizes = null; // Clear per-cell font sizes
+    this.scheduleData = null;
+    this.scheduleCellFontSizes = null;
+    this.selectedScheduleCell = null;
+    this.cancelTextPlacement();
+    this.todoEditing = false;
+    this.resetBaseImage();
+    this.syncUI();
   }
 }

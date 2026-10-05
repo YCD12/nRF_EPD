@@ -185,19 +185,40 @@ const CalendarAnnotations = {
     if (count) count.textContent = `${this.annotations.length}/${this.MAX_RECORDS}`;
     if (!body) return;
     body.innerHTML = '';
+    if (!this.annotations.length) {
+      const tr = document.createElement('tr');
+      const td = document.createElement('td');
+      td.colSpan = 6;
+      td.className = 'empty-state';
+      td.textContent = '还没有日期标注。选择日期并添加短标签，即可开始。';
+      tr.appendChild(td);
+      body.appendChild(tr);
+      return;
+    }
     this.annotations.forEach((item, index) => {
       const tr = document.createElement('tr');
-      tr.innerHTML =
-        `<td>${item.date}</td>` +
-        `<td>${item.label ? item.label : '（仅红点）'}</td>` +
-        `<td>${this.positionLabel(item.position)}</td>` +
-        `<td>${this.fontLabel(item.fontSize)}</td>` +
-        `<td>${this.colorLabel(item.color)}</td>`;
+      for (const value of [item.date, item.label || '（仅红点）',
+        this.positionLabel(item.position), this.fontLabel(item.fontSize), this.colorLabel(item.color)]) {
+        const cell = document.createElement('td');
+        cell.textContent = value;
+        tr.appendChild(cell);
+      }
       const td = document.createElement('td');
+      const editBtn = document.createElement('button');
+      editBtn.type = 'button';
+      editBtn.className = 'secondary';
+      editBtn.textContent = '编辑';
+      editBtn.setAttribute('aria-label', `编辑 ${item.date} 的标注`);
+      editBtn.onclick = (event) => {
+        event.stopPropagation();
+        this.editAt(index);
+      };
+      td.appendChild(editBtn);
       const btn = document.createElement('button');
       btn.type = 'button';
       btn.className = 'secondary';
       btn.textContent = '删除';
+      btn.setAttribute('aria-label', `删除 ${item.date} 的标注`);
       btn.onclick = (event) => {
         event.stopPropagation();
         this.removeAt(index);

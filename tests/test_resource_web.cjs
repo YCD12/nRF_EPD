@@ -409,7 +409,7 @@ function installerFixture(Client = ResourceClient, fetch) {
   const context = { document: { getElementById: node }, fetch, Uint8Array,
     EPDResourceStore: { ...require('../html/js/resource_store.js'), ResourceClient: Client } };
   vm.runInNewContext(fs.readFileSync(require.resolve('../html/js/resource_installer.js'), 'utf8'), context);
-  return { installer: context.ExternalResourceInstaller, node,
+  return { installer: context.ExternalResourceInstaller, node, context,
     select: files => listeners.get('externalResourceFolder:change')({ target: { files } }) };
 }
 
@@ -532,4 +532,283 @@ test('background output loading cannot replace a manually prepared bundle', asyn
   await new Promise(setImmediate);
   assert.equal(installer.getBundle(), selected);
   assert.match(node('externalResourceBundle').textContent, /已加载 manual/);
+});
+
+test('local Flash figures are labelled estimates and exclude system and reserved space', async () => {
+  const { installer, node } = installerFixture();
+  await installer.loadBundle(completeBundle(), 'local');
+  const usage = node('externalResourceUsage').textContent;
+  assert.match(usage, /资源包估算/);
+  assert.match(usage, /资源分区余量/);
+  assert.match(usage, /系统区占用未统计/);
+  assert.match(usage, /保留区占用未统计/);
+  assert.doesNotMatch(usage, /设备读回|已校验|校验失败/);
+});
+
+test('device usage counts verified package headers and leaves corrupt or absent resources unknown', async () => {
+  const inspected = [];
+  class Client {
+    status() { const bytes = statusBytes(0); bytes[4] |= 16; return bytes; }
+    partitions() { return parseTable(parsePackage(tableBytes())); }
+    inspect(id) {
+      inspected.push(id);
+      if (id === 6) return { code: 3 };
+      if (id === 7) return { code: 4 };
+      const pack = completeBundle().map(item => parsePackage(item.bytes)).find(item => item.id === id);
+      return { code: 0, revision: pack.revision, length: pack.payload.length, crc: pack.crc };
+    }
+    disconnect() {}
+  }
+  const { installer, node } = installerFixture(Client);
+  installer.bind({});
+  await installer.refresh();
+  assert.deepEqual(inspected, [1, 2, 3, 5, 6, 7]);
+  const usage = node('externalResourceUsage').textContent;
+  assert.match(usage, /设备读回/);
+  assert.match(usage, /日历资源：占用 33 B/);
+  assert.match(usage, /UI 布局：64\.0 KiB · 占用与余量未确认/);
+  assert.match(usage, /字体资源：256 KiB · 占用与余量未确认/);
+  assert.match(node('deviceResourceVersions').textContent, /UI 布局：—.*校验失败/);
+  assert.match(node('deviceResourceVersions').textContent, /字体资源：—.*未安装或未提交/);
+});
+
+test('legacy package headers do not claim verified CRC or confirmed free space', async () => {
+  const reads = [];
+  class Client {
+    status() { return statusBytes(0); }
+    partitions() { return parseTable(parsePackage(tableBytes())); }
+    readRange(offset) {
+      const id = this.partitions().find(item => item.offset === offset).id;
+      reads.push(id);
+      return completeBundle().find(item => parsePackage(item.bytes).id === id).bytes.subarray(0, 32);
+    }
+    disconnect() {}
+  }
+  const { installer, node } = installerFixture(Client);
+  await installer.loadBundle(completeBundle(), 'local');
+  installer.bind({});
+  await installer.refresh();
+  assert.deepEqual(reads, [1, 2, 3, 5, 6, 7]);
+  assert.match(node('externalResourceUsage').textContent, /资源占用 未确认，资源分区余量 未确认/);
+  assert.match(node('externalResourceUsage').textContent, /包头申报 33 B/);
+  assert.match(node('deviceResourceVersions').textContent, /仅读包头/);
+  assert.doesNotMatch(node('deviceResourceVersions').textContent, /已校验|内容一致/);
+});
+
+test('local loading preserves device figures and compares both CRC and length', async () => {
+  class Client {
+    status() { const bytes = statusBytes(0); bytes[4] |= 16; return bytes; }
+    partitions() { return parseTable(parsePackage(tableBytes())); }
+    inspect(id) {
+      const pack = completeBundle().map(item => parsePackage(item.bytes)).find(item => item.id === id);
+      return { code: 0, revision: 2, length: pack.payload.length + (id === 5 ? 1 : 0),
+        crc: id === 6 ? pack.crc ^ 1 : pack.crc };
+    }
+    disconnect() {}
+  }
+  const { installer, node } = installerFixture(Client);
+  installer.bind({});
+  await installer.refresh();
+  const deviceUsage = node('externalResourceUsage').textContent;
+  await installer.loadBundle(completeBundle(), 'local');
+  assert.equal(node('externalResourceUsage').textContent, deviceUsage);
+  const versions = node('deviceResourceVersions').textContent;
+  assert.match(versions, /日历资源：v2.*本地 v1 · 待更新/);
+  assert.match(versions, /UI 布局：v2.*本地 v1 · 待更新/);
+  assert.match(versions, /字体资源：v2.*本地 v1 · 内容一致/);
+  await installer.loadBundle([], 'bad');
+  assert.equal(node('externalResourceUsage').textContent, deviceUsage);
+  assert.match(node('deviceResourceVersions').textContent, /设备已读回/);
+  installer.disconnect();
+  assert.equal(node('externalResourceUsage').textContent, '尚未加载分区表');
+  assert.match(node('deviceResourceVersions').textContent, /设备未连接/);
+  assert.doesNotMatch(node('deviceResourceVersions').textContent, /v2|已校验/);
+  installer.bind({});
+  assert.match(node('deviceResourceVersions').textContent, /尚未读取/);
+});
+
+test('upload marks a previously read device snapshot as requiring refresh', async () => {
+  class Client {
+    status() { const bytes = statusBytes(0); bytes[4] = 0x13; return bytes; }
+    partitions() { return parseTable(parsePackage(tableBytes())); }
+    inspect(id) {
+      const pack = completeBundle().map(item => parsePackage(item.bytes)).find(item => item.id === id);
+      return { code: 0, revision: 1, length: pack.payload.length, crc: pack.crc };
+    }
+    async upload() {}
+    async leave() {}
+    disconnect() {}
+  }
+  const { installer, node } = installerFixture(Client);
+  await installer.loadBundle(completeBundle(), 'local');
+  installer.bind({});
+  await installer.refresh();
+  node('externalResourceForce').checked = true;
+  await installer.install();
+  assert.match(node('externalResourceUsage').textContent, /上次读取 · 待刷新/);
+  assert.match(node('deviceResourceVersions').textContent, /上次读取 · 待刷新/);
+  assert.doesNotMatch(node('deviceResourceVersions').textContent, /内容一致/);
+});
+
+function readbackDevice({ beforeReply = async () => {}, code = 0, active = 0 } = {}) {
+  const fixture = installerFixture();
+  const partitions = parseTable(parsePackage(tableBytes()));
+  const memory = new Uint8Array(524288).fill(255), packets = [];
+  const deviceFiles = completeBundle().map(item => {
+    const bytes = item.bytes.slice(), view = new DataView(bytes.buffer);
+    view.setUint32(8, 9, true); view.setUint32(24, crc32(bytes.subarray(0, 24)), true);
+    const partition = partitions.find(p => p.id === parsePackage(bytes).id);
+    memory.set(bytes, partition.offset);
+    return { name: item.name, bytes };
+  });
+  const connection = { async writeValueWithResponse(packet) {
+    packets.push(packet);
+    await beforeReply(packet);
+    let reply;
+    if (packet[1] === 0) { reply = statusBytes(packet[2], code); reply[6] = active; }
+    else if (packet[1] === 1) {
+      const offset = new DataView(packet.buffer, packet.byteOffset, packet.byteLength).getUint32(3, true);
+      reply = Uint8Array.of(0xa7, 1, packet[2], 0, ...memory.subarray(offset, offset + packet[7]));
+    } else throw new Error('Readback must not mutate the device');
+    fixture.installer.notification(reply);
+  } };
+  fixture.installer.bind(connection);
+  return { ...fixture, memory, packets, deviceFiles, connection };
+}
+
+function captureReadbackDownload(fixture) {
+  const archives = [], downloads = [], revoked = [];
+  fixture.context.TextEncoder = TextEncoder;
+  fixture.context.Blob = Blob;
+  fixture.context.EPDResourceArchive = { createZip(entries) { archives.push(entries); return Uint8Array.of(80, 75); } };
+  fixture.context.URL = { createObjectURL() { return 'blob:readback'; }, revokeObjectURL(url) { revoked.push(url); } };
+  fixture.context.setTimeout = callback => callback();
+  fixture.context.document.body = { appendChild() {} };
+  fixture.context.document.createElement = () => ({ click() { downloads.push(this.download); }, remove() {} });
+  return { archives, downloads, revoked };
+}
+
+test('readback downloads verified device bytes independently of the selected local bundle, including after disconnect', async () => {
+  const fixture = readbackDevice(), { installer, node, packets, deviceFiles } = fixture;
+  await installer.loadBundle(completeBundle(), 'local');
+  const selected = installer.getBundle();
+  assert.equal(node('externalResourceSave').disabled, true);
+  await installer.readback();
+  assert.equal(installer.getBundle(), selected);
+  assert.equal(node('externalResourceSave').disabled, false);
+  assert.equal(node('externalResourceProgress').value, 1);
+  assert.match(node('deviceResourceVersions').textContent, /日历资源：v9/);
+  assert.match(node('externalResourceReadbackStatus').textContent, /6 个资源包.*CRC 校验通过/);
+  assert.ok(packets.every(packet => [0, 1].includes(packet[1])));
+  installer.disconnect();
+  assert.equal(node('externalResourceSave').disabled, false);
+  const capture = captureReadbackDownload(fixture);
+  installer.saveReadback(); installer.saveReadback();
+  assert.equal(capture.downloads.length, 2);
+  assert.equal(capture.downloads[0], capture.downloads[1]);
+  assert.match(capture.downloads[0], /^epd-resources-readback-\d{8}-\d{6}\.zip$/);
+  for (const entry of capture.archives[0].filter(item => item.name.endsWith('.ers'))) {
+    assert.deepEqual(entry.bytes, deviceFiles.find(item => item.name === entry.name).bytes);
+  }
+  const manifest = JSON.parse(new TextDecoder().decode(capture.archives[0].find(item => item.name === 'manifest.json').bytes));
+  assert.equal(manifest.resources.length, 6);
+  assert.ok(manifest.resources.every(item => item.revision === 9));
+  assert.equal(manifest.flashCapacity, 524288);
+  assert.deepEqual(capture.revoked, ['blob:readback', 'blob:readback']);
+});
+
+test('readback holds the device operation lock and disables competing resource actions', async () => {
+  const started = deferred(), release = deferred();
+  const fixture = readbackDevice({ async beforeReply(packet) {
+    if (packet[1] === 1 && new DataView(packet.buffer).getUint32(3, true) === 0x18000) {
+      started.resolve(); await release.promise;
+    }
+  } });
+  fixture.context.DeviceOperations = {
+    current: null,
+    begin() { if (this.current) throw new Error('busy'); return this.current = {}; },
+    assert(owner) { assert.equal(this.current, owner); },
+    end(owner) { if (this.current === owner) { this.current = null; fixture.installer.controls(); } }
+  };
+  const work = fixture.installer.readback();
+  await started.promise;
+  for (const id of ['externalResourceReadback', 'externalResourceSave', 'externalResourceRefresh', 'externalResourceFolder'])
+    assert.equal(fixture.node(id).disabled, true);
+  assert.equal(fixture.installer.busy(), true);
+  const packetCount = fixture.packets.length;
+  await fixture.installer.refresh();
+  assert.equal(fixture.packets.length, packetCount);
+  release.resolve(); await work;
+  assert.equal(fixture.context.DeviceOperations.current, null);
+  assert.equal(fixture.installer.busy(), false);
+  assert.equal(fixture.node('externalResourceReadback').disabled, false);
+  assert.equal(fixture.node('externalResourceSave').disabled, false);
+});
+
+test('corrupt, missing or failed resource reads never expose an incomplete download', async () => {
+  for (const failure of ['crc', 'missing', 'transport']) {
+    const fixture = readbackDevice({ async beforeReply(packet) {
+      if (failure === 'transport' && packet[1] === 1 && new DataView(packet.buffer).getUint32(3, true) >= 0x18000)
+        throw new Error('GATT read failed');
+    } });
+    if (failure === 'crc') fixture.memory[0x18000 + 32] ^= 1;
+    if (failure === 'missing') fixture.memory.fill(255, 0x18000, 0x18000 + 32);
+    await fixture.installer.readback();
+    assert.equal(fixture.node('externalResourceSave').disabled, true);
+    assert.match(fixture.node('externalResourceReadbackStatus').textContent, /字体资源回读失败/);
+    assert.equal(fixture.installer.busy(), false);
+    const capture = captureReadbackDownload(fixture);
+    fixture.installer.saveReadback();
+    assert.equal(capture.downloads.length, 0);
+  }
+});
+
+test('incompatible or actively updating devices cannot start a complete resource readback', async () => {
+  for (const options of [{ code: 4 }, { code: 3 }, { active: 7 }]) {
+    const fixture = readbackDevice(options);
+    await fixture.installer.readback();
+    assert.equal(fixture.packets.length, 1);
+    assert.equal(fixture.node('externalResourceSave').disabled, true);
+    assert.match(fixture.node('externalResourceReadbackStatus').textContent, /回读失败/);
+  }
+});
+
+test('restarting a readback clears the old download, and a failed retry cannot download previous data', async () => {
+  const fixture = readbackDevice();
+  await fixture.installer.readback();
+  assert.equal(fixture.node('externalResourceSave').disabled, false);
+  fixture.memory[0x18000 + 32] ^= 1;
+  const work = fixture.installer.readback();
+  assert.equal(fixture.node('externalResourceSave').disabled, true);
+  await work;
+  assert.equal(fixture.node('externalResourceSave').disabled, true);
+});
+
+test('replacing a connection rejects late readback results and clears successful cached bytes', async () => {
+  const started = deferred(), release = deferred();
+  let wait = false;
+  class Client {
+    status() { return statusBytes(0); }
+    partitions() { return parseTable(parsePackage(tableBytes())); }
+    async readPackage(partition) {
+      if (wait && partition.id === 7) { started.resolve(); await release.promise; }
+      return completeBundle().find(item => parsePackage(item.bytes).id === partition.id).bytes;
+    }
+    disconnect() {}
+  }
+  const fixture = installerFixture(Client);
+  fixture.installer.bind({});
+  await fixture.installer.readback();
+  assert.equal(fixture.node('externalResourceSave').disabled, false);
+  fixture.installer.bind({});
+  assert.equal(fixture.node('externalResourceSave').disabled, true);
+  wait = true;
+  const oldWork = fixture.installer.readback();
+  await started.promise;
+  fixture.installer.bind({});
+  fixture.node('externalResourceStatus').textContent = 'new connection';
+  release.resolve(); await oldWork;
+  assert.equal(fixture.node('externalResourceSave').disabled, true);
+  assert.equal(fixture.node('externalResourceStatus').textContent, 'new connection');
+  assert.equal(fixture.installer.busy(), false);
 });

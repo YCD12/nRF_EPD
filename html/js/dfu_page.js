@@ -78,6 +78,30 @@
     if (log) log.innerHTML = '';
   }
 
+  function exportLog() {
+    const log = getDfuLog();
+    const lines = log ? Array.from(log.children, entry => entry.textContent) : [];
+    if (!lines.length) {
+      showToast('暂无可导出的升级日志');
+      return;
+    }
+    const now = new Date();
+    const stamp = [now.getFullYear(), now.getMonth() + 1, now.getDate(),
+      now.getHours(), now.getMinutes(), now.getSeconds()]
+      .map(value => String(value).padStart(2, '0')).join('-');
+    const blob = new Blob(['\uFEFF' + lines.join('\r\n') + '\r\n'], { type: 'text/plain;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `epd-dfu-log-${stamp}.txt`;
+    link.hidden = true;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+    showToast('升级日志已导出');
+  }
+
   function getRuntimeState() {
     if (typeof window.getDfuPageState === 'function') {
       return window.getDfuPageState();
@@ -167,6 +191,7 @@
   function bindPageActions() {
     const backBtn = document.getElementById('dfuBackButton');
     const clearBtn = document.getElementById('dfuClearLogButton');
+    const exportBtn = document.getElementById('exportLogButton');
     const abandonBtn = document.getElementById('dfuAbandonSessionButton');
     const resetModeBtn = document.getElementById('dfuResetModeButton');
     if (backBtn) {
@@ -189,6 +214,9 @@
     }
     if (clearBtn) {
       clearBtn.addEventListener('click', clearLog);
+    }
+    if (exportBtn) {
+      exportBtn.addEventListener('click', exportLog);
     }
     if (abandonBtn) {
       abandonBtn.addEventListener('click', () => {
@@ -241,6 +269,9 @@
   });
 
   window.addEventListener('load', () => {
+    if (window.ConsoleUI && typeof window.ConsoleUI.initTheme === 'function') {
+      window.ConsoleUI.initTheme();
+    }
     bindPageActions();
     applyHandoffNotice(loadHandoffState());
     if (typeof initDfuPanel === 'function') {

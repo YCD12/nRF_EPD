@@ -31,6 +31,47 @@ function setup() {
   return { context, elements, logs, run: code => vm.runInContext(code, context) };
 }
 
+function setupTimedImageSend(version = 0x39) {
+  const state = setup();
+  const { context, elements, run } = state;
+  const layers = [];
+  const writes = [];
+  let now = 1000;
+  context.Date = class extends Date {
+    constructor(...args) { super(...(args.length ? args : [now])); }
+    static now() { return now; }
+  };
+  context.advanceClock = milliseconds => { now += milliseconds; };
+  context.capture = packet => writes.push(Array.from(packet));
+  context.completeLayer = async (data, step) => {
+    layers.push({ step, data: Array.from(data) });
+    now += step === 'bw' ? 1250 : 2500;
+  };
+  context.processImageData = () => Uint8Array.of(1, 2, 3, 4, 5, 6, 7, 8);
+  context.setTimeout = (callback, delay) => {
+    const timer = setTimeout(callback, delay);
+    if (delay === 5000) timer.unref();
+    return timer;
+  };
+  context.document.getElementById('canvasSize').value = 'test_8_4';
+  context.document.getElementById('ditherMode').value = 'threeColor';
+  const driver = context.document.getElementById('epddriver');
+  driver.value = '03';
+  driver.selectedIndex = 0;
+  driver.options = [{ getAttribute: name => name === 'data-size' ? 'test_8_4' : 'threeColor' }];
+  context.document.getElementById('status').parentElement = { style: {} };
+  run(`appVersion = ${version}; bleDevice = {gatt: {connected: true}};
+    canvas = {width: 8, height: 4}; ctx = {getImageData: () => ({width: 8, height: 4})};
+    cropManager = {isCropMode: () => false}; paintManager = {};
+    waitForNegotiatedMtu = async () => { advanceClock(5000); return true; };
+    writeImageCRC = async (data, step, owner) => {
+      DeviceOperations.assert(owner); await completeLayer(data, step); DeviceOperations.assert(owner);
+      return true;
+    };
+    epdCharacteristic = {writeValueWithResponse: async data => capture(data)};`);
+  return { ...state, layers, writes, advanceClock: context.advanceClock };
+}
+
 test('external resource installer stays on the main page', () => {
   const { run } = setup();
   assert.equal(run('typeof openResourcesPage'), 'undefined');
@@ -123,6 +164,60 @@ test('display operation waits for matching completion, rejects BUSY, and cancels
     epdCharacteristic = {writeValueWithResponse: async data => capture(data)};`);
   assert.equal(await run('write(EpdCmd.REFRESH)'), true);
   assert.deepEqual(packets.at(-1), [3]);
+});
+
+test('image transfer reports the combined CRC time before refresh completion and excludes preparation', async () => {
+  const { run, elements, logs, layers, writes, advanceClock } = setupTimedImageSend();
+  let completed = false;
+  const work = run('sendimg()').then(result => { completed = true; return result; });
+  await new Promise(setImmediate);
+
+  assert.deepEqual(layers, [
+    { step: 'bw', data: [1, 2, 3, 4] },
+    { step: 'red', data: [5, 6, 7, 8] },
+  ]);
+  assert.equal(writes.length, 1);
+  assert.equal(writes[0][0], run('EpdCmd.REFRESH'));
+  assert.equal(completed, false);
+  assert.equal(run('DeviceOperations.current.kind'), 'image');
+  const transferMessage = '传图完成！传图耗时: 3.750s，等待屏幕刷新…';
+  assert.equal(elements.get('status').innerHTML, transferMessage);
+  assert.equal(logs.filter(message => message === transferMessage).length, 1);
+  assert.equal(logs.some(message => message.includes('图片刷新完成')), false);
+
+  // A global progress timer changing during refresh cannot alter this operation's total.
+  run('startTime = 0');
+  advanceClock(9000);
+  run(`handleNotify(new DataView(Uint8Array.of(0xab, ${writes[0][2]}, 0, 3).buffer))`);
+  await work;
+  assert.equal(completed, true);
+  assert.equal(run('DeviceOperations.current'), null);
+  const completion = '图片刷新完成！传图耗时: 3.750s · 刷新耗时: 9.000s · 总耗时: 17.750s';
+  assert.equal(elements.get('status').innerHTML, completion);
+  assert.ok(logs.includes(completion));
+});
+
+test('legacy image firmware reports transfer duration without claiming refresh completion', async () => {
+  const { run, elements, logs, writes } = setupTimedImageSend(0x38);
+  await run('sendimg()');
+  assert.equal(writes.length, 1);
+  assert.deepEqual(writes[0], [run('EpdCmd.REFRESH')]);
+  assert.equal(run('DeviceOperations.current'), null);
+  assert.match(elements.get('status').innerHTML, /传图耗时: 3\.750s.*刷新指令已发送，屏幕刷新中/);
+  assert.equal(logs.some(message => message.includes('图片刷新完成') || message.includes('刷新耗时:')), false);
+});
+
+test('failed refresh preserves the completed transfer duration and releases the operation', async () => {
+  const { run, logs, writes, advanceClock } = setupTimedImageSend();
+  const work = run('sendimg()');
+  await new Promise(setImmediate);
+  advanceClock(4000);
+  run(`handleNotify(new DataView(Uint8Array.of(0xab, ${writes[0][2]}, 2, 3).buffer))`);
+  await work;
+  assert.ok(logs.includes('传图完成！传图耗时: 3.750s，等待屏幕刷新…'));
+  assert.ok(logs.some(message => message.includes('刷新指令发送失败')));
+  assert.equal(logs.some(message => message.includes('图片刷新完成')), false);
+  assert.equal(run('DeviceOperations.current'), null);
 });
 
 test('device operation owns all writes and stale completion cannot release a new operation', async () => {

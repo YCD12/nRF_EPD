@@ -16,6 +16,7 @@ let legacyConfigDirty = false;
 let configReadWaiter = null;
 let configReadToken = 0;
 let migrationExport = null;
+let imageLoadToken = 0;
 
 // An operation owns the complete request/ACK sequence, across individual GATT writes.
 const DeviceOperations = {
@@ -568,15 +569,7 @@ async function sendImageOperation(owner) {
     return;
   }
 
-  // Clear schedule selection indicator before sending
-  if (paintManager && paintManager.selectedScheduleCell) {
-    paintManager.cancelScheduleInput();
-  }
-
-  // Clear text selection indicator before sending
-  if (paintManager && paintManager.selectedEditingText) {
-    paintManager.deselectEditingText();
-  }
+  prepareCanvasExport();
 
   const canvasSize = document.getElementById('canvasSize').value;
   const ditherMode = document.getElementById('ditherMode').value;
@@ -604,7 +597,8 @@ async function sendImageOperation(owner) {
     if (!confirm("警告：颜色模式和驱动不匹配，是否继续？")) return;
   }
 
-  startTime = new Date().getTime();
+  const operationStartedAt = new Date().getTime();
+  startTime = operationStartedAt;
   const status = document.getElementById("status");
   status.operation = owner;
   status.parentElement.style.display = "block";
@@ -675,32 +669,35 @@ async function sendImageOperation(owner) {
   }
   addLog("使用CRC校验传输模式");
 
-  try {
-    if (ditherMode === 'fourColor') {
-      await writeImageCRC(processedData, 'color', owner);
-    } else if (ditherMode === 'threeColor') {
-      const halfLength = Math.floor(processedData.length / 2);
-      const blackWhiteData = processedData.slice(0, halfLength);
-      const redWhiteData = processedData.slice(halfLength);
-      if (epdDriverSelect.value === '08' || epdDriverSelect.value === '09') {
-        await writeImageCRC(convertUC8159(blackWhiteData, redWhiteData), 'bw', owner);
-      } else {
-        await writeImageCRC(blackWhiteData, 'bw', owner);
-        await writeImageCRC(redWhiteData, 'red', owner);
-      }
-    } else if (ditherMode === 'blackWhiteColor') {
-      if (epdDriverSelect.value === '08' || epdDriverSelect.value === '09') {
-        const emptyData = new Uint8Array(processedData.length).fill(0xFF);
-        await writeImageCRC(convertUC8159(processedData, emptyData), 'bw', owner);
-      } else {
-        await writeImageCRC(processedData, 'bw', owner);
-      }
+  const layers = [];
+  if (ditherMode === 'fourColor') {
+    layers.push([processedData, 'color']);
+  } else if (ditherMode === 'threeColor') {
+    const halfLength = Math.floor(processedData.length / 2);
+    const blackWhiteData = processedData.slice(0, halfLength);
+    const redWhiteData = processedData.slice(halfLength);
+    if (epdDriverSelect.value === '08' || epdDriverSelect.value === '09') {
+      layers.push([convertUC8159(blackWhiteData, redWhiteData), 'bw']);
     } else {
-      addLog("当前固件不支持此颜色模式。");
-      updateButtonStatus();
-      hideStatusBar();
-      return;
+      layers.push([blackWhiteData, 'bw'], [redWhiteData, 'red']);
     }
+  } else if (ditherMode === 'blackWhiteColor') {
+    if (epdDriverSelect.value === '08' || epdDriverSelect.value === '09') {
+      const emptyData = new Uint8Array(processedData.length).fill(0xFF);
+      layers.push([convertUC8159(processedData, emptyData), 'bw']);
+    } else {
+      layers.push([processedData, 'bw']);
+    }
+  } else {
+    addLog("当前固件不支持此颜色模式。");
+    updateButtonStatus();
+    hideStatusBar();
+    return;
+  }
+
+  const transferStartedAt = new Date().getTime();
+  try {
+    for (const [data, step] of layers) await writeImageCRC(data, step, owner);
   } catch (e) {
     if (DeviceOperations.current !== owner) return;
     addLog(`传图失败: ${e.message || e}`);
@@ -710,8 +707,15 @@ async function sendImageOperation(owner) {
   }
 
   DeviceOperations.assert(owner);
-  setStatus('图片数据已校验，等待屏幕刷新完成…');
+  const transferFinishedAt = new Date().getTime();
+  const transferTime = ((transferFinishedAt - transferStartedAt) / 1000).toFixed(3);
+  const transferCompletion = `传图完成！传图耗时: ${transferTime}s，等待屏幕刷新…`;
+  addLog(transferCompletion);
+  setStatus(transferCompletion);
+  const confirmsRefresh = appVersion >= 0x39;
+  const refreshStartedAt = new Date().getTime();
   const refreshOk = await write(EpdCmd.REFRESH, null, true, true, true, owner);
+  const refreshFinishedAt = new Date().getTime();
   DeviceOperations.assert(owner);
   updateButtonStatus();
   const isConnectedNow = !!(gattServer && gattServer.connected && bleDevice && bleDevice.gatt && bleDevice.gatt.connected);
@@ -727,11 +731,14 @@ async function sendImageOperation(owner) {
     return;
   }
 
-  const sendTime = (new Date().getTime() - startTime) / 1000.0;
-  const completion = appVersion >= 0x39 ? '图片刷新完成' : '图片发送完成';
-  addLog(`${completion}！总耗时: ${sendTime}s`);
-  setStatus(`${completion}！总耗时: ${sendTime}s`);
-  if (appVersion < 0x39) addLog("屏幕刷新完成前请不要操作。");
+  const refreshTime = ((refreshFinishedAt - refreshStartedAt) / 1000).toFixed(3);
+  const totalTime = ((refreshFinishedAt - operationStartedAt) / 1000).toFixed(3);
+  const completion = confirmsRefresh
+    ? `图片刷新完成！传图耗时: ${transferTime}s · 刷新耗时: ${refreshTime}s · 总耗时: ${totalTime}s`
+    : `图片发送完成！传图耗时: ${transferTime}s · 刷新指令已发送，屏幕刷新中。`;
+  addLog(completion);
+  setStatus(completion);
+  if (!confirmsRefresh) addLog("屏幕刷新完成前请不要操作。");
   if (!isConnectedNow) {
     const disconnectedTip = '图片已发送，设备连接已断开，请点击“重连”继续操作。';
     addLog(disconnectedTip);
@@ -748,6 +755,7 @@ function downloadDataArray() {
     return;
   }
 
+  prepareCanvasExport();
   const mode = document.getElementById('ditherMode').value;
   const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
   const processedData = processImageData(imageData, mode);
@@ -788,18 +796,29 @@ function downloadDataArray() {
 }
 
 function updateButtonStatus(forceDisabled = false) {
-  const connected = gattServer != null && gattServer.connected;
+  const connected = !!(gattServer != null && gattServer.connected);
   const status = forceDisabled || DeviceOperations.current ? 'disabled' : (connected ? null : 'disabled');
-  document.getElementById("reconnectbutton").disabled = !bleDevice || connected || isConnecting;
-  document.getElementById("sendcmdbutton").disabled = status;
-  document.getElementById("calendarmodebutton").disabled = status;
-  document.getElementById("clockmodebutton").disabled = status;
-  document.getElementById("clearscreenbutton").disabled = status;
-  document.getElementById("sendimgbutton").disabled = status;
-  document.getElementById("setDriverbutton").disabled = status;
+  const reconnect = document.getElementById('reconnectbutton');
+  if (reconnect) reconnect.disabled = !bleDevice || connected || isConnecting;
+  for (const id of ['sendcmdbutton', 'calendarmodebutton', 'clockmodebutton',
+                    'clearscreenbutton', 'sendimgbutton', 'setDriverbutton']) {
+    const button = document.getElementById(id);
+    if (button) button.disabled = !!status;
+  }
   const clock = document.getElementById('legacyclockbutton');
-  if (clock) clock.disabled = status;
+  if (clock) clock.disabled = !!status;
+  const dfu = document.getElementById('openDfuPageButton');
+  if (dfu) dfu.disabled = !!(forceDisabled || isConnecting || DeviceOperations.current);
   for (const button of document.querySelectorAll('[data-device-operation]')) button.disabled = !!status;
+  if (window.ConsoleUI && typeof window.ConsoleUI.updateConnection === 'function') {
+    window.ConsoleUI.updateConnection({
+      connected,
+      connecting: isConnecting,
+      busy: !!(forceDisabled || DeviceOperations.current),
+      deviceName: bleDevice && bleDevice.name ? bleDevice.name : '',
+      operation: DeviceOperations.current ? DeviceOperations.current.kind : '',
+    });
+  }
 }
 
 function disconnect() {
@@ -821,6 +840,10 @@ function disconnect() {
 }
 
 async function openDfuPage() {
+  if (isConnecting || DeviceOperations.current || document.getElementById('openDfuPageButton')?.disabled) {
+    showToast('设备操作进行中，请等待完成后再进入固件升级。', 3600);
+    return false;
+  }
   const handoff = {
     source: 'index',
     fromUrl: window.location.pathname,
@@ -1538,6 +1561,18 @@ function setConsoleLogEnabled(enabled) {
 
 function addLog(logTXT, action = '') {
   const log = document.getElementById("log");
+  const message = String(logTXT == null ? '' : logTXT);
+  const level = /失败|超时|错误|异常|Error|failed|invalid/i.test(message) ? 'error'
+    : /警告|注意|电压过低|断开|disconnected|warn|warning/i.test(message) ? 'warn'
+    : /成功|完成|已连接|已保存|success|connected/i.test(message) ? 'success' : 'info';
+  if (!log) {
+    if (logToConsole) console[level === 'error' || level === 'warn' ? 'warn' : 'log']('[EPD]', message);
+    return;
+  }
+  if (level === 'error' && typeof log.closest === 'function') {
+    const details = log.closest('details');
+    if (details) details.open = true;
+  }
   // 只有用户当前停留在底部附近时才自动滚动，避免查看历史日志被强制拉回底部。
   const autoFollow = (log.scrollHeight - (log.scrollTop + log.clientHeight)) < 24;
   const now = new Date();
@@ -1547,7 +1582,7 @@ function addLog(logTXT, action = '') {
 
   const logEntry = document.createElement('div');
   const timeSpan = document.createElement('span');
-  logEntry.className = 'log-line';
+  logEntry.className = `log-line log-${level}`;
   timeSpan.className = 'time';
   timeSpan.textContent = time;
   logEntry.appendChild(timeSpan);
@@ -1558,13 +1593,13 @@ function addLog(logTXT, action = '') {
     actionSpan.innerHTML = action;
     logEntry.appendChild(actionSpan);
   }
-  logEntry.appendChild(document.createTextNode(logTXT));
+  logEntry.appendChild(document.createTextNode(message));
 
   log.appendChild(logEntry);
 
   if (logToConsole) {
-    const line = `${time}${action}${logTXT}`;
-    const isErr = /失败|超时|Error|异常|disconnected|断开|warn|warning/i.test(logTXT);
+    const line = `${time}${action}${message}`;
+    const isErr = level === 'error' || level === 'warn';
     if (isErr) {
       console.warn('[EPD]', line);
     } else {
@@ -1583,7 +1618,8 @@ function addLog(logTXT, action = '') {
 }
 
 function clearLog() {
-  document.getElementById("log").innerHTML = '';
+  const log = document.getElementById('log');
+  if (log) log.innerHTML = '';
 }
 
 function clearLogBeforeIndex(index) {
@@ -1601,6 +1637,23 @@ function fillCanvas(style) {
   ctx.fillRect(0, 0, canvas.width, canvas.height);
 }
 
+function prepareCanvasExport() {
+  if (paintManager && typeof paintManager.prepareExport === 'function') paintManager.prepareExport();
+}
+
+function captureCanvasOrientation() {
+  return rotationQuarterTurns;
+}
+
+function restoreCanvasOrientation(turns) {
+  imageLoadToken++;
+  rotationQuarterTurns = Number.isInteger(turns) ? ((turns % 4) + 4) % 4 : 0;
+  const matched = canvasSizes.find(size => size.width === canvas.width && size.height === canvas.height);
+  const sizeSelect = document.getElementById('canvasSize');
+  if (matched && sizeSelect) sizeSelect.value = matched.name;
+  updateOrientationBadge();
+}
+
 function setCanvasTitle(title) {
   const canvasTitle = document.querySelector('.canvas-title');
   if (canvasTitle) {
@@ -1611,25 +1664,69 @@ function setCanvasTitle(title) {
 
 function updateImage() {
   const imageFile = document.getElementById('imageFile');
-  if (imageFile.files.length == 0) {
-    fillCanvas('white');
+  if (!imageFile || !canvas || !ctx) return;
+  const token = ++imageLoadToken;
+  const clearInvalidCrop = () => {
+    if (!cropManager || !cropManager.isCropMode()) return;
+    cropManager.exitCropMode();
+    if (canvas.style) canvas.style.backgroundImage = '';
+    if (paintManager && typeof paintManager.redrawAll === 'function') paintManager.redrawAll();
+    else fillCanvas('white');
+  };
+  if (!imageFile.files || imageFile.files.length === 0) {
+    clearInvalidCrop();
     return;
   }
-
+  const file = imageFile.files[0];
+  if (window.ConsoleUI && typeof window.ConsoleUI.validateImageFile === 'function') {
+    const validationError = window.ConsoleUI.validateImageFile(file);
+    if (validationError) {
+      showToast(validationError, 4000);
+      addLog(validationError);
+      imageFile.value = '';
+      clearInvalidCrop();
+      if (typeof window.ConsoleUI.refreshImageFileName === 'function') window.ConsoleUI.refreshImageFileName();
+      return;
+    }
+  }
   const image = new Image();
+  let imageUrl;
+  const releaseImageUrl = () => {
+    if (imageUrl) { URL.revokeObjectURL(imageUrl); imageUrl = null; }
+  };
+  const reportImageError = () => {
+    releaseImageUrl();
+    if (token !== imageLoadToken) return;
+    imageFile.value = '';
+    clearInvalidCrop();
+    if (window.ConsoleUI && typeof window.ConsoleUI.refreshImageFileName === 'function') window.ConsoleUI.refreshImageFileName();
+    const message = '图片读取失败，请选择有效的 PNG、JPG、BMP 或 WebP 图片。';
+    showToast(message, 4000);
+    addLog(message);
+  };
   image.onload = function () {
-    URL.revokeObjectURL(this.src);
+    releaseImageUrl();
+    if (token !== imageLoadToken) return;
+    if (!image.width || !image.height) { reportImageError(); return; }
     if (image.width / image.height == canvas.width / canvas.height) {
-      if (cropManager.isCropMode()) cropManager.exitCropMode();
+      if (cropManager && cropManager.isCropMode()) cropManager.exitCropMode();
+      fillCanvas('white');
       ctx.drawImage(image, 0, 0, image.width, image.height, 0, 0, canvas.width, canvas.height);
+      if (paintManager) paintManager.captureBaseImage();
       convertDithering();
     } else {
-      alert(`图片宽高比例与画布不匹配，将进入裁剪模式。\n请放大图片后移动图片使其充满画布, 再点击"完成"按钮。`);
-      paintManager.setActiveTool(null, '');
-      cropManager.initializeCrop();
+      showToast('已进入裁剪模式：缩放、拖动图片使其填满画布，再点击“完成”。', 4800);
+      if (paintManager) paintManager.setActiveTool(null, '');
+      if (cropManager) cropManager.initializeCrop();
     }
   };
-  image.src = URL.createObjectURL(imageFile.files[0]);
+  image.onerror = reportImageError;
+  try {
+    imageUrl = URL.createObjectURL(file);
+    image.src = imageUrl;
+  } catch (_) {
+    reportImageError();
+  }
 }
 
 function updateOrientationBadge() {
@@ -1664,16 +1761,30 @@ function updateOrientationBadge() {
 function updateCanvasSize() {
   const selectedSizeName = document.getElementById('canvasSize').value;
   const selectedSize = canvasSizes.find(size => size.name === selectedSizeName);
+  if (!selectedSize) return;
+
+  const previousBase = document.createElement('canvas');
+  previousBase.width = canvas.width;
+  previousBase.height = canvas.height;
+  if (paintManager) paintManager.drawBaseImage();
+  previousBase.getContext('2d').drawImage(canvas, 0, 0);
 
   canvas.width = selectedSize.width;
   canvas.height = selectedSize.height;
-
-  updateImage();
-  // 尺寸变化后，重绘所有矢量元素（文字、线条等）
-  if (paintManager) {
-    paintManager.redrawAll();
-  }
   rotationQuarterTurns = 0;
+  fillCanvas('white');
+  ctx.drawImage(previousBase, 0, 0, canvas.width, canvas.height);
+
+  if (paintManager) {
+    paintManager.captureBaseImage();
+    if (typeof paintManager.resizeElements === 'function') {
+      paintManager.resizeElements(previousBase.width, previousBase.height, canvas.width, canvas.height);
+    }
+    if (typeof paintManager.fitScheduleToCanvas === 'function') paintManager.fitScheduleToCanvas(false);
+    paintManager.redrawAll();
+    paintManager.saveToHistory();
+  }
+  updateImage();
   updateOrientationBadge();
 }
 
@@ -1694,10 +1805,12 @@ function applyCanvasTransform(transformType) {
     alert("请先完成图片裁剪！");
     return;
   }
+  imageLoadToken++;
 
   const sourceCanvas = document.createElement('canvas');
   sourceCanvas.width = canvas.width;
   sourceCanvas.height = canvas.height;
+  if (paintManager) paintManager.drawBaseImage();
   sourceCanvas.getContext('2d').drawImage(canvas, 0, 0);
 
   const oldWidth = canvas.width;
@@ -1732,7 +1845,9 @@ function applyCanvasTransform(transformType) {
   }
 
   if (paintManager) {
+    paintManager.captureBaseImage();
     paintManager.transformElements(transformType, oldWidth, oldHeight, canvas.width, canvas.height);
+    paintManager.redrawAll();
     paintManager.saveToHistory();
   }
 
@@ -1765,6 +1880,10 @@ function flipCanvas() {
 
 function clearCanvas() {
   if (confirm('清除画布内容?')) {
+    imageLoadToken++;
+    const imageFile = document.getElementById('imageFile');
+    if (imageFile) imageFile.value = '';
+    if (window.ConsoleUI && typeof window.ConsoleUI.refreshImageFileName === 'function') window.ConsoleUI.refreshImageFileName();
     fillCanvas('white');
     paintManager.clearElements(); // Clear stored text positions and line segments
     paintManager.clearCanvasCache(); // Clear cached data from localStorage
@@ -1777,9 +1896,8 @@ function clearCanvas() {
 }
 
 function convertDithering() {
-  paintManager.redrawTextElements();
-  paintManager.redrawLineSegments();
-  paintManager.redrawTodoItems();
+  // Only dither the imported bitmap. Timetable grids and editable elements are rendered afterward.
+  paintManager.drawBaseImage();
 
   const contrast = parseFloat(document.getElementById('ditherContrast').value);
   const currentImageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
@@ -1797,11 +1915,17 @@ function convertDithering() {
   const processedData = processImageData(ditherImage(imageData, alg, strength, mode), mode);
   const finalImageData = decodeProcessedData(processedData, canvas.width, canvas.height, mode);
   ctx.putImageData(finalImageData, 0, 0);
-
+  paintManager.captureBaseImage();
+  paintManager.redrawAll();
   paintManager.saveToHistory(); // Save dithered image to history
 }
 
 function applyDither() {
+  if (!canvas || !ctx || !paintManager || !cropManager) return;
+  if (!cropManager.isCropMode()) {
+    convertDithering();
+    return;
+  }
   cropManager.finishCrop(() => convertDithering());
 }
 
@@ -1822,14 +1946,20 @@ function checkDebugMode() {
   const debugMode = urlParams.get('debug');
 
   if (debugMode === 'true') {
-    document.body.classList.add('dark-mode');
-    link.innerHTML = '正常模式';
-    link.setAttribute('href', window.location.pathname);
+    document.body.classList.add('debug-mode');
+    if (link) {
+      link.innerHTML = '正常模式';
+      urlParams.delete('debug');
+      link.setAttribute('href', window.location.pathname + (urlParams.toString() ? '?' + urlParams.toString() : '') + (window.location.hash || ''));
+    }
     addLog("注意：开发模式功能已开启！不懂请不要随意修改，否则后果自负！");
   } else {
-    document.body.classList.remove('dark-mode');
-    link.innerHTML = '开发模式';
-    link.setAttribute('href', window.location.pathname + '?debug=true');
+    document.body.classList.remove('debug-mode');
+    if (link) {
+      link.innerHTML = '开发模式';
+      urlParams.set('debug', 'true');
+      link.setAttribute('href', window.location.pathname + '?' + urlParams.toString() + (window.location.hash || ''));
+    }
   }
 }
 
@@ -1876,5 +2006,8 @@ document.body.onload = () => {
   }
   if (typeof initDfuPanel === 'function') {
     initDfuPanel();
+  }
+  if (window.ConsoleUI && typeof window.ConsoleUI.init === 'function') {
+    window.ConsoleUI.init();
   }
 }
