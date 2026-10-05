@@ -8,6 +8,13 @@
 #include "epd_clock_refresh.h"
 #include "clock_layout.h"
 #include "ui_resources.h"
+#include "calendar_grid.h"
+#include "calendar_resources.h"
+#include "Lunar.h"
+
+#ifdef GUI_LAYOUT_REFERENCE
+void DrawGUI_Unclipped(gui_data_t *data, buffer_callback callback, void *context);
+#endif
 
 static unsigned char fonts[3][16384];
 static u8g2_font_source_t sources[3];
@@ -114,11 +121,125 @@ static void install_annotations(unsigned year, unsigned month) {
     }
     assert(calendar_annotations_load(blob,sizeof(blob)));
 }
+
+static bool frame_pixel(const unsigned char *plane, int x, int y)
+{
+    assert(x >= 0 && x < 800 && y >= 0 && y < 480);
+    return (plane[y * 100 + x / 8] & (0x80U >> (x & 7))) != 0;
+}
+
+static void install_single_dot(unsigned month, unsigned day, bool corner)
+{
+    uint8_t blob[CALENDAR_ANNOTATIONS_HEADER_SIZE + CALENDAR_ANNOTATIONS_RECORD_SIZE] = {0};
+    uint32_t magic = CALENDAR_ANNOTATIONS_MAGIC;
+    for (unsigned i = 0; i < 4; ++i) blob[i] = (uint8_t)(magic >> (i * 8));
+    blob[4] = CALENDAR_ANNOTATIONS_VERSION;
+    blob[5] = CALENDAR_ANNOTATIONS_RECORD_SIZE;
+    blob[6] = 1;
+    blob[16] = (uint8_t)2026;
+    blob[17] = 2026 >> 8;
+    blob[18] = month;
+    blob[19] = day;
+    blob[20] = 1U | (corner ? CALENDAR_ANNOTATION_POS_CORNER_FLAG : 0U);
+    assert(calendar_annotations_load(blob, sizeof(blob)));
+}
+
+static void test_annotation_dots_preserve_holiday_and_lunar_pixels(void)
+{
+    static unsigned char unannotated[2][48000];
+#ifdef GUI_LAYOUT_REFERENCE
+    static unsigned char annotated[2][48000];
+#endif
+    /* Both holiday kinds, a six-row May, last holiday rows, and a normal day. */
+    static const unsigned dates[][2] = {
+        {1, 1}, {1, 4}, {5, 1}, {5, 9}, {10, 7}, {10, 10}, {5, 6},
+    };
+    static const uint8_t week_starts[] = {0, 1, 6};
+    unsigned cases = 0;
+    for (unsigned date = 0; date < sizeof(dates) / sizeof(dates[0]); ++date) {
+        unsigned month = dates[date][0], day = dates[date][1];
+        bool work = false;
+        bool holiday = calendar_resource_holiday(2026, month, day, &work);
+        for (unsigned mode = MODE_CALENDAR; mode <= MODE_CLOCK_CALENDAR; ++mode) {
+            const ui_component_t *layout = ui_resource_component(mode == MODE_CALENDAR
+                ? UI_COMP_CAL_GRID : UI_COMP_SPLIT_GRID);
+            calendar_grid_rect_t rect = {layout->x, layout->y, layout->w,
+                                        (int16_t)(layout->y + layout->h)};
+            for (unsigned week = 0; week < sizeof(week_starts); ++week) {
+                calendar_grid_input_t input = {
+                    get_first_day_week(2026, month), week_starts[week],
+                    thisMonthMaxDays((uint8_t)2026, month), 480,
+                };
+                calendar_grid_metrics_t metrics = calendar_grid_compute(&rect, &input);
+                int16_t dot_x, dot_y;
+                uint8_t dot_r;
+                calendar_annotation_dot_center(&rect, &metrics, day - 1, holiday,
+                                               &dot_x, &dot_y, &dot_r);
+                for (unsigned today = 0; today < 2; ++today) {
+                    tm_t time = {.tm_year=2026, .tm_mon=month,
+                        .tm_mday=today ? day : day == 1 ? 2 : day - 1};
+                    gui_data_t data = {.mode=mode, .color=2, .width=800, .height=480,
+                        .timestamp=transformTimeStruct(&time), .week_start=week_starts[week]};
+                    calendar_annotations_reset();
+                    memset(frame, 255, sizeof(frame));
+                    DrawGUI(&data, capture, NULL);
+                    memcpy(unannotated, frame, sizeof(frame));
+                    for (unsigned corner = 0; corner < 2; ++corner) {
+                        install_single_dot(month, day, corner != 0);
+                        memset(frame, 255, sizeof(frame));
+                        DrawGUI(&data, capture, NULL);
+#ifdef GUI_LAYOUT_REFERENCE
+                        memcpy(annotated, frame, sizeof(frame));
+                        memset(frame, 255, sizeof(frame));
+                        DrawGUI_Unclipped(&data, capture, NULL);
+                        assert(memcmp(annotated, frame, sizeof(frame)) == 0);
+#endif
+                        /* Check a full red dot, including all four extreme pixels. */
+                        static const int8_t axes[][2] = {{0,0}, {-1,0}, {1,0}, {0,-1}, {0,1}};
+                        for (unsigned axis = 0; axis < 5; ++axis) {
+                            int x = dot_x + axes[axis][0] * dot_r;
+                            int y = dot_y + axes[axis][1] * dot_r;
+                            assert(frame_pixel(frame[0], x, y));
+                            assert(!frame_pixel(frame[1], x, y));
+                        }
+                        if (today) {
+                            for (unsigned axis = 1; axis < 5; ++axis) {
+                                int x = dot_x + axes[axis][0] * (dot_r + 1);
+                                int y = dot_y + axes[axis][1] * (dot_r + 1);
+                                assert(frame_pixel(frame[0], x, y));
+                                assert(frame_pixel(frame[1], x, y));
+                            }
+                        }
+                        int extent = dot_r + (today ? 1 : 0);
+                        /* The holiday glyph/circle, lunar text, other dates and pages
+                         * must remain byte-for-byte unchanged outside this dot. */
+                        for (int y = 0; y < 480; ++y) {
+                            for (int x = 0; x < 800; ++x) {
+                                if (x >= dot_x - extent && x <= dot_x + extent &&
+                                    y >= dot_y - extent && y <= dot_y + extent) continue;
+                                for (unsigned plane = 0; plane < 2; ++plane)
+                                    assert(frame_pixel(frame[plane], x, y) ==
+                                           frame_pixel(unannotated[plane], x, y));
+                            }
+                        }
+                        ++cases;
+                    }
+                }
+            }
+        }
+    }
+    calendar_annotations_reset();
+    printf("PASS: %u full-frame dot/holiday/today/lunar preservation cases\n", cases);
+}
 static void test_calendar_edges(void) {
-    /* Approved hashes are generated from the pre-optimization GUI sources. */
+#ifdef GUI_LAYOUT_REFERENCE
+    static unsigned char production[2][48000];
+#endif
+    /* Holiday dots now use the left corner; today's dots have a white halo.
+     * All other approved calendar pixels remain unchanged. */
     static const unsigned expected_edges[24]={
-        0x79e2b9a9,0xcee3cc66,0x58fd13e6,0xbc06d974,0x046503be,0x7ab3884e,
-        0xfd256c5a,0x42b88fd4,0x03d48cf7,0x66ee8894,0xb8f1279f,0x3c6756aa,
+        0x79e2b9a9,0xe9033d7a,0x58fd13e6,0x650b13a8,0x046503be,0xc32b9922,
+        0xceff0b93,0x5067aff6,0x73bbc48c,0x4343fbec,0xac99121d,0x600c1afa,
         0xe73247ff,0x8b21e898,0x67e0b44b,0xa90f2372,0x7b0bff5e,0x5f5fbf4a,
         0x7b6cd767,0x37e38330,0xf92a30c6,0xd187d13e,0x90eb9073,0x1c7273a4
     };
@@ -133,6 +254,12 @@ static void test_calendar_edges(void) {
                     .timestamp=dates[d],.week_start=week,.temperature=-12,.voltage_mv=2700,
                     .ssid="NRF_EPD_0123456789"};
                 memset(frame,255,sizeof(frame));DrawGUI(&data,capture,NULL);
+#ifdef GUI_LAYOUT_REFERENCE
+                memcpy(production, frame, sizeof(frame));
+                memset(frame, 255, sizeof(frame));
+                DrawGUI_Unclipped(&data, capture, NULL);
+                assert(memcmp(production, frame, sizeof(frame)) == 0);
+#endif
 #ifdef GENERATE_GUI_GOLDEN
                 printf("0x%08x,\n",hash());
                 (void)expected_edges;
@@ -145,7 +272,6 @@ static void test_calendar_edges(void) {
     }
 }
 #ifdef GUI_LAYOUT_REFERENCE
-void DrawGUI_Unclipped(gui_data_t *data, buffer_callback callback, void *context);
 void ui_resources_stub_set_component(ui_component_id_t id, const ui_component_t *value);
 
 static void move_text(ui_component_id_t id, int16_t y, int16_t second,
@@ -247,6 +373,7 @@ int main(void) {
         }
     }
     test_calendar_edges();
+    test_annotation_dots_preserve_holiday_and_lunar_pixels();
 #ifdef GUI_LAYOUT_REFERENCE
     test_moved_layouts();
 #endif

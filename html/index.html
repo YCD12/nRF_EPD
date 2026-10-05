@@ -7,7 +7,7 @@
 	<title>墨水屏控制台</title>
 	<link rel="shortcut icon" type="image/png" href="favicon.png">
 	<meta name="theme-color" content="#2563eb">
-	<link rel="stylesheet" href="css/main.css?v=20261005a">
+	<link rel="stylesheet" href="css/main.css?v=20261005d">
 </head>
 
 <body>
@@ -275,50 +275,42 @@
 			</div>
 		</section>
 		<section id="calendarWorkspace" class="section" aria-labelledby="calendarHeading">
-			<div class="section-heading"><div><p class="section-kicker">03 / CALENDAR</p><h2 id="calendarHeading">日期标注</h2></div><span id="calendarAnnotationCount" class="device-badge">0/64</span></div>
-			<p class="section-note">为重要日期加一个红点或短标签。编辑完成后，点击「保存到设备」。</p>
-			<div class="annotation-form">
-				<div class="field">
-					<label for="calendarAnnotationDate">日期:</label>
-					<input id="calendarAnnotationDate" type="date" min="2000-01-01" max="2099-12-31">
-				</div><div class="field label-field">
-					<label for="calendarAnnotationLabel">短标签:</label>
-					<input id="calendarAnnotationLabel" type="text" maxlength="9" placeholder="可留空，仅红点" aria-describedby="calendarAnnotationLabelHint">
-					<span id="calendarAnnotationLabelHint" class="field-hint" aria-live="polite">0/9 UTF-8 字节</span>
-				</div><div class="field">
-					<label for="calendarAnnotationPosition">位置:</label>
-					<select id="calendarAnnotationPosition">
-						<option value="0" selected>日期下方</option>
-						<option value="1">右上角</option>
-					</select>
-				</div><div class="field">
-					<label for="calendarAnnotationFontSize">字号:</label>
-					<select id="calendarAnnotationFontSize">
-						<option value="0" selected>跟随日历</option>
-						<option value="9">小 (wqy9)</option>
-						<option value="12">大 (wqy12)</option>
-					</select>
-				</div><div class="field">
-					<label for="calendarAnnotationColor">文字颜色:</label>
-					<select id="calendarAnnotationColor">
-						<option value="0" selected>黑</option>
-						<option value="1">白</option>
-						<option value="2">红</option>
-					</select>
+			<div class="section-heading"><div><p class="section-kicker">03 / CALENDAR</p><h2 id="calendarHeading">日期标注</h2></div><span id="calendarAnnotationCount" class="device-badge">0 / 64</span></div>
+			<p class="section-note">用红点提醒重要日期，或加上简短的文字。先在这里编辑，再保存到设备日历。</p>
+			<div class="annotation-workbench">
+				<div class="annotation-editor">
+					<div class="annotation-panel-heading"><h3 id="calendarAnnotationEditorTitle">新增标注</h3><p id="calendarAnnotationEditorNote">同一个日期只保留一条标注，再次添加会更新内容。</p></div>
+					<div class="annotation-form">
+						<div class="field"><label for="calendarAnnotationDate">标注日期</label><input id="calendarAnnotationDate" type="date" min="2000-01-01" max="2099-12-31"></div>
+						<div class="field label-field"><label for="calendarAnnotationLabel">短标签 <span class="label-optional">选填</span></label><input id="calendarAnnotationLabel" type="text" placeholder="留空仅显示红点" aria-describedby="calendarAnnotationLabelHint"><span id="calendarAnnotationLabelHint" class="field-hint" aria-live="polite">中文最多 3 字 · 已用 0 / 9 字节</span></div>
+						<div class="field"><label for="calendarAnnotationPosition">显示位置</label><select id="calendarAnnotationPosition"><option value="0" selected>日期下方</option><option value="1">右上角</option></select></div>
+						<div class="field"><label for="calendarAnnotationFontSize">标签字号</label><select id="calendarAnnotationFontSize"><option value="0" selected>跟随日历</option><option value="9">小号</option><option value="12">大号</option></select></div>
+						<div class="field"><label for="calendarAnnotationColor">文字颜色</label><select id="calendarAnnotationColor" aria-describedby="calendarAnnotationColorHint"><option value="0" selected>黑色</option><option value="1">白色</option><option value="2">红色</option></select><span id="calendarAnnotationColorHint" class="field-hint annotation-color-hint" role="status" aria-live="polite" hidden></span></div>
+					</div>
+					<div class="annotation-edit-actions"><button id="calendarAnnotationSubmit" type="button" class="primary" onclick="CalendarAnnotations.addOrUpdate()">添加标注</button><button id="calendarAnnotationCancel" type="button" class="secondary" onclick="CalendarAnnotations.cancelEdit()" hidden>取消编辑</button></div>
 				</div>
+				<aside id="calendarAnnotationPreview" class="annotation-preview" data-position="below" data-color="black" data-font="follow" data-today="false" aria-labelledby="annotationPreviewHeading">
+					<div class="annotation-preview-heading"><h3 id="annotationPreviewHeading">显示示意</h3><span>单个日期</span></div>
+					<div class="annotation-day-card" aria-label="标注位置示意">
+						<div class="annotation-day-meta"><span id="calendarAnnotationPreviewMonth">选择日期</span><span id="calendarAnnotationPreviewWeekday"></span></div>
+						<div class="annotation-day-content"><strong id="calendarAnnotationPreviewDate" class="annotation-day-number">—</strong><div class="annotation-day-caption"><span id="calendarAnnotationPreviewLabel" class="annotation-preview-label" hidden></span><span id="calendarAnnotationPreviewLunar" class="annotation-preview-lunar">农历 / 节日</span></div></div>
+						<span id="calendarAnnotationPreviewDot" class="annotation-preview-dot" aria-label="红点标记"></span>
+					</div>
+					<p id="calendarAnnotationPreviewNote" class="annotation-preview-note">标签留空时，只显示红点。</p>
+					<p class="annotation-preview-caption">此处示意标注位置；实际排版以设备日历为准。</p>
+				</aside>
 			</div>
-			<div class="annotation-actions flex-group">
-					<button type="button" class="secondary" onclick="CalendarAnnotations.addOrUpdate()">添加 / 更新标注</button>
-					<button data-device-operation type="button" class="primary" onclick="CalendarAnnotations.save()">保存到设备</button>
-					<button data-device-operation type="button" class="secondary" onclick="CalendarAnnotations.loadFromDevice()">从设备读取</button>
-					<button data-device-operation type="button" class="secondary danger" onclick="CalendarAnnotations.clearDevice()">清除设备标注</button>
-					<button data-device-operation type="button" class="secondary" onclick="exportMigrationBundle()">导出配置/标注迁移备份</button>
+			<p id="calendarAnnotationStatus" class="annotation-status" role="status" aria-live="polite"></p>
+			<div class="annotation-device-panel">
+				<div><h3>同步到设备</h3><p>添加或更新标注后，点击保存，让设备日历应用当前列表。</p></div>
+				<div class="annotation-device-actions"><button data-device-operation type="button" class="primary" onclick="CalendarAnnotations.save()">保存到设备</button><button data-device-operation type="button" class="secondary" onclick="CalendarAnnotations.loadFromDevice()">从设备读取</button></div>
 			</div>
-			<p class="dfu-hint">短标签最多 9 个 UTF-8 字节（中文最多 3 个）；留空时只显示红点。点击表格中的标注可重新编辑。</p>
-			<div class="table-scroll" tabindex="0" role="region" aria-label="日期标注列表">
-				<table class="anno-table"><caption class="sr-only">已添加的日期标注</caption><thead><tr><th scope="col">日期</th><th scope="col">短标签</th><th scope="col">位置</th><th scope="col">字号</th><th scope="col">颜色</th><th scope="col">操作</th></tr></thead><tbody id="calendarAnnotationsList"></tbody></table>
+			<div class="annotation-list-heading"><h3>标注列表</h3><span id="calendarAnnotationsSummary">尚未添加标注</span></div>
+			<div class="table-scroll annotation-list" tabindex="0" role="region" aria-label="日期标注列表">
+				<table class="anno-table"><caption class="sr-only">已添加的日期标注</caption><thead><tr><th scope="col">日期</th><th scope="col">标注内容</th><th scope="col">显示设置</th><th scope="col">操作</th></tr></thead><tbody id="calendarAnnotationsList"></tbody></table>
 			</div>
-			<details class="help-details"><summary>标注显示规则与固件兼容说明</summary><p class="dfu-hint">位置可选日期下方或右上角。下方会盖过节日/农历，并在右上角打红点；右上角则节日/农历仍保留。汉字须在机内日历字库。英文字母用已有的 wqy9，不另加字库、不额外占 Flash（大号格子含字母时也会改用 wqy9）。连接后会自动从设备读回；0x33 及以上固件只有在外置 Flash 提交确认后才显示保存成功。升级旧设备前可导出 MIG1 迁移备份。</p></details>
+			<details class="help-details annotation-management"><summary>备份与管理</summary><p class="dfu-hint">升级旧设备前，可导出配置和日期标注作为迁移备份。</p><div class="annotation-management-actions"><button data-device-operation type="button" class="secondary" onclick="exportMigrationBundle()">导出迁移备份</button><button data-device-operation type="button" class="danger" onclick="CalendarAnnotations.clearDevice()">清除设备标注</button></div></details>
+			<details class="help-details annotation-rules"><summary>标注显示规则</summary><ul><li>短标签最多 9 个字节，通常可输入 3 个汉字或 9 个英文字母；汉字需包含在设备日历字库中。</li><li>标签显示在日期下方时，会替换该日的节日或农历文字，并显示红点；带有「休／班」标记的日期，红点改到左上角。</li><li>标签显示在右上角时，保留节日和农历；标签留空时仅显示红点。</li><li>当日日期下方为红色背景，请使用白色或黑色标签；红字会与背景重合。</li><li>英文字母使用小号字库；白色标签在白色背景上可能不明显。</li></ul><p class="dfu-hint">连接设备后自动读取标注。较新固件会在外置 Flash 写入确认后提示保存成功；红点避让「休／班」需更新设备固件；旧固件的右上角位置与读取功能取决于支持情况。</p></details>
 		</section>
 		<section id="externalResources" class="section">
 			<div class="section-heading"><div><p class="section-kicker">04 / RESOURCES</p><h2>设备资源</h2></div><span class="device-badge">日历 · 布局 · 字体</span></div>
@@ -422,7 +414,7 @@
 	<script src="js/paint_schedule.js?v=20261005b"></script>
 	<script type="text/javascript" src="js/crop.js?v=20261005a"></script>
 	<script type="text/javascript" src="js/ble_transfer.js?v=20260922a"></script>
-	<script type="text/javascript" src="js/calendar_annotations.js?v=20261004a"></script>
+	<script type="text/javascript" src="js/calendar_annotations.js?v=20261005d"></script>
 	<script type="text/javascript" src="js/resource_store.js?v=20260928a"></script>
 	<script src="js/resource_archive.js?v=20261004a"></script>
 	<script type="text/javascript" src="js/resource_builder.js?v=20260928a"></script>

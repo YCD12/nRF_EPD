@@ -176,9 +176,11 @@ static inline calendar_holiday_mark_t calendar_holiday_mark(const calendar_grid_
     return mark;
 }
 
+/* 休/班保留日期右侧位置，标注红点改到左上角，避免字和当日白圆遮住红点。 */
 static inline void calendar_annotation_dot_center(const calendar_grid_rect_t *rect,
                                                   const calendar_grid_metrics_t *m,
                                                   uint8_t day_index,
+                                                  bool has_holiday,
                                                   int16_t *x,
                                                   int16_t *y,
                                                   uint8_t *r)
@@ -188,7 +190,8 @@ static inline void calendar_annotation_dot_center(const calendar_grid_rect_t *re
 
     calendar_grid_cell_origin(rect, m, day_index, &cell_x, &cell_y);
     if (x != NULL) {
-        *x = (int16_t)(cell_x + m->cell_w - (m->large ? 8 : 6));
+        int16_t pad = m->large ? 8 : 6;
+        *x = (int16_t)(cell_x + (has_holiday ? pad : m->cell_w - pad));
     }
     if (y != NULL) {
         *y = (int16_t)(cell_y + (m->large ? 7 : 5));

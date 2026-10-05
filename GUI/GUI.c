@@ -553,6 +553,8 @@ static void DrawMonthGrid(Adafruit_GFX* gfx, const tm_t* tm, const gui_data_t* d
         const char* festival;
         calendar_annotation_t anno;
         bool has_anno = calendar_annotations_get(year, month, day, &anno);
+        bool work = false;
+        bool has_holiday = calendar_resource_holiday(year, month, day, &work);
 
         bool replace_below = has_anno && calendar_annotation_replaces_label(&anno);
         uint16_t anno_fg = GFX_BLACK;
@@ -594,17 +596,9 @@ static void DrawMonthGrid(Adafruit_GFX* gfx, const tm_t* tm, const gui_data_t* d
                                               GFX_getFontAscent(gfx), &mark_x, &mark_y);
             GFX_setCursor(gfx, mark_x, mark_y);
             GFX_puts(gfx, anno.label);
-        } else if (has_anno && calendar_annotation_draws_dot(&anno)) {
-            int16_t mark_x;
-            int16_t mark_y;
-            uint8_t mark_r;
-
-            calendar_annotation_dot_center(&rect, &m, i, &mark_x, &mark_y, &mark_r);
-            GFX_fillCircle(gfx, mark_x, mark_y, mark_r, GFX_RED);
         }
 
-        bool work = false;
-        if (calendar_resource_holiday(year, month, day, &work)) {
+        if (has_holiday) {
             calendar_holiday_mark_t holiday =
                 calendar_holiday_mark(&rect, &m, &cell, i,
                                       has_anno && calendar_annotation_draws_corner(&anno));
@@ -619,6 +613,20 @@ static void DrawMonthGrid(Adafruit_GFX* gfx, const tm_t* tm, const gui_data_t* d
             GFX_setTextColor(gfx, work ? GFX_BLACK : GFX_RED, GFX_WHITE);
             GFX_setCursor(gfx, holiday.text_x, holiday.text_y);
             GFX_puts(gfx, work ? "班" : "休");
+        }
+
+        if (has_anno && calendar_annotation_draws_dot(&anno)) {
+            int16_t mark_x;
+            int16_t mark_y;
+            uint8_t mark_r;
+
+            calendar_annotation_dot_center(&rect, &m, i, has_holiday,
+                                           &mark_x, &mark_y, &mark_r);
+            /* 当日红底在分屏小格中会延伸到角落，白边让红点保持可辨认。 */
+            if (day == tm->tm_mday) {
+                GFX_fillCircle(gfx, mark_x, mark_y, mark_r + 1U, GFX_WHITE);
+            }
+            GFX_fillCircle(gfx, mark_x, mark_y, mark_r, GFX_RED);
         }
     }
 }

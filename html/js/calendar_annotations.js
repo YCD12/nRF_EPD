@@ -36,6 +36,8 @@ const CalendarAnnotations = {
 
   annotations: [],
   _commitWaiter: null,
+  _editingDate: null,
+  _labelComposing: false,
 
   crc32(bytes) {
     let crc = 0xffffffff;
@@ -127,19 +129,119 @@ const CalendarAnnotations = {
 
   requireDevice() {
     if (typeof write !== 'function' || !epdCharacteristic) {
-      addLog('请先连接设备');
+      this.report('请先连接设备，再读取或保存日期标注。', true);
       return false;
     }
     return true;
   },
 
-  updateHint() {
+  report(message, error = false) {
+    const status = typeof document === 'undefined' ? null : document.getElementById('calendarAnnotationStatus');
+    if (status) {
+      status.textContent = message;
+      status.classList.toggle('error', error);
+    }
+    if (typeof addLog === 'function') addLog(message);
+  },
+
+  updateHint(composing = this._labelComposing) {
     const input = document.getElementById('calendarAnnotationLabel');
     const hint = document.getElementById('calendarAnnotationLabelHint');
-    if (!input || !hint) return;
-    const clamped = this.clampLabelToMaxBytes(input.value);
-    if (clamped !== input.value) input.value = clamped;
-    hint.textContent = `${this.labelByteLength(input.value)}/${this.MAX_LABEL_BYTES} UTF-8 字节`;
+    if (input) {
+      if (!composing) {
+        const clamped = this.clampLabelToMaxBytes(input.value);
+        if (clamped !== input.value) input.value = clamped;
+      }
+      if (hint) hint.textContent = `中文最多 3 字 · 已用 ${this.labelByteLength(input.value)}/${this.MAX_LABEL_BYTES} 字节`;
+    }
+    this.updatePreview();
+  },
+
+  dateParts(value) {
+    const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value || '');
+    if (!match) return null;
+    const [year, month, day] = match.slice(1).map(Number);
+    if (year < 2000 || year > 2099 || month < 1 || month > 12 || day < 1 || day > 31) return null;
+    const date = new Date(Date.UTC(year, month - 1, day));
+    if (date.getUTCFullYear() !== year || date.getUTCMonth() !== month - 1 || date.getUTCDate() !== day) return null;
+    return { year, month, day, weekday: ['周日', '周一', '周二', '周三', '周四', '周五', '周六'][date.getUTCDay()] };
+  },
+
+  today() {
+    const date = new Date();
+    return this.formatDate(date.getFullYear(), date.getMonth() + 1, date.getDate());
+  },
+
+  updatePreview() {
+    const preview = document.getElementById('calendarAnnotationPreview');
+    if (!preview) return;
+    const selectedDate = (document.getElementById('calendarAnnotationDate') || {}).value;
+    const date = this.dateParts(selectedDate);
+    const isToday = Boolean(date) && selectedDate === this.today();
+    const text = ((document.getElementById('calendarAnnotationLabel') || {}).value || '').trim();
+    const position = this.selectedPosition();
+    const color = Number((document.getElementById('calendarAnnotationColor') || {}).value) || this.COLOR_BLACK;
+    const font = Number((document.getElementById('calendarAnnotationFontSize') || {}).value) || this.FONT_FOLLOW;
+    const hasLetters = /[a-z]/i.test(text);
+    const previewFont = hasLetters ? this.FONT_SMALL : font;
+    const onRedBackground = isToday && position === this.POS_BELOW;
+    const colorConflict = Boolean(text) && onRedBackground && color === this.COLOR_RED;
+    const setText = (id, value) => {
+      const element = document.getElementById(id);
+      if (element) element.textContent = value;
+    };
+    preview.setAttribute('data-position', position === this.POS_CORNER ? 'corner' : 'below');
+    preview.setAttribute('data-color', color === this.COLOR_WHITE ? 'white' : color === this.COLOR_RED ? 'red' : 'black');
+    preview.setAttribute('data-font', previewFont === this.FONT_SMALL ? 'small' : previewFont === this.FONT_LARGE ? 'large' : 'follow');
+    preview.setAttribute('data-today', String(isToday));
+    const colorHint = document.getElementById('calendarAnnotationColorHint');
+    if (colorHint) {
+      colorHint.hidden = !colorConflict;
+      colorHint.textContent = colorConflict ? '当日日期下方是红色背景，请不要选择红色；建议改用白色或黑色。' : '';
+    }
+    setText('calendarAnnotationPreviewDate', date ? String(date.day).padStart(2, '0') : '—');
+    setText('calendarAnnotationPreviewMonth', date ? `${date.year} 年 ${date.month} 月` : '请选择日期');
+    setText('calendarAnnotationPreviewWeekday', date ? date.weekday.replace('周', '星期') : '');
+    setText('calendarAnnotationPreviewLabel', text);
+    const label = document.getElementById('calendarAnnotationPreviewLabel');
+    const dot = document.getElementById('calendarAnnotationPreviewDot');
+    const lunar = document.getElementById('calendarAnnotationPreviewLunar');
+    if (label) label.hidden = !text;
+    if (dot) dot.hidden = position === this.POS_CORNER && Boolean(text);
+    if (lunar) lunar.hidden = position === this.POS_BELOW && Boolean(text);
+    let note = !text ? '留空只显示红点，节日 / 农历仍保留。'
+      : position === this.POS_CORNER ? '标签显示在右上角，节日 / 农历仍保留。'
+        : '标签替换日期下方的节日 / 农历，并显示红点。';
+    if (hasLetters) note += ' 含英文字母时，设备使用小字号显示。';
+    if (colorConflict) note += ' 当日红字会与红色背景重合，请改用白色或黑色。';
+    if (text && color === this.COLOR_WHITE && !onRedBackground) note += ' 白字在浅色背景上可能不易辨认。';
+    setText('calendarAnnotationPreviewNote', note);
+  },
+
+  updateEditorState() {
+    const date = (document.getElementById('calendarAnnotationDate') || {}).value || '';
+    const existing = this.annotations.some(item => item.date === date);
+    const editing = Boolean(this._editingDate);
+    const title = document.getElementById('calendarAnnotationEditorTitle');
+    const note = document.getElementById('calendarAnnotationEditorNote');
+    const submit = document.getElementById('calendarAnnotationSubmit');
+    const cancel = document.getElementById('calendarAnnotationCancel');
+    if (title) title.textContent = existing ? '编辑日期标注' : '新增日期标注';
+    if (submit) submit.textContent = existing ? '更新标注' : '添加标注';
+    if (cancel) cancel.hidden = !editing;
+    if (note) {
+      if (editing && this._editingDate !== date) {
+        note.textContent = existing
+          ? `该日期已有标注，将更新其内容；原日期 ${this._editingDate} 保留。`
+          : `修改日期会新增标注，原日期 ${this._editingDate} 保留。`;
+      } else note.textContent = existing
+        ? '更新当前日期的本地标注，保存到设备后生效。'
+        : '选择日期并设置标注，添加到下方列表。';
+    }
+    const body = document.getElementById('calendarAnnotationsList');
+    if (body) Array.from(body.children).forEach(row => {
+      row.classList.toggle('editing', editing && row.getAttribute('data-date') === date);
+    });
   },
 
   persist() {
@@ -182,28 +284,69 @@ const CalendarAnnotations = {
   render() {
     const body = document.getElementById('calendarAnnotationsList');
     const count = document.getElementById('calendarAnnotationCount');
-    if (count) count.textContent = `${this.annotations.length}/${this.MAX_RECORDS}`;
+    const summary = document.getElementById('calendarAnnotationsSummary');
+    if (count) count.textContent = `${this.annotations.length} / ${this.MAX_RECORDS}`;
+    if (summary) summary.textContent = `共 ${this.annotations.length} 条`;
+    this.updateEditorState();
     if (!body) return;
     body.innerHTML = '';
     if (!this.annotations.length) {
       const tr = document.createElement('tr');
       const td = document.createElement('td');
-      td.colSpan = 6;
+      td.colSpan = 4;
       td.className = 'empty-state';
-      td.textContent = '还没有日期标注。选择日期并添加短标签，即可开始。';
+      const icon = document.createElement('span');
+      icon.className = 'annotation-empty-icon';
+      icon.textContent = '＋';
+      icon.setAttribute('aria-hidden', 'true');
+      const title = document.createElement('strong');
+      title.textContent = '还没有日期标注';
+      const help = document.createElement('p');
+      help.textContent = '从上方添加一个重要日期，也可以连接设备读取已有标注。';
+      td.appendChild(icon);
+      td.appendChild(title);
+      td.appendChild(help);
       tr.appendChild(td);
       body.appendChild(tr);
       return;
     }
     this.annotations.forEach((item, index) => {
       const tr = document.createElement('tr');
-      for (const value of [item.date, item.label || '（仅红点）',
-        this.positionLabel(item.position), this.fontLabel(item.fontSize), this.colorLabel(item.color)]) {
-        const cell = document.createElement('td');
-        cell.textContent = value;
-        tr.appendChild(cell);
+      tr.setAttribute('data-date', item.date);
+      tr.classList.toggle('editing', Boolean(this._editingDate) &&
+        item.date === (document.getElementById('calendarAnnotationDate') || {}).value);
+      const dateCell = document.createElement('td');
+      dateCell.className = 'annotation-date-cell';
+      const dateText = document.createElement('strong');
+      dateText.textContent = item.date;
+      dateCell.appendChild(dateText);
+      const date = this.dateParts(item.date);
+      if (date) {
+        const weekday = document.createElement('span');
+        weekday.className = 'date-subline';
+        weekday.textContent = date.weekday;
+        dateCell.appendChild(weekday);
       }
+      tr.appendChild(dateCell);
+      const labelCell = document.createElement('td');
+      labelCell.className = 'annotation-label-cell';
+      const label = document.createElement('span');
+      label.textContent = item.label || '仅红点';
+      label.className = item.label ? 'annotation-list-label' : 'annotation-dot-label';
+      labelCell.appendChild(label);
+      tr.appendChild(labelCell);
+      const displayCell = document.createElement('td');
+      displayCell.className = 'annotation-display-cell';
+      [this.positionLabel(item.position), this.fontLabel(item.fontSize), `${this.colorLabel(item.color)}字`].forEach((text, i) => {
+        const chip = document.createElement('span');
+        chip.className = i === 2 ? 'annotation-chip annotation-color-chip' : 'annotation-chip';
+        chip.textContent = text;
+        if (i === 2) chip.setAttribute('data-color', String(item.color || 0));
+        displayCell.appendChild(chip);
+      });
+      tr.appendChild(displayCell);
       const td = document.createElement('td');
+      td.className = 'annotation-actions-cell';
       const editBtn = document.createElement('button');
       editBtn.type = 'button';
       editBtn.className = 'secondary';
@@ -216,7 +359,7 @@ const CalendarAnnotations = {
       td.appendChild(editBtn);
       const btn = document.createElement('button');
       btn.type = 'button';
-      btn.className = 'secondary';
+      btn.className = 'secondary danger';
       btn.textContent = '删除';
       btn.setAttribute('aria-label', `删除 ${item.date} 的标注`);
       btn.onclick = (event) => {
@@ -224,9 +367,6 @@ const CalendarAnnotations = {
         this.removeAt(index);
       };
       td.appendChild(btn);
-      tr.style.cursor = 'pointer';
-      tr.title = '点击填入编辑区';
-      tr.onclick = () => this.editAt(index);
       tr.appendChild(td);
       body.appendChild(tr);
     });
@@ -238,15 +378,21 @@ const CalendarAnnotations = {
     const fontSelect = document.getElementById('calendarAnnotationFontSize');
     const colorSelect = document.getElementById('calendarAnnotationColor');
     const position = this.selectedPosition();
-    if (!dateInput || !dateInput.value) {
-      addLog('请选择日期');
+    if (!dateInput || !this.dateParts(dateInput.value)) {
+      this.report('请选择 2000–2099 年内的有效日期。', true);
+      if (dateInput) dateInput.focus();
+      return;
+    }
+    if (this._labelComposing) {
+      this.report('请完成标签输入后再添加标注。', true);
       return;
     }
     let label;
     try {
       label = this.assertLabel(labelInput ? labelInput.value.trim() : '');
     } catch (e) {
-      addLog(e.message);
+      this.report(e.message, true);
+      if (labelInput) labelInput.focus();
       return;
     }
     const item = {
@@ -260,20 +406,27 @@ const CalendarAnnotations = {
     if (existing >= 0) this.annotations[existing] = item;
     else {
       if (this.annotations.length >= this.MAX_RECORDS) {
-        addLog(`最多保存 ${this.MAX_RECORDS} 条日期标注`);
+        this.report(`最多保存 ${this.MAX_RECORDS} 条日期标注，可编辑或移除已有日期。`, true);
         return;
       }
       this.annotations.push(item);
     }
     this.annotations.sort((a, b) => a.date.localeCompare(b.date));
+    this._editingDate = item.date;
     this.persist();
     this.render();
+    this.updateHint();
+    this.report(`已${existing >= 0 ? '更新' : '添加'} ${item.date} 的本地标注，保存到设备后生效。`);
   },
 
   removeAt(index) {
+    const item = this.annotations[index];
+    if (!item) return;
     this.annotations.splice(index, 1);
+    if (this._editingDate === item.date) this._editingDate = null;
     this.persist();
     this.render();
+    this.report(`已移除 ${item.date} 的本地标注，保存到设备后生效。`);
   },
 
   editAt(index) {
@@ -289,7 +442,29 @@ const CalendarAnnotations = {
     if (fontSelect) fontSelect.value = String(item.fontSize || 0);
     if (colorSelect) colorSelect.value = String(item.color || 0);
     if (positionSelect) positionSelect.value = String(item.position || 0);
+    this._editingDate = item.date;
     this.updateHint();
+    this.updateEditorState();
+    if (labelInput) labelInput.focus();
+  },
+
+  cancelEdit() {
+    const defaults = {
+      calendarAnnotationDate: this.today(),
+      calendarAnnotationLabel: '',
+      calendarAnnotationFontSize: '0',
+      calendarAnnotationColor: '0',
+      calendarAnnotationPosition: '0',
+    };
+    Object.entries(defaults).forEach(([id, value]) => {
+      const element = document.getElementById(id);
+      if (element) element.value = value;
+    });
+    this._editingDate = null;
+    this._labelComposing = false;
+    this.updateHint();
+    this.updateEditorState();
+    this.report('已取消本次编辑，列表内容保持不变。');
   },
 
   pack() {
@@ -554,9 +729,22 @@ const CalendarAnnotations = {
 
   init() {
     const label = document.getElementById('calendarAnnotationLabel');
-    const position = document.getElementById('calendarAnnotationPosition');
-    if (label) label.addEventListener('input', () => this.updateHint());
-    if (position) position.addEventListener('change', () => this.updateHint());
+    const date = document.getElementById('calendarAnnotationDate');
+    if (date) {
+      if (!date.value) date.value = this.today();
+      const changed = () => { this.updatePreview(); this.updateEditorState(); };
+      date.addEventListener('input', changed);
+      date.addEventListener('change', changed);
+    }
+    if (label) {
+      label.addEventListener('compositionstart', () => { this._labelComposing = true; });
+      label.addEventListener('compositionend', () => { this._labelComposing = false; this.updateHint(); });
+      label.addEventListener('input', event => this.updateHint(this._labelComposing || Boolean(event.isComposing)));
+    }
+    ['calendarAnnotationPosition', 'calendarAnnotationFontSize', 'calendarAnnotationColor'].forEach(id => {
+      const select = document.getElementById(id);
+      if (select) select.addEventListener('change', () => this.updateHint());
+    });
     this.loadLocal();
     this.updateHint();
   },

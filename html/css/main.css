@@ -218,21 +218,79 @@ canvas.text-placement-mode { border: 2px dashed var(--primary-color) !important;
 .canvas-container.schedule-mode .schedule-tools,
 .canvas-container.crop-mode .crop-tools { display: block; }
 .canvas-container.crop-mode :is(.workspace-toolbar, .paint-tool-hint, .brush-tools, .text-tools, .todo-tools, .schedule-tools) { display: none; }
-.annotation-form { display: grid; grid-template-columns: 1.15fr 1.5fr 1fr 1fr .7fr; align-items: start; gap: 14px; padding: 18px; background: var(--surface-soft); border-radius: 10px; }
+.annotation-workbench { display: grid; grid-template-columns: minmax(0, 1.6fr) minmax(260px, 1fr); align-items: stretch; gap: 18px; }
+.annotation-editor, .annotation-preview { min-width: 0; padding: 20px; border: 1px solid var(--border-color); border-radius: 10px; background: var(--surface-soft); }
+.annotation-panel-heading { margin-bottom: 18px; }
+.annotation-panel-heading h3, .annotation-preview-heading h3, .annotation-device-panel h3, .annotation-list-heading h3 { margin: 0; font-size: 14px; }
+.annotation-panel-heading p { margin: 5px 0 0; color: var(--muted-color); font-size: 12px; }
+.annotation-form { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); align-items: start; gap: 14px; }
+.annotation-form > .field { grid-column: span 2; }
+.annotation-form > .field:nth-child(-n+2) { grid-column: span 3; }
+.annotation-form label { display: flex; align-items: center; gap: 6px; color: var(--text-color); }
+.label-optional { color: var(--muted-color); font-size: 10px; font-weight: 400; }
+.annotation-edit-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 20px; }
+.annotation-preview { background: var(--section-bg); }
+.annotation-preview-heading, .annotation-list-heading { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; }
+.annotation-preview-heading { margin-bottom: 14px; }
+.annotation-preview-heading > span, .annotation-list-heading > span { color: var(--muted-color); font-size: 11px; }
+.annotation-day-card { position: relative; max-width: 280px; margin: 0 auto; padding: 14px 16px 16px; border: 1px solid #dbe2eb; border-radius: 8px; background: #fff; color: #111; text-align: center; }
+.annotation-day-meta { display: flex; justify-content: space-between; gap: 8px; color: #64748b; font-size: 11px; }
+.annotation-day-content { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px; width: 156px; max-width: 100%; aspect-ratio: 1; margin: 16px auto 8px; border-radius: 50%; }
+.annotation-day-number { display: block; margin: 0; font-size: 64px; font-weight: 650; line-height: 1.2; font-variant-numeric: tabular-nums; }
+.annotation-preview[data-today=true] .annotation-day-content { background: #d21d2c; }
+.annotation-preview[data-today=true] :is(.annotation-day-number, .annotation-preview-lunar) { color: #fff; }
+.annotation-preview-dot { position: absolute; top: 43px; right: 18px; width: 7px; height: 7px; border-radius: 50%; background: #d21d2c; }
+.annotation-day-caption { min-height: 26px; line-height: 26px; }
+.annotation-preview-lunar { color: #64748b; font-size: 12px; }
+.annotation-preview-label { color: #111; font-size: 16px; font-weight: 600; line-height: 1.3; overflow-wrap: anywhere; }
+.annotation-preview[data-font=small] .annotation-preview-label { font-size: 12px; }
+.annotation-preview[data-font=large] .annotation-preview-label { font-size: 20px; }
+.annotation-preview[data-color=white] .annotation-preview-label { color: #fff; }
+.annotation-preview[data-color=red] .annotation-preview-label { color: #d21d2c; }
+.annotation-preview[data-position=corner] .annotation-preview-label { position: absolute; top: 39px; right: 16px; max-width: calc(100% - 32px); }
+.annotation-preview[data-position=corner] .annotation-day-content { margin-top: 40px; }
+.annotation-color-hint { padding: 7px 9px; border: 1px solid var(--warning-color); border-radius: 6px; background: var(--warning-bg); color: var(--warning-color); }
+.annotation-preview-note { margin: 12px 0 5px; color: var(--text-color); font-size: 12px; overflow-wrap: anywhere; }
+.annotation-preview-caption { margin: 0; color: var(--muted-color); font-size: 11px; }
+.annotation-status { margin: 14px 0 0; padding: 10px 14px; border: 1px solid var(--border-color); border-radius: 8px; background: var(--accent-bg); color: var(--accent-text); font-size: 12px; overflow-wrap: anywhere; }
+.annotation-status:empty { display: none; }
+.annotation-status.error { background: var(--error-bg); border-color: var(--error-color); color: var(--error-color); }
+.annotation-device-panel { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 14px; padding: 16px 18px; margin: 18px 0 24px; border: 1px solid var(--border-color); border-radius: 9px; background: var(--surface-soft); }
+.annotation-device-panel > div:first-child { flex: 1 1 260px; min-width: 0; }
+.annotation-device-panel p { margin: 4px 0 0; color: var(--muted-color); font-size: 12px; }
+.annotation-device-actions, .annotation-management-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.annotation-list-heading { margin-bottom: 12px; }
 .field { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
 .field > label, .field-label { font-size: 12px; }
 .field > input, .field > select { width: 100%; }
 .field-hint { font-size: 11px; color: var(--muted-color); }
-.annotation-actions { margin: 18px 0 12px; }
 .table-scroll { overflow-x: auto; border: 1px solid var(--border-color); border-radius: 9px; margin-top: 16px; }
-.anno-table { width: 100%; border-collapse: collapse; font-size: 13px; white-space: nowrap; }
+.annotation-list { margin-top: 0; }
+.anno-table { width: 100%; border-collapse: collapse; font-size: 13px; }
 .anno-table th, .anno-table td { padding: 12px 16px; border-bottom: 1px solid var(--border-color); text-align: left; }
-.anno-table th { background: var(--surface-soft); color: var(--muted-color); font-weight: 500; }
+.anno-table th { background: var(--surface-soft); color: var(--muted-color); font-size: 11px; font-weight: 500; white-space: nowrap; }
 .anno-table tbody tr:last-child td { border-bottom: 0; }
 .anno-table tbody tr:hover { background: var(--accent-bg); }
+.anno-table tbody tr.editing { background: var(--accent-bg); }
+.annotation-date-cell { width: 150px; white-space: nowrap; }
+.annotation-date-cell strong { display: block; font-size: 12px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.date-subline { display: block; color: var(--muted-color); font-size: 11px; }
+.annotation-list-label { font-weight: 600; overflow-wrap: anywhere; }
+.annotation-dot-label { display: inline-flex; align-items: center; gap: 6px; color: var(--muted-color); font-size: 12px; white-space: nowrap; }
+.annotation-dot-label::before { content: ''; width: 6px; height: 6px; border-radius: 50%; background: #d21d2c; }
+.annotation-chip { display: inline-flex; align-items: center; gap: 5px; padding: 2px 7px; margin: 2px 4px 2px 0; border: 1px solid var(--border-color); border-radius: 5px; background: var(--surface-soft); color: var(--muted-color); font-size: 11px; white-space: nowrap; }
+.annotation-color-chip::before { content: ''; width: 6px; height: 6px; border: 1px solid #19283f; border-radius: 50%; background: #19283f; }
+.annotation-color-chip[data-color="1"]::before { border-color: #a1b1c9; background: #fff; }
+.annotation-color-chip[data-color="2"]::before { border-color: #d21d2c; background: #d21d2c; }
+.annotation-actions-cell { width: 140px; white-space: nowrap; }
 .anno-table td button { padding: 5px 10px; min-height: 32px; font-size: 12px; }
 .anno-table td button + button { margin-left: 6px; }
-.anno-table .empty-state { text-align: center; padding: 28px; color: var(--muted-color); white-space: normal; }
+.anno-table .empty-state { text-align: center; padding: 30px 20px; color: var(--muted-color); white-space: normal; }
+.annotation-empty-icon { display: grid; place-items: center; width: 36px; height: 36px; margin: 0 auto 10px; border-radius: 10px; background: var(--accent-bg); color: var(--accent-text); font-size: 22px; }
+.empty-state strong { display: block; color: var(--text-color); font-size: 13px; font-weight: 500; }
+.empty-state p { margin: 5px 0 0; font-size: 12px; }
+.annotation-management .annotation-management-actions { margin-top: 12px; }
+.annotation-rules ul { display: grid; gap: 7px; margin: 12px 0; padding-left: 18px; color: var(--muted-color); font-size: 12px; }
 .external-resource-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 14px 0; }
 .external-resource-picker { position: relative; display: inline-flex; align-items: center; min-height: 40px; padding: 8px 15px; margin: 0; border: 1px solid var(--primary-color); border-radius: 8px; background: var(--accent-bg); color: var(--accent-text); cursor: pointer; overflow: hidden; }
 .external-resource-picker:focus-within { outline: 3px solid var(--primary-color); outline-offset: 3px; }
@@ -412,7 +470,11 @@ progress::-webkit-progress-value { border-radius: 10px; background: var(--primar
 .skip-link:focus { top: 12px; }
 @media (max-width: 1000px) {
     .overview-grid { grid-template-columns: 1fr 1fr; }
-    .annotation-form { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+    .annotation-workbench { grid-template-columns: minmax(0, 1fr); }
+    .annotation-preview { display: grid; grid-template-columns: 220px minmax(0, 1fr); gap: 0 20px; align-items: start; }
+    .annotation-preview-heading { grid-column: 1 / -1; }
+    .annotation-day-card { grid-row: span 2; width: 100%; }
+    .annotation-preview-note { margin-top: 18px; align-self: end; }
     .image-drop-zone input { width: 100%; }
     .page-actions button { padding: 8px 12px; }
 }
@@ -426,7 +488,11 @@ progress::-webkit-progress-value { border-radius: 10px; background: var(--primar
     .overview-grid { grid-template-columns: 1fr; gap: 0; }
     .section { padding: 20px; margin-bottom: 16px; border-radius: 12px; }
     .flex-group.right { margin-left: 0; }
-    .annotation-form { grid-template-columns: repeat(2, minmax(0, 1fr)); padding: 14px; }
+    .annotation-editor, .annotation-preview { padding: 16px; }
+    .annotation-preview { grid-template-columns: 180px minmax(0, 1fr); gap: 0 14px; }
+    .annotation-device-panel { padding: 14px; }
+    .annotation-device-actions { flex: 1 1 260px; }
+    .annotation-device-actions button { flex: 1; }
     .canvas-container { padding: 16px; }
     .tool-compose { grid-template-columns: minmax(0, 1fr); gap: 16px; }
     .tool-content textarea { min-height: 104px; }
@@ -436,7 +502,17 @@ progress::-webkit-progress-value { border-radius: 10px; background: var(--primar
     .options > .flex-group > label:first-child { min-width: 65px; }
     .options select { flex: 1; }
     .image-drop-zone { padding: 16px; }
-    .anno-table th, .anno-table td { padding: 10px 12px; }
+    .annotation-list { border: 0; border-radius: 0; overflow: visible; }
+    .anno-table, .anno-table tbody { display: block; }
+    .anno-table thead { display: none; }
+    .anno-table tbody { display: grid; gap: 10px; }
+    .anno-table tbody tr { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 10px; padding: 14px; border: 1px solid var(--border-color); border-radius: 9px; }
+    .anno-table tbody tr.editing { border-color: var(--primary-color); }
+    .anno-table td { min-width: 0; width: auto; padding: 0; border: 0; }
+    .annotation-label-cell { text-align: right !important; }
+    .annotation-display-cell { grid-column: 1 / -1; }
+    .annotation-actions-cell { grid-column: 1 / -1; text-align: right !important; }
+    .anno-table .empty-state { grid-column: 1 / -1; padding: 12px 0; }
     .footer .links { margin-left: 0; width: 100%; }
     .dfu-step-card { padding: 16px; gap: 12px; }
     .dfu-page .page-actions { align-self: flex-start; }
@@ -452,7 +528,12 @@ progress::-webkit-progress-value { border-radius: 10px; background: var(--primar
     .section { padding: 16px; }
     .section-heading { gap: 8px; }
     .brand { gap: 12px; }
-    .annotation-form { grid-template-columns: 1fr; }
+    .annotation-form { grid-template-columns: 1fr; gap: 12px; }
+    .annotation-form > .field, .annotation-form > .field:nth-child(-n+2) { grid-column: auto; }
+    .annotation-preview { display: block; }
+    .annotation-day-card { max-width: 240px; }
+    .annotation-edit-actions button { flex: 1; }
+    .annotation-management-actions button { flex: 1 1 100%; }
     .canvas-container { padding: 12px; }
     .workspace-toolbar { gap: 8px; }
     .tool-buttons { flex-basis: 100%; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); }

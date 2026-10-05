@@ -107,7 +107,7 @@ static void test_cell_origin_and_dot_share_same_origin(void)
     calendar_grid_cell_origin(&rect, &m, 0, &x, &y);
     assert(x == 10 + 4 * 111);
     assert(y == 84);
-    calendar_annotation_dot_center(&rect, &m, 0, &dot_x, &dot_y, &dot_r);
+    calendar_annotation_dot_center(&rect, &m, 0, false, &dot_x, &dot_y, &dot_r);
     assert(dot_x == (int16_t)(x + 111 - 8));
     assert(dot_y == (int16_t)(y + 7));
     assert(dot_r == 3);
@@ -139,6 +139,49 @@ static void test_holiday_mark_moves_away_from_corner(void)
     assert(avoid.circle_r == 10);
 }
 
+static void test_holiday_dot_is_separate_and_inside_every_cell(void)
+{
+    static const calendar_grid_rect_t rectangles[] = {
+        {10, 84, 780, 470}, {397, 136, 398, 420},
+        {10, 55, 406, 296}, {209, 55, 203, 296},
+    };
+    for (unsigned layout = 0; layout < 4; ++layout) {
+        for (uint8_t first = 0; first < 7; ++first) {
+            for (uint8_t start = 0; start < 7; ++start) {
+                for (uint8_t days = 28; days <= 31; ++days) {
+                    const calendar_grid_rect_t *rect = &rectangles[layout];
+                    calendar_grid_input_t in = {first, start, days, layout < 2 ? 480 : 300};
+                    calendar_grid_metrics_t m = calendar_grid_compute(rect, &in);
+                    for (uint8_t day = 0; day < days; ++day) {
+                        calendar_cell_pos_t cell = calendar_grid_cell(rect, &m, day);
+                        calendar_holiday_mark_t holiday =
+                            calendar_holiday_mark(rect, &m, &cell, day, false);
+                        int16_t x, y, cell_x, cell_y, normal_x, normal_y;
+                        uint8_t r, normal_r;
+                        calendar_grid_cell_origin(rect, &m, day, &cell_x, &cell_y);
+                        calendar_annotation_dot_center(rect, &m, day, true, &x, &y, &r);
+                        calendar_annotation_dot_center(rect, &m, day, false,
+                                                       &normal_x, &normal_y, &normal_r);
+                        /* The optional today halo is also wholly within this cell. */
+                        assert(x - r - 1 >= cell_x);
+                        assert(y - r - 1 >= cell_y);
+                        assert(x + r + 1 < cell_x + m.cell_w);
+                        assert(y + r + 1 < cell_y + m.cell_h);
+                        int32_t dx = x - holiday.circle_x;
+                        int32_t dy = y - holiday.circle_y;
+                        int32_t radii = r + 1 + holiday.circle_r;
+                        assert(dx * dx + dy * dy > radii * radii);
+                        assert(x + r + 1 < holiday.text_x);
+                        /* Nonholiday dates keep the original right-corner position. */
+                        assert(normal_x == cell_x + m.cell_w - (m.large ? 8 : 6));
+                        assert(normal_y == y && normal_r == r);
+                    }
+                }
+            }
+        }
+    }
+}
+
 int main(void)
 {
     test_week_header_span_matches_full_and_split();
@@ -148,6 +191,7 @@ int main(void)
     test_annotation_text_sits_in_cell_top_right();
     test_cell_origin_and_dot_share_same_origin();
     test_holiday_mark_moves_away_from_corner();
+    test_holiday_dot_is_separate_and_inside_every_cell();
     test_product_panel_does_not_ship_helvB14();
     puts("PASS: calendar grid");
     return 0;
