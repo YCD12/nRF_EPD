@@ -89,6 +89,14 @@ p { margin-bottom: 12px; }
 .workspace-nav a:hover { background: var(--surface-soft); color: var(--text-color); }
 .workspace-nav a.active { background: var(--accent-bg); color: var(--accent-text); }
 .overview-grid { display: grid; grid-template-columns: 1.1fr 1fr; align-items: start; gap: 20px; }
+body.workspace-shell { height: 100vh; height: 100dvh; overflow: hidden; }
+.main.console-page { display: grid; grid-template-rows: auto auto minmax(0, 1fr) auto; height: 100%; padding-top: 24px; padding-bottom: 12px; }
+.console-page .page-header { margin: 0 0 18px; }
+.console-page .page-actions { align-items: center; }
+.console-page .workspace-nav { position: static; margin-bottom: 16px; }
+.workspace-viewport { position: relative; min-height: 0; overflow: auto; overscroll-behavior: contain; scrollbar-gutter: stable; border-radius: 14px; }
+.workspace-viewport .section { margin-bottom: 0; }
+.console-page .footer { padding: 12px 0 0; }
 .section { min-width: 0; background: var(--section-bg); border: 1px solid var(--border-color); border-radius: 14px; padding: 24px; margin-bottom: 20px; box-shadow: var(--shadow); }
 .section-heading { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 14px; }
 .section-heading .section-note { margin: 4px 0 0; }
@@ -559,6 +567,16 @@ progress::-webkit-progress-value { border-radius: 10px; background: var(--primar
     .page-header { align-items: flex-start; flex-direction: column; gap: 16px; margin: 24px 0 20px; }
     .brand-mark { width: 48px; height: 48px; border-radius: 12px; }
     .page-actions { align-self: flex-end; }
+    .main.console-page { padding-top: 16px; padding-bottom: 10px; }
+    .console-page .page-header { flex-direction: row; flex-wrap: wrap; align-items: center; gap: 12px; margin-bottom: 12px; }
+    .console-page .page-kicker, .console-page .page-subtitle { display: none; }
+    .console-page h1 { font-size: 22px; margin-bottom: 0; }
+    .console-page .brand-mark { width: 40px; height: 40px; }
+    .console-page .page-actions { width: 100%; }
+    .console-page .page-actions .connection-badge { margin-right: auto; }
+    .console-page .page-actions button { min-height: 34px; padding: 6px 10px; font-size: 12px; }
+    .console-page .workspace-nav { margin-bottom: 12px; }
+    .workspace-viewport .overview-grid { gap: 16px; }
     .workspace-nav { top: 8px; margin-bottom: 16px; }
     .workspace-nav a { padding: 9px 14px; font-size: 13px; }
     .overview-grid { grid-template-columns: 1fr; gap: 0; }

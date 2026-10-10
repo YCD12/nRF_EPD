@@ -5,7 +5,7 @@
   let initialized = false;
   let themeInitialized = false;
   let connectionState = {};
-  let navigationObserver = null;
+  let navigationInitialized = false;
 
   function getDocument() {
     return global.document || (typeof document !== 'undefined' ? document : null);
@@ -117,58 +117,75 @@
   }
 
   function initNavigation() {
+    if (navigationInitialized) return;
     const nav = byId('workspaceNav');
     if (!nav || !nav.querySelectorAll) return;
     const items = Array.from(nav.querySelectorAll('a[href^="#"]')).map(link => {
       let id;
       try { id = decodeURIComponent(link.getAttribute('href').slice(1)); } catch (_) { return null; }
       const section = byId(id);
-      return section ? { link, section, id } : null;
+      const panel = section && section.closest('[data-workspace-panel]');
+      return panel ? { link, section, panel, id } : null;
     }).filter(Boolean);
     if (!items.length) return;
-    const activate = id => {
+    navigationInitialized = true;
+    const viewport = byId('workspaceViewport');
+    const scrollPositions = new Map();
+    let activeId = null;
+    const activate = (id, focus = false) => {
+      const current = items.find(item => item.id === id) || items[0];
+      const changed = activeId !== current.id;
+      if (changed && viewport && activeId) scrollPositions.set(activeId, viewport.scrollTop);
+      // Keep every panel mounted: Bluetooth, transfers and editor state stay alive.
       for (const item of items) {
-        const selected = item.id === id;
+        const selected = item === current;
+        item.panel.hidden = !selected;
         setClass(item.link, 'active', selected);
-        if (item.link.setAttribute && selected) item.link.setAttribute('aria-current', 'location');
+        if (item.link.setAttribute && selected) item.link.setAttribute('aria-current', 'page');
         else if (item.link.removeAttribute) item.link.removeAttribute('aria-current');
       }
-    };
-    const activateInView = () => {
-      let current = items[0];
-      for (const item of items) {
-        if (typeof item.section.getBoundingClientRect !== 'function') return;
-        if (item.section.getBoundingClientRect().top <= 120) current = item;
-        else break;
+      activeId = current.id;
+      if (viewport && changed) viewport.scrollTop = scrollPositions.get(activeId) || 0;
+      if (current.id === 'todoWorkspace' && global.TodoCalendar) {
+        global.TodoCalendar.previewGeometry();
       }
-      activate(current.id);
+      if (current.id === 'externalResources' && global.ExternalResourceInstaller) {
+        global.ExternalResourceInstaller.loadLatestOutput();
+      }
+      if (focus && typeof current.section.focus === 'function') {
+        current.section.focus({ preventScroll: true });
+        if (viewport) viewport.scrollTop = 0;
+      }
     };
     const activateHash = () => {
       let hash = '';
       try { hash = decodeURIComponent((global.location && global.location.hash || '').slice(1)); } catch (_) { }
-      const current = items.find(item => item.id === hash);
+      const target = byId(hash);
+      const panel = target && target.closest('[data-workspace-panel]');
+      const current = items.find(item => item.panel === panel);
       activate(current ? current.id : items[0].id);
     };
+    const navigate = (event, item, focus = false) => {
+      if (event.button > 0 || event.ctrlKey || event.metaKey || event.shiftKey || event.altKey) return;
+      event.preventDefault();
+      const hash = '#' + item.id;
+      if (global.location.hash !== hash) {
+        // Change the URL without navigating or running the page initialization again.
+        global.history.pushState(global.history.state, '', hash);
+      }
+      activate(item.id, focus);
+    };
     items.forEach(item => {
-      if (item.link.addEventListener) item.link.addEventListener('click', () => activate(item.id));
+      item.link.setAttribute('aria-controls', item.panel.id);
+      item.link.addEventListener('click', event => navigate(event, item));
     });
+    const doc = getDocument();
+    const skipLink = doc.querySelector('.skip-link');
+    if (skipLink) skipLink.addEventListener('click', event => navigate(event, items[0], true));
     activateHash();
-    if (global.addEventListener) global.addEventListener('hashchange', activateHash);
     if (global.addEventListener) {
-      let updatePending = false;
-      global.addEventListener('scroll', () => {
-        if (updatePending) return;
-        updatePending = true;
-        const update = () => { updatePending = false; activateInView(); };
-        if (typeof global.requestAnimationFrame === 'function') global.requestAnimationFrame(update);
-        else if (typeof global.setTimeout === 'function') global.setTimeout(update, 16);
-        else update();
-      }, { passive: true });
-    }
-    if (typeof global.IntersectionObserver === 'function') {
-      navigationObserver = new global.IntersectionObserver(activateInView,
-        { rootMargin: '-110px 0px -55% 0px', threshold: [0] });
-      items.forEach(item => navigationObserver.observe(item.section));
+      global.addEventListener('hashchange', activateHash);
+      global.addEventListener('popstate', activateHash);
     }
   }
 
@@ -329,4 +346,9 @@
   }
 
   global.ConsoleUI = { init, initTheme, updateConnection, validateImageFile, refreshImageFileName, exportLog, downloadPreview, resetImageAdjustments };
+  const doc = getDocument();
+  if (doc) {
+    if (doc.readyState === 'loading') doc.addEventListener('DOMContentLoaded', init, { once: true });
+    else init();
+  }
 })(typeof window !== 'undefined' ? window : globalThis);

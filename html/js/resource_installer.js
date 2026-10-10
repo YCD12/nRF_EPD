@@ -719,9 +719,18 @@
     }
   });
 
-  async function loadLatestOutput() {
+  let latestOutputPromise = null;
+  function loadLatestOutput() {
+    if (bundle || running) return Promise.resolve();
+    if (!latestOutputPromise) latestOutputPromise = findLatestOutput();
+    return latestOutputPromise;
+  }
+
+  async function findLatestOutput() {
     const token = bundleGeneration;
-    const pointers = ['../output/external-resources-latest.txt', '/output/external-resources-latest.txt'];
+    const candidates = ['../output/external-resources-latest.txt', '/output/external-resources-latest.txt'];
+    const pointers = candidates.filter((pointer, index) => !index || !root.location ||
+      new URL(pointer, root.location.href).href !== new URL(candidates[0], root.location.href).href);
     for (const pointer of pointers) {
       let folder = '';
       try {
@@ -757,10 +766,8 @@
       return;
     }
   }
-  loadLatestOutput();
-
   renderBundle(); renderUsage(); renderVersions(); renderReadback();
   controls();
   root.ExternalResourceInstaller = { bind, disconnect, notification, refresh, readback, saveReadback, install, runOffline,
-    ensureFonts, saveTodo, readTodo, loadBundle, controls, getBundle: () => bundle, busy: () => running };
+    ensureFonts, saveTodo, readTodo, loadBundle, loadLatestOutput, controls, getBundle: () => bundle, busy: () => running };
 })(globalThis);

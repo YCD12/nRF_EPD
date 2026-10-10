@@ -629,13 +629,29 @@ test('background output loading cannot replace a manually prepared bundle', asyn
     return { ok: true, arrayBuffer: async () => pack.bytes.buffer };
   };
   const { installer, node } = installerFixture(ResourceClient, fetch);
+  const loading = installer.loadLatestOutput();
   await fetching.promise;
   await installer.loadBundle(completeBundle(), 'manual');
   const selected = installer.getBundle();
   slow.resolve();
-  await new Promise(setImmediate);
+  await loading;
   assert.equal(installer.getBundle(), selected);
   assert.match(node('externalResourceBundle').textContent, /已加载 manual/);
+});
+
+test('resource discovery waits for use and checks a missing output only once', async () => {
+  const requests = [];
+  const { installer, context } = installerFixture(ResourceClient, async url => {
+    requests.push(url);
+    return { ok: false };
+  });
+  context.location = { href: 'http://localhost/html/index.html' };
+  context.URL = URL;
+  assert.deepEqual(requests, []);
+  await Promise.all([installer.loadLatestOutput(), installer.loadLatestOutput()]);
+  await installer.loadLatestOutput();
+  assert.deepEqual(requests, ['../output/external-resources-latest.txt']);
+  assert.equal(installer.getBundle(), null);
 });
 
 test('local Flash figures are labelled estimates and exclude system and reserved space', async () => {

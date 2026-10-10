@@ -1996,7 +1996,10 @@ function updateFooterInfo() {
   }
 }
 
-document.body.onload = () => {
+let consoleInitialized = false;
+function initConsole() {
+  if (consoleInitialized) return;
+  consoleInitialized = true;
   textDecoder = null;
   canvas = document.getElementById('canvas');
   ctx = canvas.getContext("2d", { willReadFrequently: true });
@@ -2027,4 +2030,11 @@ document.body.onload = () => {
   if (window.ConsoleUI && typeof window.ConsoleUI.init === 'function') {
     window.ConsoleUI.init();
   }
+}
+
+// Device controls must not wait for optional third-party requests to finish.
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', initConsole, { once: true });
+} else if (document.readyState === 'interactive' || document.readyState === 'complete') {
+  initConsole();
 }

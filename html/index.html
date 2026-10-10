@@ -7,10 +7,10 @@
 	<title>墨水屏控制台</title>
 	<link rel="shortcut icon" type="image/png" href="favicon.png">
 	<meta name="theme-color" content="#2563eb">
-	<link rel="stylesheet" href="css/main.css?v=20261005h">
+	<link rel="stylesheet" href="css/main.css?v=20261010a">
 </head>
 
-<body>
+<body class="workspace-shell">
 	<a class="skip-link" href="#deviceConnection">跳到设备连接</a>
 	<main class="main console-page">
 		<header class="page-header">
@@ -19,20 +19,22 @@
 				<div><p class="page-kicker">EPD / WORKSPACE</p><h1>墨水屏控制台</h1><p class="page-subtitle">连接设备，让每一屏都恰到好处。</p></div>
 			</div>
 			<div class="page-actions">
+				<span id="connectionBadge" class="connection-badge" data-state="disconnected" role="status"><span class="status-dot" aria-hidden="true"></span><span id="connectionLabel">未连接</span></span>
 				<button id="themeToggle" type="button" class="secondary" aria-pressed="false">深色外观</button>
 				<button id="openDfuPageButton" type="button" class="secondary" onclick="openDfuPage()">固件升级 <span aria-hidden="true">↗</span></button>
 			</div>
 		</header>
 		<nav id="workspaceNav" class="workspace-nav" aria-label="控制台导航">
-			<a class="active" href="#deviceConnection" aria-current="location">设备连接</a>
+			<a class="active" href="#deviceConnection" aria-current="page">设备连接</a>
 			<a href="#imageWorkspace">图片工作台</a>
 			<a href="#todoWorkspace">待办事项</a>
 			<a href="#calendarWorkspace">日期标注</a>
 			<a href="#externalResources">设备资源</a>
 		</nav>
-		<div class="overview-grid">
-		<section id="deviceConnection" class="section connection-section" aria-labelledby="connectionHeading">
-			<div class="section-heading"><div><p class="section-kicker">01 / CONNECT</p><h2 id="connectionHeading">设备连接</h2></div><span id="connectionBadge" class="connection-badge" data-state="disconnected" role="status"><span class="status-dot" aria-hidden="true"></span><span id="connectionLabel">未连接</span></span></div>
+		<div id="workspaceViewport" class="workspace-viewport" tabindex="-1" aria-label="功能内容">
+		<div id="deviceConnectionPanel" class="overview-grid" data-workspace-panel="deviceConnection">
+		<section id="deviceConnection" class="section connection-section" aria-labelledby="connectionHeading" tabindex="-1">
+			<div class="section-heading"><div><p class="section-kicker">01 / CONNECT</p><h2 id="connectionHeading">设备连接</h2></div></div>
 			<p id="connectionDetail" class="section-note">连接蓝牙设备后，自动同步时间并读取设备信息。</p>
 			<div class="flex-container">
 				<div class="flex-group">
@@ -106,7 +108,7 @@
 			</div>
 		</section>
 		</div>
-		<section id="imageWorkspace" class="section image-section" aria-labelledby="imageHeading">
+		<section id="imageWorkspace" class="section image-section" data-workspace-panel="imageWorkspace" aria-labelledby="imageHeading" tabindex="-1" hidden>
 			<div class="section-heading"><div><p class="section-kicker">02 / IMAGE STUDIO</p><h2 id="imageHeading">图片工作台</h2></div><span class="device-badge">编辑 · 预览 · 发送</span></div>
 			<p class="section-note">导入图片、调整效果，也可以用画笔、文字和课表工具直接创作。</p>
 			<div id="imageDropZone" class="image-drop-zone">
@@ -261,7 +263,7 @@
 				</div>
 			</div>
 		</section>
-		<section id="todoWorkspace" class="section" aria-labelledby="todoCalendarHeading">
+		<section id="todoWorkspace" class="section" data-workspace-panel="todoWorkspace" aria-labelledby="todoCalendarHeading" tabindex="-1" hidden>
 			<div class="section-heading"><div><p class="section-kicker">TODO / WORKSPACE</p><h2 id="todoCalendarHeading">待办事项</h2></div><span id="todoCalendarCount" class="device-badge">0 / 32</span></div>
 			<p class="section-note">选择待办+日历或全屏待办。设置触发和截止时间，保存后设备离线也会自动更新；两种布局共用这份清单。</p>
 			<div class="todo-calendar-workbench">
@@ -302,7 +304,7 @@
 			<p class="field-hint">先保存清单，再启用所选布局。布局选择只改变预览，启用后才切换设备；全屏待办需要固件 0x3B 或更新版本。</p>
 			<p id="todoCalendarStatus" class="field-hint" role="status" aria-live="polite">草稿自动保存在此浏览器。读取设备或导入备份将替换当前草稿，保存到设备后生效。</p>
 		</section>
-		<section id="calendarWorkspace" class="section" aria-labelledby="calendarHeading">
+		<section id="calendarWorkspace" class="section" data-workspace-panel="calendarWorkspace" aria-labelledby="calendarHeading" tabindex="-1" hidden>
 			<div class="section-heading"><div><p class="section-kicker">03 / CALENDAR</p><h2 id="calendarHeading">日期标注</h2></div><span id="calendarAnnotationCount" class="device-badge">0 / 64</span></div>
 			<p class="section-note">用红点提醒重要日期，或加上简短的文字。先在这里编辑，再保存到设备日历。</p>
 			<div class="annotation-workbench">
@@ -340,8 +342,8 @@
 			<details class="help-details annotation-management"><summary>备份与管理</summary><p class="dfu-hint">升级旧设备前，可导出配置和日期标注作为迁移备份。</p><div class="annotation-management-actions"><button data-device-operation type="button" class="secondary" onclick="exportMigrationBundle()">导出迁移备份</button><button data-device-operation type="button" class="danger" onclick="CalendarAnnotations.clearDevice()">清除设备标注</button></div></details>
 			<details class="help-details annotation-rules"><summary>标注显示规则</summary><ul><li>短标签最多 9 个字节，通常可输入 3 个汉字或 9 个英文字母；缺失字模会在保存时由网页生成并写入设备。</li><li>标签显示在日期下方时，会替换该日的节日或农历文字，并显示红点；带有「休／班」标记的日期，红点改到左上角。</li><li>标签显示在右上角时，保留节日和农历；标签留空时仅显示红点。</li><li>当日日期下方为红色背景，请使用白色或黑色标签；红字会与背景重合。</li><li>英文字母使用小号字库；白色标签在白色背景上可能不明显。</li></ul><p class="dfu-hint">连接设备后自动读取标注。较新固件会在外置 Flash 写入确认后提示保存成功；红点避让「休／班」需更新设备固件；旧固件的右上角位置与读取功能取决于支持情况。</p></details>
 		</section>
-		<section id="externalResources" class="section">
-			<div class="section-heading"><div><p class="section-kicker">04 / RESOURCES</p><h2>设备资源</h2></div><span class="device-badge">日历 · 布局 · 字体</span></div>
+		<section id="externalResources" class="section" data-workspace-panel="externalResources" aria-labelledby="resourcesHeading" tabindex="-1" hidden>
+			<div class="section-heading"><div><p class="section-kicker">04 / RESOURCES</p><h2 id="resourcesHeading">设备资源</h2></div><span class="device-badge">日历 · 布局 · 字体</span></div>
 			<p class="section-note">选择资源目录，或展开编辑器生成资源包。已有分区表时，将保留设备配置与日期标注。</p>
 			<div class="external-resource-actions">
 				<label for="externalResourceFolder" class="external-resource-picker">选择资源目录<input id="externalResourceFolder" class="picker-input" type="file" accept=".ers" multiple webkitdirectory directory aria-label="选择 ERS 资源目录"></label>
@@ -409,6 +411,7 @@
 				<div id="resourceEditorStatus" class="external-resource-message" role="status">请加载模板或选择资源目录。</div>
 			</details>
 		</section>
+		</div>
 		<div class="footer">
 			<span class="copy" id="footerCopy">&copy;Source from tsl0922, modify by DYC 2025.</span>
 			<span class="copy" id="footerVersion"></span>
@@ -437,25 +440,24 @@
 		</div>
 	</div>
 	<div id="toast" class="toast-message" role="status" aria-live="polite" style="display:none;"></div>
-	<script type="text/javascript" src="js/dithering.js?v=20260402b"></script>
-	<script type="text/javascript" src="js/paint.js?v=20261005h"></script>
-	<script src="js/paint_schedule.js?v=20261005b"></script>
-	<script type="text/javascript" src="js/crop.js?v=20261005a"></script>
-	<script type="text/javascript" src="js/ble_transfer.js?v=20260922a"></script>
-	<script type="text/javascript" src="js/calendar_annotations.js?v=20261005h"></script>
-	<script type="text/javascript" src="js/resource_store.js?v=20261005h"></script>
-	<script src="js/resource_archive.js?v=20261004a"></script>
-	<script type="text/javascript" src="js/resource_builder.js?v=20261005h"></script>
-	<script src="js/font_builder.js?v=20261005h"></script>
-	<script src="js/font_sync.js?v=20261005h"></script>
-	<script src="js/todo_sync.js?v=20261005h"></script>
-	<script type="text/javascript" src="js/resource_installer.js?v=20261005h"></script>
-	<script src="js/todo_calendar.js?v=20261005h"></script>
-	<script type="text/javascript" src="js/resource_editor.js?v=20261005h"></script>
-	<script type="text/javascript" src="js/console_ui.js?v=20261005a"></script>
-	<script type="text/javascript" src="js/main.js?v=20261005h"></script>
-	<script src="js/site_statistics.js?v=20261004a"></script>
-	<script async src="//busuanzi.ibruce.info/busuanzi/2.3/busuanzi.pure.mini.js"></script>
+	<script defer src="js/dithering.js?v=20260402b"></script>
+	<script defer src="js/paint.js?v=20261005h"></script>
+	<script defer src="js/paint_schedule.js?v=20261005b"></script>
+	<script defer src="js/crop.js?v=20261005a"></script>
+	<script defer src="js/ble_transfer.js?v=20260922a"></script>
+	<script defer src="js/calendar_annotations.js?v=20261005h"></script>
+	<script defer src="js/resource_store.js?v=20261005h"></script>
+	<script defer src="js/resource_archive.js?v=20261004a"></script>
+	<script defer src="js/resource_builder.js?v=20261005h"></script>
+	<script defer src="js/font_builder.js?v=20261005h"></script>
+	<script defer src="js/font_sync.js?v=20261005h"></script>
+	<script defer src="js/todo_sync.js?v=20261005h"></script>
+	<script defer src="js/resource_installer.js?v=20261010b"></script>
+	<script defer src="js/todo_calendar.js?v=20261005h"></script>
+	<script defer src="js/resource_editor.js?v=20261005h"></script>
+	<script defer src="js/console_ui.js?v=20261010b"></script>
+	<script defer src="js/main.js?v=20261010b"></script>
+	<script defer src="js/site_statistics.js?v=20261010b"></script>
 </body>
 
 </html>
