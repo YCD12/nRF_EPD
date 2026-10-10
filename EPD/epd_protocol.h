@@ -9,7 +9,7 @@ enum EPD_CMDS {
     EPD_CMD_SLEEP = 0x04,
     EPD_CMD_SET_TIME = 0x20,
     EPD_CMD_SET_WEEK_START = 0x21,
-    EPD_CMD_SET_MODE = 0x22,
+    EPD_CMD_SET_MODE = 0x22, /* modes 0..5; 4 = todos + calendar, 5 = full-screen todos */
     EPD_CMD_SYNC_TIME_SILENT = 0x23,
     EPD_CMD_SET_ANNOTATIONS = 0x24,
     EPD_CMD_RESOURCE = 0x26,

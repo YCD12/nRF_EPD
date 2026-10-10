@@ -45,9 +45,10 @@
       if (root.ExternalResourceInstaller.busy()) throw new Error('请等待当前设备操作完成');
       const next = editModel(), selectedBase = base;
       const fonts = await Promise.all(next.fonts.map(async (font, i) => {
-        const file = $('resourceFont' + i).files[0];
+        const file = $('resourceFont' + i)?.files?.[0];
         return file ? new Uint8Array(await file.arrayBuffer()) : font;
       }));
+      if (next.fonts.length === 4) fonts.customKey = next.fonts.customKey;
       if (base !== selectedBase) throw new Error('资源目录已变化，请重新生成');
       builder.encodeCalendar(next.calendar); builder.encodeUI(next.ui);
       let text = '';
@@ -92,7 +93,7 @@
     save('epd-resources.json', JSON.stringify(project, null, 2), 'application/json');
   }
   async function importProject(project, label) {
-    if (project.format !== 'EPD-RESOURCE-PROJECT-1' || !Array.isArray(project.files) || project.files.length !== 6)
+    if (project.format !== 'EPD-RESOURCE-PROJECT-1' || !Array.isArray(project.files) || ![6, 7].includes(project.files.length))
       throw new Error('不是完整的设备资源工程');
     const entries = project.files.map(file => {
       if (typeof file.name !== 'string' || /[\\/]/.test(file.name) || typeof file.base64 !== 'string' || file.base64.length > 700000)

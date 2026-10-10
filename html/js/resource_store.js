@@ -2,7 +2,7 @@
   'use strict';
   const u32 = (b, at) => new DataView(b.buffer, b.byteOffset, b.byteLength).getUint32(at, true);
   const CAPACITY = 524288;
-  const INSTALL_ORDER = [1, 5, 6, 7, 2, 3];
+  const INSTALL_ORDER = [1, 5, 6, 7, 2, 3, 9];
   const STATUS_NAMES = ['有效', '格式错误', '正在更新', '校验失败', '未安装或未提交', '读写失败', '版本不兼容', '写入受保护'];
   function statusName(code) { return STATUS_NAMES[code] || `未知状态 ${code}`; }
   function put32(b, at, value) { new DataView(b.buffer).setUint32(at, value, true); }
@@ -83,7 +83,7 @@
       ids.add(pack.id);
       packages.push({ name: file.name || `partition-${pack.id}.ers`, bytes, pack });
     }
-    const missing = INSTALL_ORDER.filter(id => !ids.has(id));
+    const missing = INSTALL_ORDER.filter(id => id !== 9 && !ids.has(id));
     if (missing.length) throw new Error(`资源包不完整，缺少：${missing.map(id => `分区 ${id}`).join('、')}`);
     const extra = packages.filter(item => !INSTALL_ORDER.includes(item.pack.id));
     if (extra.length) throw new Error(`一键烧录不支持分区：${extra.map(item => item.pack.id).join('、')}`);
@@ -99,7 +99,7 @@
     if (statusCode !== 0) throw new Error(`分区表状态为“${statusName(statusCode)}”，不能按空白设备处理`);
     // Existing devices own their config and annotations. Factory records are
     // installed only alongside a new partition table on blank Flash.
-    const packages = bundle.packages.filter(item => ![1, 2, 3].includes(item.pack.id));
+    const packages = bundle.packages.filter(item => ![1, 2, 3, 9].includes(item.pack.id));
     for (const item of packages) validateTarget(item.pack, installedPartitions || []);
     return packages;
   }

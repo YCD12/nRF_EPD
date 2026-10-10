@@ -169,6 +169,52 @@ static void test_source_switch_and_revision(void) {
     assert(!u8g2_IsGlyph(&ctx, 'A') && u8g2_IsGlyph(&ctx, 'B'));
 }
 
+static void test_frame_io_error_survives_glyph_and_source_recovery(void) {
+    uint8_t a[512], b[64];
+    make_font(a, sizeof(a), 237);
+    make_font(b, sizeof(b), 0);
+    b[23] = 'B';
+    mock_font_t ma = {a, sizeof(a), 0, 0, 0}, mb = {b, sizeof(b), 0, 0, 0};
+    u8g2_font_source_t sa = {NULL, sizeof(a), mock_read, &ma, 1};
+    u8g2_font_source_t sb = {NULL, sizeof(b), mock_read, &mb, 1};
+    u8g2_font_t ctx = {0};
+    u8g2_SetExternalFont(&ctx, &sa);
+    ma.fail_reads = 100U; /* The next glyph block exceeds all local retries. */
+    assert(!u8g2_IsGlyph(&ctx, 'A'));
+    assert(ma.fail_reads < 100U && ctx.font_frame_io_error);
+    ma.fail_reads = 0U;
+    assert(u8g2_IsGlyph(&ctx, 'A'));
+    assert(!ctx.font_read_error && ctx.font_frame_io_error);
+    u8g2_SetExternalFont(&ctx, &sb);
+    assert(u8g2_IsGlyph(&ctx, 'B'));
+    assert(!ctx.font_read_error && ctx.font_frame_io_error);
+    /* A new frame resets the sticky state; normal absent glyphs leave it clear. */
+    ctx.font_frame_io_error = 0U;
+    assert(!u8g2_IsGlyph(&ctx, 'C'));
+    assert(!ctx.font_read_error && !ctx.font_frame_io_error);
+}
+
+static void test_stop_after_io_is_scoped_to_one_frame(void) {
+    uint8_t a[512], b[64];
+    make_font(a, sizeof(a), 237); make_font(b, sizeof(b), 0); b[23] = 'B';
+    mock_font_t ma = {a, sizeof(a), 0, 0, 0}, mb = {b, sizeof(b), 0, 0, 0};
+    u8g2_font_source_t sa = {NULL, sizeof(a), mock_read, &ma, 1};
+    u8g2_font_source_t sb = {NULL, sizeof(b), mock_read, &mb, 1};
+    u8g2_font_t ctx = {.font_stop_after_io = 1U};
+    u8g2_SetExternalFont(&ctx, &sa);
+    ma.fail_reads = 100U;
+    assert(!u8g2_IsGlyph(&ctx, 'A') && ma.fail_reads == 99U);
+    unsigned calls = ma.calls;
+    ma.fail_reads = 0U;
+    assert(!u8g2_IsGlyph(&ctx, 'A') && ma.calls == calls);
+    u8g2_SetExternalFont(&ctx, &sb);
+    assert(!u8g2_IsGlyph(&ctx, 'B') && mb.calls == 0U);
+    ctx.font_frame_io_error = 0U;
+    u8g2_SetExternalFont(&ctx, &sb);
+    assert(u8g2_IsGlyph(&ctx, 'B') && mb.calls != 0U);
+    assert(!u8g2_IsGlyph(&ctx, 'C') && !ctx.font_frame_io_error);
+}
+
 int main(void) {
     test_external_font_uses_one_block();
     test_external_font_refills_on_block_boundary();
@@ -176,6 +222,8 @@ int main(void) {
     test_external_font_retries_multiple_transient_errors();
     test_external_font_reloads_invalid_header_for_same_source();
     test_source_switch_and_revision();
+    test_frame_io_error_survives_glyph_and_source_recovery();
+    test_stop_after_io_is_scoped_to_one_frame();
     puts("PASS: u8g2 external font block cache and retry");
     return 0;
 }

@@ -12,7 +12,7 @@
 #define FONT_PACK_VERSION            1U
 #define FONT_PACK_HEADER_SIZE        8U
 #define FONT_PACK_RECORD_SIZE        16U
-#define FONT_PACK_DIRECTORY_SIZE     (FONT_PACK_HEADER_SIZE + FONT_STORE_SLOT_COUNT * FONT_PACK_RECORD_SIZE)
+#define FONT_PACK_DIRECTORY_SIZE     (FONT_PACK_HEADER_SIZE + FONT_STORE_MAX_SLOTS * FONT_PACK_RECORD_SIZE)
 typedef struct {
     uint32_t offset;
     uint32_t length;
@@ -40,11 +40,14 @@ static bool validate_font_records(uint32_t address, uint32_t length,
                                   uint16_t start_unicode);
 static uint8_t m_ready;
 static uint32_t m_revision = 1U;
-static font_record_t m_records[FONT_STORE_SLOT_COUNT];
+static font_record_t m_records[FONT_STORE_MAX_SLOTS];
+static uint32_t m_todo_key;
+static uint8_t m_todo_size;
+static const u8g2_font_placeholder_t *m_todo_metrics;
 
 static uint32_t m_data_base;
-static fm25q04b_region_t m_regions[FONT_STORE_SLOT_COUNT];
-static u8g2_font_source_t m_sources[FONT_STORE_SLOT_COUNT];
+static fm25q04b_region_t m_regions[FONT_STORE_MAX_SLOTS];
+static u8g2_font_source_t m_sources[FONT_STORE_MAX_SLOTS];
 
 static uint16_t get_u16(const uint8_t* p)
 {
@@ -61,7 +64,7 @@ static uint32_t get_u32(const uint8_t* p)
 
 static bool slot_valid(font_store_slot_t slot)
 {
-    return slot < FONT_STORE_SLOT_COUNT;
+    return slot < FONT_STORE_MAX_SLOTS;
 }
 
 static uint32_t record_address(const font_record_t* record)
@@ -74,11 +77,11 @@ static bool records_non_overlapping(const font_record_t* records)
     uint8_t i;
     uint8_t j;
 
-    for (i = 0U; i < FONT_STORE_SLOT_COUNT; i++) {
+    for (i = 0U; i < FONT_STORE_MAX_SLOTS; i++) {
         if (records[i].length == 0U) {
             continue;
         }
-        for (j = (uint8_t)(i + 1U); j < FONT_STORE_SLOT_COUNT; j++) {
+        for (j = (uint8_t)(i + 1U); j < FONT_STORE_MAX_SLOTS; j++) {
             uint32_t i_end;
             uint32_t j_end;
 
@@ -99,7 +102,7 @@ static void font_store_update_sources(void)
 {
     uint8_t slot;
 
-    for (slot = 0U; slot < FONT_STORE_SLOT_COUNT; slot++) {
+    for (slot = 0U; slot < FONT_STORE_MAX_SLOTS; slot++) {
         m_regions[slot].base_address = m_data_base + m_records[slot].offset;
         m_regions[slot].length = m_records[slot].length;
         m_sources[slot].data = NULL;
@@ -120,33 +123,43 @@ static bool resource_font_pack_load(void)
     if (resource_store_find(RS_PART_FONTS, &partition) != RS_OK ||
         resource_store_info(RS_PART_FONTS, &package) != RS_OK ||
         resource_store_open(RS_PART_FONTS, &checked_length) != RS_OK ||
-        checked_length != package.length || package.length < sizeof(raw) ||
-        resource_store_read(RS_PART_FONTS, 0U, raw, sizeof(raw)) != RS_OK ||
+        checked_length != package.length || package.length < FONT_PACK_HEADER_SIZE ||
+        resource_store_read(RS_PART_FONTS, 0U, raw, FONT_PACK_HEADER_SIZE) != RS_OK ||
         get_u32(raw) != FONT_PACK_MAGIC || get_u16(&raw[4]) != FONT_PACK_VERSION ||
-        get_u16(&raw[6]) != FONT_STORE_SLOT_COUNT) return false;
+        (get_u16(&raw[6]) != FONT_STORE_SLOT_COUNT && get_u16(&raw[6]) != FONT_STORE_MAX_SLOTS)) return false;
+
+    uint16_t count = get_u16(&raw[6]);
+    uint32_t directory_size = FONT_PACK_HEADER_SIZE + count * FONT_PACK_RECORD_SIZE;
+    if (package.length < directory_size ||
+        resource_store_read(RS_PART_FONTS, FONT_PACK_HEADER_SIZE, raw + FONT_PACK_HEADER_SIZE,
+                            directory_size - FONT_PACK_HEADER_SIZE) != RS_OK) return false;
 
     memset(m_records, 0, sizeof(m_records));
-    for (uint8_t slot = 0U; slot < FONT_STORE_SLOT_COUNT; slot++) {
+    m_todo_key = 0U; m_todo_size = 0U; m_todo_metrics = NULL;
+    for (uint8_t slot = 0U; slot < count; slot++) {
         uint32_t base = FONT_PACK_HEADER_SIZE + slot * FONT_PACK_RECORD_SIZE;
         font_record_t *record = &m_records[slot];
         record->offset = get_u32(&raw[base]);
         record->length = get_u32(&raw[base + 4U]);
         record->crc32 = get_u32(&raw[base + 8U]);
-        if (get_u32(&raw[base + 12U]) != 0U ||
+        uint32_t key = get_u32(&raw[base + 12U]);
+        if ((slot < FONT_STORE_SLOT_COUNT && key != 0U) ||
+            (slot == FONT_STORE_SLOT_TODO && ((record->length != 0U) != (key != 0U))) ||
             (record->length == 0U && (record->offset != 0U || record->crc32 != 0U)) ||
             (record->length != 0U &&
-             (record->offset < sizeof(raw) || record->offset >= package.length ||
+             (record->offset < directory_size || record->offset >= package.length ||
               record->length > package.length - record->offset))) {
             memset(m_records, 0, sizeof(m_records));
             return false;
         }
+        if (slot == FONT_STORE_SLOT_TODO) m_todo_key = key;
     }
     if (!records_non_overlapping(m_records)) {
         memset(m_records, 0, sizeof(m_records));
         return false;
     }
     m_data_base = partition.offset + RS_HEADER_SIZE;
-    for (uint8_t slot = 0U; slot < FONT_STORE_SLOT_COUNT; slot++) {
+    for (uint8_t slot = 0U; slot < count; slot++) {
         font_record_t *record = &m_records[slot];
         if (record->length == 0U) continue;
         if (resource_crc32_flash(record_address(record), record->length, record->crc32) != RS_OK ||
@@ -180,7 +193,23 @@ static bool font_header_matches_slot(font_store_slot_t slot, uint32_t length,
         if (header->bytes[i] == 0U || header->bytes[i] > 8U) return false;
     }
     /* The first eight geometry fields use the same byte order as u8g2. */
-    if (memcmp(header->bytes + 9U, &font_slot_geometry[slot], 8U) != 0) return false;
+    if (slot == FONT_STORE_SLOT_TODO) {
+        for (unsigned i = 0U; i < TODO_FONT_SIZE_COUNT; ++i) {
+            if (memcmp(header->bytes + 9U, &todo_font_geometry[i], 8U) == 0) {
+                m_todo_size = todo_font_sizes[i]; m_todo_metrics = &todo_font_geometry[i];
+                break;
+            }
+        }
+        if (m_todo_metrics == NULL) {
+            for (unsigned i = 0U; i < 2U; ++i) {
+                if (memcmp(header->bytes + 9U, &font_slot_geometry[i], 8U) == 0) {
+                    m_todo_size = i == 0U ? 9U : 12U; m_todo_metrics = &font_slot_geometry[i];
+                    break;
+                }
+            }
+        }
+        if (m_todo_metrics == NULL) return false;
+    } else if (memcmp(header->bytes + 9U, &font_slot_geometry[slot], 8U) != 0) return false;
     for (unsigned i = 17U; i <= 21U; i += 2U) {
         if ((uint32_t)header_word(header, i) + 23U >= length) return false;
     }
@@ -358,11 +387,27 @@ const u8g2_font_source_t* font_store_get_source(font_store_slot_t slot)
     return &m_sources[slot];
 }
 
+uint8_t font_store_todo_font_size(void)
+{
+    return font_store_get_source(FONT_STORE_SLOT_TODO) != NULL ? m_todo_size : 0U;
+}
+
+uint32_t font_store_todo_font_key(void)
+{
+    return font_store_get_source(FONT_STORE_SLOT_TODO) != NULL ? m_todo_key : 0U;
+}
+
+const u8g2_font_placeholder_t *font_store_todo_font_metrics(void)
+{
+    return font_store_get_source(FONT_STORE_SLOT_TODO) != NULL ? m_todo_metrics : NULL;
+}
+
 void font_store_invalidate(void)
 {
     m_ready = 0U;
     m_revision = 1U;
     m_data_base = 0U;
+    m_todo_key = 0U; m_todo_size = 0U; m_todo_metrics = NULL;
     memset(m_records, 0, sizeof(m_records));
     memset(m_regions, 0, sizeof(m_regions));
     memset(m_sources, 0, sizeof(m_sources));

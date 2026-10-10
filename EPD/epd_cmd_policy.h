@@ -109,10 +109,10 @@ typedef struct {
     uint8_t mode;
 } epd_set_time_action_t;
 
-/* 0–3：图片 / 日历 / 分屏时钟 / 全屏时钟。 */
+/* 0–5：图片 / 日历 / 分屏时钟 / 全屏时钟 / 待办日历 / 全屏待办。 */
 static inline bool epd_display_mode_valid(uint8_t mode)
 {
-    return mode <= 3U; /* MODE_CLOCK */
+    return mode <= 5U; /* MODE_TODO */
 }
 
 /* SET_TIME：限频只挡时间，不挡模式 */

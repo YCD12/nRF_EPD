@@ -59,7 +59,8 @@ uint8_t resource_protocol_execute(const uint8_t *q, uint8_t n, uint8_t *a)
 {
     rs_result_t r = RS_INVALID;
     uint8_t reply_length = 4;
-    memset(a, 0, RESOURCE_PACKET_MAX);
+    /* Every byte within reply_length is assigned by the selected branch.
+     * Failed reads return only this four-byte header, even after partial IO. */
     a[0] = EPD_RSP_RESOURCE;
     a[1] = n > 1 ? q[1] : 0xFF;
     a[2] = n > 2 ? q[2] : 0;

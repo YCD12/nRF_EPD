@@ -6,11 +6,13 @@
 #include "u8g2_font.h"
 
 #define FONT_STORE_SLOT_COUNT 3U
+#define FONT_STORE_MAX_SLOTS 4U /* Three required fonts and an optional TODO font. */
 
 typedef enum {
     FONT_STORE_SLOT_WQY9 = 0,
     FONT_STORE_SLOT_WQY12,
     FONT_STORE_SLOT_HELVB18,
+    FONT_STORE_SLOT_TODO,
 } font_store_slot_t;
 
 ret_code_t font_store_init(void);
@@ -19,6 +21,9 @@ void font_store_invalidate(void);
 bool font_store_ready(void);
 
 const u8g2_font_source_t* font_store_get_source(font_store_slot_t slot);
+uint8_t font_store_todo_font_size(void);
+uint32_t font_store_todo_font_key(void);
+const u8g2_font_placeholder_t *font_store_todo_font_metrics(void);
 
 #if defined(FONT_STORE_HOST_TEST)
 /* Test-only runtime reset; Flash contents are deliberately preserved. */

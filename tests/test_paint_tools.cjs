@@ -194,6 +194,58 @@ test('legacy composed image caches preserve the bitmap without rendering duplica
   const restore = p.loadCanvasFromLocalStorage(); s.images.at(-1).onload(); assert.equal(await restore, true);
   assert.equal(p.textElements.length, 0); assert.equal(p.todoItems.length, 0); assert.equal(p.scheduleData, null);
   assert.ok(p.baseImageData);
+  assert.equal(p.getLegacyTodoItems()[0].text, '重复待办');
+  assert.equal(JSON.parse(s.storage.get('epd_legacy_paint_todos_v1'))[0].text, '重复待办');
+});
+
+test('removed checklist controls do not break the image workspace or discard legacy drafts', () => {
+  const s = setup(), p = s.paint;
+  const getElement = s.document.getElementById;
+  s.document.getElementById = id => id.startsWith('todo-') || /-todo-btn$/.test(id) ? null : getElement(id);
+  const old = { text: '保留旧事项', completed: true, x: 20, y: 30, font: '18px Arial', color: '#000000' };
+  s.storage.set('canvasState', JSON.stringify({ version: 2, width: 400, height: 300,
+    textElements: [], lineSegments: [], todoItems: [old] }));
+  p.initPaintTools();
+  assert.equal(p.todoItems.length, 1);
+  assert.equal(p.getLegacyTodoItems()[0].completed, true);
+  p.setActiveTool('brush'); p.startPaint(s.point(10, 10)); p.endPaint();
+  assert.equal(p.lineSegments.length, 1);
+  p.setActiveTool('todo'); assert.equal(p.currentTool, 'brush');
+  p.clearElements(); p.saveCanvasToLocalStorage();
+  assert.equal(p.getLegacyTodoItems()[0].text, old.text);
+  const imported = p.getLegacyTodoItems(); imported[0].text = '改动副本';
+  assert.equal(p.getLegacyTodoItems()[0].text, old.text);
+});
+
+test('legacy checklist metadata survives a reload after its bitmap cache was upgraded', async () => {
+  const s = setup(), p = s.paint;
+  s.storage.set('canvasState', JSON.stringify({ width: 400, height: 300, imageDataUrl: 'data:legacy',
+    todoItems: [{ text: '未完成', completed: false }, { text: '已完成', completed: true }] }));
+  const loading = p.loadCanvasFromLocalStorage();
+  assert.equal(p.getLegacyTodoItems().length, 2);
+  s.images.at(-1).onload(); assert.equal(await loading, true);
+  assert.equal(JSON.parse(s.storage.get('canvasState')).todoItems.length, 0);
+  const restarted = new p.constructor(s.canvas, s.ctx);
+  const restored = restarted.loadCanvasFromLocalStorage(); s.images.at(-1).onload();
+  assert.equal(await restored, true);
+  assert.deepEqual(Array.from(restarted.getLegacyTodoItems(), item => [item.text, item.completed]),
+    [['未完成', false], ['已完成', true]]);
+});
+
+test('a failed legacy backup cannot overwrite the original checklist metadata', async () => {
+  const s = setup(), p = s.paint;
+  const original = JSON.stringify({ width: 400, height: 300, imageDataUrl: 'data:legacy',
+    todoItems: [{ text: '缓存不足也保留' }] });
+  s.storage.set('canvasState', original);
+  const setItem = s.storage.set.bind(s.storage);
+  // The sandbox localStorage delegates to this map, including quota failures.
+  s.storage.set = (key, value) => { if (key === 'epd_legacy_paint_todos_v1') throw new Error('quota'); return setItem(key, value); };
+  const loading = p.loadCanvasFromLocalStorage(); s.images.at(-1).onload();
+  assert.equal(await loading, true);
+  assert.equal(s.storage.get('canvasState'), original);
+  assert.equal(p.getLegacyTodoItems()[0].text, '缓存不足也保留');
+  s.storage.set = setItem; p.saveCanvasToLocalStorage();
+  assert.equal(JSON.parse(s.storage.get('epd_legacy_paint_todos_v1'))[0].text, '缓存不足也保留');
 });
 
 test('resize scales editable coordinates and affine text bounds without losing their model', () => {

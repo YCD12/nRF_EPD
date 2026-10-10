@@ -1,6 +1,7 @@
 @echo off
-:: nRF52 Windows Local Debug Flashing Script (84KB APP)
-:: Purpose: Rebuild Keil project, erase chip (including UICR), flash SoftDevice and 84KB debug Application, then reset.
+:: nRF52 Windows Local Debug Flashing Script (56 KiB APP)
+:: Purpose: Rebuild Keil project, erase chip (including UICR), flash SoftDevice and debug Application, then reset.
+:: Internal FDS is disabled; application records use external Flash.
 
 echo =========================================
 echo 1. Rebuilding Keil Application (nRF52811_xxAA)...
@@ -17,6 +18,12 @@ if not exist %UV4% (
 
 :: Run build. Keil will write output to Keil_Build_Log.txt
 %UV4% -b Keil\EPD-nRF52.uvprojx -t nRF52811_xxAA -o Keil_Build_Log.txt
+rem Keil returns 1 for a successful build with warnings, and >=2 for errors.
+if errorlevel 2 (
+    if exist Keil_Build_Log.txt type Keil_Build_Log.txt
+    echo Error: Keil application build failed; flashing stopped.
+    exit /b 1
+)
 type Keil_Build_Log.txt
 
 echo =========================================
@@ -40,7 +47,7 @@ if %errorlevel% neq 0 (
 )
 
 echo =========================================
-echo 4. Programming 84KB Debug Application...
+echo 4. Programming 56 KiB Debug Application...
 echo =========================================
 nrfjprog -f nrf52 --program Keil\_build_nRF52\EPD-nRF52.hex --sectorerase
 if %errorlevel% neq 0 (
@@ -55,7 +62,7 @@ echo =========================================
 nrfjprog -f nrf52 --reset
 
 echo =========================================
-echo Flashing complete! (Application size up to 84KB)
-echo FDS is automatically shifted to 0x2E000 - 0x30000.
+echo Flashing complete! (Application size up to 56 KiB)
+echo Internal FDS is disabled; application records use external Flash.
 echo =========================================
 pause

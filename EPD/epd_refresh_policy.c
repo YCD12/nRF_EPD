@@ -35,7 +35,8 @@ epd_refresh_schedule_out_t epd_refresh_schedule(const epd_refresh_schedule_in_t 
     }
 
     out.force_full = in->day_rolled &&
-                     (in->mode == MODE_CALENDAR || epd_is_clock_mode(in->mode));
+                     (in->mode == MODE_CALENDAR || epd_is_clock_mode(in->mode) ||
+                      epd_is_todo_mode(in->mode));
 
     if (!in->force_update && !out.force_full && !periodic) {
         return out;

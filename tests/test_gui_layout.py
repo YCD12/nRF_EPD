@@ -22,13 +22,15 @@ source, count = re.subn(
     count=1,
 )
 assert count == 1, "Reference must disable exactly one page predicate"
-exports = ("DrawGUI", "DrawGUI_ClockOnly", "GetTimeRefreshArea", "GetTimeRefreshAreaFromLocal")
+exports = ("DrawGUI", "DrawGUI_ClockOnly", "GetTimeRefreshArea", "GetTimeRefreshAreaFromLocal",
+           "GUI_TodoRenderValid")
 reference = OUT / "GUI_unculled.c"
 reference.write_text("".join(f"#define {name} {name}_Unclipped\n" for name in exports) + source,
                      encoding="utf-8")
 common = ["-DGUI_LAYOUT_REFERENCE", "-IGUI", "-IEPD", "-Itests/stubs", "-Itools/test/host/shim",
           "GUI/GUI.c", str(reference), "GUI/Adafruit_GFX.c", "GUI/u8g2_font.c", "GUI/Lunar.c",
-          "GUI/calendar_annotations.c", "tests/stubs/calendar_resources_stub.c",
+          "GUI/calendar_annotations.c", "GUI/todo_items.c", "GUI/font_geometry.c", "tests/stubs/todo_resources_stub.c",
+          "tests/stubs/calendar_resources_stub.c",
           "tests/stubs/ui_resources_stub.c", "EPD/epd_clock_refresh.c", "tests/test_gui_render.c"]
 cc = shlex.split(os.environ.get("HOST_CC", "gcc"))
 flags = shlex.split(os.environ.get("HOST_CFLAGS", "-Wall -Werror -std=c11"))

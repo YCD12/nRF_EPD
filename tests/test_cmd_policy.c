@@ -98,6 +98,12 @@ static void test_set_time_rate_limit_still_applies_valid_mode(void)
     a = epd_set_time_action(false, true, 9);
     assert(a.apply_time);
     assert(!a.apply_mode);
+    for (uint8_t mode = 0U; mode <= 5U; mode++) assert(epd_display_mode_valid(mode));
+    assert(!epd_display_mode_valid(6U) && !epd_display_mode_valid(255U));
+    a = epd_set_time_action(true, true, 5U);
+    assert(!a.apply_time && a.apply_mode && a.mode == 5U);
+    a = epd_set_time_action(false, true, 6U);
+    assert(a.apply_time && !a.apply_mode);
 }
 
 int main(void)

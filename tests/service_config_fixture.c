@@ -8,6 +8,7 @@
 #include "EPD_config.h"
 #include "epd_protocol.h"
 #include "epd_cmd_policy.h"
+#include "epd_refresh_policy.h"
 #include "epd_offline.h"
 #include "calendar_annotations_tx.h"
 #include "resource_protocol.h"
@@ -17,8 +18,6 @@
 #include "epd_command_queue.h"
 #include "epd_display_queue.h"
 
-#define MODE_PICTURE 0U
-#define MODE_CLOCK 3U
 #define EPD_UC8179_750_BWR 7U
 typedef struct { uint16_t value_handle; } ble_gatts_char_handles_t;
 typedef struct epd_model epd_model_t;
@@ -58,6 +57,15 @@ static bool epd_resources_ready(void) { return true; }
 static rs_result_t epd_resources_apply(void) { reloads++; return RS_OK; }
 static void calendar_annotations_store_init(void) {}
 static bool calendar_annotations_store_valid(void) { return true; }
+static bool todo_items_init(void) { return true; }
+static bool todo_items_ready(void) { return true; }
+static void todo_items_invalidate(void) {}
+static uint8_t todo_items_font_slot(void) { return 1U; }
+static uint8_t todo_items_font_size(void) { return 12U; }
+static uint32_t todo_items_font_key(void) { return 0U; }
+static void todo_items_suspend_display(void) { assert(!"default font must never suspend"); }
+static bool GUI_TodoFontMatches(uint8_t size, uint32_t key)
+{ (void)size; (void)key; assert(!"default font must not query custom dependency"); return false; }
 
 /* PRODUCTION_HANDLERS */
 
@@ -91,7 +99,7 @@ static void test_invalid_updates(void)
     for (unsigned field = 0; field < 4U; field++) {
         reset(&p);
         epd_config_t candidate = p.config;
-        if (field == 0U) candidate.display_mode = 4U;
+        if (field == 0U) candidate.display_mode = 6U;
         if (field == 1U) candidate.week_start = 7U;
         if (field == 2U) candidate.model_id = 8U;
         if (field == 3U) candidate.mosi_pin = 32U;
@@ -119,6 +127,12 @@ static void test_display_only(void)
     assert(epd_resource_event(&p, RESOURCE_ACTIVATE, 1U << RS_PART_EPD_CONFIG) == RS_OK);
     assert(p.config.display_mode == 2U && requests == 1U && reloads == 1U);
     assert(!hardware_length && refs == 1U && p.epd == &panel);
+    for (uint8_t mode = MODE_TODO_CALENDAR; mode <= MODE_TODO; mode++) {
+        saved.display_mode = mode;
+        assert(epd_resource_event(&p, RESOURCE_ACTIVATE, 1U << RS_PART_EPD_CONFIG) == RS_OK);
+        assert(p.config.display_mode == mode && requests == mode - 2U && reloads == mode - 2U);
+        assert(!hardware_length && refs == 1U && p.epd == &panel);
+    }
 }
 
 static void test_hardware_changes(void)

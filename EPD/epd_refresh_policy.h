@@ -45,6 +45,11 @@ static inline bool epd_is_clock_mode(display_mode_t mode)
     return mode == MODE_CLOCK || mode == MODE_CLOCK_CALENDAR;
 }
 
+static inline bool epd_is_todo_mode(display_mode_t mode)
+{
+    return mode == MODE_TODO_CALENDAR || mode == MODE_TODO;
+}
+
 /* 传图须中止/跳过进行中的时钟刷新，避免刷新结束时在 WRITE_BLOCK 中途睡眠或释放 GPIO。 */
 static inline bool epd_clock_refresh_must_yield(display_mode_t mode,
                                                 bool transfer_active)

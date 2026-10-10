@@ -9,6 +9,8 @@ typedef enum {
     MODE_CALENDAR = 1,       // 全屏日历
     MODE_CLOCK_CALENDAR = 2, // 分屏：左时钟 + 右日历，时钟走局刷
     MODE_CLOCK = 3,          // 全屏时钟：局刷流程与分屏相同，数字更大
+    MODE_TODO_CALENDAR = 4,  // 分屏：左待办 + 右日历，按有效事项变化刷新
+    MODE_TODO = 5,           // 全屏待办，复用同一事项和时间调度
 } display_mode_t;
 
 // 界面绘制所需参数
@@ -27,6 +29,7 @@ typedef struct {
 // 按显示模式绘制完整界面
 // data：显示参数；callback / callback_data：分页缓冲回调
 void DrawGUI(gui_data_t* data, buffer_callback callback, void* callback_data);
+bool GUI_TodoRenderValid(void); /* A failed task read must not commit a partial list. */
 
 // 仅绘制 HH:MM，供时钟局刷。画布尺寸由 clock_refresh_geom() 决定（分屏 TIME_REFRESH_* 或全屏数字框）
 void DrawGUI_ClockOnly(const gui_data_t* data, buffer_callback callback, void* callback_data);

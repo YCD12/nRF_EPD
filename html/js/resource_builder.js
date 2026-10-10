@@ -163,10 +163,17 @@
 
   // Same slot geometry and bounded record walks as the firmware/font_store_tool.
   const metrics = [[12,12,0,254,8,254,10,255], [16,16,0,254,11,253,12,252], [13,22,0,253,19,251,19,251]];
+  const todoSizes = [9, 12, 16, 20, 24, 32];
+  function todoFontGeometry(size) {
+    if (!todoSizes.includes(size)) fail('待办字号必须为 9、12、16、20、24 或 32');
+    const pixels = Math.ceil(size * 4 / 3), descent = Math.ceil(pixels / 3), overhang = Math.ceil(pixels / 4);
+    return [pixels + overhang, pixels + descent, -overhang, -descent, pixels, -descent, pixels, -descent];
+  }
+  const todoMetrics = todoSizes.map(size => todoFontGeometry(size).map(n => n & 255));
   function validateFont(bytes, slot) {
-    integer(slot, 0, 2, '字体槽位');
+    integer(slot, 0, 3, '字体槽位');
     if (!(bytes instanceof Uint8Array) || bytes.length < 23 || !bytes[0] || bytes[0] === 255 ||
-        metrics[slot].some((n, i) => bytes[9 + i] !== n) ||
+        !(slot === 3 ? [...metrics.slice(0, 2), ...todoMetrics] : [metrics[slot]]).some(metric => metric.every((n, i) => bytes[9 + i] === n)) ||
         Array.from(bytes.subarray(2, 9)).some(n => n < 1 || n > 8)) fail(`字体槽位 ${slot} 的头或几何不兼容`);
     const v = view(bytes), glyphs = new Set();
     const offsets = [17, 19, 21].map(at => 23 + v.getUint16(at));
@@ -194,28 +201,46 @@
   }
   function decodeFonts(bytes) {
     const v = view(bytes);
-    if (bytes.length < 56 || v.getUint32(0, true) !== 0x314b5046 || v.getUint16(4, true) !== 1 || v.getUint16(6, true) !== 3)
+    if (bytes.length < 56 || v.getUint32(0, true) !== 0x314b5046 || v.getUint16(4, true) !== 1 || ![3, 4].includes(v.getUint16(6, true)))
       fail('不支持的 FPK1 资源');
-    let end = 56;
-    return Array.from({ length: 3 }, (_, slot) => {
+    const count = v.getUint16(6, true);
+    let end = 8 + count * 16;
+    if (bytes.length < end) fail('字体目录不完整');
+    const fonts = Array.from({ length: count }, (_, slot) => {
       const at = 8 + slot * 16, offset = v.getUint32(at, true), length = v.getUint32(at + 4, true);
-      if (offset < end || !length || offset + length > bytes.length || v.getUint32(at + 12, true)) fail('字体目录越界或重叠');
+      const key = v.getUint32(at + 12, true);
+      if (offset < end || !length || offset + length > bytes.length || (slot === 3 ? !key : key)) fail('字体目录越界或重叠');
       end = offset + length;
       const font = bytes.slice(offset, end);
       if (store.crc32(font) !== v.getUint32(at + 8, true)) fail('字体 CRC 错误');
       validateFont(font, slot); return font;
     });
+    if (count === 4) fonts.customKey = v.getUint32(68, true);
+    return fonts;
   }
   function encodeFonts(fonts) {
-    list(fonts, 3, 'fonts');
+    list(fonts, null, 'fonts');
+    if (![3, 4].includes(fonts.length)) fail('字体需要三个基础槽位和可选待办槽位');
+    if (fonts.length === 4) integer(fonts.customKey, 1, 0xffffffff, '待办字体标识');
     fonts.forEach(validateFont);
-    const bytes = new Uint8Array(56 + fonts.reduce((n, b) => n + b.length, 0)), v = view(bytes);
-    v.setUint32(0, 0x314b5046, true); v.setUint16(4, 1, true); v.setUint16(6, 3, true);
-    let offset = 56;
+    const directorySize = 8 + fonts.length * 16;
+    const bytes = new Uint8Array(directorySize + fonts.reduce((n, b) => n + b.length, 0)), v = view(bytes);
+    v.setUint32(0, 0x314b5046, true); v.setUint16(4, 1, true); v.setUint16(6, fonts.length, true);
+    let offset = directorySize;
     fonts.forEach((b, i) => {
-      [offset, b.length, store.crc32(b), 0].forEach((n, j) => v.setUint32(8 + i * 16 + j * 4, n, true));
+      [offset, b.length, store.crc32(b), i === 3 ? fonts.customKey : 0].forEach((n, j) => v.setUint32(8 + i * 16 + j * 4, n, true));
       bytes.set(b, offset); offset += b.length;
     }); return bytes;
+  }
+  function fontKey(family, sourceSlot) {
+    integer(sourceSlot, 0, 1, '待办基础字号');
+    return store.crc32(encoder.encode(`${sourceSlot}:${family.trim()}`)) || 1;
+  }
+  function todoFontKey(family, size, bold = false, italic = false) {
+    todoFontGeometry(size);
+    if (typeof family !== 'string' || typeof bold !== 'boolean' || typeof italic !== 'boolean')
+      fail('待办字体名称或字形设置无效');
+    return store.crc32(encoder.encode(`todo-v3:${size}:${bold ? 1 : 0}:${italic ? 1 : 0}:${family.trim()}`)) || 1;
   }
   function wrap(id, payload, revision, builtAt = Math.floor(Date.now() / 1000)) {
     integer(id, 1, 255, '分区 ID');
@@ -245,7 +270,7 @@
     });
     return store.prepareBundle(entries);
   }
-  const api = { encodeCalendar, decodeCalendar, encodeUI, decodeUI, validateFont, encodeFonts, decodeFonts, wrap, open, build };
+  const api = { encodeCalendar, decodeCalendar, encodeUI, decodeUI, validateFont, encodeFonts, decodeFonts, fontKey, todoFontGeometry, todoFontKey, wrap, open, build };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   else root.EPDResourceBuilder = api;
 })(globalThis);

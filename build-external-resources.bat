@@ -55,7 +55,7 @@ if not "%CALENDAR_DATA%"=="" echo   Calendar : "%CALENDAR_DATA%"
 echo =========================================
 
 if "%MIGRATION_BUNDLE%"=="" (
-    python tools\resource_pack.py --check --fonts --calendar %CALENDAR_OPTION% --ui --records ^
+    python tools\resource_pack.py --check --fonts --calendar %CALENDAR_OPTION% --ui --todo --records ^
         --revision "%REVISION%" --output "%OUTPUT_DIR%"
 ) else (
     if not exist "%MIGRATION_BUNDLE%" (
@@ -63,7 +63,7 @@ if "%MIGRATION_BUNDLE%"=="" (
         popd
         exit /b 1
     )
-    python tools\resource_pack.py --check --fonts --calendar %CALENDAR_OPTION% --ui ^
+    python tools\resource_pack.py --check --fonts --calendar %CALENDAR_OPTION% --ui --todo ^
         --migration-bundle "%MIGRATION_BUNDLE%" ^
         --revision "%REVISION%" --output "%OUTPUT_DIR%"
 )
@@ -77,7 +77,7 @@ echo.
 echo Generated ERS packages:
 for %%F in ("%OUTPUT_DIR%\*.ers") do echo   %%~nxF
 echo.
-echo Upload order: partition-table, calendar, ui, fonts, epd-config, calendar-annotations.
+echo Upload order: partition-table, calendar, ui, fonts, epd-config, calendar-annotations, todo.
 echo Generation completed. No device Flash was written.
 if /I "%OUTPUT_DIR:~0,7%"=="output\" (
     > "output\external-resources-latest.txt" echo %OUTPUT_DIR:~7%

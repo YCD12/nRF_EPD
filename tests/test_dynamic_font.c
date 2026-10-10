@@ -2,18 +2,24 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "fm25q04b.h"
 #include "font_store.h"
 #include "resource_layout.h"
 #include "resource_store.h"
+#include "font_geometry.h"
 
 /* Browser-produced FPK1 bytes are consumed by the real font validator and
  * renderer. Only SPI and the outer resource package are mocked here. */
 static uint8_t font_pack[RS_SIZE_FONTS];
 static uint32_t font_pack_length;
 static uint32_t font_revision = 1U;
+static unsigned custom_size;
+static uint32_t custom_key;
+static bool custom_extended;
+static bool custom_real;
 static uint8_t image[64][64];
 
 void app_feed_wdt(void) { }
@@ -113,20 +119,72 @@ static void assert_glyph(u8g2_font_t *font, unsigned slot, uint16_t code)
         }
     }
 }
+static void assert_extended_glyph(u8g2_font_t *font, uint16_t code)
+{
+    const u8g2_font_placeholder_t *metrics = todo_font_metrics_for_size((uint8_t)custom_size);
+    assert(metrics != NULL);
+    int width = metrics->max_char_width, height = metrics->max_char_height;
+    int origin_x = 12 + metrics->x_offset;
+    int origin_y = 43 - (height + metrics->y_offset);
+    assert(u8g2_GetGlyphWidth(font, code) == metrics->advance);
+    memset(image, 0, sizeof(image));
+    assert(u8g2_DrawGlyph(font, 12, 43, code) == metrics->advance);
+    assert(!font->font_read_error);
+    for (int y = 0; y < 64; ++y) {
+        for (int x = 0; x < 64; ++x) {
+            int gx = x - origin_x, gy = y - origin_y;
+            bool inside = gx >= 0 && gx < width && gy >= 0 && gy < height;
+            bool expected = inside && (code == 0xE000U ? gy >= (height + 1) / 2 :
+                (gx < 3 || gx >= width - 3 || gy < 3 || gy >= height - 3));
+            assert(image[y][x] == expected);
+        }
+    }
+}
+
 static void assert_loaded(u8g2_font_t *font)
 {
     for (unsigned slot = 0U; slot < FONT_STORE_SLOT_COUNT; ++slot)
         assert(font_store_get_source((font_store_slot_t)slot) != NULL);
-    for (unsigned slot = 0U; slot < 2U; ++slot) {
+    for (unsigned slot = 0U; !custom_real && slot < 2U; ++slot) {
         u8g2_SetExternalFont(font, font_store_get_source((font_store_slot_t)slot));
         assert(u8g2_IsGlyph(font, 0x6708U)); /* Existing lunar-calendar glyph. */
         assert_glyph(font, slot, slot == 0U ? 0x00A1U : (uint16_t)'A');
         assert_glyph(font, slot, 0xE000U);
     }
+    if (custom_size) {
+        assert(font_store_todo_font_size() == custom_size);
+        assert(font_store_todo_font_key() == custom_key);
+        u8g2_SetExternalFont(font, font_store_get_source(FONT_STORE_SLOT_TODO));
+        if (custom_extended) {
+            assert(memcmp(font_store_todo_font_metrics(), todo_font_metrics_for_size((uint8_t)custom_size),
+                          sizeof(u8g2_font_placeholder_t)) == 0);
+            if (custom_real) {
+                const uint16_t codes[] = {0x5F85U, 0x99A8U, 0x9F98U, 'f', 'j'};
+                for (unsigned i = 0U; i < sizeof(codes) / sizeof(codes[0]); ++i) {
+                    memset(image, 0, sizeof(image));
+                    assert(u8g2_IsGlyph(font, codes[i]));
+                    assert(u8g2_DrawGlyph(font, 12, 43, codes[i]) > 0);
+                    assert(!font->font_read_error);
+                }
+            } else {
+                assert_extended_glyph(font, 'A');
+                assert_extended_glyph(font, 0xE000U);
+            }
+        } else {
+            assert_glyph(font, custom_size == 9U ? 0U : 1U, 'A');
+            assert_glyph(font, custom_size == 9U ? 0U : 1U, 0xE000U);
+        }
+    } else {
+        assert(font_store_get_source(FONT_STORE_SLOT_TODO) == NULL);
+        assert(font_store_todo_font_key() == 0U);
+    }
 }
 int main(int argc, char **argv)
 {
-    assert(argc == 2);
+    assert(argc == 2 || argc == 4 || argc == 5);
+    if (argc >= 4) { custom_size = (unsigned)strtoul(argv[2], NULL, 10); custom_key = (uint32_t)strtoul(argv[3], NULL, 10); }
+    custom_extended = argc == 5;
+    custom_real = argc == 5 && strcmp(argv[4], "real") == 0;
     FILE *file = fopen(argv[1], "rb");
     assert(file != NULL);
     font_pack_length = (uint32_t)fread(font_pack, 1U, sizeof(font_pack), file);
@@ -146,6 +204,11 @@ int main(int argc, char **argv)
     u8g2_SetForegroundColor(&font, 1U);
     assert(font_store_init() == NRF_SUCCESS);
     assert_loaded(&font);
+
+    if (custom_real) {
+        puts("PASS: real browser 32 pt bold italic font validation, glyph drawing and reboot");
+        return 0;
+    }
 
     /* A package revision must evict cached misses even when its size and
      * physical addresses stay unchanged. Hide and restore an ASCII record. */
@@ -175,7 +238,7 @@ int main(int argc, char **argv)
     record[2] ^= 1U;
     font_store_host_reset();
     assert(font_store_init() == NRF_SUCCESS);
-    for (unsigned slot = 0U; slot < FONT_STORE_SLOT_COUNT; ++slot)
+    for (unsigned slot = 0U; slot < FONT_STORE_MAX_SLOTS; ++slot)
         assert(font_store_get_source((font_store_slot_t)slot) == NULL);
     record[2] ^= 1U;
     font_store_host_reset();

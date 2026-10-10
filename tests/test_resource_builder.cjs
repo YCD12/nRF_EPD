@@ -67,6 +67,31 @@ test('font replacement checks metrics, bounded records, CRC and overlapping dire
   assert.throws(() => builder.decodeFonts(overlap), /重叠/);
 });
 
+test('TODO geometry accepts six point sizes only in the custom slot and keys distinguish every style', () => {
+  const expected = [
+    [9, [15,16,-3,-4,12,-4,12,-4]], [12, [20,22,-4,-6,16,-6,16,-6]],
+    [16, [28,30,-6,-8,22,-8,22,-8]], [20, [34,36,-7,-9,27,-9,27,-9]],
+    [24, [40,43,-8,-11,32,-11,32,-11]], [32, [54,58,-11,-15,43,-15,43,-15]],
+  ];
+  const fonts = builder.open(bundle()).fonts, keys = new Set();
+  for (const [size, geometry] of expected) {
+    assert.deepEqual(builder.todoFontGeometry(size), geometry);
+    const custom = fonts[0].slice(); custom.set(geometry.map(n => n & 255), 9);
+    assert.doesNotThrow(() => builder.validateFont(custom, 3));
+    for (let slot = 0; slot < 3; ++slot) assert.throws(() => builder.validateFont(custom, slot));
+    for (const bold of [false, true]) for (const italic of [false, true]) {
+      const key = builder.todoFontKey(' SimSun ', size, bold, italic);
+      assert.equal(key, store.crc32(new TextEncoder().encode(`todo-v3:${size}:${+bold}:${+italic}:SimSun`)) || 1);
+      assert.equal(key, builder.todoFontKey('SimSun', size, bold, italic)); keys.add(key);
+    }
+  }
+  assert.equal(keys.size, 24);
+  assert.notEqual(builder.todoFontKey('', 12), builder.todoFontKey('SimSun', 12));
+  for (const size of [0, 8, 10, 36, '32']) assert.throws(() => builder.todoFontGeometry(size));
+  for (const args of [[null, 12], ['', 12, 1], ['', 12, false, 'italic']])
+    assert.throws(() => builder.todoFontKey(...args));
+});
+
 test('partition capacity and revision overflow are checked before download or upload', () => {
   const b = bundle(), model = builder.open(b);
   model.ui.components[0].x++;
@@ -112,7 +137,9 @@ test('editor loads, previews, generates, exports a complete reusable project and
   calendar.solar_festivals[0].name = '新年';
   f.node('resourceCalendarSource').value = JSON.stringify(calendar);
   const result = await f.editor.generate();
-  assert.equal(result.packages.length, 6);
+  assert.equal(result.packages.length, 7);
+  assert.deepEqual(result.packages.find(item => item.pack.id === 9).bytes,
+    bundle().packages.find(item => item.pack.id === 9).bytes);
   assert.equal(builder.open(result).calendar.solar_festivals[0].name, '新年');
   assert.equal(builder.validateFont(builder.open(result).fonts[0], 0).has('新'.codePointAt(0)), true);
   assert.equal(builder.validateFont(builder.open(result).fonts[1], 1).has('新'.codePointAt(0)), true);

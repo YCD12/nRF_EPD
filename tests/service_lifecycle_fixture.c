@@ -123,6 +123,21 @@ static rs_result_t epd_resources_apply(void) {
 void epd_config_read(epd_config_t *cfg) { *cfg = current->config; }
 static void calendar_annotations_store_init(void) {}
 static bool calendar_annotations_store_valid(void) { return true; }
+static bool todo_items_available = true;
+static bool todo_items_loaded = true;
+static unsigned todo_reloads, todo_invalidations;
+static bool todo_items_init(void) { todo_reloads++; todo_items_loaded = todo_items_available; return todo_items_loaded; }
+static bool todo_items_ready(void) { return todo_items_loaded; }
+static void todo_items_invalidate(void) { todo_invalidations++; }
+static uint8_t todo_font_slot = 1U;
+static bool todo_font_matches = true;
+static unsigned todo_font_checks;
+static uint8_t todo_items_font_slot(void) { return todo_font_slot; }
+static uint8_t todo_items_font_size(void) { return 12U; }
+static uint32_t todo_items_font_key(void) { return 123U; }
+static void todo_items_suspend_display(void) { todo_items_loaded = false; }
+static bool GUI_TodoFontMatches(uint8_t size, uint32_t key)
+{ assert(size == 12U && key == 123U); todo_font_checks++; return todo_font_matches; }
 static void epd_display_complete(ble_epd_t *p) { (void)p; }
 static void nrf_delay_ms(unsigned ms) { (void)ms; }
 static void sleep_mode_enter(void) { assert(0); }
@@ -285,6 +300,47 @@ int main(void) {
     assert(!resources_ready && resource_reloads == 2);
     assert(epd_resource_event(current, RESOURCE_ACTIVATE, 0) == RS_INVALID);
     assert(resource_reloads == 3); /* Failure never enables the cached success path. */
+    assert(RS_PART_TODO_ITEMS == 9U);
+    reload_result = RS_OK;
+    unsigned before_todo_reload = todo_reloads;
+    unsigned before_todo_invalidation = todo_invalidations;
+    assert(epd_resource_event(current, RESOURCE_INVALIDATE, 1U << RS_PART_TODO_ITEMS) == RS_OK);
+    assert(todo_invalidations == before_todo_invalidation + 1U);
+    assert(epd_resource_event(current, RESOURCE_ACTIVATE, 1U << RS_PART_TODO_ITEMS) == RS_OK);
+    assert(todo_reloads == before_todo_reload + 1U && resources_ready);
+    todo_items_available = false;
+    unsigned before_resource_reload = resource_reloads;
+    assert(epd_resource_event(current, RESOURCE_ACTIVATE, 1U << RS_PART_TODO_ITEMS) == RS_INVALID);
+    assert(todo_reloads == before_todo_reload + 2U && resource_reloads == before_resource_reload);
+    assert(!todo_items_ready());
+    /* An optional damaged TODO package does not block ordinary modes. */
+    current->config.display_mode = MODE_CLOCK;
+    assert(epd_resource_event(current, RESOURCE_ACTIVATE, 0U) == RS_OK);
+    assert(todo_reloads == before_todo_reload + 2U);
+    for (uint8_t mode = MODE_TODO_CALENDAR; mode <= MODE_TODO; mode++) {
+        current->config.display_mode = mode;
+        todo_items_loaded = todo_items_available = false;
+        unsigned reloads_before = todo_reloads;
+        assert(epd_resource_event(current, RESOURCE_ACTIVATE, 0U) == RS_INVALID);
+        assert(todo_reloads == reloads_before + 1U);
+        /* Normal activation recovers an already valid persisted TODO package. */
+        todo_items_available = true;
+        assert(epd_resource_event(current, RESOURCE_ACTIVATE, 0U) == RS_OK);
+        assert(todo_items_loaded && todo_reloads == reloads_before + 2U);
+        assert(epd_resource_event(current, RESOURCE_ACTIVATE, 0U) == RS_OK);
+        assert(todo_reloads == reloads_before + 2U); /* Successful view is cached. */
+    }
+    assert(todo_font_checks == 0U);
+    todo_font_slot = 3U;
+    todo_font_matches = false;
+    unsigned before_requests = requests;
+    before_resource_reload = resource_reloads;
+    assert(epd_resource_event(current, RESOURCE_ACTIVATE, 1U << RS_PART_FONTS) == RS_INVALID);
+    assert(resource_reloads == before_resource_reload + 1U && !todo_items_ready());
+    assert(requests == before_requests && todo_font_checks == 1U);
+    todo_font_matches = true;
+    assert(epd_resource_event(current, RESOURCE_ACTIVATE, 1U << RS_PART_FONTS) == RS_OK);
+    assert(todo_items_ready() && requests == before_requests + 1U && todo_font_checks == 2U);
     puts("PASS: real INIT/disconnect/timeout/refresh cleanup and optional GPIO handlers");
     return 0;
 }

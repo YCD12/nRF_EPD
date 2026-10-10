@@ -377,12 +377,15 @@ if not exist "%SOFTDEVICE_HEX%" (
     exit /b 1
 )
 set "BOOTLOADER_HEX=Keil\_build_DFU52\bl_nrf52811_xxaa_s112.hex"
-if not exist "!BOOTLOADER_HEX!" set "BOOTLOADER_HEX=tools\bootloader\bl_nrf52811_xxaa_s112.hex"
+if not exist "!BOOTLOADER_HEX!" set "BOOTLOADER_HEX=output\bootloader-8k\bl_nrf52811_xxaa_s112_8k.hex"
+if not exist "!BOOTLOADER_HEX!" set "BOOTLOADER_HEX=tools\bootloader\bl_nrf52811_xxaa_s112_8k.hex"
 if not exist "!BOOTLOADER_HEX!" (
     echo Error: Bootloader HEX was not found.
     exit /b 1
 )
 set "SETTINGS_HEX=%FIRMWARE_PREFIX%-settings.hex"
+python "tools\dfu_release.py" --audit-only --application "%FIRMWARE_HEX%" --bootloader "!BOOTLOADER_HEX!" --softdevice "%SOFTDEVICE_HEX%"
+if errorlevel 1 exit /b %errorlevel%
 echo =========================================
 echo Generating directly flashable full firmware...
 echo Bootloader: !BOOTLOADER_HEX!

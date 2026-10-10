@@ -17,6 +17,7 @@ def template():
         (7, 'fonts', pack.font_payload(ROOT / 'tools/dist')[0]),
         (2, 'epd-config', pack.record_payload(pack.CONFIG_RECORD_MAGIC, config)),
         (3, 'calendar-annotations', pack.record_payload(pack.ANNOTATION_RECORD_MAGIC, annotations)),
+        (9, 'todo', pack.todo_payload()),
     ]
     return json.dumps({'format': 'EPD-RESOURCE-PROJECT-1', 'files': [
         {'name': name + '.ers', 'base64': base64.b64encode(

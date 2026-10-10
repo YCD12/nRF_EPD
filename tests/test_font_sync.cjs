@@ -112,3 +112,32 @@ test('valid incoming font resources repair CRC-valid malformed old fonts', () =>
   assert.equal(result.bytes, incoming);
   assert.throws(() => sync.preserve(malformed, incoming, [{ id: 7, type: 7, size: 262144 }]));
 });
+
+test('deferred font commits expose a guarded rollback that verifies old bytes without applying independently', async () => {
+  const f = fixture(), old = f.bytes.slice();
+  let current = true;
+  const result = await sync.ensure(f.client, requests, { rasterize, deferApply: true,
+    assertCurrent: () => { if (!current) throw new Error('connection changed'); } });
+  assert.equal(result.deferred, true); assert.equal(typeof result.rollback, 'function');
+  assert.equal(f.calls.includes('leave'), false);
+  const before = f.calls.length;
+  current = false;
+  await assert.rejects(result.rollback(), /connection changed/);
+  assert.equal(f.calls.length, before);
+  current = true;
+  await result.rollback();
+  assert.deepEqual(f.bytes, old);
+  assert.equal(f.calls.filter(call => call === 'upload').length, 2);
+  assert.equal(f.calls.includes('leave'), false);
+});
+
+test('unrecoverable deferred font write failure preserves the original error and avoids applying partial fonts', async () => {
+  const f = fixture({ uploadFail: true });
+  await assert.rejects(sync.ensure(f.client, requests, { rasterize, deferApply: true }), error => {
+    assert.equal(error.recoveryIncomplete, true);
+    assert.match(error.message, /upload failed.*旧字库恢复未完成/);
+    return true;
+  });
+  assert.equal(f.calls.includes('request:5'), true);
+  assert.equal(f.calls.includes('leave'), false);
+});

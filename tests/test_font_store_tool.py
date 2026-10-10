@@ -15,8 +15,9 @@ spec.loader.exec_module(tool)
 
 class FontStoreToolTest(unittest.TestCase):
     def test_geometry_matches_firmware(self):
-        text = (ROOT / "GUI/font_geometry.h").read_text(encoding="utf-8")
-        rows = re.findall(r"\{\s*(-?\d+(?:\s*,\s*-?\d+){8})\s*\}", text)
+        text = (ROOT / "GUI/font_geometry.c").read_text(encoding="utf-8")
+        table = re.search(r"font_slot_geometry\[3\]\s*=\s*\{(.*?)\n\};", text, re.S).group(1)
+        rows = re.findall(r"\{\s*(-?\d+(?:\s*,\s*-?\d+){8})\s*\}", table)
         self.assertEqual(len(rows), len(tool.SLOTS))
         for row, slot in zip(rows, tool.SLOTS.values()):
             width, height, x, y, ascent, descent, a_para, d_para, _ = map(int, row.split(","))

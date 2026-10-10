@@ -1,7 +1,7 @@
 {
   "status": "design-draft-not-for-flashing",
   "layout_version": 1,
-  "draft_revision": 3,
+  "draft_revision": 4,
   "device": "FM25Q04B",
   "capacity_bytes": 524288,
   "erase_sector_bytes": 4096,
@@ -61,17 +61,25 @@
       "size_bytes": 262144
     },
     {
+      "id": 9,
+      "name": "todo_items",
+      "type": "todo_items",
+      "offset": "0x58000",
+      "size_bytes": 4096
+    },
+    {
       "id": 8,
       "name": "reserved",
       "type": "reserved",
-      "offset": "0x58000",
-      "size_bytes": 163840
+      "offset": "0x59000",
+      "size_bytes": 159744
     }
   ],
   "notes": [
     "One copy per partition; no mirrored table, backup packages or firmware slots.",
     "Package capacities include headers, indexes, checksums and commit records.",
     "The 256 KiB font partition contains all three fonts together.",
+    "TODO items use one 4 KiB sector carved from the old reserved range; partitions 2 through 7 keep their original addresses.",
     "Invalidate the target before payload modification; mark valid only after complete readback verification.",
     "Interrupted updates may require re-upload; update-status loss restarts the transfer.",
     "Partition-table discovery and basic BLE recovery use minimal internal constants.",

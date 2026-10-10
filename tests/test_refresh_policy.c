@@ -19,6 +19,11 @@ static void test_is_clock_mode(void)
 {
     assert(!epd_is_clock_mode(MODE_PICTURE));
     assert(!epd_is_clock_mode(MODE_CALENDAR));
+    assert(!epd_is_clock_mode(MODE_TODO_CALENDAR));
+    assert(!epd_is_clock_mode(MODE_TODO));
+    assert(epd_is_todo_mode(MODE_TODO_CALENDAR) && epd_is_todo_mode(MODE_TODO));
+    assert(!epd_is_todo_mode(MODE_PICTURE) && !epd_is_todo_mode(MODE_CALENDAR));
+    assert(!epd_is_todo_mode(MODE_CLOCK) && !epd_is_todo_mode(MODE_CLOCK_CALENDAR));
     assert(epd_is_clock_mode(MODE_CLOCK));
     assert(epd_is_clock_mode(MODE_CLOCK_CALENDAR));
 }
@@ -228,6 +233,45 @@ static void test_kind_partial_unless_maintenance(void)
     assert(epd_refresh_kind(&in) == EPD_REFRESH_KIND_PARTIAL);
 }
 
+static void test_todo_refreshes_on_changes_and_day_rollover(display_mode_t mode)
+{
+    epd_refresh_schedule_in_t in = base_schedule();
+    epd_refresh_schedule_out_t out;
+    in.mode = mode;
+    /* Minute boundaries and midnight alone do not cause periodic clock work. */
+    in.timestamp = 180U;
+    assert(!epd_refresh_schedule(&in).should_refresh);
+    in.timestamp = 86400U;
+    assert(!epd_refresh_schedule(&in).should_refresh);
+    /* A selection change is supplied by the RAM-only timer comparison and
+     * must refresh even within the minute of a previous display update. */
+    in.timestamp = 181U;
+    in.last_refresh_start = 180U;
+    in.force_update = true;
+    out = epd_refresh_schedule(&in);
+    assert(out.should_refresh && !out.force_full);
+    in.force_update = false;
+    in.day_rolled = true;
+    out = epd_refresh_schedule(&in);
+    assert(out.should_refresh && out.force_full);
+    in.transfer_active = true;
+    assert(!epd_refresh_schedule(&in).should_refresh);
+    in.transfer_active = false;
+    in.low_battery_hold = true;
+    assert(!epd_refresh_schedule(&in).should_refresh);
+    epd_refresh_kind_in_t kind = {
+        .mode = mode,
+        .timestamp = 181U,
+        .last_full_clear = 180U,
+        .clock_state_valid = true,
+        .hardware_partial_ok = true,
+        .hour = 10U,
+    };
+    assert(epd_refresh_kind(&kind) == EPD_REFRESH_KIND_FULL);
+    assert(!epd_clock_refresh_must_yield(mode, false));
+    assert(epd_clock_refresh_must_yield(mode, true));
+}
+
 int main(void)
 {
     test_is_clock_mode();
@@ -241,6 +285,8 @@ int main(void)
     test_picture_transfer_preempts_clock_refresh();
     test_kind_full_when_not_clock_or_hw_missing();
     test_kind_partial_unless_maintenance();
+    test_todo_refreshes_on_changes_and_day_rollover(MODE_TODO_CALENDAR);
+    test_todo_refreshes_on_changes_and_day_rollover(MODE_TODO);
     puts("PASS: refresh policy");
     return 0;
 }

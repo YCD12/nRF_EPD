@@ -72,6 +72,28 @@ function setupTimedImageSend(version = 0x39) {
   return { ...state, layers, writes, advanceClock: context.advanceClock };
 }
 
+test('time packets preserve local wall time in whole, half and quarter-hour zones', () => {
+  const utc = 1767225300;
+  for (const offsetMinutes of [480, 330, 345, -210, -150, 765, 0, -240]) {
+    const { context, run } = setup();
+    let snapshots = 0;
+    context.Date = class extends Date {
+      constructor(...args) {
+        super(...(args.length ? args : [utc * 1000]));
+        if (!args.length) snapshots++;
+      }
+      getTimezoneOffset() { return -offsetMinutes; }
+    };
+    const payload = run('buildTimeData(4)');
+    const epoch = new DataView(payload.buffer, payload.byteOffset, payload.byteLength).getUint32(0, false);
+    const timezone = payload[4] > 127 ? payload[4] - 256 : payload[4];
+    assert.equal(epoch + timezone * 3600, utc + offsetMinutes * 60, `${offsetMinutes} minutes`);
+    assert.equal(timezone, Math.trunc(offsetMinutes / 60));
+    assert.equal(payload[5], 4);
+    assert.equal(snapshots, 1, 'epoch and timezone must come from the same instant');
+  }
+});
+
 test('external resource installer stays on the main page', () => {
   const { run } = setup();
   assert.equal(run('typeof openResourcesPage'), 'undefined');
@@ -296,13 +318,13 @@ test('selecting each GUI mode sends its command while keeping the connection', a
   const { run, context, logs } = setup();
   const writes = [];
   context.capture = data => writes.push(Array.from(data));
-  run(`appVersion = 0x38; lastWeekStartSent = 0;
+  run(`appVersion = 0x3B; lastWeekStartSent = 0;
     epdCharacteristic = {writeValueWithResponse: async data => {
       capture(data);
       if (data[0] === EpdCmd.SET_MODE)
         handleNotify(new DataView(Uint8Array.of(0xaa, data[2], 0, data[1]).buffer));
     }};`);
-  for (const mode of [1, 2, 3]) {
+  for (const mode of [1, 2, 3, 4, 5]) {
     writes.length = 0;
     assert.equal(await run(`sendTimeCommand(${mode}, 'test mode')`), true);
     assert.deepEqual(writes.map(p => p[0]), [run('EpdCmd.SET_MODE')]);
@@ -312,6 +334,39 @@ test('selecting each GUI mode sends its command while keeping the connection', a
   }
   assert.ok(logs.some(message => message.includes('无需断开蓝牙')));
   assert.ok(!logs.some(message => message.includes('断开连接后刷新')));
+});
+
+test('todo mode versions gate writes and disable unsupported quick actions', async () => {
+  const { run, context, logs, elements } = setup(); const writes = [];
+  context.capture = data => writes.push(Array.from(data));
+  run(`appVersion = 0x39; epdCharacteristic = {writeValueWithResponse: async data => {
+    capture(data);
+    if (data[0] === EpdCmd.SET_MODE) handleNotify(new DataView(Uint8Array.of(0xaa, data[2], 0, data[1]).buffer));
+  }}; updateButtonStatus();`);
+  assert.equal(elements.get('todocalendarmodebutton').disabled, true);
+  assert.equal(elements.get('todofullmodebutton').disabled, true);
+  assert.equal(await run('sendTimeCommand(4, "待办日历")'), false);
+  run('appVersion = 0x3A; updateButtonStatus()');
+  assert.equal(elements.get('todocalendarmodebutton').disabled, false);
+  assert.equal(elements.get('todofullmodebutton').disabled, true);
+  assert.equal(await run('sendTimeCommand(5, "全屏待办")'), false);
+  assert.equal(writes.length, 0); assert.ok(logs.some(message => /全屏待办.*0x3B/.test(message)));
+  assert.equal(await run('sendTimeCommand(4, "待办日历")'), true);
+  run('appVersion = 0x3B; updateButtonStatus()');
+  assert.equal(elements.get('todofullmodebutton').disabled, false);
+  assert.equal(await run('sendTimeCommand(5, "全屏待办")'), true);
+  assert.equal(run('displayModeName(5)'), '全屏待办');
+  run('updateButtonStatus(true)'); assert.equal(elements.get('todofullmodebutton').disabled, true);
+});
+
+test('workspace mode activation can observe cancellation and device acceptance', async () => {
+  const { run, context } = setup(); let mode = null;
+  context.confirm = () => false;
+  context.captureMode = next => { mode = next; };
+  run('sendTimeCommand = async mode => { captureMode(mode); return true; }');
+  assert.equal(await run('syncTime(5)'), false); assert.equal(mode, null);
+  context.confirm = () => true;
+  assert.equal(await run('syncTime(5)'), true); assert.equal(mode, 5);
 });
 
 test('mode write waits for matching ACK and reports busy or disconnect', async () => {

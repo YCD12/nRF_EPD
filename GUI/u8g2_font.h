@@ -192,6 +192,10 @@ typedef struct _u8g2_font_t {
     uint16_t font_cache_length;
     uint8_t font_cache_valid;
     uint8_t font_read_error;
+    /* Sticky across glyph retries, font switches and pages; a new GFX frame
+     * clears it. Missing glyphs do not set this external-reader I/O flag. */
+    uint8_t font_frame_io_error;
+    uint8_t font_stop_after_io; /* TODO frames stop further reads after the first I/O fault. */
     uint8_t font_info_valid;
     uint8_t placeholder_enabled;
     u8g2_font_placeholder_t placeholder;

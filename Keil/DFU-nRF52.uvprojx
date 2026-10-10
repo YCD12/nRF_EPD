@@ -392,7 +392,7 @@
             <File>
               <FileName>main.c</FileName>
               <FileType>1</FileType>
-              <FilePath>..\SDK\17.1.0_ddde560\dfu\main.c</FilePath>
+              <FilePath>..\Bootloader\main.c</FilePath>
             </File>
             <File>
               <FileName>sdk_config.h</FileName>
@@ -2458,7 +2458,7 @@
             <File>
               <FileName>nrf_dfu_validation.c</FileName>
               <FileType>1</FileType>
-              <FilePath>..\SDK\17.1.0_ddde560\components\libraries\bootloader\dfu\nrf_dfu_validation.c</FilePath>
+              <FilePath>..\Bootloader\nrf_dfu_validation.c</FilePath>
               <FileOption>
                 <CommonProperty>
                   <UseCPPCompiler>0</UseCPPCompiler>

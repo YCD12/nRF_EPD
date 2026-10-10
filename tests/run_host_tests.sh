@@ -46,7 +46,7 @@ run test_storage -Itests/storage_stubs -Itests/font_transfer_stubs -Itests/stubs
     EPD/EPD_config.c EPD/calendar_annotations_store.c \
     GUI/calendar_annotations.c tests/test_storage.c
 run test_calendar_annotations -IGUI GUI/calendar_annotations.c tests/test_calendar_annotations.c
-run test_wqy_ascii -IGUI -DGUI_USE_EXTERNAL_FONTS=0 -DGUI_INCLUDE_INTERNAL_FONTS=1 GUI/fonts.c GUI/u8g2_font.c tests/test_wqy_ascii.c
+run test_wqy_ascii -IGUI -DGUI_USE_EXTERNAL_FONTS=0 -DGUI_INCLUDE_INTERNAL_FONTS=1 GUI/fonts.c GUI/font_geometry.c GUI/u8g2_font.c tests/test_wqy_ascii.c
 run test_font_files -IGUI GUI/u8g2_font.c tests/test_font_files.c
 run test_external_font_text -IGUI GUI/Adafruit_GFX.c GUI/u8g2_font.c tests/test_external_font_text.c
 run test_gfx_primitives -IGUI GUI/Adafruit_GFX.c GUI/u8g2_font.c tests/test_gfx_primitives.c
@@ -58,15 +58,16 @@ run test_u8g2_bounds -IGUI GUI/u8g2_font.c tests/test_u8g2_bounds.c
 run test_font_store -I. -IEPD -IGUI \
     -ISDK/17.1.0_ddde560/components/libraries/util \
     -ISDK/17.1.0_ddde560/components/softdevice/s112/headers \
-    -DFONT_STORE_HOST_TEST EPD/font_store.c EPD/resource_crc.c EPD/resource_crc_flash.c tests/test_font_store.c
+    -DFONT_STORE_HOST_TEST EPD/font_store.c GUI/font_geometry.c EPD/resource_crc.c EPD/resource_crc_flash.c tests/test_font_store.c
 run test_fm25q04b_read -Itests/spi_stubs -I. -IEPD \
     -ISDK/17.1.0_ddde560/components/libraries/util \
     -ISDK/17.1.0_ddde560/components/softdevice/s112/headers \
     EPD/fm25q04b.c tests/test_fm25q04b_read.c
 run test_external_font_sources -I. -IEPD -IGUI -ISDK/17.1.0_ddde560/components/libraries/util \
     -ISDK/17.1.0_ddde560/components/softdevice/s112/headers \
-    -DGUI_USE_EXTERNAL_FONTS=1 -DGUI_INCLUDE_INTERNAL_FONTS=0 GUI/fonts.c tests/test_external_font_sources.c
+    -DGUI_USE_EXTERNAL_FONTS=1 -DGUI_INCLUDE_INTERNAL_FONTS=0 GUI/fonts.c GUI/font_geometry.c tests/test_external_font_sources.c
 run test_clock_layout -IGUI tests/test_clock_layout.c
+run test_todo_items -IEPD -IGUI GUI/todo_items.c GUI/font_geometry.c tests/test_todo_items.c
 run test_calendar_grid -IGUI tests/test_calendar_grid.c
 run test_clock_refresh_window -IGUI tests/test_clock_refresh_window.c
 run test_clock_text -IGUI tests/test_clock_text.c
@@ -76,21 +77,26 @@ run test_refresh_policy -IEPD -IGUI EPD/epd_refresh_policy.c tests/test_refresh_
 run test_clock_refresh -IEPD -IGUI -Itests/stubs EPD/epd_clock_refresh.c \
     tests/stubs/ui_resources_stub.c tests/test_clock_refresh.c
 run test_gui_render -IGUI -IEPD -Itests/stubs -Itools/test/host/shim \
-    GUI/GUI.c GUI/Adafruit_GFX.c GUI/u8g2_font.c GUI/Lunar.c GUI/calendar_annotations.c tests/stubs/calendar_resources_stub.c tests/stubs/ui_resources_stub.c \
+    GUI/GUI.c GUI/todo_items.c GUI/font_geometry.c tests/stubs/todo_resources_stub.c GUI/Adafruit_GFX.c GUI/u8g2_font.c GUI/Lunar.c GUI/calendar_annotations.c tests/stubs/calendar_resources_stub.c tests/stubs/ui_resources_stub.c \
     EPD/epd_clock_refresh.c tests/test_gui_render.c
 run test_gui_render_fixed -DGFX_FIXED_BWR_PANEL=1 -DGFX_FIXED_FONT_DIRECTION_0=1 \
     -DGUI_FIXED_PANEL_WIDTH=800 -DGUI_FIXED_PANEL_HEIGHT=480 \
     -IGUI -IEPD -Itests/stubs -Itools/test/host/shim \
-    GUI/GUI.c GUI/Adafruit_GFX.c GUI/u8g2_font.c GUI/Lunar.c GUI/calendar_annotations.c tests/stubs/calendar_resources_stub.c tests/stubs/ui_resources_stub.c \
+    GUI/GUI.c GUI/todo_items.c GUI/font_geometry.c tests/stubs/todo_resources_stub.c GUI/Adafruit_GFX.c GUI/u8g2_font.c GUI/Lunar.c GUI/calendar_annotations.c tests/stubs/calendar_resources_stub.c tests/stubs/ui_resources_stub.c \
     EPD/epd_clock_refresh.c tests/test_gui_render.c
 run test_uc8179 -IEPD -Itests/stubs -Itools/test/host/shim EPD/UC8179.c tests/uc8179_command_sequence_test.c
 
 if command -v node >/dev/null 2>&1; then
+    node --test tests/test_dfu_layout.cjs
     node --test tests/test_ble_lifecycle.cjs
     node --test tests/test_resource_web.cjs
     node --test tests/test_resource_builder.cjs
     node --test tests/test_font_builder.cjs
     node --test tests/test_font_sync.cjs
+    node --test tests/test_todo_calendar_web.cjs
+    node --test tests/test_todo_custom_fonts.cjs
+    node --test tests/test_todo_sync.cjs
+    node --test tests/test_paint_tools.cjs
     node --test tests/test_calendar_annotations_web.cjs
 else
     echo "Node.js unavailable; run node --test tests/test_ble_lifecycle.cjs separately."
@@ -105,5 +111,7 @@ python3 tests/test_service_lifecycle.py
 python3 tests/test_resources_reload.py
 python3 tests/test_dynamic_font.py
 python3 tests/test_gui_layout.py
+python3 tests/test_todo_integration.py
+python3 tests/test_todo_service_pipeline.py
 
 echo "HOST_OK"

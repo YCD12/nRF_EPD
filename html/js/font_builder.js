@@ -24,7 +24,7 @@
     return Array.from(header.subarray(2, 9));
   }
   function fontList(fonts) {
-    if (!Array.isArray(fonts) || fonts.length !== 3) fail('必须提供三个字体槽位');
+    if (!Array.isArray(fonts) || ![3, 4].includes(fonts.length)) fail('必须提供三个基础字体槽位和可选待办槽位');
     fonts.forEach((font, slot) => builder.validateFont(font, slot));
   }
   function readFont(bytes, slot) {
@@ -47,19 +47,55 @@
     return records;
   }
 
-  function gatherMissing(fonts, requests) {
+  function prepareRequests(inputFonts, requests) {
+    fontList(inputFonts);
+    if (!Array.isArray(requests)) fail('字体需求必须为数组');
+    const fonts = inputFonts.slice();
+    if (inputFonts.length === 4) fonts.customKey = inputFonts.customKey;
+    const custom = requests.filter(request => request?.slot === 3);
+    let rebuild = false;
+    if (custom.length) {
+      const { sourceSlot, fontFamily } = custom[0];
+      integer(sourceSlot, 0, 1, '待办基础字体槽位');
+      const extended = request => ['fontSize', 'fontBold', 'fontItalic'].some(name => Object.hasOwn(request, name));
+      const v3 = extended(custom[0]);
+      if (typeof fontFamily !== 'string' || (!v3 && !fontFamily.trim())) fail('待办字体名称无效');
+      const keyFor = request => extended(request)
+        ? builder.todoFontKey(request.fontFamily, request.fontSize, request.fontBold ?? false, request.fontItalic ?? false)
+        : builder.fontKey(request.fontFamily, request.sourceSlot);
+      const key = keyFor(custom[0]);
+      if (custom.some(request => request.sourceSlot !== sourceSlot || extended(request) !== v3 || keyFor(request) !== key))
+        fail('一次保存只能使用一种待办字体');
+      const geometry = v3 ? builder.todoFontGeometry(custom[0].fontSize).map(n => n & 255) : fonts[sourceSlot].subarray(9, 17);
+      rebuild = fonts.length !== 4 || fonts.customKey !== key ||
+        !fonts[3].subarray(9, 17).every((n, i) => n === geometry[i]);
+      if (rebuild) {
+        if (v3) {
+          // A separate header leaves the three device fonts byte-identical.
+          // Wide signed fields retain italic bearings and large advances.
+          const font = new Uint8Array(31);
+          font.set([1, 0, 4, 4, 7, 7, 8, 8, 8]); font.set(geometry, 9);
+          font[22] = 2; font.set([0, 4, 255, 255], 25); fonts[3] = font;
+        } else fonts[3] = fonts[sourceSlot].slice();
+      }
+      fonts.customKey = key;
+    }
+    return { fonts, rebuild, custom: custom[0] };
+  }
+  function gatherMissing(inputFonts, requests) {
+    const { fonts, rebuild } = prepareRequests(inputFonts, requests);
     fontList(fonts);
     if (!Array.isArray(requests)) fail('字体需求必须为数组');
     const present = fonts.map((font, slot) => builder.validateFont(font, slot)), missing = new Map();
     for (const request of requests) {
       if (!request || typeof request.text !== 'string') fail('字体需求必须包含文本 text');
-      const slot = integer(request.slot, 0, 2, '字体槽位');
+      const slot = integer(request.slot, 0, 3, '字体槽位');
       for (const char of request.text) {
         const code = char.codePointAt(0);
         if (code > 0xffff || (code >= 0xd800 && code <= 0xdfff))
           fail(`${label(code)} 不支持；设备仅支持 BMP 字符，不能使用 emoji 或代理项`);
         codePoint(code);
-        if (!present[slot].has(code)) missing.set(`${slot}:${code}`, { slot, codePoint: code });
+        if ((slot === 3 && rebuild) || !present[slot].has(code)) missing.set(`${slot}:${code}`, { slot, codePoint: code });
       }
     }
     return Array.from(missing.values()).sort((a, b) => a.slot - b.slot || a.codePoint - b.codePoint);
@@ -163,10 +199,21 @@
     builder.validateFont(bytes, slot); return bytes;
   }
 
-  function mergeFonts(incomingFonts, installedFonts) {
+  function mergeFonts(incomingFonts, installedFonts, options = {}) {
     fontList(incomingFonts); fontList(installedFonts);
     const fonts = incomingFonts.slice(), added = [];
-    for (let slot = 0; slot < 3; slot++) {
+    let customPreserved = false;
+    if (incomingFonts.length === 4) fonts.customKey = incomingFonts.customKey;
+    if (installedFonts.length === 4 && (fonts.length === 3 || options.preserveCustom)) {
+      customPreserved = fonts.length !== 4 || fonts.customKey !== installedFonts.customKey ||
+        fonts[3].length !== installedFonts[3].length || !fonts[3].every((n, i) => n === installedFonts[3][i]);
+      fonts[3] = installedFonts[3].slice(); fonts.customKey = installedFonts.customKey;
+      if (customPreserved)
+        for (const code of readFont(fonts[3], 3).keys()) added.push({ slot: 3, codePoint: code });
+    }
+    for (let slot = 0; slot < incomingFonts.length; slot++) {
+      if (slot === 3 && options.preserveCustom && installedFonts.length === 4) continue;
+      if (slot === 3 && (installedFonts.length !== 4 || incomingFonts.customKey !== installedFonts.customKey)) continue;
       const records = readFont(incomingFonts[slot], slot), installed = readFont(installedFonts[slot], slot), count = records.size;
       const sameBits = incomingFonts[slot].subarray(2, 9).every((n, i) => n === installedFonts[slot][i + 2]);
       for (const [code, record] of installed) {
@@ -179,14 +226,17 @@
       }
       if (records.size !== count) fonts[slot] = writeFont(incomingFonts[slot], records, slot);
     }
-    return { fonts, added };
+    return { fonts, added, customPreserved };
   }
 
   async function rasterizeGlyph(code, slot, header, options = {}) {
     codePoint(code); integer(slot, 0, 2, '字体槽位'); headerBits(header);
     const document = options.document || root.document;
     if (!document || !document.fonts || typeof document.fonts.load !== 'function') fail('浏览器不支持字体加载和 Canvas 字形生成');
-    const family = options.fontFamily || defaultFamily, size = sizes[slot], css = `${slot === 2 ? 'bold ' : ''}${size}px ${family}`, char = String.fromCodePoint(code);
+    const v3 = Object.hasOwn(options, 'fontSize');
+    if (v3) builder.todoFontKey(options.fontFamily ?? '', options.fontSize, options.fontBold ?? false, options.fontItalic ?? false);
+    const family = options.fontFamily || defaultFamily, size = v3 ? Math.ceil(options.fontSize * 4 / 3) : sizes[slot];
+    const css = `${v3 && options.fontItalic ? 'italic ' : ''}${v3 ? options.fontBold ? 'bold ' : '' : slot === 2 ? 'bold ' : ''}${size}px ${family}`, char = String.fromCodePoint(code);
     try { await document.fonts.load(css, char); await document.fonts.ready; }
     catch (error) { fail(`加载浏览器字体失败：${error.message || error}`); }
     const canvas = document.createElement('canvas'), side = size * 6, origin = size * 2;
@@ -205,6 +255,8 @@
       const width = right < left ? 0 : right - left + 1, height = bottom < top ? 0 : bottom - top + 1, pixels = new Uint8Array(width * height);
       for (let row = 0; row < height; row++) for (let col = 0; col < width; col++)
         pixels[row * width + col] = alpha[((top + row) * side + left + col) * 4 + 3] >= 128 ? 1 : 0;
+      if (width && (left === 0 || top === 0 || right === side - 1 || bottom === side - 1))
+        fail(`${label(code)} 超出字形画布，请更换字体`);
       return { width, height, x: width ? left - origin : 0, y: height ? origin - bottom - 1 : 0, advance: Math.round(context.measureText(text).width), pixels };
     }
     const glyph = render(char);
@@ -227,15 +279,19 @@
   }
 
   async function extendFonts(inputFonts, requests, options = {}) {
-    const missing = gatherMissing(inputFonts, requests), fonts = inputFonts.slice(), added = [], records = new Map();
+    const prepared = prepareRequests(inputFonts, requests);
+    const missing = gatherMissing(inputFonts, requests), fonts = prepared.fonts, added = [], records = new Map();
     const rasterize = options.rasterize || rasterizeGlyph;
     for (const request of missing) {
       const { slot, codePoint: code } = request;
-      if (!records.has(slot)) records.set(slot, readFont(inputFonts[slot], slot));
-      const glyph = await rasterize(code, slot, inputFonts[slot].slice(0, 23), options);
-      records.get(slot).set(code, encodeGlyph(inputFonts[slot], code, glyph)); added.push(request);
+      if (!records.has(slot)) records.set(slot, slot === 3 && prepared.rebuild ? new Map() : readFont(fonts[slot], slot));
+      const sourceSlot = slot === 3 ? prepared.custom.sourceSlot : slot;
+      const glyph = await rasterize(code, sourceSlot, fonts[slot].slice(0, 23),
+        slot === 3 ? { ...options, ...Object.fromEntries(['fontFamily', 'fontSize', 'fontBold', 'fontItalic']
+          .filter(name => Object.hasOwn(prepared.custom, name)).map(name => [name, prepared.custom[name]])) } : options);
+      records.get(slot).set(code, encodeGlyph(fonts[slot], code, glyph)); added.push(request);
     }
-    for (const [slot, glyphs] of records) fonts[slot] = writeFont(inputFonts[slot], glyphs, slot);
+    for (const [slot, glyphs] of records) fonts[slot] = writeFont(fonts[slot], glyphs, slot);
     return { fonts, added, missing };
   }
   const api = { gatherMissing, encodeGlyph, decodeGlyph, rasterizeGlyph, extendFonts, mergeFonts };

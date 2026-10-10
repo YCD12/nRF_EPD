@@ -71,6 +71,7 @@ static void resource_protocol_set_handler(void (*handler)(void), void *context)
 }
 static void annotations_store_applied(void) {}
 static void calendar_annotations_store_init(void) { store_inits++; }
+static bool todo_items_init(void) { return true; }
 static void calendar_annotations_store_on_applied(void (*callback)(void))
 {
     applied_callback = callback;
@@ -180,7 +181,7 @@ static void test_init(void)
      * not just the pin prefix, with the same rules used by config updates. */
     for (unsigned field = 0; field < 3U; field++) {
         reset_shims();
-        if (field == 0U) stored_config.display_mode = 4U;
+        if (field == 0U) stored_config.display_mode = 6U;
         if (field == 1U) stored_config.week_start = 7U;
         if (field == 2U) stored_config.model_id = 8U;
         assert(ble_epd_init(&p) == NRF_SUCCESS);
@@ -192,6 +193,12 @@ static void test_init(void)
     stored_config.model_id = 0xFFU; /* Documented default-panel alias is valid. */
     assert(ble_epd_init(&p) == NRF_SUCCESS);
     assert(!config_writes && p.config.model_id == 0xFFU && p.config.week_start == 1U);
+    for (uint8_t mode = 4U; mode <= 5U; mode++) {
+        reset_shims();
+        stored_config.display_mode = mode; /* Both persisted TODO modes remain valid. */
+        assert(ble_epd_init(&p) == NRF_SUCCESS);
+        assert(!config_writes && p.config.display_mode == mode && p.config.week_start == 1U);
+    }
 }
 
 static void test_notify(void)

@@ -15,6 +15,8 @@ static jmp_buf power_loss;
 static unsigned mutations, reads, depth, executions, sent;
 static unsigned watchdog_feeds;
 static int read_fail = -1;
+static size_t read_fail_prefix;
+static bool init_fail, probe_fail;
 static bool block_send;
 static uint8_t reply[RESOURCE_PACKET_MAX];
 static unsigned invalidations, activations, offline_requests;
@@ -39,13 +41,18 @@ static rs_result_t on_resource(void *context, resource_event_t event, uint16_t c
 void test_critical_enter(void) { ++depth; }
 void test_critical_exit(void) { assert(depth); --depth; }
 void app_feed_wdt(void) { ++watchdog_feeds; }
-ret_code_t fm25q04b_init(void) { return NRF_SUCCESS; }
-ret_code_t fm25q04b_probe(fm25q04b_jedec_id_t *id) { memset(id, 0, sizeof(*id)); return NRF_SUCCESS; }
+ret_code_t fm25q04b_init(void) { return init_fail ? NRF_ERROR_INTERNAL : NRF_SUCCESS; }
+ret_code_t fm25q04b_probe(fm25q04b_jedec_id_t *id)
+{ memset(id, 0, sizeof(*id)); return probe_fail ? NRF_ERROR_INTERNAL : NRF_SUCCESS; }
 ret_code_t fm25q04b_read(uint32_t at, void *p, size_t n)
 {
     assert(depth == 0 && at <= sizeof(flash) && n <= sizeof(flash) - at);
     ++reads;
-    if (read_fail == 0) return NRF_ERROR_INTERNAL;
+    if (read_fail == 0) {
+        size_t copied = read_fail_prefix < n ? read_fail_prefix : n;
+        memcpy(p, flash + at, copied);
+        return NRF_ERROR_INTERNAL;
+    }
     if (read_fail > 0) --read_fail;
     memcpy(p, flash + at, n);
     return NRF_SUCCESS;
@@ -530,6 +537,137 @@ static void test_large_protocol(void)
     resource_protocol_reset(); resource_protocol_set_data_limit(20);
 }
 
+static void expect_protocol_reply(const uint8_t *q, uint8_t n, rs_result_t status,
+                                  const uint8_t *body, uint8_t body_length, uint8_t dirty)
+{
+    uint8_t expected[RESOURCE_PACKET_MAX] = {0xA7, n > 1U ? q[1] : 0xFF,
+                                           n > 2U ? q[2] : 0, (uint8_t)status};
+    if (body_length) memcpy(expected + 4, body, body_length);
+    memset(reply, dirty, sizeof(reply));
+    uint8_t length = resource_protocol_execute(q, n, reply);
+    assert(length == 4U + body_length && !memcmp(reply, expected, length));
+}
+
+/* All transmitted bytes must be defined independently of the reply buffer's
+ * old contents. A partial failing raw read must not increase the reply length. */
+static void test_protocol_defined_replies(void)
+{
+    for (unsigned pass = 0U; pass < 2U; pass++) {
+        uint8_t dirty = pass ? 0x5A : 0xA5;
+        uint8_t q[RESOURCE_PACKET_MAX] = {0x26, 0xFF, 0x83};
+        uint8_t body[240] = {0};
+        resource_protocol_set_handler(NULL, NULL);
+        blank();
+        resource_protocol_set_data_limit(RESOURCE_PACKET_MAX);
+        for (uint8_t n = 0U; n < 3U; n++)
+            expect_protocol_reply(q, n, RS_INVALID, NULL, 0U, dirty);
+        expect_protocol_reply(q, 3U, RS_INVALID, NULL, 0U, dirty);
+        q[0] = 0x25;
+        expect_protocol_reply(q, 3U, RS_INVALID, NULL, 0U, dirty);
+        q[0] = 0x26; q[1] = 0U;
+        body[0] = RESOURCE_CAP_WRITE | RESOURCE_CAP_LARGE_PACKETS |
+                  RESOURCE_CAP_VERIFY | RESOURCE_CAP_BUFFERED_WRITE;
+        body[1] = RS_ABI;
+        resource_put_u32(body + 8, FM25Q04B_SIZE_BYTES);
+        expect_protocol_reply(q, 3U, RS_OK, body, 12U, dirty);
+        expect_protocol_reply(q, 4U, RS_INVALID, NULL, 0U, dirty);
+        q[1] = 1U; q[7] = 240U;
+        expect_protocol_reply(q, 8U, RS_OK, flash, 240U, dirty);
+        expect_protocol_reply(q, 7U, RS_INVALID, NULL, 0U, dirty);
+        q[7] = 0U;
+        expect_protocol_reply(q, 8U, RS_INVALID, NULL, 0U, dirty);
+        q[7] = 241U;
+        expect_protocol_reply(q, 8U, RS_INVALID, NULL, 0U, dirty);
+        q[7] = 16U; resource_put_u32(q + 3, UINT32_MAX);
+        expect_protocol_reply(q, 8U, RS_INVALID, NULL, 0U, dirty);
+        resource_put_u32(q + 3, FM25Q04B_SIZE_BYTES);
+        expect_protocol_reply(q, 8U, RS_INVALID, NULL, 0U, dirty);
+        resource_put_u32(q + 3, 0U);
+        read_fail = 0; read_fail_prefix = 3U;
+        expect_protocol_reply(q, 8U, RS_IO, NULL, 0U, dirty);
+        assert(!memcmp(reply + 4, flash, read_fail_prefix));
+        read_fail = -1; read_fail_prefix = 0U;
+        resource_protocol_reset(); init_fail = true;
+        expect_protocol_reply(q, 8U, RS_IO, NULL, 0U, dirty);
+        init_fail = false; probe_fail = true;
+        expect_protocol_reply(q, 8U, RS_IO, NULL, 0U, dirty);
+        probe_fail = false;
+
+        for (unsigned op = 2U; op <= 10U; op++) {
+            if (op != 2U && op != 3U && op != 4U && op != 10U) continue;
+            q[1] = (uint8_t)op;
+            expect_protocol_reply(q, 3U, RS_WRITE_PROTECTED, NULL, 0U, dirty);
+        }
+        q[1] = 9U; q[3] = 99U;
+        expect_protocol_reply(q, 4U, RS_NOT_FOUND, NULL, 0U, dirty);
+        q[1] = 6U; memcpy(q + 3, "BAD1", 4U);
+        expect_protocol_reply(q, 7U, RS_INVALID, NULL, 0U, dirty);
+        memcpy(q + 3, "MIG1", 4U);
+        expect_protocol_reply(q, 7U, RS_OK, NULL, 0U, dirty);
+        uint8_t data[] = {42U, 43U, 44U, 45U, 46U};
+        q[1] = 2U; q[3] = 2U;
+        resource_put_u32(q + 4, sizeof(data));
+        resource_put_u32(q + 8, crc(data, sizeof(data)));
+        resource_put_u32(q + 12, 17U);
+        expect_protocol_reply(q, 15U, RS_INVALID, NULL, 0U, dirty);
+        expect_protocol_reply(q, 16U, RS_OK, NULL, 0U, dirty);
+        expect_protocol_reply(q, 16U, RS_BUSY, NULL, 0U, dirty);
+        q[1] = 9U;
+        expect_protocol_reply(q, 4U, RS_BUSY, NULL, 0U, dirty);
+        q[1] = 3U; resource_put_u32(q + 3, 0U); memcpy(q + 7, data, sizeof(data));
+        expect_protocol_reply(q, 12U, RS_OK, NULL, 0U, dirty);
+        q[1] = 10U;
+        resource_put_u32(body, sizeof(data)); resource_put_u32(body + 4, sizeof(data));
+        expect_protocol_reply(q, 12U, RS_INVALID, body, 8U, dirty);
+        q[1] = 4U; read_fail = 0;
+        expect_protocol_reply(q, 3U, RS_IO, NULL, 0U, dirty);
+        read_fail = -1;
+        expect_protocol_reply(q, 3U, RS_OK, NULL, 0U, dirty);
+        q[1] = 9U; q[3] = 2U;
+        resource_put_u32(body, 17U); resource_put_u32(body + 4, sizeof(data));
+        resource_put_u32(body + 8, crc(data, sizeof(data)));
+        expect_protocol_reply(q, 4U, RS_OK, body, 12U, dirty);
+        read_fail = 0;
+        expect_protocol_reply(q, 4U, RS_IO, NULL, 0U, dirty);
+        read_fail = -1;
+
+        q[1] = 2U; q[3] = 2U;
+        resource_put_u32(q + 4, sizeof(data));
+        resource_put_u32(q + 8, crc(data, sizeof(data)));
+        resource_put_u32(q + 12, 18U);
+        expect_protocol_reply(q, 16U, RS_OK, NULL, 0U, dirty);
+        q[1] = 10U; resource_put_u32(q + 3, 0U); memcpy(q + 7, data, 2U);
+        resource_put_u32(body, 2U); resource_put_u32(body + 4, 0U);
+        expect_protocol_reply(q, 9U, RS_OK, body, 8U, dirty);
+        resource_put_u32(q + 3, 4U);
+        expect_protocol_reply(q, 9U, RS_INVALID, body, 8U, dirty);
+        resource_put_u32(q + 3, 2U); memcpy(q + 7, data + 2, 3U);
+        resource_put_u32(body, sizeof(data)); resource_put_u32(body + 4, sizeof(data));
+        expect_protocol_reply(q, 10U, RS_OK, body, 8U, dirty);
+        q[1] = 4U;
+        expect_protocol_reply(q, 3U, RS_OK, NULL, 0U, dirty);
+        q[1] = 9U; q[3] = 2U; flash[4096U + RS_HEADER_SIZE] ^= 1U;
+        expect_protocol_reply(q, 4U, RS_CRC, NULL, 0U, dirty);
+        q[1] = 5U;
+        expect_protocol_reply(q, 3U, RS_OK, NULL, 0U, dirty);
+        q[1] = 7U;
+        expect_protocol_reply(q, 3U, RS_OK, NULL, 0U, dirty);
+        q[1] = 8U;
+        expect_protocol_reply(q, 3U, RS_INVALID, NULL, 0U, dirty);
+        resource_protocol_set_handler(on_resource, &reply); entry_busy = true;
+        expect_protocol_reply(q, 3U, RS_BUSY, NULL, 0U, dirty);
+        entry_busy = false; activation_result = RS_INVALID;
+        expect_protocol_reply(q, 3U, RS_INVALID, NULL, 0U, dirty);
+        activation_result = RS_OK;
+        expect_protocol_reply(q, 3U, RS_OK, NULL, 0U, dirty);
+        assert(!resource_protocol_entered());
+        resource_protocol_set_handler(NULL, NULL);
+        resource_protocol_reset();
+    }
+    resource_protocol_set_data_limit(20U);
+    puts("protocol replies: exact transmitted bytes with dirty buffers, IO errors and partial raw reads OK");
+}
+
 int main(void)
 {
     assert(crc((const uint8_t *)"123456789", 9) == 0xCBF43926UL);
@@ -547,6 +685,7 @@ int main(void)
     test_flash_crc();
     test_buffered_pages();
     test_large_protocol();
+    test_protocol_defined_replies();
     puts("resource store: boundaries, CRC, power loss, repair, retries, cache refill/invalidation and relocation OK");
     return 0;
 }

@@ -126,6 +126,11 @@ static void u8g2_draw_placeholder(u8g2_font_t* u8g2, int16_t x, int16_t y) {
 static uint8_t u8g2_font_read_byte(u8g2_font_t* u8g2, uint32_t offset) {
     u8g2_font_source_t* source = &u8g2->font_source;
 
+    if (u8g2->font_stop_after_io && u8g2->font_frame_io_error) {
+        u8g2->font_read_error = 1U;
+        return 0;
+    }
+
     if (source->read == NULL) {
         if (source->data == NULL) {
             u8g2->font_read_error = 1;
@@ -157,6 +162,7 @@ static uint8_t u8g2_font_read_byte(u8g2_font_t* u8g2, uint32_t offset) {
         if (ret != 0) {
             u8g2_font_cache_reset(u8g2);
             u8g2->font_read_error = 1;
+            u8g2->font_frame_io_error = 1U;
             return 0;
         }
 

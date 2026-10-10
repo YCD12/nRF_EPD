@@ -1,4 +1,5 @@
 # =============================================================================
+APPLICATION_MAKEFILE := $(lastword $(MAKEFILE_LIST))
 # 工具链配置
 #   tools/gcc       → symlink 到打包的 arm-none-eabi-gcc 9.3.1
 #   tools/nrf-tools → symlink 到打包的 nrf-command-line-tools（mergehex/nrfjprog）
@@ -23,8 +24,8 @@ SDK_ROOT := $(PROJ_DIR)/SDK/17.1.0_ddde560
 
 # =============================================================================
 # 调试选项：启用 RTT View 或 BLE 日志重定向
-#   USE_RTT ?= 1 : 编译并使用原生的 SEGGER RTT View 输出日志 (此时会超 56KB 空间，仅用于调试)
-#   USE_RTT ?= 0 : 默认值，不包含 RTT 模块 (在 56KB 内)
+#   USE_RTT ?= 1 : 编译并使用原生的 SEGGER RTT View 输出日志 (需检查 56 KiB 生产空间预算)
+#   USE_RTT ?= 0 : 默认值，不包含 RTT 模块
 #   USE_BLE_LOG ?= 1 : 开启轻量级 BLE 日志重定向输出 (默认不开启以优化 Flash/RAM)
 # =============================================================================
 USE_RTT ?= 0
@@ -42,11 +43,13 @@ USE_RTT := 1
 endif
 
 ifeq ($(DEBUG_LAYOUT),1)
+APPLICATION_LINKER_SCRIPT := $(SDK_ROOT)/gcc_nrf52_debug.ld
 $(OUTPUT_DIRECTORY)/nrf52811_xxaa.out: \
-  LINKER_SCRIPT  := $(SDK_ROOT)/gcc_nrf52_debug.ld
+  LINKER_SCRIPT  := $(APPLICATION_LINKER_SCRIPT)
 else
+APPLICATION_LINKER_SCRIPT := $(SDK_ROOT)/gcc_nrf52.ld
 $(OUTPUT_DIRECTORY)/nrf52811_xxaa.out: \
-  LINKER_SCRIPT  := $(SDK_ROOT)/gcc_nrf52.ld
+  LINKER_SCRIPT  := $(APPLICATION_LINKER_SCRIPT)
 endif
 
 # =============================================================================
@@ -117,8 +120,10 @@ SRC_FILES += \
   $(PROJ_DIR)/GUI/calendar_resources.c \
   $(PROJ_DIR)/GUI/ui_resources.c \
   $(PROJ_DIR)/GUI/calendar_annotations.c \
+  $(PROJ_DIR)/GUI/todo_items.c \
   $(PROJ_DIR)/GUI/Lunar.c \
   $(PROJ_DIR)/GUI/fonts.c \
+  $(PROJ_DIR)/GUI/font_geometry.c \
   $(PROJ_DIR)/GUI/Adafruit_GFX.c \
   $(PROJ_DIR)/GUI/u8g2_font.c
 
@@ -224,6 +229,8 @@ CFLAGS += -DGFX_FIXED_FONT_DIRECTION_0=$(GFX_FIXED_FONT_DIRECTION_0)
 CFLAGS += -DGUI_FIXED_PANEL_WIDTH=$(GUI_FIXED_PANEL_WIDTH)
 CFLAGS += -DGUI_FIXED_PANEL_HEIGHT=$(GUI_FIXED_PANEL_HEIGHT)
 CFLAGS += -DCALENDAR_ANNOTATIONS_USE_NRF_CRITICAL=1
+# Persistent application records use external Flash; leave SDK defaults intact.
+CFLAGS += -DFDS_ENABLED=0 -DNRF_FSTORAGE_ENABLED=0
 ifeq ($(USE_SYSVIEW),1)
 CFLAGS += -DUSE_SYSVIEW
 endif
@@ -302,10 +309,10 @@ LDFLAGS += -Wl,-u,SPIM0_SPIS0_SPI0_IRQHandler
 LDFLAGS += -Wl,-u,TWIM0_TWIS0_TWI0_SPIM1_SPIS1_SPI1_IRQHandler
 
 # 与 Keil 工程一致：HEAP=0（帧缓冲由静态 s_gfx_buffer 承担），STACK=2048
-nrf52811_xxaa: CFLAGS += -D__HEAP_SIZE=0
-nrf52811_xxaa: CFLAGS += -D__STACK_SIZE=2048
-nrf52811_xxaa: ASMFLAGS += -D__HEAP_SIZE=0
-nrf52811_xxaa: ASMFLAGS += -D__STACK_SIZE=2048
+CFLAGS += -D__HEAP_SIZE=0
+CFLAGS += -D__STACK_SIZE=2048
+ASMFLAGS += -D__HEAP_SIZE=0
+ASMFLAGS += -D__STACK_SIZE=2048
 
 $(OUTPUT_DIRECTORY)/nrf52811_xxaa/ble_dfu.c.o: CFLAGS += -fno-lto
 $(OUTPUT_DIRECTORY)/nrf52811_xxaa/ble_dfu_unbonded.c.o: CFLAGS += -fno-lto
@@ -323,8 +330,35 @@ LIB_FILES += -lc -lnosys -lm
 TEMPLATE_PATH := $(SDK_ROOT)/components/toolchain/gcc
 
 include $(TEMPLATE_PATH)/Makefile.common
+MK := mkdir -p
 
 $(foreach target, $(TARGETS), $(call define_target, $(target)))
+
+# Track this entry point and effective options instead of relying on the SDK's
+# unrelated root Makefile prerequisite. Preserve object/linker input separation.
+APPLICATION_PREFIX := $(OUTPUT_DIRECTORY)/nrf52811_xxaa
+APPLICATION_OBJECTS := $(foreach src,$(SRC_FILES),$(call get_object_file_name,$(TARGETS),$(src)))
+APPLICATION_OPTIONS := $(APPLICATION_PREFIX).build-options
+APPLICATION_LINKER_FILES := $(APPLICATION_LINKER_SCRIPT) $(SDK_ROOT)/modules/nrfx/mdk/nrf_common.ld
+APPLICATION_BUILD_FILES := $(APPLICATION_MAKEFILE) $(APPLICATION_LINKER_FILES) $(APPLICATION_OPTIONS)
+APPLICATION_EFFECTIVE_OPTIONS = $(CC)|$(CFLAGS)|$(CXXFLAGS)|$(ASMFLAGS)|$(LDFLAGS)|$(SRC_FILES)|$(INC_FOLDERS)|$(LIB_FILES)
+
+.PHONY: application_options_force
+application_options_force:
+$(APPLICATION_OPTIONS): application_options_force | $(OUTPUT_DIRECTORY)
+	+$(NO_ECHO)$(call dump,$(APPLICATION_EFFECTIVE_OPTIONS)) > $@.tmp
+	$(NO_ECHO)if ! cmp -s $@.tmp $@; then mv $@.tmp $@; else rm $@.tmp; fi
+
+$(APPLICATION_OBJECTS): $(APPLICATION_MAKEFILE) $(APPLICATION_OPTIONS)
+# The SDK's paired .S.o/.s.o.o rule otherwise rebuilds an unused peer each time.
+$(filter %.S.o,$(APPLICATION_OBJECTS)):
+	$(call run,$(CC) -x assembler-with-cpp,$(ASMFLAGS),Assembling)
+$(APPLICATION_PREFIX).out: $(APPLICATION_BUILD_FILES)
+ifeq ($(PASS_LINKER_INPUT_VIA_FILE),1)
+GENERATE_LD_INPUT_FILE = $(call dump,$(filter %.o,$^) $(LIB_FILES)) > $(@:.out=.in)
+else
+LD_INPUT = $(filter %.o,$^) $(LIB_FILES)
+endif
 
 # Run even for an incremental build. Debug images use a different partition.
 ifeq ($(OS),Windows_NT)
@@ -348,7 +382,8 @@ default: build
 
 SOFTDEVICE_HEX := $(SDK_ROOT)/components/softdevice/s112/hex/s112_nrf52_7.3.0_softdevice.hex
 KEIL_BOOTLOADER_HEX := $(PROJ_DIR)/Keil/_build_DFU52/bl_nrf52811_xxaa_s112.hex
-TOOLS_BOOTLOADER_HEX := $(TOOLS_DIR)/bootloader/bl_nrf52811_xxaa_s112.hex
+GCC_BOOTLOADER_HEX := $(PROJ_DIR)/output/bootloader-8k/bl_nrf52811_xxaa_s112_8k.hex
+TOOLS_BOOTLOADER_HEX := $(TOOLS_DIR)/bootloader/bl_nrf52811_xxaa_s112_8k.hex
 FIRMWARE_PREFIX := $(OUTPUT_DIRECTORY)/nrf52811_xxaa
 NRFUTIL ?= nrfutil
 MERGEHEX ?= mergehex
@@ -372,8 +407,10 @@ build: firmware
 merge_full: $(FIRMWARE_PREFIX).hex
 	@test -f "$(SOFTDEVICE_HEX)" || { echo "Error: SoftDevice HEX was not found: $(SOFTDEVICE_HEX)"; exit 1; }
 	@bootloader="$(KEIL_BOOTLOADER_HEX)"; \
+	if [ ! -f "$$bootloader" ]; then bootloader="$(GCC_BOOTLOADER_HEX)"; fi; \
 	if [ ! -f "$$bootloader" ]; then bootloader="$(TOOLS_BOOTLOADER_HEX)"; fi; \
 	if [ ! -f "$$bootloader" ]; then echo "Error: Bootloader HEX was not found."; exit 1; fi; \
+	$(BUILD_PYTHON) "$(TOOLS_DIR)/dfu_release.py" --audit-only --application "$(FIRMWARE_PREFIX).hex" --bootloader "$$bootloader" --softdevice "$(SOFTDEVICE_HEX)" || exit 1; \
 	command -v "$(NRFUTIL)" >/dev/null 2>&1 || { echo "Error: nrfutil was not found. Install legacy Nordic nrfutil and add it to PATH."; exit 1; }; \
 	command -v "$(MERGEHEX)" >/dev/null 2>&1 || { echo "Error: mergehex was not found. Install Nordic nRF Command Line Tools and add it to PATH."; exit 1; }; \
 	echo "========================================="; \
@@ -404,7 +441,9 @@ clean:
 	@echo "=== Cleaning ==="
 	$(RM) $(OUTPUT_DIRECTORY)
 
-rebuild: clean build
+rebuild:
+	+$(MAKE) -f $(APPLICATION_MAKEFILE) --no-print-directory clean
+	+$(MAKE) -f $(APPLICATION_MAKEFILE) --no-print-directory build
 
 size: $(OUTPUT_DIRECTORY)/nrf52811_xxaa.out
 	@$(GNU_INSTALL_ROOT)arm-none-eabi-size $(OUTPUT_DIRECTORY)/nrf52811_xxaa.out

@@ -1,8 +1,11 @@
+import base64
 import copy
 import importlib.util
 import json
 from pathlib import Path
 import struct
+import subprocess
+import sys
 import tempfile
 import unittest
 import zlib
@@ -18,19 +21,56 @@ class ResourcePackTests(unittest.TestCase):
         layout = pack.load_layout()
         pack.generate(layout, check=True)
         self.assertEqual(sum(p['size_bytes'] for p in layout['partitions']), 524288)
-        self.assertEqual(len(pack.table_payload(layout)), 128)
+        self.assertEqual(len(pack.table_payload(layout)), 144)
+
+    def test_todo_partition_keeps_existing_resource_offsets(self):
+        layout = pack.load_layout()
+        by_id = {p['id']: p for p in layout['partitions']}
+        original = {2: (0x01000, 4096), 3: (0x02000, 4096),
+                    4: (0x03000, 4096), 5: (0x04000, 16384),
+                    6: (0x08000, 65536), 7: (0x18000, 262144)}
+        for part_id, geometry in original.items():
+            self.assertEqual((int(by_id[part_id]['offset'], 0), by_id[part_id]['size_bytes']), geometry)
+        self.assertEqual([p['id'] for p in layout['partitions']], [1, 2, 3, 4, 5, 6, 7, 9, 8])
+        self.assertEqual(struct.unpack_from('<HHIIHH', pack.table_payload(layout), 7 * 16),
+                         (9, 9, 0x58000, 4096, 1, 0))
+        self.assertEqual((int(by_id[8]['offset'], 0), by_id[8]['size_bytes']), (0x59000, 159744))
 
     def test_wire_header(self):
         payload = pack.table_payload(pack.load_layout())
         image = pack.package(1, payload, 19)
         words = struct.unpack('<8I', image[:32])
-        self.assertEqual(words[:4], (pack.MAGIC, 0x10001, 19, 128))
+        self.assertEqual(words[:4], (pack.MAGIC, 0x10001, 19, 144))
         self.assertEqual(words[4], zlib.crc32(payload))
         self.assertEqual(words[6], zlib.crc32(image[:24]))
         self.assertEqual(words[7], pack.COMMIT)
-        stamp = struct.unpack('<3I', image[32 + 128:])
+        stamp = struct.unpack('<3I', image[32 + len(payload):])
         self.assertEqual(stamp[0], pack.STAMP_MAGIC)
-        self.assertEqual(stamp[2], zlib.crc32(image[32 + 128:32 + 128 + 8]))
+        self.assertEqual(stamp[2], zlib.crc32(image[32 + len(payload):32 + len(payload) + 8]))
+
+    def test_default_todo_wire_payload_and_cli_package(self):
+        payload = pack.todo_payload()
+        self.assertEqual(payload, b'TODO\x01\x50\x00\x00\x05\x0c' + bytes(6))
+        with tempfile.TemporaryDirectory() as directory:
+            result = subprocess.run([sys.executable, str(ROOT / 'tools/resource_pack.py'),
+                                     '--check', '--todo', '--output', directory],
+                                    capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            image = (Path(directory) / 'todo.ers').read_bytes()
+            words = struct.unpack_from('<8I', image)
+            self.assertEqual(words[:4], (pack.MAGIC, 0x10009, pack.MODULE_VERSIONS[9], 16))
+            self.assertEqual(image[32:48], payload)
+            self.assertEqual(words[4], zlib.crc32(payload))
+            self.assertEqual(words[6], zlib.crc32(image[:24]))
+            self.assertEqual(words[7], pack.COMMIT)
+            self.assertEqual(json.loads((Path(directory) / 'todo.json').read_text())['display_limit'], 5)
+
+    def test_browser_default_project_includes_todo_and_new_table(self):
+        project = json.loads((ROOT / 'html/resources/default-project.json').read_text(encoding='utf-8'))
+        files = {row['name']: base64.b64decode(row['base64']) for row in project['files']}
+        self.assertEqual(files['todo.ers'], pack.package(9, pack.todo_payload(), pack.MODULE_VERSIONS[9], 0))
+        table = pack.table_payload(pack.load_layout())
+        self.assertEqual(files['partition-table.ers'], pack.package(1, table, pack.MODULE_VERSIONS[1], 0))
 
     def test_font_payload_uses_validated_three_slot_directory(self):
         payload, records = pack.font_payload(ROOT / 'tools/dist')

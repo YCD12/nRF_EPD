@@ -10,6 +10,7 @@
 #include "clock_text.h"
 #include "fonts.h"
 #include "ui_resources.h"
+#include "todo_items.h"
 
 // 计算数组元素个数的宏定义
 #define ARRAY_SIZE(arr) (sizeof(arr) / sizeof((arr)[0]))
@@ -32,6 +33,9 @@
  * worker's stack frame and a nested clock-only refresh frame. GFX_begin resets
  * this context before every render, including external-font revision state. */
 static Adafruit_GFX m_gui_gfx;
+static bool s_todo_render_valid;
+
+bool GUI_TodoRenderValid(void) { return s_todo_render_valid; }
 
 /* Page culling is independent of the external layout's decorative lines. */
 static bool gui_page_hits(const Adafruit_GFX *gfx, int32_t top, int32_t bottom)
@@ -64,11 +68,15 @@ static u8g2_font_placeholder_t gui_font_placeholder(gui_font_id_t font_id)
     return metrics != NULL ? *metrics : (u8g2_font_placeholder_t){0};
 }
 
-/* Select one of the three fixed font slots.  External fonts keep a fixed
+/* Select a fixed font slot or the optional TODO font. External fonts keep a fixed
  * placeholder geometry so a deleted or incomplete glyph never collapses the
  * layout. */
 static void gui_set_font(Adafruit_GFX* gfx, gui_font_id_t font_id)
 {
+#if !GUI_USE_EXTERNAL_FONTS
+    if (font_id == GUI_FONT_TODO)
+        font_id = todo_items_font_size() == 9U ? GUI_FONT_WQY9 : GUI_FONT_WQY12;
+#endif
     u8g2_font_placeholder_t placeholder = gui_font_placeholder(font_id);
 #if GUI_USE_EXTERNAL_FONTS
     const u8g2_font_source_t* source = GUI_GetExternalFont(font_id);
@@ -864,8 +872,255 @@ static void DrawJieqiRight(Adafruit_GFX* gfx, const tm_t* tm,
     }
 }
 
+/* TODO text has a smaller writable area than the complete page buffer. Clip
+ * font scanlines too: generated glyph offsets and narrow custom UI panes must
+ * never overwrite another row, the split calendar, or the footer. Rendering
+ * is serial, like m_gui_gfx, so this costs no nested stack context. */
+static struct {
+    void (*forward)(u8g2_font_t *, int16_t, int16_t, int16_t, uint8_t, uint16_t);
+    int16_t left, right, top, bottom;
+} m_todo_clip;
+
+static void todo_clip_line(u8g2_font_t *font, int16_t x, int16_t y,
+                           int16_t length, uint8_t direction, uint16_t color)
+{
+#if !GFX_FIXED_FONT_DIRECTION_0
+    if (direction == 2U) { x -= length - 1; direction = 0U; }
+    if (direction == 3U) { y -= length - 1; direction = 1U; }
+#endif
+    if (direction == 0U) {
+        if (y < m_todo_clip.top || y >= m_todo_clip.bottom) return;
+        if (x < m_todo_clip.left) { length -= m_todo_clip.left - x; x = m_todo_clip.left; }
+        if ((int32_t)x + length > m_todo_clip.right) length = m_todo_clip.right - x;
+    } else {
+        if (x < m_todo_clip.left || x >= m_todo_clip.right) return;
+        if (y < m_todo_clip.top) { length -= m_todo_clip.top - y; y = m_todo_clip.top; }
+        if ((int32_t)y + length > m_todo_clip.bottom) length = m_todo_clip.bottom - y;
+    }
+    if (length > 0) m_todo_clip.forward(font, x, y, length, direction, color);
+}
+
+/* Measure the furthest painted pixel, including placeholder glyphs and the
+ * actual advances between letters. Separately adding the widths of a title
+ * and its ellipsis loses the final title glyph's trailing advance. */
+static int16_t todo_text_extent(Adafruit_GFX *gfx, const char *text, int16_t *left)
+{
+    int16_t cursor = 0, right = 0;
+    if (left != NULL) *left = 0;
+    while (*text != '\0') {
+        const uint8_t *bytes = (const uint8_t *)text;
+        uint16_t code = bytes[0];
+        unsigned length = code < 0x80U ? 1U : code < 0xE0U ? 2U : 3U;
+        if (length == 2U) code = ((code & 0x1FU) << 6) | (bytes[1] & 0x3FU);
+        if (length == 3U) code = ((code & 0x0FU) << 12) | ((bytes[1] & 0x3FU) << 6) | (bytes[2] & 0x3FU);
+        int8_t advance = 0;
+        int16_t edge = cursor;
+        int16_t start = cursor;
+        if (u8g2_GetGlyphWidthIfPresent(&gfx->u8g2, code, &advance)) {
+            if (gfx->u8g2.font_decode.glyph_width != 0U) {
+                start += gfx->u8g2.glyph_x_offset;
+                edge += gfx->u8g2.glyph_x_offset + gfx->u8g2.font_decode.glyph_width;
+            }
+        } else if (code != ' ' && gfx->u8g2.placeholder_enabled) {
+            start += gfx->u8g2.placeholder.x_offset;
+            edge += gfx->u8g2.placeholder.x_offset + gfx->u8g2.placeholder.max_char_width;
+            advance = gfx->u8g2.placeholder.advance;
+        }
+        if (edge > right) right = edge;
+        if (left != NULL && start < *left) *left = start;
+        cursor += advance;
+        text += length;
+    }
+    return right;
+}
+
+static int16_t todo_text_width(Adafruit_GFX *gfx, const char *text)
+{
+    return todo_text_extent(gfx, text, NULL);
+}
+
+/* Draw a bounded UTF-8 line, wrapping at glyph boundaries. The final line
+ * reserves space for an ellipsis when the title is wider than the pane. */
+static void DrawTodoText(Adafruit_GFX *gfx, const char **cursor, int16_t width,
+                         bool last_line, bool strike)
+{
+    char line[TODO_ITEMS_TEXT_MAX + 4U];
+    size_t length = 0U;
+    const char *text = *cursor;
+    const char *draw = text;
+    if (width <= 0) return;
+    if (todo_text_width(gfx, text) <= width) {
+        *cursor = text + strlen(text);
+        goto draw_line;
+    }
+    const char *dots = last_line ? "..." : "";
+    while (*dots != '\0' && todo_text_width(gfx, dots) > width) dots++;
+    while (*text != '\0') {
+        unsigned char first = (unsigned char)*text;
+        size_t bytes = first < 0x80U ? 1U : (first < 0xE0U ? 2U : 3U);
+        if (length + bytes > TODO_ITEMS_TEXT_MAX) break;
+        for (size_t i = 0U; i < bytes; ++i) line[length + i] = text[i];
+        clock_text_append(line, sizeof(line), length + bytes, dots);
+        if (todo_text_width(gfx, line) > width) break;
+        length += bytes;
+        text += bytes;
+    }
+    clock_text_append(line, sizeof(line), length, dots);
+    *cursor = text;
+    draw = line;
+draw_line:
+    /* Selecting an external font resets its transparency. Preserve the
+     * overlapping bearings of adjacent italic glyphs on the white canvas. */
+    GFX_setFontMode(gfx, 1U);
+    int16_t origin_x = gfx->tx, origin_y = gfx->ty;
+    GFX_puts(gfx, draw);
+    if (strike) {
+        int16_t left;
+        int16_t end = origin_x + todo_text_extent(gfx, draw, &left);
+        int16_t start = origin_x + left;
+        int16_t y = origin_y - gfx->u8g2.font_info.ascent_A / 2;
+        if (start < m_todo_clip.left) start = m_todo_clip.left;
+        if (end > m_todo_clip.right) end = m_todo_clip.right;
+        if (y >= m_todo_clip.top && y < m_todo_clip.bottom && end > start)
+            GFX_drawFastHLine(gfx, start, y, end - start, GFX_BLACK);
+    }
+}
+
+/* TODO owns its pane from title to final row. Clock date/status components
+ * deliberately do not constrain this layout or reduce the selected count. */
+static void DrawTodo(Adafruit_GFX *gfx, const gui_data_t *data)
+{
+    todo_selection_t selection;
+    const int16_t x = 23, first_y = 62, bottom = GUI_HEIGHT(data) - 30;
+    int16_t right = data->mode == MODE_TODO ? GUI_WIDTH(data) - 25 : 367;
+    const ui_component_t *calendar = ui_resource_component(UI_COMP_SPLIT_GRID);
+    if (data->mode == MODE_TODO_CALENDAR && calendar != NULL && right > calendar->x - 10)
+        right = calendar->x - 10;
+    const int16_t width = right - x - 14;
+    if (width < 1 || bottom - first_y < 24) {
+        todo_items_suspend_display();
+        s_todo_render_valid = false;
+        return;
+    }
+    m_todo_clip.forward = gfx->u8g2.draw_hv_line;
+    m_todo_clip.left = x; m_todo_clip.right = right;
+    m_todo_clip.top = 12; m_todo_clip.bottom = bottom;
+    gfx->u8g2.draw_hv_line = todo_clip_line;
+    gui_set_font(gfx, GUI_FONT_WQY9);
+    GFX_setTextColor(gfx, GFX_BLACK, GFX_WHITE);
+    /* Share the calendar frame geometry; split mode draws one continuous line. */
+    if (data->mode == MODE_TODO) {
+        const ui_component_t *top = ui_resource_component(UI_COMP_SPLIT_FRAME_TOP);
+        if (top) GFX_fillRect(gfx, top->x, top->y, top->w, top->h, GFX_BLACK);
+    }
+    char temperature[9];
+    gui_format_int(temperature, sizeof(temperature), data->temperature, 1U);
+    const ui_component_t *calendar_header = ui_resource_component(UI_COMP_CAL_HEADER);
+    gui_font_id_t temp_number_font = calendar_header ? (gui_font_id_t)calendar_header->font_primary : GUI_FONT_HELVB18;
+    gui_font_id_t temp_unit_font = calendar_header ? (gui_font_id_t)calendar_header->font_secondary : GUI_FONT_WQY12;
+    int16_t heading_width = right - x;
+    gui_set_font(gfx, temp_number_font);
+    int16_t number_advance = 0;
+    for (const char *digit = temperature; *digit != '\0'; ++digit) {
+        int8_t advance = 0;
+        if (!u8g2_GetGlyphWidthIfPresent(&gfx->u8g2, (uint8_t)*digit, &advance))
+            advance = gfx->u8g2.placeholder.advance;
+        number_advance += advance;
+    }
+    gui_set_font(gfx, temp_unit_font);
+    int16_t temp_width = number_advance + todo_text_width(gfx, "℃");
+    if (temp_width + 8 < heading_width) {
+        GFX_setCursor(gfx, right - temp_width, 36);
+        gui_set_font(gfx, temp_number_font);
+        GFX_puts(gfx, temperature);
+        gui_set_font(gfx, temp_unit_font);
+        GFX_puts(gfx, "℃");
+        heading_width -= temp_width + 8;
+    }
+    gui_set_font(gfx, GUI_FONT_WQY9);
+    GFX_setCursor(gfx, x, 36);
+    const char *cursor;
+    const gui_font_id_t font = (gui_font_id_t)todo_items_font_slot();
+    if (font == GUI_FONT_TODO &&
+        !GUI_TodoFontMatches(todo_items_font_size(), todo_items_font_key()))
+        todo_items_suspend_display();
+    if (!todo_items_select(data->timestamp, &selection)) {
+        s_todo_render_valid = false;
+        cursor = "TODO DATA ERROR";
+        DrawTodoText(gfx, &cursor, heading_width, true, false);
+        goto finish;
+    }
+    char heading[16] = "TODO ";
+    size_t heading_pos = clock_text_append_u8(heading, sizeof(heading), 5U, selection.count);
+    heading_pos = clock_text_append(heading, sizeof(heading), heading_pos, "/");
+    clock_text_append_u8(heading, sizeof(heading), heading_pos, selection.daily_count);
+    cursor = heading;
+    DrawTodoText(gfx, &cursor, heading_width, true, false);
+    if (selection.count == 0U) {
+        GFX_setCursor(gfx, x, first_y + 20);
+        cursor = "NO ACTIVE TASKS";
+        DrawTodoText(gfx, &cursor, right - x, true, false);
+        goto finish;
+    }
+    const int16_t row_height = (bottom - first_y - 4) / todo_items_display_limit();
+    const gui_font_metrics_t *metrics = GUI_GetFontMetrics(font);
+    int16_t descent = metrics != NULL ? metrics->max_char_height - metrics->ascent : 5;
+    if (metrics != NULL && descent < -metrics->y_offset) descent = -metrics->y_offset;
+    const bool extended = todo_items_extended_font();
+    int16_t text_x = x + 14;
+    int16_t text_width = width;
+    int16_t first_baseline = 15, line_step = 18;
+    bool two_lines;
+    if (extended) {
+        if (metrics == NULL || row_height < metrics->max_char_height + 6) {
+            todo_items_suspend_display();
+            s_todo_render_valid = false;
+            goto finish;
+        }
+        /* Reserve the complete italic bearing on the first glyph as well as
+         * its ascent/descent. Larger glyphs must not overlap the next row. */
+        if (metrics->x_offset < 0) text_x -= metrics->x_offset;
+        text_width = right - text_x;
+        first_baseline = metrics->ascent + 3;
+        line_step = metrics->max_char_height + 4;
+        two_lines = row_height >= 2 * metrics->max_char_height + 10;
+    } else {
+        two_lines = row_height >= 52 + descent;
+    }
+    for (uint8_t row = 0U; row < selection.count; ++row) {
+        int16_t y = first_y + row * row_height;
+        if (!gui_page_hits(gfx, y, y + row_height)) continue;
+        m_todo_clip.top = y; m_todo_clip.bottom = y + row_height;
+        todo_item_t item;
+        if (!todo_items_read(selection.index[row], &item)) {
+            s_todo_render_valid = false;
+            continue;
+        }
+        int16_t marker_y = y + (extended ? 3 + (metrics->max_char_height - 7) / 2 : 4);
+        uint16_t marker_color = data->color > 1 &&
+            (selection.phase[row] == TODO_PHASE_ACTIVE || selection.phase[row] == TODO_PHASE_EXPIRED) ? GFX_RED : GFX_BLACK;
+        if (item.flags & TODO_ITEM_RESIDENT)
+            GFX_fillRect(gfx, x, marker_y, 7, 7, marker_color);
+        else
+            GFX_drawRect(gfx, x, marker_y, 7, 7, marker_color);
+        gui_set_font(gfx, font);
+        GFX_setTextColor(gfx, GFX_BLACK, GFX_WHITE);
+        cursor = item.text;
+        GFX_setCursor(gfx, text_x, y + first_baseline);
+        bool strike = selection.phase[row] == TODO_PHASE_EXPIRED;
+        DrawTodoText(gfx, &cursor, text_width, !two_lines, strike);
+        if (two_lines && *cursor != '\0') {
+            GFX_setCursor(gfx, text_x, y + first_baseline + line_step);
+            DrawTodoText(gfx, &cursor, text_width, true, strike);
+        }
+    }
+finish:
+    gfx->u8g2.draw_hv_line = m_todo_clip.forward;
+}
+
 /* Full and split clocks share the face and footer; their headers use different
  * arrangements from the external UI package. Both render in black for partial refresh. */
+
 static void DrawClock(Adafruit_GFX* gfx, const tm_t* tm, const struct Lunar_Date* Lunar,
                       const gui_data_t* data) {
     bool fullscreen = data->mode == MODE_CLOCK;
@@ -971,14 +1226,17 @@ static void DrawClockCalendar_Full(Adafruit_GFX* gfx, const tm_t* tm, const stru
     const ui_component_t *top = ui_resource_component(UI_COMP_SPLIT_FRAME_TOP);
     const ui_component_t *bottom = ui_resource_component(UI_COMP_SPLIT_FRAME_BOTTOM);
     if (!top || !bottom) return;
+    const ui_component_t *separator = ui_resource_component(UI_COMP_SPLIT_SEPARATOR);
     GFX_fillRect(gfx, top->x, top->y, top->w, top->h, GFX_BLACK);
-    GFX_fillRect(gfx, bottom->x, bottom->y, bottom->w, bottom->h, GFX_BLACK);
+    int16_t frame_x = data->mode == MODE_TODO_CALENDAR && separator ? separator->x : bottom->x;
+    GFX_fillRect(gfx, frame_x, bottom->y, bottom->x + bottom->w - frame_x, bottom->h, GFX_BLACK);
 
     // 在右侧绘制日历
     DrawCalendar_Right(gfx, tm, Lunar, data);
 
     // 在左侧绘制时钟
-    DrawClock(gfx, tm, Lunar, data);
+    if (data->mode == MODE_TODO_CALENDAR) DrawTodo(gfx, data);
+    else DrawClock(gfx, tm, Lunar, data);
 }
 
 /* An application-only update may leave the external UI package absent.
@@ -1020,6 +1278,8 @@ static void DrawMissingResources(Adafruit_GFX* gfx, const gui_data_t* data) {
  * 支持黑白/三色/四色；使用静态缓冲分页，入口仅可串行调用。
  */
 void DrawGUI(gui_data_t* data, buffer_callback callback, void* callback_data) {
+    s_todo_render_valid = true;
+    const bool todo_mode = data->mode == MODE_TODO || data->mode == MODE_TODO_CALENDAR;
     // 验证一周起始日参数
     if (data->week_start > 6) data->week_start = 0;
 
@@ -1044,6 +1304,7 @@ void DrawGUI(gui_data_t* data, buffer_callback callback, void* callback_data) {
 #endif
     else
         GFX_begin(gfx, GUI_WIDTH(data), GUI_HEIGHT(data), ph);  // 黑白屏幕
+    gfx->u8g2.font_stop_after_io = todo_mode;
 
     if (layout_ready)
         LUNAR_SolarToLunar(&Lunar, tm.tm_year + YEAR0, tm.tm_mon + 1, tm.tm_mday);
@@ -1066,7 +1327,11 @@ void DrawGUI(gui_data_t* data, buffer_callback callback, void* callback_data) {
                 case MODE_CLOCK:
                     DrawClock(gfx, &tm, &Lunar, data);  // 全屏时钟
                     break;
+                case MODE_TODO:
+                    DrawTodo(gfx, data);
+                    break;
                 case MODE_CLOCK_CALENDAR:
+                case MODE_TODO_CALENDAR:
                     DrawClockCalendar_Full(gfx, &tm, &Lunar, data);  // 分屏模式
                     break;
                 default:
@@ -1078,8 +1343,15 @@ void DrawGUI(gui_data_t* data, buffer_callback callback, void* callback_data) {
             (tm.tm_year + YEAR0 == 2025 && tm.tm_mon + 1 == 1)) {
             DrawTimeSyncTip(gfx, data);
         }
+        /* Do not write a known invalid TODO page or render the remaining
+         * pages. GFX_begin clears this frame's I/O latch on the next attempt. */
+        if (todo_mode && (!s_todo_render_valid || gfx->u8g2.font_frame_io_error)) break;
     } while (GFX_nextPage(gfx, callback, callback_data));  // 分页绘制
 
+    /* Later glyphs and font switches may recover their local read state,
+     * while an earlier page already contains placeholders from failed I/O.
+     * Keep that frame out of the TODO scheduling snapshot so main retries. */
+    if (gfx->u8g2.font_frame_io_error) s_todo_render_valid = false;
     GFX_end(gfx);
 }
 

@@ -23,13 +23,15 @@ def function(source, name):
 
 
 source = (ROOT / 'EPD/EPD_service.c').read_text(encoding='utf-8')
-handlers = '\n'.join(function(source, name) for name in (
+retry_reset = ('static volatile uint8_t s_todo_retry_step;\n' +
+               function(source, 'epd_todo_retry_reset') + '\n')
+handlers = retry_reset + '\n'.join(function(source, name) for name in (
     'epd_append_char', 'epd_append_uint', 'epd_make_prefixed_uint',
     'epd_send_prefixed_uint', 'epd_send_mtu', 'epd_send_time', 'epd_send_voltage',
     'on_connect', 'on_disconnect', 'cmd_init', 'epd_init_process',
     'epd_connection_process', 'cmd_reset_transfer', 'epd_config_pins_valid',
     'epd_config_validate', 'epd_config_apply', 'cmd_set_pins',
-    'epd_process_next_command', 'resource_notification_send', 'epd_resource_event'))
+    'epd_process_next_command', 'resource_notification_send', 'epd_todo_font_valid', 'epd_resource_event'))
 start = source.index('finish_refresh:') + len('finish_refresh:')
 end = source.index('\n}\n', start)
 finish = 'static void finish_refresh(ble_epd_t *p_epd) {\n' + '''
@@ -72,23 +74,24 @@ subprocess.run(shlex.split(os.environ.get('HOST_CC', 'gcc')) +
                 str(generated), '-o', str(exe)], cwd=ROOT, check=True)
 subprocess.run([str(exe.resolve())], check=True)
 
-config_handlers = '\n'.join(function(source, name) for name in (
+config_handlers = retry_reset + '\n'.join(function(source, name) for name in (
     'epd_config_pins_valid', 'epd_config_validate', 'epd_config_apply',
-    'cmd_set_pins', 'cmd_set_config', 'epd_resource_event'))
+    'cmd_set_pins', 'cmd_set_config', 'epd_todo_font_valid', 'epd_resource_event'))
 fixture = (ROOT / 'tests/service_config_fixture.c').read_text(encoding='utf-8')
 generated = out / 'service_config_generated.c'
 generated.write_text(fixture.replace('/* PRODUCTION_SERVICE_TYPES */', service_types)
                      .replace('/* PRODUCTION_HANDLERS */', config_handlers), encoding='utf-8')
 exe = out / ('test_service_config.exe' if os.name == 'nt' else 'test_service_config')
 subprocess.run(shlex.split(os.environ.get('HOST_CC', 'gcc')) +
-               ['-Wall', '-Werror', '-std=c11', '-Itests/font_transfer_stubs', '-IEPD',
+               ['-Wall', '-Werror', '-std=c11', '-Itests/font_transfer_stubs', '-IEPD', '-IGUI',
                 str(generated), '-o', str(exe)], cwd=ROOT, check=True)
 subprocess.run([str(exe.resolve())], check=True)
 
-refresh_handlers = '\n'.join(function(source, name) for name in (
+refresh_handlers = ('static volatile uint32_t s_todo_retry_at;\n' + retry_reset +
+                    '\n'.join(function(source, name) for name in (
     'epd_parse_time_payload', 'epd_display_request', 'epd_display_complete',
     'epd_update_display_mode', 'epd_switch_from_clock_mode', 'epd_command_ack',
-    'cmd_set_mode', 'ble_epd_on_timer', 'epd_gui_update'))
+    'epd_todo_font_valid', 'cmd_set_mode', 'ble_epd_on_timer', 'epd_gui_update')))
 refresh_fixture = (ROOT / 'tests/connected_refresh_fixture.c').read_text(encoding='utf-8')
 generated = out / 'connected_refresh_generated.c'
 generated.write_text(refresh_fixture.replace('/* PRODUCTION_HANDLERS */', refresh_handlers), encoding='utf-8')

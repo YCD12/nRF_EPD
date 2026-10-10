@@ -12,6 +12,8 @@ class PaintManager {
     this.textElements = [];
     this.lineSegments = [];
     this.todoItems = [];
+    this.legacyTodoItems = [];
+    this.legacyTodoBackupPending = false;
     this.isTextPlacementMode = false;
     this.isTodoPlacementMode = false;
     this.selectedTextElement = null;
@@ -171,6 +173,10 @@ class PaintManager {
 
   saveCanvasToLocalStorage() {
     try {
+      if (this.legacyTodoBackupPending && !this.rememberLegacyTodoItems(this.legacyTodoItems)) {
+        this.report('旧版待办缓存暂未备份，画布缓存保持原样。请到待办事项工作区导入并导出备份。', true);
+        return;
+      }
       if (this.baseImageData && !this.baseImageUrl) {
         const baseCanvas = document.createElement('canvas');
         baseCanvas.width = this.baseImageData.width;
@@ -191,11 +197,39 @@ class PaintManager {
     }
   }
 
+  rememberLegacyTodoItems(items) {
+    if (!Array.isArray(items) || !items.length) return true;
+    this.legacyTodoItems = items.map(item => ({ text: item?.text, completed: !!item?.completed }));
+    try {
+      localStorage.setItem('epd_legacy_paint_todos_v1', JSON.stringify(this.legacyTodoItems));
+      this.legacyTodoBackupPending = false;
+      return true;
+    } catch (_) { this.legacyTodoBackupPending = true; return false; }
+  }
+
+  getLegacyTodoItems() {
+    let items = this.todoItems.length ? this.todoItems : this.legacyTodoItems;
+    if (!items.length) {
+      try {
+        const cache = JSON.parse(localStorage.getItem('canvasState') || 'null');
+        if (Array.isArray(cache?.todoItems)) items = cache.todoItems;
+      } catch (_) { items = []; }
+      if (!items.length) {
+        try { items = JSON.parse(localStorage.getItem('epd_legacy_paint_todos_v1') || '[]'); }
+        catch (_) { items = []; }
+      }
+    }
+    return Array.isArray(items) ? items.map(item => ({ text: item?.text, completed: !!item?.completed })) : [];
+  }
+
   loadCanvasFromLocalStorage() {
     try {
       const raw = localStorage.getItem('canvasState');
       if (!raw) return false;
       const data = JSON.parse(raw);
+      // Preserve the old checklist before a composed bitmap restore removes
+      // its duplicate vectors, or a new image workspace overwrites the cache.
+      this.rememberLegacyTodoItems(data.todoItems);
       if (!Number.isInteger(data.width) || !Number.isInteger(data.height) || data.width < 1 || data.height < 1 ||
           data.width > 4096 || data.height > 4096 || data.width * data.height > 16000000) return false;
       if (data.version !== 2 && (data.width !== this.canvas.width || data.height !== this.canvas.height)) return false;
@@ -400,6 +434,10 @@ class PaintManager {
   }
 
   setActiveTool(tool, title) {
+    if (tool === 'todo' && !this.element('todo-mode')) {
+      this.report('待办已移至“待办事项”工作区。');
+      return;
+    }
     this.endPaint();
     this.cancelTextPlacement();
     this.currentTool = tool;
@@ -416,7 +454,7 @@ class PaintManager {
       if (button) { button.classList.toggle('active', tool === name); button.setAttribute('aria-pressed', String(tool === name)); }
     });
     const hint = this.element('paint-tool-hint');
-    if (hint) hint.textContent = hints[tool] || '选择工具，为图片添加笔迹、文字、待办或课表。';
+    if (hint) hint.textContent = hints[tool] || '选择工具，为图片添加笔迹、文字或课表。';
     if (typeof setCanvasTitle === 'function') setCanvasTitle(title || ({ brush: '画笔', eraser: '橡皮擦', text: '添加文字', todo: '待办清单', schedule: '课程表' }[tool] || ''));
     ['undo-btn', 'redo-btn'].forEach(id => this.element(id)?.classList.remove('hide'));
     this.updateTextEditingUI();

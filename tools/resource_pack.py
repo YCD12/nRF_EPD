@@ -17,18 +17,19 @@ STAMP_MAGIC = 0x54535245  # ERST, appended after the payload and not written to 
 # Written into each ERS header revision and stored on the device. Bump a module
 # here when its resource contents change.
 MODULE_VERSIONS = {
-    1: 1,  # partition table
+    1: 2,  # partition table, adds TODO without moving existing resources
     2: 1,  # epd config
     3: 1,  # calendar annotations
     5: 1,  # calendar
     6: 1,  # ui
     7: 1,  # fonts
+    9: 1,  # todo items
 }
 RECORD_SCHEMA, RECORD_HEADER_SIZE = 1, 16
 CONFIG_RECORD_MAGIC, ANNOTATION_RECORD_MAGIC = 0x31435045, 0x31434E41
 TYPES = {'partition_table': 1, 'config_record': 2, 'annotation_record': 3,
          'update_status': 4, 'calendar_package': 5, 'ui_package': 6,
-         'font_package': 7, 'reserved': 8}
+         'font_package': 7, 'reserved': 8, 'todo_items': 9}
 
 
 def load_layout(path=LAYOUT):
@@ -109,6 +110,11 @@ def default_record_data():
                     0x07, 0xFF, 0x12, 0x07, 0x02, 0x00, 0x00))
     annotations = struct.pack('<IBBH8x', 0x4F4E4E41, 1, 16, 0)
     return config, annotations
+
+
+def todo_payload():
+    """Empty TODO v1 package; five visible items and a 12-pixel font."""
+    return struct.pack('<IBBHBB6x', 0x4F444F54, 1, 80, 0, 5, 12)
 
 
 def migration_bundle(path):
@@ -298,6 +304,7 @@ def main():
     parser.add_argument('--calendar-dir', type=Path, default=ROOT / 'tools/dist')
     parser.add_argument('--calendar-data', type=Path, help='JSON overrides for calendar years and calculation/holiday tables')
     parser.add_argument('--ui', action='store_true', help='build fixed-component UI layout package')
+    parser.add_argument('--todo', action='store_true', help='build empty TODO items with factory display settings')
     parser.add_argument('--records', action='store_true', help='build default config and empty annotation records')
     parser.add_argument('--config-record', type=Path, help='14-byte legacy epd_config_t export')
     parser.add_argument('--annotations-record', type=Path, help='legacy ANNO blob export')
@@ -362,6 +369,20 @@ def main():
             'format': 'UIR1', 'revision': args.revision,
             'screen_width': 800, 'screen_height': 480,
             'payload_bytes': len(payload), 'components': records,
+        }, ensure_ascii=False, indent=2) + '\n', encoding='utf-8')
+    if args.todo:
+        if not args.output:
+            parser.error('--todo requires --output')
+        payload = todo_payload()
+        todo = next((p for p in layout['partitions'] if p['id'] == 9), None)
+        if todo is None or todo['type'] != 'todo_items' or len(payload) > todo['size_bytes'] - 32:
+            parser.error('missing or incompatible TODO partition')
+        args.output.mkdir(parents=True, exist_ok=True)
+        (args.output / 'todo.ers').write_bytes(package(9, payload, MODULE_VERSIONS[9], built_at))
+        (args.output / 'todo.json').write_text(json.dumps({
+            'format': 'TODO', 'revision': MODULE_VERSIONS[9],
+            'payload_bytes': len(payload), 'record_size': 80,
+            'count': 0, 'display_limit': 5, 'font_size': 12,
         }, ensure_ascii=False, indent=2) + '\n', encoding='utf-8')
     if args.records or args.config_record or args.annotations_record or args.migration_bundle:
         if not args.output:

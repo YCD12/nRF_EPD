@@ -110,7 +110,8 @@ nRF_EPD/
 
 - 基于 Nordic BLE 外设模式广播，设备名为 `NRF_EPD`
 - 内置 `EPD` 自定义 BLE 服务，支持控制命令、状态通知和图像传输
-- 支持图片模式、日历模式、时钟模式、时钟+日历模式
+- 支持图片、日历、时钟、时钟+日历、待办事项+日历及全屏待办模式
+- 固件 `0x3D` 支持全屏待办和独立待办字体，字号 `9/12/16/20/24/32`，可加粗、斜体及组合：网页设置触发/截止、提前显示与过期保留时间、常驻/完成状态及显示数量，触发后红框、截止后删除线，支持排队补位、缺字生成和备份；模式 `4/5` 共用事项和调度，详见 [待办工作区说明](docs/todo-calendar.md)
 - 支持运行时设置屏幕驱动和引脚映射
 - 支持多种电子纸控制器与不同尺寸屏幕组合
 - 支持 `Buttonless DFU`，可从应用固件无按键切入 Bootloader
@@ -121,9 +122,10 @@ nRF_EPD/
 
 - 独立工程文件：`Keil/DFU-nRF52.uvprojx`
 - 基于 Nordic Secure DFU Bootloader
-- 对应源码入口位于 `SDK/17.1.0_ddde560/dfu/main.c`
+- 对应源码入口位于 `Bootloader/main.c`，GCC 构建入口为 `make -f Bootloader/Makefile`
+- 项目验签和布局定制集中在 `Bootloader/`，`SDK/` 保持仓库版本；应用的内部 FDS/fstorage 开关由项目编译参数提供，详见 [SDK 目录恢复说明](docs/sdk-cleanup-20261009.md)
 - 用于构建可与应用固件配套使用的 BLE DFU Bootloader
-- 与 `tools/bootloader/bl_nrf52811_xxaa_s112.hex`、网页 DFU 页面和 OTA 打包脚本相互配合
+- 与 `tools/bootloader/bl_nrf52811_xxaa_s112_8k.hex`、网页 DFU 页面和 OTA 打包脚本相互配合
 
 ### 2. 图片传输
 
@@ -141,10 +143,11 @@ nRF_EPD/
 
 - 蓝牙连接、重连、设备过滤、日志查看
 - 屏幕驱动选择与引脚配置下发
-- 日历模式 / 时钟模式切换
+- 日历、时钟、待办事项+日历及全屏待办模式切换
 - 连接后自动读取固件版本、时间、MTU、电池电压
 - 图片上传、抖动处理、旋转、镜像、翻转、裁剪
-- 手绘、文字工具、待办清单、课表生成
+- 手绘、文字工具、课表生成；独立待办工作区提供定时清单、全屏预览和字体选择
+- 图片工作台不再提供重复待办入口，旧待办草稿保留，可在待办工作区手动导入
 - 支持多种画布尺寸、双色 / 三色 / 四色 / 六色模式
 
 ### 4. 独立 DFU 升级页
@@ -261,6 +264,10 @@ nRF_EPD/
 
 ## 固件编译与刷机
 
+当前保留原有 8 KiB 内置应用数据区域（`0x27000–0x29000`），应用区为 56 KiB（`0x19000–0x27000`）。配置、日期标注、待办及字体继续使用外置 Flash，应用已停用内部 FDS。需要更新修复后的 Bootloader 时，通过 SWD 安装配套完整 HEX；应用 OTA 仅更新应用。具体构建与升级说明见 [8 KiB 保留区说明](docs/internal-flash-8k-20261008.md)。
+
+当前待办日期刷新修正、验证结果及 Bootloader 源码目录缺失问题见 [2026-10-10 代码复核](docs/current-code-review-20261010.md)。
+
 ### 方式一：Keil 编译（推荐）
 
 推荐环境：
@@ -352,22 +359,22 @@ build.bat ota
 相关资源：
 
 - 私钥：`tools/priv.pem`
-- Bootloader：`tools/bootloader/bl_nrf52811_xxaa_s112.hex`
+- 当前 8 KiB 保留区 Bootloader：`tools/bootloader/bl_nrf52811_xxaa_s112_8k.hex`
 - `nrfutil`、`mergehex`：`tools/bin/`
 
 `build.bat` 的默认动作会生成完整 HEX；需要 OTA 包时显式运行 `build.bat ota`。直接在 `Keil/EPD-nRF52.uvprojx` 中编译时只生成应用 HEX，需要再运行上述脚本。
 
 Windows 下直接执行 `build.bat`（或 `build.bat build`）会在应用编译和测试通过后，生成
 `_build/nrf52811_xxaa-settings.hex` 与 `_build/nrf52811_xxaa-full.hex`。完整 HEX
-包含 SoftDevice、现有 Bootloader、Application 和两页 settings，可用于 SWD 全量烧录，
+包含 SoftDevice、配套 8 KiB 保留区 Bootloader、Application 和两页 settings，可用于 SWD 全量烧录，
 并直接支持外置 Flash 分区读取和资源更新。
 该开发构建只使用 CRC 启动校验，也不生成 OTA ZIP；需要签名 OTA 时使用 `build.bat ota`。
-两个构建流程均不检查现有 Bootloader 与 `tools/priv.pem` 的公钥是否匹配。settings 的应用版本默认
+两个构建流程均检查编译后 Bootloader 的布局描述符和 UICR 地址，拒绝缺少正确标识或布局不匹配的镜像；正式发布还核对签名公钥，开发构建不检查签名密钥。settings 的应用版本默认
 为 `0x1C`，可在构建前通过 `set BUILD_APPLICATION_VERSION=0x1D` 覆盖。
 
 ### 方式四：生成全部外置 Flash 资源包
 
-在项目根目录执行以下命令，生成分区表、日历、UI、字体、默认 EPD 配置和空用户标注包：
+在项目根目录执行以下命令，生成分区表、日历、UI、字体、默认 EPD 配置、空用户标注及空待办包：
 
 ```bat
 build-external-resources.bat
@@ -388,8 +395,8 @@ build-external-resources.bat 3 output\resources-r3 "" calendar-2027.json
 脚本只生成并校验 `.ers` 文件，不会写入设备。上传顺序和迁移说明见 [外置资源生成说明](docs/external-resources-p4-20260916.md)。
 
 网页主控制台的“设备资源”区域直接提供一键烧录，复用当前蓝牙连接。
-首次烧录时选择 `build-external-resources.bat` 生成的资源目录，再点击“一键烧录”；网页会校验 6 个 ERS 文件并按分区表、日历、UI、字体、配置、标注的顺序连续写入。
-连接设备时会先读取并校验实际分区表。仅当设备报告分区表未安装或未提交时按空白 Flash 初始化；已有有效分区表时保留现有分区表、设备配置和日期标注，只更新日历、UI 和字体资源。
+首次烧录时选择 `build-external-resources.bat` 生成的资源目录，再点击“一键烧录”；网页会校验 7 个 ERS 文件并按分区表、日历、UI、字体、配置、标注、待办的顺序连续写入，仍兼容不含待办的旧版 6 包目录。
+连接设备时会先读取并校验实际分区表。仅当设备报告分区表未安装或未提交时按空白 Flash 初始化；已有有效分区表时保留现有分区表、设备配置、日期标注及待办，只更新日历、UI 和字体资源。
 格式错误、CRC 错误或不兼容的分区表不会被当成空白 Flash。单包更新、完整 Flash / 单分区 BIN 备份和 ERS 校验导出收在“高级操作”中。
 更新状态区与保留区禁止上传。
 当前业务固件直接支持查看、导出和更新分区资源；新版分区固件停用旧版 BIN 字库入口，字体改用 `fonts.ers`。
@@ -397,7 +404,7 @@ BIN 为原始备份，不能直接作为 ERS 上传；列表的包头校验不�
 
 “编辑并生成设备资源”支持加载默认模板或完整资源工程，在浏览器内修改日历、节日/休班表、文字和 19 个固定 UI 组件，生成 CAL1/UIR1/FPK1 对应的 ERS 包。可选替换三个兼容的 u8g2 字模 `.bin`，也可下载单个 ERS 或导出完整 JSON 工程。新增文字缺字时，网页使用浏览器可用字体生成字模并合并到字体包。JSON 仅用于网页编辑，设备只读取二进制资源。默认年份为 2025–2027；扩展年份须提供相应计算表。模板与命令行生成器的同步检查为 `python tools/export_web_template.py --check`。
 
-保存日期标注时，网页会检查设备实际字库，为缺字生成对应字模并写入外置 Flash，字体应用成功后继续保存标注。该能力提供通用的字模生成和设备安装接口，后续文字功能可复用；当前支持 Unicode BMP，标注标签仍最多 9 个 UTF-8 字节。使用与接口说明见[网页按需补充外置字库](docs/web-font-generation.md)。
+保存日期标注时，网页会检查设备实际字库，为缺字生成对应字模并写入外置 Flash，字体应用成功后继续保存标注。该能力提供通用的字模生成和设备安装接口；当前支持 Unicode BMP，标注标签仍最多 9 个 UTF-8 字节。使用与接口说明见[网页按需补充外置字库](docs/web-font-generation.md)。待办的字体和事项在同一资源会话内提交，最后一次性应用，避免中途刷新。新保存统一使用 TODO v4，兼容回读 v1/v2/v3；自定义字体、更大字号、加粗和斜体使用 `FPK1` 可选第四槽，不替换日历及时钟基础字体。时间及字形格式见[待办说明](docs/todo-calendar.md)。
 
 固件 `0x35` 起，写入完成后直接校验并应用资源，保留设备时间。网页切换日历、分屏时钟、全屏时钟后，设备保持蓝牙连接也会刷新；资源维护会话、传图及屏幕初始化期间保留显示互斥。资源更新页面可选择完成后自动断连，也可单独点击“应用并断开连接”，断连不是刷新的前提。断开后设备继续运行，蓝牙按原策略间歇广播。广播间隔、超时和唤醒配置沿用原逻辑，资源应用不关闭蓝牙广播。单张图片继续直传屏幕 RAM；这里没有加入图片轮播存储。
 
@@ -521,7 +528,7 @@ BLE 协议详情见 [docs/ble-protocol.md](docs/ble-protocol.md)。
 - `EPD_CMD_INIT (0x01)`：初始化驱动，并上报 `mtu`、时间、电压
 - `EPD_CMD_SET_TIME (0x20)`：设置时间并立即刷新
 - `EPD_CMD_SET_WEEK_START (0x21)`：设置周起始日
-- `EPD_CMD_SET_MODE (0x22)`：切换图片 / 日历 / 时钟 / 时钟+日历模式
+- `EPD_CMD_SET_MODE (0x22)`：切换图片 / 日历 / 时钟 / 时钟+日历 / 待办事项+日历 / 全屏待办模式（`0–5`）
 - `EPD_CMD_SYNC_TIME_SILENT (0x23)`：静默校时，不立即刷新，仅固件 `>= 0x21` 支持
 - `EPD_CMD_REFRESH (0x03)` / `EPD_CMD_SLEEP (0x04)`：刷新与休眠
 - `EPD_CMD_WRITE_BLOCK (0x30)`：带 CRC16 的分块传图
@@ -588,6 +595,9 @@ BLE 连接、真实墨水屏刷新、电源与低电量行为，仍然需要在�
 - BLE 协议：[docs/ble-protocol.md](docs/ble-protocol.md)
 - 网页按需补充外置字库：[docs/web-font-generation.md](docs/web-font-generation.md)
 - Flash 与网页优化实现及验证：[docs/flash-web-optimization-20261001.md](docs/flash-web-optimization-20261001.md)
+- 当前内置 8 KiB 保留区及配套固件：[docs/internal-flash-8k-20261008.md](docs/internal-flash-8k-20261008.md)
+- 当前待办、字库和 Flash 修改复核：[docs/current-changes-review-8k-20261009.md](docs/current-changes-review-8k-20261009.md)
+- SDK 目录恢复及项目定制迁移：[docs/sdk-cleanup-20261009.md](docs/sdk-cleanup-20261009.md)
 - SoftDevice 安全刷写说明：[docs/flash_softdevice_safe_refactor_summary.md](docs/flash_softdevice_safe_refactor_summary.md)
 - 应用工程：`Keil/EPD-nRF52.uvprojx`
 - Bootloader 工程：`Keil/DFU-nRF52.uvprojx`

@@ -48,7 +48,7 @@ void ble_epd_evt_handler(ble_evt_t const* p_ble_evt, void* p_context);
     static ble_epd_t _name; \
     NRF_SDH_BLE_OBSERVER(_name##_obs, BLE_EPD_BLE_OBSERVER_PRIO, ble_epd_evt_handler, &_name)
 
-#define APP_VERSION 0x39  // Buffered resource transfer and confirmed display completion
+#define APP_VERSION 0x3D  // TODO lead/grace timing and visible phase markers
 
 // EPD 服务的 128 位基础 UUID（自定义服务）
 #define BLE_UUID_EPD_SVC_BASE \

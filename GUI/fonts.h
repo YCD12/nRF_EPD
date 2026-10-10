@@ -2,6 +2,7 @@
 #define __FONTS_H
 
 #include <stdint.h>
+#include <stdbool.h>
 
 #include "u8g2_font.h"
 
@@ -17,6 +18,7 @@ typedef enum {
     GUI_FONT_WQY9 = 0,
     GUI_FONT_WQY12,
     GUI_FONT_HELVB18,
+    GUI_FONT_TODO,
 } gui_font_id_t;
 
 typedef u8g2_font_placeholder_t gui_font_metrics_t;
@@ -57,5 +59,6 @@ uint8_t GUI_ExternalFontsInit(void);
 const u8g2_font_source_t* GUI_GetExternalFont(gui_font_id_t font_id);
 
 const gui_font_metrics_t* GUI_GetFontMetrics(gui_font_id_t font_id);
+bool GUI_TodoFontMatches(uint8_t size, uint32_t key);
 
 #endif

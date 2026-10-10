@@ -12,6 +12,7 @@ static struct {
 } m;
 
 bool resource_transfer_running(void) { return m.running; }
+bool resource_transfer_reply_pending(void) { return m.reply_pending; }
 
 void resource_transfer_receive(const uint8_t *data, uint16_t length, uint32_t generation)
 {

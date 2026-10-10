@@ -8,6 +8,7 @@
 #include "fm25q04b.h"
 #include "font_store.h"
 #include "resource_store.h"
+#include "font_geometry.h"
 
 #define MOCK_FLASH_SIZE FM25Q04B_SIZE_BYTES
 
@@ -167,6 +168,20 @@ static uint8_t* install_pack(const uint8_t* font, size_t length)
     return payload;
 }
 
+static uint8_t* install_todo_pack(const uint8_t* font, size_t length)
+{
+    uint8_t* payload = &mock_flash[0x18000U + RS_HEADER_SIZE];
+    memset(payload, 0, 72U);
+    write_u32_le(payload, 0x314B5046UL); payload[4] = 1U; payload[6] = 4U;
+    write_u32_le(payload + 56U, 72U);
+    write_u32_le(payload + 60U, (uint32_t)length);
+    write_u32_le(payload + 64U, font_crc32(font, length));
+    write_u32_le(payload + 68U, 0x12345678UL);
+    memcpy(payload + 72U, font, length);
+    resource_payload_length = 72U + (uint32_t)length;
+    return payload;
+}
+
 int main(void)
 {
     uint8_t font[300];
@@ -207,6 +222,60 @@ int main(void)
     font_store_host_reset();
     assert(font_store_init() == NRF_SUCCESS);
     assert_source(FONT_STORE_SLOT_WQY9, 0x18000U + RS_HEADER_SIZE + 56U, sizeof(font));
-    puts("PASS: ERS font pack, missing/corrupt pack recovery and legacy rejection");
+    /* Optional fourth directory record has independent family identity and
+     * either supported body size. Legacy three-record packages remain valid. */
+    for (unsigned size = 0U; size < 2U; ++size) {
+        make_font(font, sizeof(font), (font_store_slot_t)size);
+        payload = &mock_flash[0x18000U + RS_HEADER_SIZE];
+        memset(payload, 0, 72U);
+        write_u32_le(payload, 0x314B5046UL); payload[4] = 1U; payload[6] = 4U;
+        write_u32_le(payload + 56U, 72U);
+        write_u32_le(payload + 60U, sizeof(font));
+        write_u32_le(payload + 64U, font_crc32(font, sizeof(font)));
+        write_u32_le(payload + 68U, 0x12345678UL);
+        memcpy(payload + 72U, font, sizeof(font));
+        resource_payload_length = 72U + sizeof(font);
+        font_store_host_reset(); assert(font_store_init() == NRF_SUCCESS);
+        assert(font_store_get_source(FONT_STORE_SLOT_TODO) != NULL);
+        assert(font_store_todo_font_size() == (size == 0U ? 9U : 12U));
+        assert(font_store_todo_font_key() == 0x12345678UL);
+        assert(memcmp(font_store_todo_font_metrics(), &font_slot_geometry[size],
+                      sizeof(u8g2_font_placeholder_t)) == 0);
+        write_u32_le(payload + 68U, 0U);
+        font_store_host_reset(); assert(font_store_init() == NRF_SUCCESS);
+        assert(font_store_get_source(FONT_STORE_SLOT_TODO) == NULL);
+        assert(font_store_todo_font_key() == 0U && font_store_todo_font_size() == 0U);
+        assert(font_store_todo_font_metrics() == NULL);
+    }
+    for (unsigned i = 0U; i < TODO_FONT_SIZE_COUNT; ++i) {
+        make_font(font, sizeof(font), FONT_STORE_SLOT_WQY9);
+        memcpy(font + 9U, &todo_font_geometry[i], 8U);
+        payload = install_todo_pack(font, sizeof(font));
+        font_store_host_reset(); assert(font_store_init() == NRF_SUCCESS);
+        assert(font_store_todo_font_size() == todo_font_sizes[i]);
+        assert(font_store_todo_font_key() == 0x12345678UL);
+        assert(memcmp(font_store_todo_font_metrics(), &todo_font_geometry[i],
+                      sizeof(u8g2_font_placeholder_t)) == 0);
+        assert(font_store_todo_font_metrics()->x_offset < 0);
+        payload[72U + 13U] ^= 1U; /* Geometry is validated even with a valid CRC. */
+        write_u32_le(payload + 64U, font_crc32(payload + 72U, sizeof(font)));
+        font_store_host_reset(); assert(font_store_init() == NRF_SUCCESS);
+        assert(font_store_get_source(FONT_STORE_SLOT_TODO) == NULL);
+        assert(font_store_todo_font_metrics() == NULL);
+        install_pack(font, sizeof(font)); /* Large geometry is never a base font. */
+        font_store_host_reset(); assert(font_store_init() == NRF_SUCCESS);
+        assert(font_store_get_source(FONT_STORE_SLOT_WQY9) == NULL);
+    }
+    payload = install_todo_pack(font, sizeof(font));
+    make_font(font, sizeof(font), FONT_STORE_SLOT_HELVB18);
+    memcpy(payload + 72U, font, sizeof(font));
+    write_u32_le(payload + 68U, 1U);
+    write_u32_le(payload + 64U, font_crc32(font, sizeof(font)));
+    font_store_host_reset(); assert(font_store_init() == NRF_SUCCESS);
+    assert(font_store_get_source(FONT_STORE_SLOT_TODO) == NULL);
+    install_pack(font, sizeof(font));
+    font_store_host_reset(); assert(font_store_init() == NRF_SUCCESS);
+    assert(font_store_todo_font_key() == 0U);
+    puts("PASS: ERS three/four-slot font packs, family/geometry guards and recovery");
     return 0;
 }

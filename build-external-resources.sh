@@ -46,7 +46,7 @@ args=(--check --fonts --calendar)
 if [[ -n "$CALENDAR_DATA" ]]; then
     args+=(--calendar-data "$CALENDAR_DATA")
 fi
-args+=(--ui)
+args+=(--ui --todo)
 
 if [[ -z "$MIGRATION_BUNDLE" ]]; then
     args+=(--records --revision "$REVISION" --output "$OUTPUT_DIR")
@@ -69,7 +69,7 @@ for package in "$OUTPUT_DIR"/*.ers; do
     echo "  $(basename "$package")"
 done
 echo
-echo "Upload order: partition-table, calendar, ui, fonts, epd-config, calendar-annotations."
+echo "Upload order: partition-table, calendar, ui, fonts, epd-config, calendar-annotations, todo."
 echo "Generation completed. No device Flash was written."
 if [[ "$OUTPUT_DIR" == output/* ]]; then
     printf '%s\n' "${OUTPUT_DIR#output/}" > output/external-resources-latest.txt

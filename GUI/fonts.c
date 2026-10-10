@@ -361,8 +361,25 @@ const u8g2_font_source_t* GUI_GetExternalFont(gui_font_id_t font_id) {
 }
 
 const gui_font_metrics_t* GUI_GetFontMetrics(gui_font_id_t font_id) {
+    if (font_id == GUI_FONT_TODO) {
+#if GUI_USE_EXTERNAL_FONTS
+        return font_store_todo_font_metrics();
+#else
+        font_id = GUI_FONT_WQY12;
+#endif
+    }
     if ((unsigned)font_id >= 3U) {
         return NULL;
     }
     return &font_slot_geometry[font_id];
+}
+
+bool GUI_TodoFontMatches(uint8_t size, uint32_t key) {
+#if GUI_USE_EXTERNAL_FONTS
+    return GUI_GetExternalFont(GUI_FONT_TODO) != NULL &&
+        font_store_todo_font_size() == size && font_store_todo_font_key() == key;
+#else
+    (void)size; (void)key;
+    return true;
+#endif
 }

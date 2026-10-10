@@ -57,8 +57,8 @@ async function runDeviceOperation(kind, action, parent = null) {
 }
 
 // APP版本号 (便于调试)
-const APP_VERSION = '2.0.22';
-const APP_BUILD_DATE = '2026-10-01';
+const APP_VERSION = '2.1.0';
+const APP_BUILD_DATE = '2026-10-05';
 const EPD_DEVICE_NAME_PREFIX = 'NRF_EPD';
 const SCAN_DURATION_MS = 5000;
 const LOG_CONSOLE_STORAGE_KEY = 'epd_log_to_console';
@@ -422,13 +422,18 @@ function getWeekStart() {
 
 // 辅助函数：构建时间数据包
 function buildTimeData(mode = null) {
-  const timestamp = Math.floor(new Date().getTime() / 1000);
+  const now = new Date();
+  const offsetMinutes = -now.getTimezoneOffset();
+  const timezoneHours = Math.trunc(offsetMinutes / 60);
+  // The existing wire field stores whole hours. Carry the remaining minutes
+  // in the epoch so the device still receives the exact local wall clock.
+  const timestamp = Math.floor(now.getTime() / 1000) + (offsetMinutes - timezoneHours * 60) * 60;
   const payload = [
     (timestamp >> 24) & 0xFF,
     (timestamp >> 16) & 0xFF,
     (timestamp >> 8) & 0xFF,
     timestamp & 0xFF,
-    -(new Date().getTimezoneOffset() / 60)
+    timezoneHours
   ];
   if (mode !== null && mode !== undefined) payload.push(mode);
   return new Uint8Array(payload);
@@ -440,6 +445,11 @@ async function sendTimeCommand(mode, modeName) {
 }
 
 async function sendModeOperation(mode, modeName, owner) {
+  const required = mode === 5 ? 0x3B : mode === 4 ? 0x3A : 0;
+  if (required && (!Number.isInteger(appVersion) || appVersion < required)) {
+    addLog(`${mode === 5 ? '全屏待办' : '待办日历'}需要固件 0x${required.toString(16).toUpperCase()} 或更高，请先升级设备`);
+    return false;
+  }
   const weekStart = getWeekStart();
   const weekDays = ['周日', '周一', '周二', '周三', '周四', '周五', '周六'];
   const payload = new Uint8Array(8);
@@ -491,6 +501,8 @@ async function syncTimeOnConnect(owner = null) {
 function displayModeName(mode) {
   if (mode === 1) return '日历模式';
   if (mode === 3) return '全屏时钟';
+  if (mode === 4) return '待办事项+日历';
+  if (mode === 5) return '全屏待办';
   return '时钟+日历';
 }
 
@@ -500,9 +512,9 @@ async function syncTime(mode) {
   if (mode === 2 || mode === 3) {
     confirmMsg += '\n\n⚠️ 警告：分钟刷新会加速屏幕老化导致损坏！\n• 请勿长时间使用\n• 费电';
   }
-  if (!confirm(confirmMsg)) return;
+  if (!confirm(confirmMsg)) return false;
 
-  await sendTimeCommand(mode, modeName);
+  return await sendTimeCommand(mode, modeName);
 }
 
 // 全屏时钟 (MODE_CLOCK=3，仅适用于 UC8179 7.5 寸)
@@ -810,6 +822,11 @@ function updateButtonStatus(forceDisabled = false) {
   const dfu = document.getElementById('openDfuPageButton');
   if (dfu) dfu.disabled = !!(forceDisabled || isConnecting || DeviceOperations.current);
   for (const button of document.querySelectorAll('[data-device-operation]')) button.disabled = !!status;
+  for (const [id, minimum] of [['todocalendarmodebutton', 0x3A], ['todofullmodebutton', 0x3B]]) {
+    const todo = document.getElementById(id);
+    if (todo) todo.disabled = !!status || !Number.isInteger(appVersion) || appVersion < minimum;
+  }
+  if (window.TodoCalendar?.controls) window.TodoCalendar.controls(forceDisabled);
   if (window.ConsoleUI && typeof window.ConsoleUI.updateConnection === 'function') {
     window.ConsoleUI.updateConnection({
       connected,

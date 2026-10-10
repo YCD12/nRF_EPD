@@ -277,7 +277,7 @@
               <OCR_RVCT4>
                 <Type>1</Type>
                 <StartAddress>0x19000</StartAddress>
-                <Size>0x15000</Size>
+                <Size>0xe000</Size>
               </OCR_RVCT4>
               <OCR_RVCT5>
                 <Type>1</Type>
@@ -338,7 +338,7 @@
             <v6Rtti>0</v6Rtti>
             <VariousControls>
               <MiscControls>--locale=english --reduce_paths</MiscControls>
-              <Define>APP_TIMER_V2 APP_TIMER_V2_RTC1_ENABLED CONFIG_GPIO_AS_PINRESET DEVELOP_IN_NRF52840 FLOAT_ABI_SOFT NRF52811_XXAA NRFX_COREDEP_DELAY_US_LOOP_CYCLES=3 NRF_DFU_SVCI_ENABLED NRF_DFU_TRANSPORT_BLE=1 NRF_SD_BLE_API_VERSION=7 S112 SOFTDEVICE_PRESENT __HEAP_SIZE=0 __STACK_SIZE=2048 USE_SYSVIEW NRF_LOG_ENABLED=1 BLE_LOG_REDIRECT_ALL_NRF_LOG=0 GFX_FIXED_BWR_PANEL=1 GFX_FIXED_FONT_DIRECTION_0=1 GUI_FIXED_PANEL_WIDTH=800 GUI_FIXED_PANEL_HEIGHT=480 CALENDAR_ANNOTATIONS_USE_NRF_CRITICAL=1</Define>
+              <Define>APP_TIMER_V2 APP_TIMER_V2_RTC1_ENABLED CONFIG_GPIO_AS_PINRESET DEVELOP_IN_NRF52840 FLOAT_ABI_SOFT NRF52811_XXAA NRFX_COREDEP_DELAY_US_LOOP_CYCLES=3 NRF_DFU_SVCI_ENABLED NRF_DFU_TRANSPORT_BLE=1 NRF_SD_BLE_API_VERSION=7 S112 SOFTDEVICE_PRESENT FDS_ENABLED=0 NRF_FSTORAGE_ENABLED=0 __HEAP_SIZE=0 __STACK_SIZE=2048 USE_SYSVIEW NRF_LOG_ENABLED=1 BLE_LOG_REDIRECT_ALL_NRF_LOG=0 GFX_FIXED_BWR_PANEL=1 GFX_FIXED_FONT_DIRECTION_0=1 GUI_FIXED_PANEL_WIDTH=800 GUI_FIXED_PANEL_HEIGHT=480 CALENDAR_ANNOTATIONS_USE_NRF_CRITICAL=1</Define>
               <Undefine></Undefine>
               <IncludePath>..\;..\EPD;..\GUI;..\SDK\17.1.0_ddde560;..\SDK\17.1.0_ddde560\components\ble\common;..\SDK\17.1.0_ddde560\components\ble\ble_advertising;..\SDK\17.1.0_ddde560\components\ble\nrf_ble_gatt;..\SDK\17.1.0_ddde560\components\ble\ble_services\ble_dfu;..\SDK\17.1.0_ddde560\components\libraries\atomic;..\SDK\17.1.0_ddde560\components\libraries\atomic_fifo;..\SDK\17.1.0_ddde560\components\libraries\atomic_flags;..\SDK\17.1.0_ddde560\components\libraries\balloc;..\SDK\17.1.0_ddde560\components\libraries\bootloader;..\SDK\17.1.0_ddde560\components\libraries\bootloader\ble_dfu;..\SDK\17.1.0_ddde560\components\libraries\bootloader\dfu;..\SDK\17.1.0_ddde560\components\libraries\delay;..\SDK\17.1.0_ddde560\components\libraries\fstorage;..\SDK\17.1.0_ddde560\components\libraries\fds;..\SDK\17.1.0_ddde560\components\libraries\experimental_section_vars;..\SDK\17.1.0_ddde560\components\libraries\log;..\SDK\17.1.0_ddde560\components\libraries\log\src;..\SDK\17.1.0_ddde560\components\libraries\memobj;..\SDK\17.1.0_ddde560\components\libraries\mutex;..\SDK\17.1.0_ddde560\components\libraries\pwr_mgmt;..\SDK\17.1.0_ddde560\components\libraries\ringbuf;..\SDK\17.1.0_ddde560\components\libraries\sortlist;..\SDK\17.1.0_ddde560\components\libraries\scheduler;..\SDK\17.1.0_ddde560\components\libraries\strerror;..\SDK\17.1.0_ddde560\components\libraries\svc;..\SDK\17.1.0_ddde560\components\libraries\timer;..\SDK\17.1.0_ddde560\components\libraries\util;..\SDK\17.1.0_ddde560\components\softdevice\common;..\SDK\17.1.0_ddde560\components\softdevice\s112\headers;..\SDK\17.1.0_ddde560\components\softdevice\s112\headers\nrf52;..\SDK\17.1.0_ddde560\components\toolchain\cmsis\include;..\SDK\17.1.0_ddde560\external\fprintf;..\SDK\17.1.0_ddde560\external\segger_rtt;..\SDK\17.1.0_ddde560\integration\nrfx;..\SDK\17.1.0_ddde560\integration\nrfx\legacy;..\SDK\17.1.0_ddde560\modules\nrfx;..\SDK\17.1.0_ddde560\modules\nrfx\mdk;..\SDK\17.1.0_ddde560\modules\nrfx\drivers\include;..\SDK\17.1.0_ddde560\modules\nrfx\hal;..\SystemView</IncludePath>
             </VariousControls>
@@ -355,8 +355,8 @@
             <useXO>0</useXO>
             <ClangAsOpt>1</ClangAsOpt>
             <VariousControls>
-              <MiscControls>--cpreproc_opts=-DAPP_TIMER_V2,-DAPP_TIMER_V2_RTC1_ENABLED,-DCONFIG_GPIO_AS_PINRESET,-DDEVELOP_IN_NRF52840,-DFLOAT_ABI_SOFT,-DNRF52811_XXAA,-DNRFX_COREDEP_DELAY_US_LOOP_CYCLES=3,-DNRF_SD_BLE_API_VERSION=7,-DS112,-DSOFTDEVICE_PRESENT,-D__HEAP_SIZE=512,-D__STACK_SIZE=2048,-DUSE_SYSVIEW,-DNRF_LOG_ENABLED=1,-DBLE_LOG_REDIRECT_ALL_NRF_LOG=0</MiscControls>
-              <Define>APP_TIMER_V2 APP_TIMER_V2_RTC1_ENABLED CONFIG_GPIO_AS_PINRESET DEVELOP_IN_NRF52840 FLOAT_ABI_SOFT NRF52811_XXAA NRFX_COREDEP_DELAY_US_LOOP_CYCLES=3 NRF_DFU_SVCI_ENABLED NRF_DFU_TRANSPORT_BLE=1 NRF_SD_BLE_API_VERSION=7 S112 SOFTDEVICE_PRESENT __HEAP_SIZE=0 __STACK_SIZE=2048 USE_SYSVIEW NRF_LOG_ENABLED=1 BLE_LOG_REDIRECT_ALL_NRF_LOG=0 GFX_FIXED_BWR_PANEL=1 GFX_FIXED_FONT_DIRECTION_0=1 GUI_FIXED_PANEL_WIDTH=800 GUI_FIXED_PANEL_HEIGHT=480 CALENDAR_ANNOTATIONS_USE_NRF_CRITICAL=1</Define>
+              <MiscControls>--cpreproc_opts=-DAPP_TIMER_V2,-DAPP_TIMER_V2_RTC1_ENABLED,-DCONFIG_GPIO_AS_PINRESET,-DDEVELOP_IN_NRF52840,-DFLOAT_ABI_SOFT,-DNRF52811_XXAA,-DNRFX_COREDEP_DELAY_US_LOOP_CYCLES=3,-DNRF_SD_BLE_API_VERSION=7,-DS112,-DSOFTDEVICE_PRESENT,-DFDS_ENABLED=0,-DNRF_FSTORAGE_ENABLED=0,-D__HEAP_SIZE=0,-D__STACK_SIZE=2048,-DUSE_SYSVIEW,-DNRF_LOG_ENABLED=1,-DBLE_LOG_REDIRECT_ALL_NRF_LOG=0</MiscControls>
+              <Define>APP_TIMER_V2 APP_TIMER_V2_RTC1_ENABLED CONFIG_GPIO_AS_PINRESET DEVELOP_IN_NRF52840 FLOAT_ABI_SOFT NRF52811_XXAA NRFX_COREDEP_DELAY_US_LOOP_CYCLES=3 NRF_DFU_SVCI_ENABLED NRF_DFU_TRANSPORT_BLE=1 NRF_SD_BLE_API_VERSION=7 S112 SOFTDEVICE_PRESENT FDS_ENABLED=0 NRF_FSTORAGE_ENABLED=0 __HEAP_SIZE=0 __STACK_SIZE=2048 USE_SYSVIEW NRF_LOG_ENABLED=1 BLE_LOG_REDIRECT_ALL_NRF_LOG=0 GFX_FIXED_BWR_PANEL=1 GFX_FIXED_FONT_DIRECTION_0=1 GUI_FIXED_PANEL_WIDTH=800 GUI_FIXED_PANEL_HEIGHT=480 CALENDAR_ANNOTATIONS_USE_NRF_CRITICAL=1</Define>
               <Undefine></Undefine>
               <IncludePath>..\config;..\EPD;..\GUI;..\SDK\17.1.0_ddde560;..\SDK\17.1.0_ddde560\components\ble\common;..\SDK\17.1.0_ddde560\components\ble\ble_advertising;..\SDK\17.1.0_ddde560\components\ble\nrf_ble_gatt;..\SDK\17.1.0_ddde560\components\libraries\atomic;..\SDK\17.1.0_ddde560\components\libraries\atomic_fifo;..\SDK\17.1.0_ddde560\components\libraries\atomic_flags;..\SDK\17.1.0_ddde560\components\libraries\balloc;..\SDK\17.1.0_ddde560\components\libraries\delay;..\SDK\17.1.0_ddde560\components\libraries\fstorage;..\SDK\17.1.0_ddde560\components\libraries\fds;..\SDK\17.1.0_ddde560\components\libraries\experimental_section_vars;..\SDK\17.1.0_ddde560\components\libraries\log;..\SDK\17.1.0_ddde560\components\libraries\log\src;..\SDK\17.1.0_ddde560\components\libraries\memobj;..\SDK\17.1.0_ddde560\components\libraries\mutex;..\SDK\17.1.0_ddde560\components\libraries\pwr_mgmt;..\SDK\17.1.0_ddde560\components\libraries\ringbuf;..\SDK\17.1.0_ddde560\components\libraries\sortlist;..\SDK\17.1.0_ddde560\components\libraries\scheduler;..\SDK\17.1.0_ddde560\components\libraries\strerror;..\SDK\17.1.0_ddde560\components\libraries\timer;..\SDK\17.1.0_ddde560\components\libraries\util;..\SDK\17.1.0_ddde560\components\softdevice\common;..\SDK\17.1.0_ddde560\components\softdevice\s112\headers;..\SDK\17.1.0_ddde560\components\softdevice\s112\headers\nrf52;..\SDK\17.1.0_ddde560\components\toolchain\cmsis\include;..\SDK\17.1.0_ddde560\external\fprintf;..\SDK\17.1.0_ddde560\external\segger_rtt;..\SDK\17.1.0_ddde560\integration\nrfx;..\SDK\17.1.0_ddde560\integration\nrfx\legacy;..\SDK\17.1.0_ddde560\modules\nrfx;..\SDK\17.1.0_ddde560\modules\nrfx\mdk;..\SDK\17.1.0_ddde560\modules\nrfx\drivers\include;..\SDK\17.1.0_ddde560\modules\nrfx\hal;..\SystemView</IncludePath>
             </VariousControls>
@@ -514,6 +514,11 @@
               <FilePath>..\GUI\ui_resources.c</FilePath>
             </File>
             <File>
+              <FileName>todo_items.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\GUI\todo_items.c</FilePath>
+            </File>
+            <File>
               <FileName>calendar_annotations.c</FileName>
               <FileType>1</FileType>
               <FilePath>..\GUI\calendar_annotations.c</FilePath>
@@ -523,6 +528,11 @@
               <FileName>Lunar.c</FileName>
               <FileType>1</FileType>
               <FilePath>..\GUI\Lunar.c</FilePath>
+            </File>
+            <File>
+              <FileName>font_geometry.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\GUI\font_geometry.c</FilePath>
             </File>
             <File>
               <FileName>fonts.c</FileName>
@@ -1121,7 +1131,7 @@
               <OCR_RVCT4>
                 <Type>1</Type>
                 <StartAddress>0x19000</StartAddress>
-                <Size>0x17000</Size>
+                <Size>0xe000</Size>
               </OCR_RVCT4>
               <OCR_RVCT5>
                 <Type>1</Type>
@@ -1182,7 +1192,7 @@
             <v6Rtti>0</v6Rtti>
             <VariousControls>
               <MiscControls>--locale=english --reduce_paths</MiscControls>
-              <Define>APP_TIMER_V2 APP_TIMER_V2_RTC1_ENABLED CONFIG_GPIO_AS_PINRESET DEVELOP_IN_NRF52840 FLOAT_ABI_SOFT NRF52811_XXAA NRFX_COREDEP_DELAY_US_LOOP_CYCLES=3 NRF_DFU_SVCI_ENABLED NRF_DFU_TRANSPORT_BLE=1 NRF_SD_BLE_API_VERSION=7 S112 SOFTDEVICE_PRESENT __HEAP_SIZE=0 __STACK_SIZE=2048 GFX_FIXED_BWR_PANEL=1 GFX_FIXED_FONT_DIRECTION_0=1 GUI_FIXED_PANEL_WIDTH=800 GUI_FIXED_PANEL_HEIGHT=480 CALENDAR_ANNOTATIONS_USE_NRF_CRITICAL=1</Define>
+              <Define>APP_TIMER_V2 APP_TIMER_V2_RTC1_ENABLED CONFIG_GPIO_AS_PINRESET DEVELOP_IN_NRF52840 FLOAT_ABI_SOFT NRF52811_XXAA NRFX_COREDEP_DELAY_US_LOOP_CYCLES=3 NRF_DFU_SVCI_ENABLED NRF_DFU_TRANSPORT_BLE=1 NRF_SD_BLE_API_VERSION=7 S112 SOFTDEVICE_PRESENT FDS_ENABLED=0 NRF_FSTORAGE_ENABLED=0 __HEAP_SIZE=0 __STACK_SIZE=2048 GFX_FIXED_BWR_PANEL=1 GFX_FIXED_FONT_DIRECTION_0=1 GUI_FIXED_PANEL_WIDTH=800 GUI_FIXED_PANEL_HEIGHT=480 CALENDAR_ANNOTATIONS_USE_NRF_CRITICAL=1</Define>
               <Undefine></Undefine>
               <IncludePath>..\;..\EPD;..\GUI;..\SDK\17.1.0_ddde560;..\SDK\17.1.0_ddde560\components\ble\common;..\SDK\17.1.0_ddde560\components\ble\ble_advertising;..\SDK\17.1.0_ddde560\components\ble\nrf_ble_gatt;..\SDK\17.1.0_ddde560\components\ble\ble_services\ble_dfu;..\SDK\17.1.0_ddde560\components\libraries\atomic;..\SDK\17.1.0_ddde560\components\libraries\atomic_fifo;..\SDK\17.1.0_ddde560\components\libraries\atomic_flags;..\SDK\17.1.0_ddde560\components\libraries\balloc;..\SDK\17.1.0_ddde560\components\libraries\bootloader;..\SDK\17.1.0_ddde560\components\libraries\bootloader\ble_dfu;..\SDK\17.1.0_ddde560\components\libraries\bootloader\dfu;..\SDK\17.1.0_ddde560\components\libraries\delay;..\SDK\17.1.0_ddde560\components\libraries\fstorage;..\SDK\17.1.0_ddde560\components\libraries\fds;..\SDK\17.1.0_ddde560\components\libraries\experimental_section_vars;..\SDK\17.1.0_ddde560\components\libraries\log;..\SDK\17.1.0_ddde560\components\libraries\log\src;..\SDK\17.1.0_ddde560\components\libraries\memobj;..\SDK\17.1.0_ddde560\components\libraries\mutex;..\SDK\17.1.0_ddde560\components\libraries\pwr_mgmt;..\SDK\17.1.0_ddde560\components\libraries\ringbuf;..\SDK\17.1.0_ddde560\components\libraries\sortlist;..\SDK\17.1.0_ddde560\components\libraries\scheduler;..\SDK\17.1.0_ddde560\components\libraries\strerror;..\SDK\17.1.0_ddde560\components\libraries\svc;..\SDK\17.1.0_ddde560\components\libraries\timer;..\SDK\17.1.0_ddde560\components\libraries\util;..\SDK\17.1.0_ddde560\components\softdevice\common;..\SDK\17.1.0_ddde560\components\softdevice\s112\headers;..\SDK\17.1.0_ddde560\components\softdevice\s112\headers\nrf52;..\SDK\17.1.0_ddde560\components\toolchain\cmsis\include;..\SDK\17.1.0_ddde560\external\fprintf;..\SDK\17.1.0_ddde560\external\segger_rtt;..\SDK\17.1.0_ddde560\integration\nrfx;..\SDK\17.1.0_ddde560\integration\nrfx\legacy;..\SDK\17.1.0_ddde560\modules\nrfx;..\SDK\17.1.0_ddde560\modules\nrfx\mdk;..\SDK\17.1.0_ddde560\modules\nrfx\drivers\include;..\SDK\17.1.0_ddde560\modules\nrfx\hal</IncludePath>
             </VariousControls>
@@ -1199,8 +1209,8 @@
             <useXO>0</useXO>
             <ClangAsOpt>1</ClangAsOpt>
             <VariousControls>
-              <MiscControls>--cpreproc_opts=-DAPP_TIMER_V2,-DAPP_TIMER_V2_RTC1_ENABLED,-DCONFIG_GPIO_AS_PINRESET,-DDEVELOP_IN_NRF52840,-DFLOAT_ABI_SOFT,-DNRF52811_XXAA,-DNRFX_COREDEP_DELAY_US_LOOP_CYCLES=3,-DNRF_SD_BLE_API_VERSION=7,-DS112,-DSOFTDEVICE_PRESENT,-D__HEAP_SIZE=8192,-D__STACK_SIZE=2048</MiscControls>
-              <Define>APP_TIMER_V2 APP_TIMER_V2_RTC1_ENABLED CONFIG_GPIO_AS_PINRESET DEVELOP_IN_NRF52840 FLOAT_ABI_SOFT NRF52811_XXAA NRFX_COREDEP_DELAY_US_LOOP_CYCLES=3 NRF_DFU_SVCI_ENABLED NRF_DFU_TRANSPORT_BLE=1 NRF_SD_BLE_API_VERSION=7 S112 SOFTDEVICE_PRESENT __HEAP_SIZE=0 __STACK_SIZE=2048 GFX_FIXED_BWR_PANEL=1 GFX_FIXED_FONT_DIRECTION_0=1 GUI_FIXED_PANEL_WIDTH=800 GUI_FIXED_PANEL_HEIGHT=480 CALENDAR_ANNOTATIONS_USE_NRF_CRITICAL=1</Define>
+              <MiscControls>--cpreproc_opts=-DAPP_TIMER_V2,-DAPP_TIMER_V2_RTC1_ENABLED,-DCONFIG_GPIO_AS_PINRESET,-DDEVELOP_IN_NRF52840,-DFLOAT_ABI_SOFT,-DNRF52811_XXAA,-DNRFX_COREDEP_DELAY_US_LOOP_CYCLES=3,-DNRF_SD_BLE_API_VERSION=7,-DS112,-DSOFTDEVICE_PRESENT,-DFDS_ENABLED=0,-DNRF_FSTORAGE_ENABLED=0,-D__HEAP_SIZE=0,-D__STACK_SIZE=2048</MiscControls>
+              <Define>APP_TIMER_V2 APP_TIMER_V2_RTC1_ENABLED CONFIG_GPIO_AS_PINRESET DEVELOP_IN_NRF52840 FLOAT_ABI_SOFT NRF52811_XXAA NRFX_COREDEP_DELAY_US_LOOP_CYCLES=3 NRF_DFU_SVCI_ENABLED NRF_DFU_TRANSPORT_BLE=1 NRF_SD_BLE_API_VERSION=7 S112 SOFTDEVICE_PRESENT FDS_ENABLED=0 NRF_FSTORAGE_ENABLED=0 __HEAP_SIZE=0 __STACK_SIZE=2048 GFX_FIXED_BWR_PANEL=1 GFX_FIXED_FONT_DIRECTION_0=1 GUI_FIXED_PANEL_WIDTH=800 GUI_FIXED_PANEL_HEIGHT=480 CALENDAR_ANNOTATIONS_USE_NRF_CRITICAL=1</Define>
               <Undefine></Undefine>
               <IncludePath>..\config;..\EPD;..\GUI;..\SDK\17.1.0_ddde560;..\SDK\17.1.0_ddde560\components\ble\common;..\SDK\17.1.0_ddde560\components\ble\ble_advertising;..\SDK\17.1.0_ddde560\components\ble\nrf_ble_gatt;..\SDK\17.1.0_ddde560\components\libraries\atomic;..\SDK\17.1.0_ddde560\components\libraries\atomic_fifo;..\SDK\17.1.0_ddde560\components\libraries\atomic_flags;..\SDK\17.1.0_ddde560\components\libraries\balloc;..\SDK\17.1.0_ddde560\components\libraries\delay;..\SDK\17.1.0_ddde560\components\libraries\fstorage;..\SDK\17.1.0_ddde560\components\libraries\fds;..\SDK\17.1.0_ddde560\components\libraries\experimental_section_vars;..\SDK\17.1.0_ddde560\components\libraries\log;..\SDK\17.1.0_ddde560\components\libraries\log\src;..\SDK\17.1.0_ddde560\components\libraries\memobj;..\SDK\17.1.0_ddde560\components\libraries\mutex;..\SDK\17.1.0_ddde560\components\libraries\pwr_mgmt;..\SDK\17.1.0_ddde560\components\libraries\ringbuf;..\SDK\17.1.0_ddde560\components\libraries\sortlist;..\SDK\17.1.0_ddde560\components\libraries\scheduler;..\SDK\17.1.0_ddde560\components\libraries\strerror;..\SDK\17.1.0_ddde560\components\libraries\timer;..\SDK\17.1.0_ddde560\components\libraries\util;..\SDK\17.1.0_ddde560\components\softdevice\common;..\SDK\17.1.0_ddde560\components\softdevice\s112\headers;..\SDK\17.1.0_ddde560\components\softdevice\s112\headers\nrf52;..\SDK\17.1.0_ddde560\components\toolchain\cmsis\include;..\SDK\17.1.0_ddde560\external\fprintf;..\SDK\17.1.0_ddde560\external\segger_rtt;..\SDK\17.1.0_ddde560\integration\nrfx;..\SDK\17.1.0_ddde560\integration\nrfx\legacy;..\SDK\17.1.0_ddde560\modules\nrfx;..\SDK\17.1.0_ddde560\modules\nrfx\mdk;..\SDK\17.1.0_ddde560\modules\nrfx\drivers\include;..\SDK\17.1.0_ddde560\modules\nrfx\hal</IncludePath>
             </VariousControls>
@@ -1359,6 +1369,11 @@
               <FilePath>..\GUI\ui_resources.c</FilePath>
             </File>
             <File>
+              <FileName>todo_items.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\GUI\todo_items.c</FilePath>
+            </File>
+            <File>
               <FileName>calendar_annotations.c</FileName>
               <FileType>1</FileType>
               <FilePath>..\GUI\calendar_annotations.c</FilePath>
@@ -1368,6 +1383,11 @@
               <FileName>Lunar.c</FileName>
               <FileType>1</FileType>
               <FilePath>..\GUI\Lunar.c</FilePath>
+            </File>
+            <File>
+              <FileName>font_geometry.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\GUI\font_geometry.c</FilePath>
             </File>
             <File>
               <FileName>fonts.c</FileName>

@@ -8,7 +8,8 @@
 <script src="../html/js/font_builder.js"></script>
 <script>
 (async () => {
-  const out = document.getElementById('out'), evidence = [];
+  const out = document.getElementById('out'), evidence = [], styled = [];
+  let styledPackBase64 = '';
   const check = (name, valid) => { if (!valid) throw new Error(name); };
   try {
     const template = await (await fetch('../html/resources/default-project.json')).json();
@@ -37,15 +38,37 @@
     check('all characters present after generation', EPDWebFonts.gatherMissing(generated.fonts, requests).length === 0);
     const pack = EPDResourceBuilder.encodeFonts(generated.fonts);
     EPDResourceBuilder.decodeFonts(pack);
+    for (const fontFamily of ['SimSun', 'Microsoft YaHei']) for (const fontSize of [9, 12, 16, 20, 24, 32])
+      for (const fontBold of [false, true]) for (const fontItalic of [false, true]) {
+      const request = { slot: 3, sourceSlot: fontSize === 9 ? 0 : 1, fontFamily,
+        fontSize, fontBold, fontItalic, text: ' ...待馨龘fj' };
+      const result = await EPDWebFonts.extendFonts(fonts, [request]);
+      const payload = EPDResourceBuilder.encodeFonts(result.fonts), decoded = EPDResourceBuilder.decodeFonts(payload);
+      check('styled glyphs all present', EPDWebFonts.gatherMissing(decoded, [request]).length === 0);
+      check('styled key matches settings', decoded.customKey === EPDResourceBuilder.todoFontKey(fontFamily, fontSize, fontBold, fontItalic));
+      const metrics = [];
+      for (const char of '待馨龘fj') {
+        const code = char.codePointAt(0), header = decoded[3].slice(0, 23);
+        const glyph = await EPDWebFonts.rasterizeGlyph(code, request.sourceSlot, header, request);
+        const record = EPDWebFonts.encodeGlyph(header, code, glyph), roundtrip = EPDWebFonts.decodeGlyph(header, code, record);
+        check(`${char} styled metrics round trip`, ['width', 'height', 'x', 'y', 'advance'].every(key => glyph[key] === roundtrip[key]));
+        check(`${char} styled pixels round trip`, glyph.pixels.every((pixel, i) => pixel === roundtrip.pixels[i]));
+        metrics.push({ char, width: glyph.width, height: glyph.height, x: glyph.x, y: glyph.y,
+          advance: glyph.advance, recordBytes: record.length, inkPixels: glyph.pixels.reduce((sum, pixel) => sum + pixel, 0) });
+      }
+      styled.push({ fontFamily, fontSize, fontBold, fontItalic, metrics, key: decoded.customKey, packBytes: payload.length });
+      if (fontFamily === 'Microsoft YaHei' && fontSize === 32 && fontBold && fontItalic)
+        styledPackBase64 = btoa(String.fromCharCode(...payload));
+    }
     let unsupportedReason = '';
     try { await EPDWebFonts.rasterizeGlyph(0x0378, 0, fonts[0].slice(0, 23)); }
     catch (error) { unsupportedReason = error.message; }
     check('notdef glyph rejected', /不支持|缺字/.test(unsupportedReason));
     out.textContent = 'PASS: real Canvas Chinese fonts, compact metrics and codec round trip\n' +
       JSON.stringify({ browser: navigator.userAgent, generated: generated.added,
-        packBytes: pack.length, packBase64: btoa(String.fromCharCode(...pack)), unsupportedReason, evidence }, null, 2);
+        packBytes: pack.length, packBase64: btoa(String.fromCharCode(...pack)), unsupportedReason, evidence, styled, styledPackBase64 }, null, 2);
   } catch (error) {
-    out.textContent = 'FAIL: ' + error.message + '\n' + JSON.stringify(evidence, null, 2);
+    out.textContent = 'FAIL: ' + error.message + '\n' + JSON.stringify({ evidence, styled }, null, 2);
   }
 })().catch(error => { document.getElementById('out').textContent = 'FAIL: ' + error.stack; });
 </script>

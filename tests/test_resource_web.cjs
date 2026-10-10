@@ -11,9 +11,11 @@ function wrap(id, payload) {
   v.setUint32(24, crc32(b.subarray(0, 24)), true); v.setUint32(28, 0xa55ac33c, true);
   return b;
 }
-function tableBytes() {
-  const b = new Uint8Array(layout.partitions.length * 16), v = new DataView(b.buffer);
-  layout.partitions.forEach((p, i) => {
+function tableBytes({ todo = true } = {}) {
+  const entries = layout.partitions.filter(partition => todo || partition.id !== 9).map(partition =>
+    !todo && partition.id === 8 ? { ...partition, offset: '0x58000', size_bytes: 163840 } : partition);
+  const b = new Uint8Array(entries.length * 16), v = new DataView(b.buffer);
+  entries.forEach((p, i) => {
     v.setUint16(i * 16, p.id, true); v.setUint16(i * 16 + 2, p.id, true);
     v.setUint32(i * 16 + 4, Number(p.offset), true); v.setUint32(i * 16 + 8, p.size_bytes, true);
     v.setUint16(i * 16 + 12, 1, true);
@@ -56,15 +58,18 @@ function packageBytes() {
   view.setUint32(28, 0xa55ac33c, true);
   return b;
 }
-function completeBundle() {
-  return [
+function completeBundle({ todo = false, legacy = false } = {}) {
+  const entries = [
     { name: 'calendar-annotations.ers', bytes: wrap(3, Uint8Array.of(3)) },
     { name: 'fonts.ers', bytes: wrap(7, Uint8Array.of(7)) },
-    { name: 'partition-table.ers', bytes: tableBytes() },
+    { name: 'partition-table.ers', bytes: tableBytes({ todo: !legacy }) },
     { name: 'ui.ers', bytes: wrap(6, Uint8Array.of(6)) },
     { name: 'epd-config.ers', bytes: packageBytes() },
     { name: 'calendar.ers', bytes: wrap(5, Uint8Array.of(5)) },
   ];
+  if (todo) entries.push({ name: 'todo.ers', bytes: wrap(9,
+    require('../html/js/todo_calendar.js').pack({ items: [], limit: 5, fontSize: 12 })) });
+  return entries;
 }
 test('CRC and package rejects corruption/truncation', () => {
   assert.equal(crc32(Buffer.from('123456789')), 0xcbf43926);
@@ -76,12 +81,22 @@ test('CRC and package rejects corruption/truncation', () => {
 test('one-click bundle is complete, validated and sorted in safe install order', () => {
   const result = prepareBundle(completeBundle());
   assert.deepEqual(result.packages.map(item => item.pack.id), [1, 5, 6, 7, 2, 3]);
-  assert.equal(result.partitions.length, 8);
+  assert.equal(result.partitions.length, 9);
   assert.equal(result.total, parsePackage(tableBytes()).payload.length + 33);
 
   assert.throws(() => prepareBundle(completeBundle().slice(1)), /缺少/);
   assert.throws(() => prepareBundle([...completeBundle(), { name: 'duplicate.ers', bytes: wrap(2, Uint8Array.of(2)) }]), /重复/);
-  assert.throws(() => prepareBundle([...completeBundle().slice(0, -1), { name: 'unsupported.ers', bytes: wrap(9, Uint8Array.of(9)) }]), /缺少|不支持/);
+  assert.throws(() => prepareBundle([...completeBundle(), { name: 'unsupported.ers', bytes: wrap(10, Uint8Array.of(10)) }]), /不支持/);
+});
+
+test('both legacy six-package projects and optional todo backups prepare successfully', () => {
+  const old = prepareBundle(completeBundle({ legacy: true }));
+  assert.equal(old.packages.length, 6); assert.equal(old.partitions.length, 8);
+  assert.equal(old.partitions.some(partition => partition.id === 9), false);
+  const modern = prepareBundle(completeBundle({ todo: true }));
+  assert.deepEqual(modern.packages.map(item => item.pack.id), [1, 5, 6, 7, 2, 3, 9]);
+  assert.equal(modern.partitions.find(partition => partition.id === 9).size, 4096);
+  assert.throws(() => prepareBundle(completeBundle({ legacy: true, todo: true })), /不存在目标分区/);
 });
 test('install plan initializes blank Flash and preserves the table and personal data on existing devices', () => {
   const bundle = prepareBundle(completeBundle());
@@ -89,6 +104,11 @@ test('install plan initializes blank Flash and preserves the table and personal 
   assert.deepEqual(installationPlan(bundle, 4, null).map(item => item.pack.id), [1, 5, 6, 7, 2, 3]);
   assert.deepEqual(installationPlan(bundle, 0, partitions).map(item => item.pack.id), [5, 6, 7]);
   assert.throws(() => installationPlan(bundle, 3, partitions), /不能按空白/);
+  const withTodos = prepareBundle(completeBundle({ todo: true }));
+  assert.deepEqual(installationPlan(withTodos, 4, null).map(item => item.pack.id), [1, 5, 6, 7, 2, 3, 9]);
+  assert.deepEqual(installationPlan(withTodos, 0, partitions).map(item => item.pack.id), [5, 6, 7]);
+  const legacy = parseTable(parsePackage(tableBytes({ todo: false })));
+  assert.deepEqual(installationPlan(withTodos, 0, legacy).map(item => item.pack.id), [5, 6, 7]);
 });
 test('upload uses stop-and-wait packets bounded to default ATT payload', async () => {
   const { client, packets } = deviceClient();
@@ -307,7 +327,7 @@ test('new installer applies without reset, syncs time before offline and keeps t
 test('actual device partition table is read and validated; payload export verifies full CRC', async () => {
   const { client, memory } = deviceClient();
   const entries = await client.partitions();
-  assert.equal(entries.length, 8);
+  assert.equal(entries.length, 9);
   assert.equal(entries.find(p => p.id === 7).size, 262144);
   const p = entries.find(p => p.id === 2);
   assert.deepEqual(await client.readPackage(p), packageBytes());
@@ -334,12 +354,22 @@ test('bad, overlapping, duplicate and incompatible partition tables fail before 
 });
 
 test('missing partition, reserved regions and oversized packages are refused before ENTER', async () => {
-  for (const b of [wrap(4, Uint8Array.of(1)), wrap(8, Uint8Array.of(1)), wrap(9, Uint8Array.of(1)), wrap(2, new Uint8Array(4065))]) {
+  for (const b of [wrap(4, Uint8Array.of(1)), wrap(8, Uint8Array.of(1)), wrap(10, Uint8Array.of(1)), wrap(2, new Uint8Array(4065)), wrap(9, new Uint8Array(4065))]) {
     const { client, packets } = deviceClient();
     await assert.rejects(client.upload(b));
     assert.ok(packets.every(p => p[1] < 2));
   }
   assert.throws(() => validateTarget(parsePackage(packageBytes()), []), /先安装/);
+  const old = deviceClient({ table: tableBytes({ todo: false }) });
+  await assert.rejects(old.client.upload(wrap(9, Uint8Array.of(9))), /不存在目标分区/);
+  assert.ok(old.packets.every(packet => packet[1] < 2));
+});
+
+test('the new todo resource is writable only through its declared partition', async () => {
+  const { client, packets } = deviceClient();
+  await client.upload(completeBundle({ todo: true }).find(item => item.name === 'todo.ers').bytes);
+  assert.ok(packets.some(packet => packet[1] === 2 && packet[3] === 9));
+  assert.ok(packets.some(packet => packet[1] === 4));
 });
 
 test('firmware can repair absent table, but cannot upload other resources without it', async () => {
@@ -629,6 +659,7 @@ test('device usage counts verified package headers and leaves corrupt or absent 
       if (id === 6) return { code: 3 };
       if (id === 7) return { code: 4 };
       const pack = completeBundle().map(item => parsePackage(item.bytes)).find(item => item.id === id);
+      if (!pack) return { code: 4 };
       return { code: 0, revision: pack.revision, length: pack.payload.length, crc: pack.crc };
     }
     disconnect() {}
@@ -636,7 +667,7 @@ test('device usage counts verified package headers and leaves corrupt or absent 
   const { installer, node } = installerFixture(Client);
   installer.bind({});
   await installer.refresh();
-  assert.deepEqual(inspected, [1, 2, 3, 5, 6, 7]);
+  assert.deepEqual(inspected, [1, 2, 3, 5, 6, 7, 9]);
   const usage = node('externalResourceUsage').textContent;
   assert.match(usage, /设备读回/);
   assert.match(usage, /日历资源：占用 33 B/);
@@ -644,6 +675,7 @@ test('device usage counts verified package headers and leaves corrupt or absent 
   assert.match(usage, /字体资源：256 KiB · 占用与余量未确认/);
   assert.match(node('deviceResourceVersions').textContent, /UI 布局：—.*校验失败/);
   assert.match(node('deviceResourceVersions').textContent, /字体资源：—.*未安装或未提交/);
+  assert.match(node('deviceResourceVersions').textContent, /待办事项：—.*未安装或未提交/);
 });
 
 test('legacy package headers do not claim verified CRC or confirmed free space', async () => {
@@ -654,7 +686,8 @@ test('legacy package headers do not claim verified CRC or confirmed free space',
     readRange(offset) {
       const id = this.partitions().find(item => item.offset === offset).id;
       reads.push(id);
-      return completeBundle().find(item => parsePackage(item.bytes).id === id).bytes.subarray(0, 32);
+      const item = completeBundle().find(item => parsePackage(item.bytes).id === id);
+      return item ? item.bytes.subarray(0, 32) : new Uint8Array(32).fill(255);
     }
     disconnect() {}
   }
@@ -662,7 +695,7 @@ test('legacy package headers do not claim verified CRC or confirmed free space',
   await installer.loadBundle(completeBundle(), 'local');
   installer.bind({});
   await installer.refresh();
-  assert.deepEqual(reads, [1, 2, 3, 5, 6, 7]);
+  assert.deepEqual(reads, [1, 2, 3, 5, 6, 7, 9]);
   assert.match(node('externalResourceUsage').textContent, /资源占用 未确认，资源分区余量 未确认/);
   assert.match(node('externalResourceUsage').textContent, /包头申报 33 B/);
   assert.match(node('deviceResourceVersions').textContent, /仅读包头/);
@@ -675,6 +708,7 @@ test('local loading preserves device figures and compares both CRC and length', 
     partitions() { return parseTable(parsePackage(tableBytes())); }
     inspect(id) {
       const pack = completeBundle().map(item => parsePackage(item.bytes)).find(item => item.id === id);
+      if (!pack) return { code: 4 };
       return { code: 0, revision: 2, length: pack.payload.length + (id === 5 ? 1 : 0),
         crc: id === 6 ? pack.crc ^ 1 : pack.crc };
     }
@@ -707,6 +741,7 @@ test('upload marks a previously read device snapshot as requiring refresh', asyn
     partitions() { return parseTable(parsePackage(tableBytes())); }
     inspect(id) {
       const pack = completeBundle().map(item => parsePackage(item.bytes)).find(item => item.id === id);
+      if (!pack) return { code: 4 };
       return { code: 0, revision: 1, length: pack.payload.length, crc: pack.crc };
     }
     async upload() {}
@@ -724,25 +759,62 @@ test('upload marks a previously read device snapshot as requiring refresh', asyn
   assert.doesNotMatch(node('deviceResourceVersions').textContent, /内容一致/);
 });
 
-function readbackDevice({ beforeReply = async () => {}, code = 0, active = 0 } = {}) {
+test('forced resource installation preserves existing todo bytes from a seven-package project', async () => {
+  const files = completeBundle({ todo: true }), stored = new Map(files.map(item => [parsePackage(item.bytes).id, item.bytes]));
+  const todo = stored.get(9).slice(), uploads = [];
+  class Client {
+    status() { const bytes = statusBytes(0); bytes[4] = 0x13; return bytes; }
+    partitions() { return parseTable(parsePackage(stored.get(1))); }
+    inspect(id) {
+      const pack = parsePackage(stored.get(id));
+      return { code: 0, revision: pack.revision, length: pack.payload.length, crc: pack.crc };
+    }
+    async upload(bytes) { const id = parsePackage(bytes).id; uploads.push(id); stored.set(id, bytes); }
+    async leave() {}
+    disconnect() {}
+  }
+  const { installer, node } = installerFixture(Client);
+  await installer.loadBundle(files, 'with-todos'); installer.bind({});
+  node('externalResourceForce').checked = true;
+  await installer.install();
+  assert.deepEqual(uploads, [5, 6, 7]);
+  assert.deepEqual(stored.get(9), todo);
+});
+
+function readbackDevice({ beforeReply = async () => {}, code = 0, active = 0, todo = 'missing', legacy = false, verify = !legacy } = {}) {
   const fixture = installerFixture();
-  const partitions = parseTable(parsePackage(tableBytes()));
+  const partitions = parseTable(parsePackage(tableBytes({ todo: !legacy })));
   const memory = new Uint8Array(524288).fill(255), packets = [];
-  const deviceFiles = completeBundle().map(item => {
+  const deviceFiles = completeBundle({ todo: todo === 'present' || todo === 'corrupt', legacy }).map(item => {
     const bytes = item.bytes.slice(), view = new DataView(bytes.buffer);
     view.setUint32(8, 9, true); view.setUint32(24, crc32(bytes.subarray(0, 24)), true);
     const partition = partitions.find(p => p.id === parsePackage(bytes).id);
     memory.set(bytes, partition.offset);
     return { name: item.name, bytes };
   });
+  if (todo === 'corrupt') memory[partitions.find(partition => partition.id === 9).offset + 32] ^= 1;
   const connection = { async writeValueWithResponse(packet) {
     packets.push(packet);
     await beforeReply(packet);
     let reply;
-    if (packet[1] === 0) { reply = statusBytes(packet[2], code); reply[6] = active; }
+    if (packet[1] === 0) {
+      reply = statusBytes(packet[2], code); reply[6] = active;
+      if (verify) reply[4] |= 16;
+    }
     else if (packet[1] === 1) {
       const offset = new DataView(packet.buffer, packet.byteOffset, packet.byteLength).getUint32(3, true);
       reply = Uint8Array.of(0xa7, 1, packet[2], 0, ...memory.subarray(offset, offset + packet[7]));
+    } else if (packet[1] === 9) {
+      const partition = partitions.find(item => item.id === packet[3]);
+      try {
+        const header = parseHeader(memory.subarray(partition.offset, partition.offset + 32), partition);
+        const pack = parsePackage(memory.subarray(partition.offset, partition.offset + 32 + header.length));
+        reply = new Uint8Array(16); reply.set([0xa7, 9, packet[2], 0]);
+        const view = new DataView(reply.buffer);
+        view.setUint32(4, pack.revision, true); view.setUint32(8, pack.payload.length, true); view.setUint32(12, pack.crc, true);
+      } catch (error) {
+        reply = Uint8Array.of(0xa7, 9, packet[2], /未安装或未提交/.test(error.message) ? 4 : 3);
+      }
     } else throw new Error('Readback must not mutate the device');
     fixture.installer.notification(reply);
   } };
@@ -773,7 +845,7 @@ test('readback downloads verified device bytes independently of the selected loc
   assert.equal(node('externalResourceProgress').value, 1);
   assert.match(node('deviceResourceVersions').textContent, /日历资源：v9/);
   assert.match(node('externalResourceReadbackStatus').textContent, /6 个资源包.*CRC 校验通过/);
-  assert.ok(packets.every(packet => [0, 1].includes(packet[1])));
+  assert.ok(packets.every(packet => [0, 1, 9].includes(packet[1])));
   installer.disconnect();
   assert.equal(node('externalResourceSave').disabled, false);
   const capture = captureReadbackDownload(fixture);
@@ -789,6 +861,70 @@ test('readback downloads verified device bytes independently of the selected loc
   assert.ok(manifest.resources.every(item => item.revision === 9));
   assert.equal(manifest.flashCapacity, 524288);
   assert.deepEqual(capture.revoked, ['blob:readback', 'blob:readback']);
+});
+
+test('legacy devices export the original six packages without requiring todo inspection', async () => {
+  const fixture = readbackDevice({ legacy: true });
+  await fixture.installer.readback();
+  assert.equal(fixture.node('externalResourceSave').disabled, false);
+  assert.ok(fixture.packets.every(packet => [0, 1].includes(packet[1])));
+  const capture = captureReadbackDownload(fixture); fixture.installer.saveReadback();
+  assert.equal(capture.downloads.length, 1);
+  const files = capture.archives[0].filter(item => item.name.endsWith('.ers'));
+  assert.equal(files.length, 6); assert.equal(files.some(item => item.name === 'todo.ers'), false);
+  const prepared = prepareBundle(files);
+  assert.equal(prepared.partitions.length, 8); assert.equal(prepared.packages.length, 6);
+});
+
+test('valid optional todo data is included byte for byte in the seven-package backup', async () => {
+  const fixture = readbackDevice({ todo: 'present' });
+  await fixture.installer.readback();
+  assert.equal(fixture.node('externalResourceSave').disabled, false);
+  assert.match(fixture.node('externalResourceReadbackStatus').textContent, /7 个资源包/);
+  assert.ok(fixture.packets.some(packet => packet[1] === 9 && packet[3] === 9));
+  assert.ok(fixture.packets.every(packet => [0, 1, 9].includes(packet[1])));
+  const capture = captureReadbackDownload(fixture); fixture.installer.saveReadback();
+  assert.equal(capture.downloads.length, 1);
+  const archive = capture.archives[0];
+  const saved = archive.find(item => item.name === 'todo.ers');
+  assert.deepEqual(saved.bytes, fixture.deviceFiles.find(item => item.name === 'todo.ers').bytes);
+  const manifest = JSON.parse(new TextDecoder().decode(archive.find(item => item.name === 'manifest.json').bytes));
+  assert.equal(manifest.resources.length, 7);
+  assert.equal(manifest.resources.find(item => item.id === 9).revision, 9);
+  assert.equal(prepareBundle(archive.filter(item => item.name.endsWith('.ers'))).packages.length, 7);
+});
+
+test('corrupt optional todo data prevents export rather than silently dropping personal tasks', async () => {
+  const fixture = readbackDevice({ todo: 'corrupt' });
+  await fixture.installer.readback();
+  assert.equal(fixture.node('externalResourceSave').disabled, true);
+  assert.match(fixture.node('externalResourceReadbackStatus').textContent, /待办资源校验失败/);
+  const capture = captureReadbackDownload(fixture); fixture.installer.saveReadback();
+  assert.equal(capture.downloads.length, 0);
+});
+
+test('firmware without VERIFY backs up optional todo using local CRC checks', async () => {
+  for (const todo of ['present', 'missing']) {
+    const fixture = readbackDevice({ verify: false, todo });
+    await fixture.installer.readback();
+    assert.equal(fixture.node('externalResourceSave').disabled, false);
+    assert.ok(fixture.packets.every(packet => [0, 1].includes(packet[1])));
+    const capture = captureReadbackDownload(fixture); fixture.installer.saveReadback();
+    const files = capture.archives[0].filter(item => item.name.endsWith('.ers'));
+    assert.equal(files.length, todo === 'present' ? 7 : 6);
+    const saved = files.find(item => item.name === 'todo.ers');
+    if (todo === 'present') assert.deepEqual(saved.bytes, fixture.deviceFiles.find(item => item.name === 'todo.ers').bytes);
+    else assert.equal(saved, undefined);
+  }
+});
+
+test('local CRC failure on optional todo also blocks backup without VERIFY', async () => {
+  const fixture = readbackDevice({ verify: false, todo: 'corrupt' });
+  await fixture.installer.readback();
+  assert.equal(fixture.node('externalResourceSave').disabled, true);
+  assert.match(fixture.node('externalResourceReadbackStatus').textContent, /待办事项回读失败.*CRC/);
+  const capture = captureReadbackDownload(fixture); fixture.installer.saveReadback();
+  assert.equal(capture.downloads.length, 0);
 });
 
 test('readback holds the device operation lock and disables competing resource actions', async () => {
@@ -862,8 +998,9 @@ test('replacing a connection rejects late readback results and clears successful
   const started = deferred(), release = deferred();
   let wait = false;
   class Client {
-    status() { return statusBytes(0); }
+    status() { const bytes = statusBytes(0); bytes[4] |= 16; return bytes; }
     partitions() { return parseTable(parsePackage(tableBytes())); }
+    inspect(id) { assert.equal(id, 9); return { code: 4 }; }
     async readPackage(partition) {
       if (wait && partition.id === 7) { started.resolve(); await release.promise; }
       return completeBundle().find(item => parsePackage(item.bytes).id === partition.id).bytes;

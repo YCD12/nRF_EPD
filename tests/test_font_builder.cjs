@@ -253,6 +253,41 @@ test('browser rasterizer awaits fonts, uses compact baseline metrics and detects
   await assert.rejects(codec.rasterizeGlyph(0x9f98, 0, header, { document: {} }), /Canvas/);
 });
 
+test('large TODO headers encode full glyph bounds with negative italic bearings without touching base fonts', async () => {
+  const original = baseFonts(), snapshots = original.map(font => font.slice());
+  for (const size of [9, 12, 16, 20, 24, 32]) {
+    const px = Math.ceil(size * 4 / 3), desc = Math.ceil(px / 3), overhang = Math.ceil(px / 4);
+    const bitmap = { ...glyph(px + overhang, px + desc, (x, y) => x === y || x === px + overhang - 1 - y || y % 8 === 0),
+      x: -overhang, y: -desc, advance: px + 1 };
+    const request = { slot: 3, sourceSlot: 1, fontFamily: '', fontSize: size, fontBold: true, fontItalic: true, text: '年' };
+    const result = await codec.extendFonts(original, [request], { rasterize: async (code, slot, header, options) => {
+      assert.equal(slot, 1); assert.equal(options.fontFamily, ''); assert.equal(options.fontSize, size);
+      assert.equal(options.fontBold, true); assert.equal(options.fontItalic, true);
+      assert.deepEqual(Array.from(header.subarray(4, 9)), [7, 7, 8, 8, 8]); return bitmap;
+    } });
+    assert.equal(result.fonts.customKey, builder.todoFontKey('', size, true, true));
+    const font = result.fonts[3], record = records(font).get('年'.codePointAt(0));
+    assert.deepEqual(decode(font, '年'.codePointAt(0), record), bitmap);
+    assert.deepEqual(builder.decodeFonts(builder.encodeFonts(result.fonts)), result.fonts);
+    original.forEach((font, slot) => { assert.equal(result.fonts[slot], font); assert.deepEqual(font, snapshots[slot]); });
+  }
+});
+
+test('browser TODO glyphs rasterize actual bold and italic at point-derived pixels and retain negative bearings', async () => {
+  const fonts = (await codec.extendFonts(baseFonts(), [{ slot: 3, sourceSlot: 1, fontFamily: '', fontSize: 32,
+    fontBold: true, fontItalic: true, text: '年' }], { rasterize: async () => glyph(1, 1, () => 1) })).fonts;
+  const target = { ...glyph(3, 4, () => 1), x: -2, y: -1, advance: 30 };
+  const f = browserFixture({ '年': target, tofu: glyph(4, 4, (x, y) => x === y) });
+  const result = await codec.rasterizeGlyph('年'.codePointAt(0), 1, fonts[3], {
+    document: f.document, fontFamily: 'SimSun', fontSize: 32, fontBold: true, fontItalic: true,
+  });
+  assert.deepEqual(result, target); assert.equal(f.context.font, 'italic bold 43px SimSun');
+  const huge = browserFixture({ '年': { ...glyph(55, 44, () => 1), advance: 43 }, tofu: glyph(4, 4) });
+  await assert.rejects(codec.rasterizeGlyph('年'.codePointAt(0), 1, fonts[3], {
+    document: huge.document, fontSize: 32, fontBold: true, fontItalic: true,
+  }), /超出字体槽位/);
+});
+
 test('browser UMD exposes the same API without Node dependencies', () => {
   const context = { EPDResourceBuilder: builder, Uint8Array };
   vm.runInNewContext(fs.readFileSync(require.resolve('../html/js/font_builder.js'), 'utf8'), context);

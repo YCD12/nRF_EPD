@@ -1,13 +1,13 @@
 (function (root) {
   'use strict';
   const api = root.EPDResourceStore;
-  const names = { 1: '分区表', 2: '设备配置', 3: '日期标注', 4: '更新状态', 5: '日历资源', 6: 'UI 布局', 7: '字体资源', 8: '保留区' };
+  const names = { 1: '分区表', 2: '设备配置', 3: '日期标注', 4: '更新状态', 5: '日历资源', 6: 'UI 布局', 7: '字体资源', 8: '保留区', 9: '待办事项' };
   function formatSize(bytes) {
     if (bytes < 1024) return `${bytes} B`;
     const kib = bytes / 1024;
     return `${kib >= 100 ? Math.round(kib) : kib.toFixed(1)} KiB`;
   }
-  const resourceIds = new Set([1, 2, 3, 5, 6, 7]);
+  const resourceIds = new Set([1, 2, 3, 5, 6, 7, 9]);
   function isResource(partition) { return resourceIds.has(partition.id) && partition.type !== 8; }
   function element(tag, className, text) {
     const node = document.createElement(tag);
@@ -295,6 +295,39 @@
     }
   }
 
+  async function todoOperation(action, parent = null) {
+    const session = client;
+    if (running || !session || !root.EPDTodoSync) throw new Error('待办资源模块或设备连接不可用');
+    const owner = parent || root.DeviceOperations?.begin('todos');
+    try {
+      if (owner) root.DeviceOperations.assert(owner);
+      session.owner = owner;
+      running = true; controls();
+      const assertCurrent = () => { ensureCurrent(session); if (owner) root.DeviceOperations.assert(owner); };
+      return await action(session, {
+        assertCurrent, onWrite: markResourcesChanged,
+        validate: bytes => root.TodoCalendar.unpack(bytes),
+        ensureFonts: requests => root.EPDFontSync.ensure(session, requests, {
+          assertCurrent, progress: action.progress || (() => {}), onWrite: markResourcesChanged, deferApply: true
+        })
+      });
+    } finally {
+      if (session.owner === owner) session.owner = null;
+      if (session === client) { running = false; controls(); }
+      if (!parent && owner) root.DeviceOperations.end(owner);
+    }
+  }
+
+  async function saveTodo(bytes, requests, parent = null, progress = () => {}) {
+    const action = (session, options) => root.EPDTodoSync.save(session, bytes, requests, { ...options, progress });
+    action.progress = progress;
+    return todoOperation(action, parent);
+  }
+
+  async function readTodo(parent = null) {
+    return todoOperation((session, options) => root.EPDTodoSync.read(session, options), parent);
+  }
+
   async function readStatus(silent = false, session = client) {
     ensureCurrent(session);
     const status = api.parseStatus(await session.status());
@@ -389,15 +422,37 @@
       if (status.code !== 0) throw new Error(`分区表${api.statusName(status.code)}，无法完整回读资源`);
       const partitions = await session.partitions();
       ensureCurrent(session);
+      const files = readbackFiles.slice();
+      const todoPartition = partitions.find(partition => partition.id === 9 && isResource(partition));
+      if (todoPartition) {
+        let installed;
+        if (status.verify) {
+          const todo = await session.inspect(9);
+          ensureCurrent(session);
+          if (!todo || ![0, 4].includes(todo.code)) throw new Error('待办资源校验失败');
+          installed = todo.code === 0;
+        } else {
+          // Older firmware can still back up a new partition table. The
+          // readPackage loop below checks the complete payload CRC locally.
+          const header = await session.readRange(todoPartition.offset, 32);
+          ensureCurrent(session);
+          try { api.parseHeader(header, todoPartition); installed = true; }
+          catch (error) {
+            if (!/未安装或未提交/.test(error.message)) throw error;
+            installed = false;
+          }
+        }
+        if (installed) files.push({ id: 9, name: 'todo.ers' });
+      }
       for (const file of readbackFiles) {
         if (!partitions.some(partition => partition.id === file.id && isResource(partition)))
           throw new Error(`设备分区表缺少${names[file.id]}，无法完整回读资源`);
       }
       const entries = [], modules = new Map();
-      for (const [index, file] of readbackFiles.entries()) {
+      for (const [index, file] of files.entries()) {
         title = names[file.id];
         const partition = partitions.find(item => item.id === file.id);
-        report(`正在回读 ${index + 1}/${readbackFiles.length}：${title}`);
+        report(`正在回读 ${index + 1}/${files.length}：${title}`);
         if (note) note.textContent = `正在回读${title}，完成全部资源校验后可保存。`;
         let lastProgress = 0;
         const bytes = await session.readPackage(partition, (done, total) => {
@@ -405,8 +460,8 @@
           const now = Date.now();
           if (done !== total && now - lastProgress < 100) return;
           lastProgress = now;
-          progress.value = (index + done / total) / readbackFiles.length;
-          $('externalResourceStatus').textContent = `正在回读 ${index + 1}/${readbackFiles.length}：${title} · ${Math.round(done * 100 / total)}%`;
+          progress.value = (index + done / total) / files.length;
+          $('externalResourceStatus').textContent = `正在回读 ${index + 1}/${files.length}：${title} · ${Math.round(done * 100 / total)}%`;
         });
         ensureCurrent(session);
         const pack = api.parsePackage(bytes);
@@ -414,7 +469,7 @@
         if (pack.id !== file.id) throw new Error('回读资源的分区 ID 不匹配');
         entries.push({ name: file.name, bytes, pack });
         modules.set(file.id, { ...pack, length: pack.payload.length, state: 'verified', used: bytes.length });
-        progress.value = (index + 1) / readbackFiles.length;
+        progress.value = (index + 1) / files.length;
       }
       const table = entries.find(item => item.pack.id === 1);
       if (JSON.stringify(api.parseTable(table.pack)) !== JSON.stringify(partitions))
@@ -496,12 +551,13 @@
             report('正在保留设备已补充的字模…');
             const installed = await session.readPackage(fontPartition);
             ensureCurrent(session);
-            const retained = root.EPDFontSync.preserve(fontItem.bytes, installed, current.partitions);
+            const retained = root.EPDFontSync.preserve(fontItem.bytes, installed, current.partitions, { preserveCustom: true });
             if (retained.repair) report('设备字体格式无效，将使用所选字体资源修复');
-            if (retained.added.length) {
+            if (retained.added.length || retained.customPreserved) {
               packages = packages.map(item => item === fontItem
                 ? { ...item, bytes: retained.bytes, pack: api.parsePackage(retained.bytes) } : item);
-              report(`保留了 ${retained.added.length} 个设备字模`);
+              report(retained.customPreserved ? `已保留设备待办字体，保留了 ${retained.added.length} 个设备字模`
+                : `保留了 ${retained.added.length} 个设备字模`);
             }
           }
         }
@@ -689,6 +745,12 @@
           break;
         }
       }
+      if (complete) {
+        try {
+          const response = await fetch(`${prefix}${folder}/todo.ers`, { cache: 'no-store' });
+          if (response.ok) entries.push({ name: 'todo.ers', bytes: new Uint8Array(await response.arrayBuffer()) });
+        } catch (_) { /* Older resource directories have no optional todo package. */ }
+      }
       if (token !== bundleGeneration || running) return;
       if (!complete) continue;
       await loadBundle(entries, `output/${folder}`);
@@ -700,5 +762,5 @@
   renderBundle(); renderUsage(); renderVersions(); renderReadback();
   controls();
   root.ExternalResourceInstaller = { bind, disconnect, notification, refresh, readback, saveReadback, install, runOffline,
-    ensureFonts, loadBundle, controls, getBundle: () => bundle, busy: () => running };
+    ensureFonts, saveTodo, readTodo, loadBundle, controls, getBundle: () => bundle, busy: () => running };
 })(globalThis);

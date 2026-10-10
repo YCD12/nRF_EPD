@@ -7,7 +7,7 @@
 	<title>墨水屏控制台</title>
 	<link rel="shortcut icon" type="image/png" href="favicon.png">
 	<meta name="theme-color" content="#2563eb">
-	<link rel="stylesheet" href="css/main.css?v=20261005d">
+	<link rel="stylesheet" href="css/main.css?v=20261005h">
 </head>
 
 <body>
@@ -26,6 +26,7 @@
 		<nav id="workspaceNav" class="workspace-nav" aria-label="控制台导航">
 			<a class="active" href="#deviceConnection" aria-current="location">设备连接</a>
 			<a href="#imageWorkspace">图片工作台</a>
+			<a href="#todoWorkspace">待办事项</a>
 			<a href="#calendarWorkspace">日期标注</a>
 			<a href="#externalResources">设备资源</a>
 		</nav>
@@ -92,6 +93,8 @@
 				<div class="flex-group mode-actions">
 					<button id="calendarmodebutton" type="button" class="primary" onclick="syncTime(1)">日历模式</button>
 					<button id="clockmodebutton" type="button" class="primary" onclick="syncTime(2)">时钟+日历</button>
+					<button id="todocalendarmodebutton" type="button" class="primary" onclick="syncTime(4)" disabled>待办事项+日历</button>
+					<button id="todofullmodebutton" type="button" class="primary" onclick="syncTime(5)" disabled>全屏待办</button>
 					<button id="legacyclockbutton" type="button" class="primary" onclick="syncTimeLegacy()"
 						style="display:none;">全屏时钟</button>
 					<button id="clearscreenbutton" type="button" class="secondary" onclick="clearScreen()">清除屏幕</button>
@@ -105,7 +108,7 @@
 		</div>
 		<section id="imageWorkspace" class="section image-section" aria-labelledby="imageHeading">
 			<div class="section-heading"><div><p class="section-kicker">02 / IMAGE STUDIO</p><h2 id="imageHeading">图片工作台</h2></div><span class="device-badge">编辑 · 预览 · 发送</span></div>
-			<p class="section-note">导入图片、调整效果，也可以用画笔、文字、待办和课表工具直接创作。</p>
+			<p class="section-note">导入图片、调整效果，也可以用画笔、文字和课表工具直接创作。</p>
 			<div id="imageDropZone" class="image-drop-zone">
 				<div class="upload-icon" aria-hidden="true">↥</div><div class="upload-copy"><label for="imageFile">选择图片，或拖放到这里</label><p>PNG / JPG / BMP / WebP · 比例不匹配时自动进入裁剪</p><p id="imageFileName" role="status">尚未选择图片</p></div>
 				<input type="file" id="imageFile" accept=".png,.jpg,.bmp,.webp,.jpeg" onchange="updateImage()" aria-label="选择要编辑的图片">
@@ -197,7 +200,6 @@
 						<button id="brush-mode" type="button" title="画笔" class="tool-button" aria-pressed="false"><span aria-hidden="true">✎</span>画笔</button>
 						<button id="eraser-mode" type="button" title="橡皮擦" class="tool-button" aria-pressed="false"><span aria-hidden="true">▱</span>橡皮擦</button>
 						<button id="text-mode" type="button" title="添加文字" class="tool-button" aria-pressed="false"><span aria-hidden="true">T</span>文字</button>
-						<button id="todo-mode" type="button" title="待办清单" class="tool-button" aria-pressed="false"><span aria-hidden="true">☑</span>待办</button>
 						<button id="schedule-mode" type="button" title="课程表" class="tool-button" aria-pressed="false"><span aria-hidden="true">▦</span>课程表</button>
 					</div>
 					<div class="history-tools" role="group" aria-label="编辑历史">
@@ -233,21 +235,6 @@
 					</div>
 					<div class="tool-actions"><button id="add-text-btn" type="button" class="primary">添加文字</button><button id="cancel-text-btn" type="button" class="secondary">取消选择</button><button id="delete-text-btn" type="button" class="danger" disabled>删除文字</button></div>
 				</div>
-				<div class="tool-panel todo-tools">
-					<div class="tool-panel-heading"><div><h3>待办清单</h3><p>每行输入一件事，批量放置为清单。点击画布上的方框勾选完成，拖动文字调整位置。</p></div><span id="todo-summary" class="device-badge">0 项待办</span></div>
-					<div class="tool-compose">
-						<div class="tool-field tool-content"><label for="todo-input">待办内容 · 每行一项</label><textarea id="todo-input" rows="4" placeholder="阅读 20 分钟&#10;整理桌面&#10;完成今天的计划"></textarea></div>
-						<div class="tool-fields">
-							<div class="tool-field"><label for="todo-font-family">字体</label><select id="todo-font-family"><option value="Microsoft YaHei">微软雅黑</option><option value="PingFang SC">苹方</option><option value="SimHei">黑体</option><option value="SimSun">宋体</option><option value="KaiTi">楷体</option><option value="sans-serif">默认字体</option><option value="monospace">等宽字体</option><option value="Arial">Arial</option><option value="Microsoft JhengHei">微软正黑体</option><option value="NSimSun">新宋体</option><option value="FangSong">仿宋</option><option value="YouYuan">幼圆</option><option value="LiSu">隶书</option><option value="STHeiti">华文黑体</option><option value="STXihei">华文细黑</option><option value="STKaiti">华文楷体</option><option value="STSong">华文宋体</option><option value="STFangsong">华文仿宋</option><option value="STZhongsong">华文中宋</option><option value="STHupo">华文琥珀</option><option value="STXinwei">华文新魏</option><option value="STLiti">华文隶书</option><option value="STXingkai">华文行楷</option><option value="FZShuTi">方正舒体</option><option value="FZYaoti">方正姚体</option><option value="Source Han Sans CN">思源黑体</option><option value="Source Han Serif SC">思源宋体</option><option value="WenQuanYi Micro Hei">文泉驿微米黑</option></select></div>
-							<div class="tool-field"><label for="todo-font-size">字号 · px</label><input type="number" id="todo-font-size" value="18" min="6" max="100"></div>
-							<div class="tool-field"><label for="todo-color">清单颜色</label><select id="todo-color"><option value="#000000">黑色</option><option value="#FF0000">红色</option><option value="#FFFF00">黄色</option><option value="#00FF00">绿色</option><option value="#0000FF">蓝色</option><option value="#FFFFFF">白色</option></select></div>
-							<div class="tool-field"><label for="todo-spacing">项目行距</label><input type="number" id="todo-spacing" value="1.6" min="1.2" max="3" step="0.1"></div>
-							<div class="tool-field"><span class="field-label">字形</span><div class="format-buttons"><button id="todo-bold" type="button" title="粗体" aria-pressed="false"><b>B</b></button><button id="todo-italic" type="button" title="斜体" aria-pressed="false"><i>I</i></button></div></div>
-						</div>
-					</div>
-					<div class="tool-actions"><button id="add-todo-btn" type="button" class="primary">添加清单</button><button id="cancel-todo-btn" type="button" class="secondary">取消放置</button><button id="todo-align-btn" type="button" class="secondary">对齐清单</button><button id="clear-completed-todo-btn" type="button" class="secondary">清理已完成</button></div>
-					<div id="todo-list" class="todo-editor-list" aria-label="编辑待办清单"></div>
-				</div>
 				<div class="tool-panel schedule-tools">
 					<div class="tool-panel-heading"><div><h3>课程表</h3><p>先设置天数与节数，再点击画布单元格填写课程。长内容自动换行，表格适配当前画布。</p></div><span id="schedule-summary" class="device-badge">尚未生成</span></div>
 					<p id="schedule-status" class="field-hint" role="status" aria-live="polite"></p>
@@ -273,6 +260,47 @@
 					<div class="tool-actions"><button id="crop-zoom-in" type="button" title="放大" class="secondary">放大</button><button id="crop-zoom-out" type="button" title="缩小" class="secondary">缩小</button><button id="crop-move-left" type="button" title="左移" aria-label="裁剪左移">←</button><button id="crop-move-up" type="button" title="上移" aria-label="裁剪上移">↑</button><button id="crop-move-down" type="button" title="下移" aria-label="裁剪下移">↓</button><button id="crop-move-right" type="button" title="右移" aria-label="裁剪右移">→</button><button type="button" class="primary" onclick="applyDither()">完成裁剪</button></div>
 				</div>
 			</div>
+		</section>
+		<section id="todoWorkspace" class="section" aria-labelledby="todoCalendarHeading">
+			<div class="section-heading"><div><p class="section-kicker">TODO / WORKSPACE</p><h2 id="todoCalendarHeading">待办事项</h2></div><span id="todoCalendarCount" class="device-badge">0 / 32</span></div>
+			<p class="section-note">选择待办+日历或全屏待办。设置触发和截止时间，保存后设备离线也会自动更新；两种布局共用这份清单。</p>
+			<div class="todo-calendar-workbench">
+				<div class="todo-calendar-editor">
+					<form id="todoCalendarForm" class="todo-calendar-form">
+						<div class="field todo-calendar-text-field"><label for="todoCalendarText">事项内容</label><input id="todoCalendarText" type="text" placeholder="例如：完成本周报告" aria-describedby="todoCalendarTextHint"><span id="todoCalendarTextHint" class="field-hint" aria-live="polite">已用 0 / 64 字节 · 中文通常最多 21 字</span></div>
+						<div class="field"><label for="todoCalendarStart">触发时间</label><input id="todoCalendarStart" type="datetime-local" min="2000-01-01T00:00" max="2099-12-31T23:59:59" step="1"></div>
+						<div class="field"><label for="todoCalendarEnd">截止时间</label><input id="todoCalendarEnd" type="datetime-local" min="2000-01-01T00:00" max="2099-12-31T23:59:59" step="1"></div>
+						<div class="todo-calendar-flags"><label><input id="todoCalendarResident" type="checkbox"> 常驻显示</label><label><input id="todoCalendarCompleted" type="checkbox"> 已完成</label></div>
+						<div class="todo-calendar-edit-actions"><button id="todoCalendarSubmit" type="submit" class="primary">添加事项</button><button id="todoCalendarCancel" type="button" class="secondary" hidden>取消编辑</button></div>
+						<p class="field-hint todo-calendar-text-field">先添加或更新事项，再保存到设备。完成、删除和显示设置也需要保存后才会在屏幕上生效。</p>
+					</form>
+					<div class="todo-calendar-options">
+						<div class="field todo-calendar-layout-field"><label for="todoCalendarLayout">屏幕布局</label><select id="todoCalendarLayout" aria-describedby="todoCalendarLayoutHint"><option value="4" selected>待办+日历</option><option value="5">全屏待办</option></select><span id="todoCalendarLayoutHint" class="field-hint">待办+日历需要固件 0x3A 或更新版本。</span></div>
+						<div class="field"><label for="todoCalendarLimit">屏幕显示数量</label><input id="todoCalendarLimit" type="number" min="1" max="8" step="1" value="5"></div>
+						<div class="field"><label for="todoCalendarLeadMinutes">显示提前时间（分钟）</label><input id="todoCalendarLeadMinutes" type="number" min="0" max="1440" step="1" value="10" aria-describedby="todoCalendarTimingHint"></div>
+						<div class="field"><label for="todoCalendarRetainMinutes">过期保留时间（分钟）</label><input id="todoCalendarRetainMinutes" type="number" min="0" max="1440" step="1" value="5" aria-describedby="todoCalendarTimingHint"></div>
+						<span id="todoCalendarTimingHint" class="field-hint todo-calendar-size-hint">事项默认提前 10 分钟出现，触发后方框变红；截止后保留 5 分钟并加删除线，再自动隐藏。保存需要固件 0x3D。</span>
+						<div class="field"><label for="todoCalendarFontSize">待办字号</label><select id="todoCalendarFontSize" aria-describedby="todoCalendarFontSizeHint"><option value="9">9</option><option value="12" selected>12</option><option value="16">16</option><option value="20">20</option><option value="24">24</option><option value="32">32</option></select></div>
+						<fieldset class="todo-calendar-font-style"><legend>待办字形</legend><label><input id="todoCalendarFontBold" type="checkbox"> 加粗</label><label><input id="todoCalendarFontItalic" type="checkbox"> 斜体</label></fieldset>
+						<span id="todoCalendarFontSizeHint" class="field-hint todo-calendar-size-hint">当前字号最多显示 8 项。大字号、加粗及斜体需要固件 0x3C。</span>
+						<div class="field todo-calendar-font-field"><label for="todoCalendarFontFamily">待办字体类型</label><select id="todoCalendarFontFamily" aria-describedby="todoCalendarFontHint"><option value="">设备默认</option></select><span id="todoCalendarFontHint" class="field-hint">字体列表复用图片文字工具。缺失字形由网页生成并保存到设备，离线也能显示。自定义字体需要固件 0x3B；大字号、加粗及斜体需要 0x3C。</span></div>
+					</div>
+					<p class="field-hint">常驻事项优先；定时事项按触发时间排序。超过显示数量的事项等待空位，前面的事项完成或过期后自动递补。已完成和已过期事项会保留在编辑列表，屏幕上隐藏。每项显示截止时间或常驻标记，长标题会换行或省略。</p>
+					<div class="todo-calendar-local-actions"><button id="todoCalendarImportPaint" type="button" class="secondary">导入旧版待办</button><button id="todoCalendarExport" type="button" class="secondary">导出备份</button><label class="todo-calendar-import-label" for="todoCalendarImport">导入备份<input id="todoCalendarImport" type="file" accept=".json,application/json"></label></div>
+					<p class="field-hint">旧版图片待办草稿仍保留。点击导入会追加到当前清单，长内容按字数限制拆分；容量不足时整批保留，不覆盖当前事项。</p>
+				</div>
+				<aside class="todo-calendar-preview" aria-labelledby="todoCalendarPreviewHeading">
+					<div class="annotation-preview-heading"><h3 id="todoCalendarPreviewHeading">显示预览</h3><span id="todoCalendarPreviewLayout">左待办 · 右日历</span></div>
+					<div id="todoCalendarPreviewScreen" class="todo-calendar-screen" data-layout="split"><div class="todo-calendar-preview-left"><div class="todo-calendar-preview-header"><strong id="todoCalendarPreviewTitle" class="todo-calendar-preview-title">TODO 0/0</strong><span id="todoCalendarPreviewTemperature" class="todo-calendar-preview-temperature" aria-label="设备温度未知"><span class="todo-calendar-temperature-value">—</span><span class="todo-calendar-temperature-unit">℃</span></span></div><div id="todoCalendarPreviewItems" class="todo-calendar-preview-items" data-font="12"></div></div><div id="todoCalendarPreviewCalendar" class="todo-calendar-preview-calendar" aria-label="日历预览"></div></div>
+					<p id="todoCalendarPreviewSummary" class="field-hint" aria-live="polite"></p>
+					<div class="todo-calendar-preview-controls"><label for="todoCalendarPreviewTime">模拟时间</label><input id="todoCalendarPreviewTime" type="datetime-local" step="1" min="2000-01-01T00:00" max="2099-12-31T23:59:59"><button id="todoCalendarPreviewNow" type="button" class="secondary">现在</button></div>
+					<p class="field-hint">留空使用当前时间。时间按网页所在时区设置；切换模式会同步设备时间。预览为排版示意，缺失字模会在网页生成并随待办保存到设备。</p>
+				</aside>
+			</div>
+			<div id="todoCalendarList" class="todo-calendar-list" aria-label="编辑定时待办事项"></div>
+			<div class="todo-calendar-device-actions"><button id="todoCalendarRead" type="button" class="secondary" data-device-operation disabled>读取设备待办</button><button id="todoCalendarSave" type="button" class="primary" data-device-operation disabled>保存到设备</button><button id="todoCalendarActivate" type="button" class="secondary" data-device-operation disabled>启用待办+日历</button></div>
+			<p class="field-hint">先保存清单，再启用所选布局。布局选择只改变预览，启用后才切换设备；全屏待办需要固件 0x3B 或更新版本。</p>
+			<p id="todoCalendarStatus" class="field-hint" role="status" aria-live="polite">草稿自动保存在此浏览器。读取设备或导入备份将替换当前草稿，保存到设备后生效。</p>
 		</section>
 		<section id="calendarWorkspace" class="section" aria-labelledby="calendarHeading">
 			<div class="section-heading"><div><p class="section-kicker">03 / CALENDAR</p><h2 id="calendarHeading">日期标注</h2></div><span id="calendarAnnotationCount" class="device-badge">0 / 64</span></div>
@@ -389,9 +417,9 @@
 				<a href="https://qm.qq.com/q/SQAYIKMOKQ">交流群</a>
 				<a href="?debug=true" id="debug-toggle">开发模式</a>
 			</span>
-			<div class="site-statistics" aria-label="网站访问统计">
-				<span id="busuanzi_container_site_pv" style="display:none;">本站总访问量 <strong id="busuanzi_value_site_pv">—</strong> 次</span>
-				<span id="busuanzi_container_site_uv" style="display:none;">访客人数 <strong id="busuanzi_value_site_uv">—</strong> 人</span>
+			<div id="busuanzi_container_site_pv" style="display:none; width: 100%; margin-top: 4px; opacity: 0.8;">
+				本站总访问量 <span id="busuanzi_value_site_pv">--</span> 次 |
+				访客数 <span id="busuanzi_value_site_uv">--</span> 人
 			</div>
 		</div>
 	</main>
@@ -410,21 +438,24 @@
 	</div>
 	<div id="toast" class="toast-message" role="status" aria-live="polite" style="display:none;"></div>
 	<script type="text/javascript" src="js/dithering.js?v=20260402b"></script>
-	<script type="text/javascript" src="js/paint.js?v=20261005a"></script>
+	<script type="text/javascript" src="js/paint.js?v=20261005h"></script>
 	<script src="js/paint_schedule.js?v=20261005b"></script>
 	<script type="text/javascript" src="js/crop.js?v=20261005a"></script>
 	<script type="text/javascript" src="js/ble_transfer.js?v=20260922a"></script>
-	<script type="text/javascript" src="js/calendar_annotations.js?v=20261005e"></script>
-	<script type="text/javascript" src="js/resource_store.js?v=20260928a"></script>
+	<script type="text/javascript" src="js/calendar_annotations.js?v=20261005h"></script>
+	<script type="text/javascript" src="js/resource_store.js?v=20261005h"></script>
 	<script src="js/resource_archive.js?v=20261004a"></script>
-	<script type="text/javascript" src="js/resource_builder.js?v=20260928a"></script>
-	<script src="js/font_builder.js?v=20261005a"></script>
-	<script src="js/font_sync.js?v=20261005a"></script>
-	<script type="text/javascript" src="js/resource_installer.js?v=20261005a"></script>
-	<script type="text/javascript" src="js/resource_editor.js?v=20261005a"></script>
+	<script type="text/javascript" src="js/resource_builder.js?v=20261005h"></script>
+	<script src="js/font_builder.js?v=20261005h"></script>
+	<script src="js/font_sync.js?v=20261005h"></script>
+	<script src="js/todo_sync.js?v=20261005h"></script>
+	<script type="text/javascript" src="js/resource_installer.js?v=20261005h"></script>
+	<script src="js/todo_calendar.js?v=20261005h"></script>
+	<script type="text/javascript" src="js/resource_editor.js?v=20261005h"></script>
 	<script type="text/javascript" src="js/console_ui.js?v=20261005a"></script>
-	<script type="text/javascript" src="js/main.js?v=20261005a"></script>
+	<script type="text/javascript" src="js/main.js?v=20261005h"></script>
 	<script src="js/site_statistics.js?v=20261004a"></script>
+	<script async src="//busuanzi.ibruce.info/busuanzi/2.3/busuanzi.pure.mini.js"></script>
 </body>
 
 </html>

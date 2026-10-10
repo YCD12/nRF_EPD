@@ -33,6 +33,7 @@ int main(void)
     assert(u8g2_GetGlyphWidth(&ctx, 0x4E2D) == 0);
     assert(u8g2_DrawGlyph(&ctx, 10, 20, 0x4E2D) == 13);
     assert(line_calls > 0U);
+    assert(ctx.font_frame_io_error == 0U);
     puts("PASS: missing font uses fixed-width placeholder");
     return 0;
 }
