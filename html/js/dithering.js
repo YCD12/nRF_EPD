@@ -74,7 +74,12 @@ function labDistance(lab1, lab2) {
   return Math.sqrt(0.2 * dl * dl + 3 * da * da + 3 * db * db);
 }
 
+const paletteLabs = new Map([rgbPalette, fourColorPalette].map(palette =>
+  [palette, palette.map(color => rgbToLab(color.r, color.g, color.b))]));
+
 function findClosestColor(r, g, b, mode) {
+  if (mode === 'blackWhiteColor')
+    return 0.299 * r + 0.587 * g + 0.114 * b < 140 ? threeColorPalette[0] : threeColorPalette[1];
   let palette;
 
   if (mode === 'fourColor') {
@@ -92,21 +97,21 @@ function findClosestColor(r, g, b, mode) {
 
   // 三色模式下优先检测红色
   if (mode === 'threeColor') {
-    // 如果红色通道显著高于绿色和蓝色，且强度足够
-    if (r > 120 && r > g * 1.5 && r > b * 1.5) {
+    // 与发送阶段使用同一红色判定，避免预览与实际像素分类不一致。
+    if (r > 160 && r > g && r > b) {
       return threeColorPalette[2]; // 红色
     }
     // 否则根据亮度选择黑或白
     const luminance = 0.299 * r + 0.587 * g + 0.114 * b;
-    return luminance < 128 ? threeColorPalette[0] : threeColorPalette[1]; // 黑色或白色
+    return luminance < 140 ? threeColorPalette[0] : threeColorPalette[1]; // 黑色或白色
   }
 
   const inputLab = rgbToLab(r, g, b);
   let minDistance = Infinity;
   let closestColor = palette[0];
 
-  for (const color of palette) {
-    const colorLab = rgbToLab(color.r, color.g, color.b);
+  for (let i = 0; i < palette.length; i++) {
+    const color = palette[i], colorLab = paletteLabs.get(palette)[i];
     const distance = labDistance(inputLab, colorLab);
     if (distance < minDistance) {
       minDistance = distance;
@@ -117,351 +122,51 @@ function findClosestColor(r, g, b, mode) {
   return closestColor;
 }
 
-function floydSteinbergDither(imageData, strength, mode) {
-  const width = imageData.width;
-  const height = imageData.height;
-  const data = imageData.data;
-  const tempData = new Uint8ClampedArray(data);
-
+// Keep fractional errors until each pixel is quantized. A clamped byte buffer
+// rounds every small diffusion contribution away, especially at low strength.
+function errorDiffusionDither(imageData, strength, mode, kernel, divisor) {
+  const { width, height, data } = imageData;
+  const errors = new Float32Array(data);
   for (let y = 0; y < height; y++) {
     for (let x = 0; x < width; x++) {
-      const idx = (y * width + x) * 4;
-      const r = tempData[idx];
-      const g = tempData[idx + 1];
-      const b = tempData[idx + 2];
-
+      const at = (y * width + x) * 4;
+      const r = Math.min(255, Math.max(0, errors[at]));
+      const g = Math.min(255, Math.max(0, errors[at + 1]));
+      const b = Math.min(255, Math.max(0, errors[at + 2]));
       const closest = findClosestColor(r, g, b, mode);
-
-      const errR = (r - closest.r) * strength;
-      const errG = (g - closest.g) * strength;
-      const errB = (b - closest.b) * strength;
-
-      if (x + 1 < width) {
-        const idxRight = idx + 4;
-        tempData[idxRight] = Math.min(255, Math.max(0, tempData[idxRight] + errR * 7 / 16));
-        tempData[idxRight + 1] = Math.min(255, Math.max(0, tempData[idxRight + 1] + errG * 7 / 16));
-        tempData[idxRight + 2] = Math.min(255, Math.max(0, tempData[idxRight + 2] + errB * 7 / 16));
-      }
-      if (y + 1 < height) {
-        if (x > 0) {
-          const idxDownLeft = idx + width * 4 - 4;
-          tempData[idxDownLeft] = Math.min(255, Math.max(0, tempData[idxDownLeft] + errR * 3 / 16));
-          tempData[idxDownLeft + 1] = Math.min(255, Math.max(0, tempData[idxDownLeft + 1] + errG * 3 / 16));
-          tempData[idxDownLeft + 2] = Math.min(255, Math.max(0, tempData[idxDownLeft + 2] + errB * 3 / 16));
-        }
-        const idxDown = idx + width * 4;
-        tempData[idxDown] = Math.min(255, Math.max(0, tempData[idxDown] + errR * 5 / 16));
-        tempData[idxDown + 1] = Math.min(255, Math.max(0, tempData[idxDown + 1] + errG * 5 / 16));
-        tempData[idxDown + 2] = Math.min(255, Math.max(0, tempData[idxDown + 2] + errB * 5 / 16));
-        if (x + 1 < width) {
-          const idxDownRight = idx + width * 4 + 4;
-          tempData[idxDownRight] = Math.min(255, Math.max(0, tempData[idxDownRight] + errR * 1 / 16));
-          tempData[idxDownRight + 1] = Math.min(255, Math.max(0, tempData[idxDownRight + 1] + errG * 1 / 16));
-          tempData[idxDownRight + 2] = Math.min(255, Math.max(0, tempData[idxDownRight + 2] + errB * 1 / 16));
-        }
+      data[at] = closest.r; data[at + 1] = closest.g; data[at + 2] = closest.b;
+      const er = (r - closest.r) * strength, eg = (g - closest.g) * strength, eb = (b - closest.b) * strength;
+      for (const [dx, dy, weight] of kernel) {
+        const nx = x + dx, ny = y + dy;
+        if (nx < 0 || nx >= width || ny >= height) continue;
+        const next = (ny * width + nx) * 4, fraction = weight / divisor;
+        errors[next] += er * fraction; errors[next + 1] += eg * fraction; errors[next + 2] += eb * fraction;
       }
     }
   }
-
-  for (let y = 0; y < height; y++) {
-    for (let x = 0; x < width; x++) {
-      const idx = (y * width + x) * 4;
-      const r = tempData[idx];
-      const g = tempData[idx + 1];
-      const b = tempData[idx + 2];
-
-      const closest = findClosestColor(r, g, b, mode);
-      data[idx] = closest.r;
-      data[idx + 1] = closest.g;
-      data[idx + 2] = closest.b;
-    }
-  }
-
   return imageData;
+}
+
+function floydSteinbergDither(imageData, strength, mode) {
+  return errorDiffusionDither(imageData, strength, mode,
+    [[1,0,7], [-1,1,3], [0,1,5], [1,1,1]], 16);
 }
 
 function atkinsonDither(imageData, strength, mode) {
-  const width = imageData.width;
-  const height = imageData.height;
-  const data = imageData.data;
-  const tempData = new Uint8ClampedArray(data);
-
-  for (let y = 0; y < height; y++) {
-    for (let x = 0; x < width; x++) {
-      const idx = (y * width + x) * 4;
-      const r = tempData[idx];
-      const g = tempData[idx + 1];
-      const b = tempData[idx + 2];
-
-      const closest = findClosestColor(r, g, b, mode);
-
-      data[idx] = closest.r;
-      data[idx + 1] = closest.g;
-      data[idx + 2] = closest.b;
-
-      const errR = (r - closest.r) * strength;
-      const errG = (g - closest.g) * strength;
-      const errB = (b - closest.b) * strength;
-
-      const fraction = 1 / 8;
-
-      if (x + 1 < width) {
-        const idxRight = idx + 4;
-        tempData[idxRight] = Math.min(255, Math.max(0, tempData[idxRight] + errR * fraction));
-        tempData[idxRight + 1] = Math.min(255, Math.max(0, tempData[idxRight + 1] + errG * fraction));
-        tempData[idxRight + 2] = Math.min(255, Math.max(0, tempData[idxRight + 2] + errB * fraction));
-      }
-      if (x + 2 < width) {
-        const idxRight2 = idx + 8;
-        tempData[idxRight2] = Math.min(255, Math.max(0, tempData[idxRight2] + errR * fraction));
-        tempData[idxRight2 + 1] = Math.min(255, Math.max(0, tempData[idxRight2 + 1] + errG * fraction));
-        tempData[idxRight2 + 2] = Math.min(255, Math.max(0, tempData[idxRight2 + 2] + errB * fraction));
-      }
-      if (y + 1 < height) {
-        if (x > 0) {
-          const idxDownLeft = idx + width * 4 - 4;
-          tempData[idxDownLeft] = Math.min(255, Math.max(0, tempData[idxDownLeft] + errR * fraction));
-          tempData[idxDownLeft + 1] = Math.min(255, Math.max(0, tempData[idxDownLeft + 1] + errG * fraction));
-          tempData[idxDownLeft + 2] = Math.min(255, Math.max(0, tempData[idxDownLeft + 2] + errB * fraction));
-        }
-        const idxDown = idx + width * 4;
-        tempData[idxDown] = Math.min(255, Math.max(0, tempData[idxDown] + errR * fraction));
-        tempData[idxDown + 1] = Math.min(255, Math.max(0, tempData[idxDown + 1] + errG * fraction));
-        tempData[idxDown + 2] = Math.min(255, Math.max(0, tempData[idxDown + 2] + errB * fraction));
-        if (x + 1 < width) {
-          const idxDownRight = idx + width * 4 + 4;
-          tempData[idxDownRight] = Math.min(255, Math.max(0, tempData[idxDownRight] + errR * fraction));
-          tempData[idxDownRight + 1] = Math.min(255, Math.max(0, tempData[idxDownRight + 1] + errG * fraction));
-          tempData[idxDownRight + 2] = Math.min(255, Math.max(0, tempData[idxDownRight + 2] + errB * fraction));
-        }
-      }
-      if (y + 2 < height) {
-        const idxDown2 = idx + width * 8;
-        tempData[idxDown2] = Math.min(255, Math.max(0, tempData[idxDown2] + errR * fraction));
-        tempData[idxDown2 + 1] = Math.min(255, Math.max(0, tempData[idxDown2 + 1] + errG * fraction));
-        tempData[idxDown2 + 2] = Math.min(255, Math.max(0, tempData[idxDown2 + 2] + errB * fraction));
-      }
-    }
-  }
-
-  return imageData;
+  return errorDiffusionDither(imageData, strength, mode,
+    [[1,0,1], [2,0,1], [-1,1,1], [0,1,1], [1,1,1], [0,2,1]], 8);
 }
 
 function stuckiDither(imageData, strength, mode) {
-  // 执行Stucki错误扩散算法以处理图像
-  const width = imageData.width;
-  const height = imageData.height;
-  const data = imageData.data;
-  const tempData = new Uint8ClampedArray(data);
-
-  for (let y = 0; y < height; y++) {
-    for (let x = 0; x < width; x++) {
-      const idx = (y * width + x) * 4;
-      const r = tempData[idx];
-      const g = tempData[idx + 1];
-      const b = tempData[idx + 2];
-
-      const closest = findClosestColor(r, g, b, mode);
-
-      const errR = (r - closest.r) * strength;
-      const errG = (g - closest.g) * strength;
-      const errB = (b - closest.b) * strength;
-
-      const divisor = 42;
-
-      if (x + 1 < width) {
-        const idxRight = idx + 4;
-        tempData[idxRight] = Math.min(255, Math.max(0, tempData[idxRight] + errR * 8 / divisor));
-        tempData[idxRight + 1] = Math.min(255, Math.max(0, tempData[idxRight + 1] + errG * 8 / divisor));
-        tempData[idxRight + 2] = Math.min(255, Math.max(0, tempData[idxRight + 2] + errB * 8 / divisor));
-      }
-      if (x + 2 < width) {
-        const idxRight2 = idx + 8;
-        tempData[idxRight2] = Math.min(255, Math.max(0, tempData[idxRight2] + errR * 4 / divisor));
-        tempData[idxRight2 + 1] = Math.min(255, Math.max(0, tempData[idxRight2 + 1] + errG * 4 / divisor));
-        tempData[idxRight2 + 2] = Math.min(255, Math.max(0, tempData[idxRight2 + 2] + errB * 4 / divisor));
-      }
-      if (y + 1 < height) {
-        if (x > 1) {
-          const idxDownLeft2 = idx + width * 4 - 8;
-          tempData[idxDownLeft2] = Math.min(255, Math.max(0, tempData[idxDownLeft2] + errR * 2 / divisor));
-          tempData[idxDownLeft2 + 1] = Math.min(255, Math.max(0, tempData[idxDownLeft2 + 1] + errG * 2 / divisor));
-          tempData[idxDownLeft2 + 2] = Math.min(255, Math.max(0, tempData[idxDownLeft2 + 2] + errB * 2 / divisor));
-        }
-        if (x > 0) {
-          const idxDownLeft = idx + width * 4 - 4;
-          tempData[idxDownLeft] = Math.min(255, Math.max(0, tempData[idxDownLeft] + errR * 4 / divisor));
-          tempData[idxDownLeft + 1] = Math.min(255, Math.max(0, tempData[idxDownLeft + 1] + errG * 4 / divisor));
-          tempData[idxDownLeft + 2] = Math.min(255, Math.max(0, tempData[idxDownLeft + 2] + errB * 4 / divisor));
-        }
-        const idxDown = idx + width * 4;
-        tempData[idxDown] = Math.min(255, Math.max(0, tempData[idxDown] + errR * 8 / divisor));
-        tempData[idxDown + 1] = Math.min(255, Math.max(0, tempData[idxDown + 1] + errG * 8 / divisor));
-        tempData[idxDown + 2] = Math.min(255, Math.max(0, tempData[idxDown + 2] + errB * 8 / divisor));
-        if (x + 1 < width) {
-          const idxDownRight1 = idx + width * 4 + 4;
-          tempData[idxDownRight1] = Math.min(255, Math.max(0, tempData[idxDownRight1] + errR * 4 / divisor));
-          tempData[idxDownRight1 + 1] = Math.min(255, Math.max(0, tempData[idxDownRight1 + 1] + errG * 4 / divisor));
-          tempData[idxDownRight1 + 2] = Math.min(255, Math.max(0, tempData[idxDownRight1 + 2] + errB * 4 / divisor));
-        }
-        if (x + 2 < width) {
-          const idxDownRight2 = idx + width * 4 + 8;
-          tempData[idxDownRight2] = Math.min(255, Math.max(0, tempData[idxDownRight2] + errR * 2 / divisor));
-          tempData[idxDownRight2 + 1] = Math.min(255, Math.max(0, tempData[idxDownRight2 + 1] + errG * 2 / divisor));
-          tempData[idxDownRight2 + 2] = Math.min(255, Math.max(0, tempData[idxDownRight2 + 2] + errB * 2 / divisor));
-        }
-      }
-      if (y + 2 < height) {
-        if (x > 1) {
-          const idxDown2Left2 = idx + width * 8 - 8;
-          tempData[idxDown2Left2] = Math.min(255, Math.max(0, tempData[idxDown2Left2] + errR * 1 / divisor));
-          tempData[idxDown2Left2 + 1] = Math.min(255, Math.max(0, tempData[idxDown2Left2 + 1] + errG * 1 / divisor));
-          tempData[idxDown2Left2 + 2] = Math.min(255, Math.max(0, tempData[idxDown2Left2 + 2] + errB * 1 / divisor));
-        }
-        if (x > 0) {
-          const idxDown2Left = idx + width * 8 - 4;
-          tempData[idxDown2Left] = Math.min(255, Math.max(0, tempData[idxDown2Left] + errR * 2 / divisor));
-          tempData[idxDown2Left + 1] = Math.min(255, Math.max(0, tempData[idxDown2Left + 1] + errG * 2 / divisor));
-          tempData[idxDown2Left + 2] = Math.min(255, Math.max(0, tempData[idxDown2Left + 2] + errB * 2 / divisor));
-        }
-        const idxDown2 = idx + width * 8;
-        tempData[idxDown2] = Math.min(255, Math.max(0, tempData[idxDown2] + errR * 4 / divisor));
-        tempData[idxDown2 + 1] = Math.min(255, Math.max(0, tempData[idxDown2 + 1] + errG * 4 / divisor));
-        tempData[idxDown2 + 2] = Math.min(255, Math.max(0, tempData[idxDown2 + 2] + errB * 4 / divisor));
-        if (x + 1 < width) {
-          const idxDown2Right = idx + width * 8 + 4;
-          tempData[idxDown2Right] = Math.min(255, Math.max(0, tempData[idxDown2Right] + errR * 2 / divisor));
-          tempData[idxDown2Right + 1] = Math.min(255, Math.max(0, tempData[idxDown2Right + 1] + errG * 2 / divisor));
-          tempData[idxDown2Right + 2] = Math.min(255, Math.max(0, tempData[idxDown2Right + 2] + errB * 2 / divisor));
-        }
-        if (x + 2 < width) {
-          const idxDown2Right2 = idx + width * 8 + 8;
-          tempData[idxDown2Right2] = Math.min(255, Math.max(0, tempData[idxDown2Right2] + errR * 1 / divisor));
-          tempData[idxDown2Right2 + 1] = Math.min(255, Math.max(0, tempData[idxDown2Right2 + 1] + errG * 1 / divisor));
-          tempData[idxDown2Right2 + 2] = Math.min(255, Math.max(0, tempData[idxDown2Right2 + 2] + errB * 1 / divisor));
-        }
-      }
-    }
-  }
-
-  for (let y = 0; y < height; y++) {
-    for (let x = 0; x < width; x++) {
-      const idx = (y * width + x) * 4;
-      const r = tempData[idx];
-      const g = tempData[idx + 1];
-      const b = tempData[idx + 2];
-
-      const closest = findClosestColor(r, g, b, mode);
-      data[idx] = closest.r;
-      data[idx + 1] = closest.g;
-      data[idx + 2] = closest.b;
-    }
-  }
-
-  return imageData;
+  return errorDiffusionDither(imageData, strength, mode,
+    [[1,0,8], [2,0,4], [-2,1,2], [-1,1,4], [0,1,8], [1,1,4], [2,1,2],
+      [-2,2,1], [-1,2,2], [0,2,4], [1,2,2], [2,2,1]], 42);
 }
 
 function jarvisDither(imageData, strength, mode) {
-  const width = imageData.width;
-  const height = imageData.height;
-  const data = imageData.data;
-  const tempData = new Uint8ClampedArray(data);
-
-  for (let y = 0; y < height; y++) {
-    for (let x = 0; x < width; x++) {
-      const idx = (y * width + x) * 4;
-      const r = tempData[idx];
-      const g = tempData[idx + 1];
-      const b = tempData[idx + 2];
-
-      const closest = findClosestColor(r, g, b, mode);
-
-      data[idx] = closest.r;
-      data[idx + 1] = closest.g;
-      data[idx + 2] = closest.b;
-
-      const errR = (r - closest.r) * strength;
-      const errG = (g - closest.g) * strength;
-      const errB = (b - closest.b) * strength;
-
-      const divisor = 48;
-
-      if (x + 1 < width) {
-        const idxRight = idx + 4;
-        tempData[idxRight] = Math.min(255, Math.max(0, tempData[idxRight] + errR * 7 / divisor));
-        tempData[idxRight + 1] = Math.min(255, Math.max(0, tempData[idxRight + 1] + errG * 7 / divisor));
-        tempData[idxRight + 2] = Math.min(255, Math.max(0, tempData[idxRight + 2] + errB * 7 / divisor));
-      }
-      if (x + 2 < width) {
-        const idxRight2 = idx + 8;
-        tempData[idxRight2] = Math.min(255, Math.max(0, tempData[idxRight2] + errR * 5 / divisor));
-        tempData[idxRight2 + 1] = Math.min(255, Math.max(0, tempData[idxRight2 + 1] + errG * 5 / divisor));
-        tempData[idxRight2 + 2] = Math.min(255, Math.max(0, tempData[idxRight2 + 2] + errB * 5 / divisor));
-      }
-      if (y + 1 < height) {
-        if (x > 1) {
-          const idxDownLeft2 = idx + width * 4 - 8;
-          tempData[idxDownLeft2] = Math.min(255, Math.max(0, tempData[idxDownLeft2] + errR * 3 / divisor));
-          tempData[idxDownLeft2 + 1] = Math.min(255, Math.max(0, tempData[idxDownLeft2 + 1] + errG * 3 / divisor));
-          tempData[idxDownLeft2 + 2] = Math.min(255, Math.max(0, tempData[idxDownLeft2 + 2] + errB * 3 / divisor));
-        }
-        if (x > 0) {
-          const idxDownLeft = idx + width * 4 - 4;
-          tempData[idxDownLeft] = Math.min(255, Math.max(0, tempData[idxDownLeft] + errR * 5 / divisor));
-          tempData[idxDownLeft + 1] = Math.min(255, Math.max(0, tempData[idxDownLeft + 1] + errG * 5 / divisor));
-          tempData[idxDownLeft + 2] = Math.min(255, Math.max(0, tempData[idxDownLeft + 2] + errB * 5 / divisor));
-        }
-        const idxDown = idx + width * 4;
-        tempData[idxDown] = Math.min(255, Math.max(0, tempData[idxDown] + errR * 7 / divisor));
-        tempData[idxDown + 1] = Math.min(255, Math.max(0, tempData[idxDown + 1] + errG * 7 / divisor));
-        tempData[idxDown + 2] = Math.min(255, Math.max(0, tempData[idxDown + 2] + errB * 7 / divisor));
-        if (x + 1 < width) {
-          const idxDownRight = idx + width * 4 + 4;
-          tempData[idxDownRight] = Math.min(255, Math.max(0, tempData[idxDownRight] + errR * 5 / divisor));
-          tempData[idxDownRight + 1] = Math.min(255, Math.max(0, tempData[idxDownRight + 1] + errG * 5 / divisor));
-          tempData[idxDownRight + 2] = Math.min(255, Math.max(0, tempData[idxDownRight + 2] + errB * 5 / divisor));
-        }
-        if (x + 2 < width) {
-          const idxDownRight2 = idx + width * 4 + 8;
-          tempData[idxDownRight2] = Math.min(255, Math.max(0, tempData[idxDownRight2] + errR * 3 / divisor));
-          tempData[idxDownRight2 + 1] = Math.min(255, Math.max(0, tempData[idxDownRight2 + 1] + errG * 3 / divisor));
-          tempData[idxDownRight2 + 2] = Math.min(255, Math.max(0, tempData[idxDownRight2 + 2] + errB * 3 / divisor));
-        }
-      }
-      if (y + 2 < height) {
-        if (x > 1) {
-          const idxDown2Left2 = idx + width * 8 - 8;
-          tempData[idxDown2Left2] = Math.min(255, Math.max(0, tempData[idxDown2Left2] + errR * 1 / divisor));
-          tempData[idxDown2Left2 + 1] = Math.min(255, Math.max(0, tempData[idxDown2Left2 + 1] + errG * 1 / divisor));
-          tempData[idxDown2Left2 + 2] = Math.min(255, Math.max(0, tempData[idxDown2Left2 + 2] + errB * 1 / divisor));
-        }
-        if (x > 0) {
-          const idxDown2Left = idx + width * 8 - 4;
-          tempData[idxDown2Left] = Math.min(255, Math.max(0, tempData[idxDown2Left] + errR * 3 / divisor));
-          tempData[idxDown2Left + 1] = Math.min(255, Math.max(0, tempData[idxDown2Left + 1] + errG * 3 / divisor));
-          tempData[idxDown2Left + 2] = Math.min(255, Math.max(0, tempData[idxDown2Left + 2] + errB * 3 / divisor));
-        }
-        const idxDown2 = idx + width * 8;
-        tempData[idxDown2] = Math.min(255, Math.max(0, tempData[idxDown2] + errR * 5 / divisor));
-        tempData[idxDown2 + 1] = Math.min(255, Math.max(0, tempData[idxDown2 + 1] + errG * 5 / divisor));
-        tempData[idxDown2 + 2] = Math.min(255, Math.max(0, tempData[idxDown2 + 2] + errB * 5 / divisor));
-        if (x + 1 < width) {
-          const idxDown2Right = idx + width * 8 + 4;
-          tempData[idxDown2Right] = Math.min(255, Math.max(0, tempData[idxDown2Right] + errR * 3 / divisor));
-          tempData[idxDown2Right + 1] = Math.min(255, Math.max(0, tempData[idxDown2Right + 1] + errG * 3 / divisor));
-          tempData[idxDown2Right + 2] = Math.min(255, Math.max(0, tempData[idxDown2Right + 2] + errB * 3 / divisor));
-        }
-        if (x + 2 < width) {
-          const idxDown2Right2 = idx + width * 8 + 8;
-          tempData[idxDown2Right2] = Math.min(255, Math.max(0, tempData[idxDown2Right2] + errR * 1 / divisor));
-          tempData[idxDown2Right2 + 1] = Math.min(255, Math.max(0, tempData[idxDown2Right2 + 1] + errG * 1 / divisor));
-          tempData[idxDown2Right2 + 2] = Math.min(255, Math.max(0, tempData[idxDown2Right2 + 2] + errB * 1 / divisor));
-        }
-      }
-    }
-  }
-
-  return imageData;
+  return errorDiffusionDither(imageData, strength, mode,
+    [[1,0,7], [2,0,5], [-2,1,3], [-1,1,5], [0,1,7], [1,1,5], [2,1,3],
+      [-2,2,1], [-1,2,3], [0,2,5], [1,2,3], [2,2,1]], 48);
 }
 
 function bayerDither(imageData, strength, mode) {
@@ -494,7 +199,7 @@ function bayerDither(imageData, strength, mode) {
       // Get threshold from Bayer matrix
       const matrixX = x % matrixSize;
       const matrixY = y % matrixSize;
-      const threshold = (bayerMatrix[matrixY][matrixX] / maxThreshold) * 255;
+      const threshold = ((bayerMatrix[matrixY][matrixX] + 0.5) / maxThreshold) * 255;
 
       // Apply dithering with strength factor
       const adjustedR = r + (threshold - 127.5) * strength;
@@ -519,6 +224,7 @@ function bayerDither(imageData, strength, mode) {
 }
 
 function ditherImage(imageData, alg, strength, mode) {
+  strength = Number.isFinite(strength) ? Math.max(0, Math.min(5, strength)) : 1;
   switch (alg) {
     case 'floydSteinberg':
       return floydSteinbergDither(imageData, strength, mode);
@@ -532,6 +238,10 @@ function ditherImage(imageData, alg, strength, mode) {
       return bayerDither(imageData, strength, mode);
     case 'none':
     default:
+      for (let i = 0; i < imageData.data.length; i += 4) {
+        const color = findClosestColor(imageData.data[i], imageData.data[i + 1], imageData.data[i + 2], mode);
+        imageData.data[i] = color.r; imageData.data[i + 1] = color.g; imageData.data[i + 2] = color.b;
+      }
       return imageData;
   }
 }
@@ -563,7 +273,7 @@ function decodeProcessedData(processedData, width, height, mode) {
     for (let y = 0; y < height; y++) {
       for (let x = 0; x < width; x++) {
         const newIndex = (y * width + x) / 4 | 0;
-        const shift = 6 - ((x % 4) * 2);
+        const shift = 6 - (((y * width + x) % 4) * 2);
         const value = (processedData[newIndex] >> shift) & 0x03;
         const color = fourColorValues.find(c => c.value === value) || fourColorValues[1]; // 默认白色
         const index = (y * width + x) * 4;
@@ -639,7 +349,7 @@ function processImageData(imageData, mode) {
       }
     }
   } else if (mode === 'fourColor') {
-    processedData = new Uint8Array(Math.ceil((width * height) / 4));
+    processedData = new Uint8Array(Math.ceil((width * height) / 4)).fill(0x55);
     for (let y = 0; y < height; y++) {
       for (let x = 0; x < width; x++) {
         const index = (y * width + x) * 4;
@@ -647,15 +357,15 @@ function processImageData(imageData, mode) {
         const g = data[index + 1];
         const b = data[index + 2];
         const closest = findClosestColor(r, g, b, mode); // 使用 fourColorPalette
-        const colorValue = closest.value; // 0x00 (黑), 0x01 (白), 0x02 (红), 0x03 (黄)
+        const colorValue = closest.value; // 0x00 (黑), 0x01 (白), 0x02 (黄), 0x03 (红)
         const newIndex = (y * width + x) / 4 | 0;
-        const shift = 6 - ((x % 4) * 2);
-        processedData[newIndex] |= (colorValue << shift);
+        const shift = 6 - (((y * width + x) % 4) * 2);
+        processedData[newIndex] = (processedData[newIndex] & ~(3 << shift)) | (colorValue << shift);
       }
     }
   } else if (mode === 'blackWhiteColor') {
     const byteWidth = Math.ceil(width / 8);
-    processedData = new Uint8Array(byteWidth * height);
+    processedData = new Uint8Array(byteWidth * height).fill(0xff);
     const threshold = 140;
 
     for (let y = 0; y < height; y++) {
@@ -664,11 +374,11 @@ function processImageData(imageData, mode) {
         const r = data[index];
         const g = data[index + 1];
         const b = data[index + 2];
-        const grayscale = Math.round(0.299 * r + 0.587 * g + 0.114 * b);
+        const grayscale = 0.299 * r + 0.587 * g + 0.114 * b;
         const bit = grayscale >= threshold ? 1 : 0;
         const byteIndex = y * byteWidth + Math.floor(x / 8);
         const bitIndex = 7 - (x % 8);
-        processedData[byteIndex] |= (bit << bitIndex);
+        processedData[byteIndex] = (processedData[byteIndex] & ~(1 << bitIndex)) | (bit << bitIndex);
       }
     }
   } else if (mode === 'threeColor') {
@@ -676,8 +386,8 @@ function processImageData(imageData, mode) {
     const blackWhiteThreshold = 140;
     const redThreshold = 160;
 
-    const blackWhiteData = new Uint8Array(height * byteWidth);
-    const redWhiteData = new Uint8Array(height * byteWidth);
+    const blackWhiteData = new Uint8Array(height * byteWidth).fill(0xff);
+    const redWhiteData = new Uint8Array(height * byteWidth).fill(0xff);
 
     for (let y = 0; y < height; y++) {
       for (let x = 0; x < width; x++) {
@@ -685,7 +395,7 @@ function processImageData(imageData, mode) {
         const r = data[index];
         const g = data[index + 1];
         const b = data[index + 2];
-        const grayscale = Math.round(0.299 * r + 0.587 * g + 0.114 * b);
+        const grayscale = 0.299 * r + 0.587 * g + 0.114 * b;
         // UC8179 uses active-low black/red planes. Classify red first and
         // force its black bit to white so the two planes are always mutually
         // exclusive. This matches the legacy renderer's existing red-first

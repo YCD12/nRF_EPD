@@ -149,9 +149,7 @@
       if (current.id === 'todoWorkspace' && global.TodoCalendar) {
         global.TodoCalendar.previewGeometry();
       }
-      if (current.id === 'externalResources' && global.ExternalResourceInstaller) {
-        global.ExternalResourceInstaller.loadLatestOutput();
-      }
+      if (current.id === 'externalResources') global.ExternalResourceEditor?.ensureReady();
       if (focus && typeof current.section.focus === 'function') {
         current.section.focus({ preventScroll: true });
         if (viewport) viewport.scrollTop = 0;

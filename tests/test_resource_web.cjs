@@ -443,6 +443,55 @@ function installerFixture(Client = ResourceClient, fetch) {
     select: files => listeners.get('externalResourceFolder:change')({ target: { files } }) };
 }
 
+test('version-only updates are uploaded even when all payload CRCs match', async () => {
+  const old = completeBundle(), uploads = [], builder = require('../html/js/resource_builder.js');
+  class Client {
+    status() { const bytes = statusBytes(0); bytes[4] = 0x13; return bytes; }
+    partitions() { return parseTable(parsePackage(tableBytes())); }
+    inspect(id) { const pack = parsePackage(old.find(item => parsePackage(item.bytes).id === id).bytes); return { code: 0, revision: 1, length: pack.payload.length, crc: pack.crc }; }
+    upload(bytes) { uploads.push(parsePackage(bytes)); } leave() {} disconnect() {}
+  }
+  const { installer, node } = installerFixture(Client);
+  await installer.loadBundle(old.map(item => { const pack = parsePackage(item.bytes); return { name: item.name, bytes: builder.wrap(pack.id, pack.payload, 9) }; }));
+  installer.bind({}); await installer.install();
+  assert.deepEqual(uploads.map(pack => pack.id), [5, 6, 7]); assert.ok(uploads.every(pack => pack.revision === 9));
+  assert.equal(node('externalResourceInstall').disabled, false);
+});
+
+test('failed semantic imports preserve both the installer bundle and the editor model', async () => {
+  const packer = require('../html/js/ui_tools/resource_pack.js'), builder = require('../html/js/resource_builder.js');
+  const original = packer.create({ fonts: ['wqy9_t_lunar', 'wqy12_t_lunar', 'helvB18_tn'].map(name =>
+    new Uint8Array(fs.readFileSync(require('node:path').join(__dirname, '../html/resources/fonts/u8g2_font_' + name + '.bin')))) });
+  const { installer, context, node } = installerFixture(); let loaded;
+  context.EPDResourcePack = packer; context.ExternalResourceEditor = { load: bundle => { loaded = bundle; }, controls() {}, busy: () => false };
+  await installer.loadBundle(original.packages); const before = installer.getBundle(), model = loaded;
+  const bad = original.packages.map(item => {
+    if (item.pack.id !== 2) return item;
+    const payload = item.pack.payload.slice(); payload[16] ^= 1;
+    return { name: item.name, bytes: builder.wrap(2, payload, 2) };
+  });
+  await assert.rejects(installer.loadBundle(bad), /REC1/);
+  assert.equal(installer.getBundle(), before); assert.equal(loaded, model);
+  assert.match(node('externalResourceBundle').textContent, /保留原资源/);
+});
+
+test('dirty editor generation runs before the device lock and failed generation sends nothing', async () => {
+  const events = []; let succeeds = false, dirty = true;
+  class Client {
+    status() { events.push('status'); return statusBytes(0, 4); }
+    upload() { events.push('upload'); } leave() {} disconnect() {}
+  }
+  const { installer, context } = installerFixture(Client);
+  const owner = {}; context.DeviceOperations = { current: null, begin() { events.push('lock'); this.current = owner; return owner; },
+    assert(value) { assert.equal(value, owner); }, end() { this.current = null; } };
+  context.ExternalResourceEditor = { controls() {}, load() {}, busy: () => false, isDirty: () => dirty,
+    async generate() { assert.equal(context.DeviceOperations.current, null); events.push('generate'); if (!succeeds) return null; dirty = false; return installer.getBundle(); } };
+  await installer.loadBundle(completeBundle()); installer.bind({});
+  await installer.install(); assert.deepEqual(events, ['generate']);
+  events.length = 0; succeeds = true; await installer.install();
+  assert.deepEqual(events.slice(0, 3), ['generate', 'lock', 'status']); assert.ok(events.includes('upload'));
+});
+
 test('font synchronization keeps the parent operation owner and propagates failures', async () => {
   let session;
   class Client { constructor() { session = this; } disconnect() { this.closed = true; } }
@@ -654,6 +703,27 @@ test('resource discovery waits for use and checks a missing output only once', a
   assert.equal(installer.getBundle(), null);
 });
 
+test('browser generation disables competing resource actions and refuses installation and directory selection', async () => {
+  let calls = 0;
+  class Client {
+    status() { ++calls; return statusBytes(0); }
+    disconnect() {}
+  }
+  const fixture = installerFixture(Client), { installer, context, node } = fixture;
+  await installer.loadBundle(completeBundle(), 'selected'); installer.bind({});
+  const prepared = installer.getBundle();
+  let generating = true;
+  context.ExternalResourceEditor = { busy: () => generating, controls() {} };
+  installer.controls();
+  for (const id of ['externalResourceInstall', 'externalResourceRefresh', 'externalResourceFolder', 'externalResourceReadback'])
+    assert.equal(node(id).disabled, true);
+  await installer.install(); await installer.refresh(); await fixture.select([]);
+  assert.equal(calls, 0); assert.equal(installer.getBundle(), prepared);
+  generating = false; installer.controls();
+  assert.equal(node('externalResourceInstall').disabled, false);
+  assert.equal(node('externalResourceFolder').disabled, false);
+});
+
 test('local Flash figures are labelled estimates and exclude system and reserved space', async () => {
   const { installer, node } = installerFixture();
   await installer.loadBundle(completeBundle(), 'local');
@@ -739,12 +809,14 @@ test('local loading preserves device figures and compares both CRC and length', 
   const versions = node('deviceResourceVersions').textContent;
   assert.match(versions, /日历资源：v2.*本地 v1 · 待更新/);
   assert.match(versions, /UI 布局：v2.*本地 v1 · 待更新/);
-  assert.match(versions, /字体资源：v2.*本地 v1 · 内容一致/);
-  await installer.loadBundle([], 'bad');
+  assert.match(versions, /字体资源：v2.*本地 v1 · 待更新/);
+  const selected = installer.getBundle();
+  await assert.rejects(installer.loadBundle([], 'bad'), /ERS/);
+  assert.equal(installer.getBundle(), selected);
   assert.equal(node('externalResourceUsage').textContent, deviceUsage);
   assert.match(node('deviceResourceVersions').textContent, /设备已读回/);
   installer.disconnect();
-  assert.equal(node('externalResourceUsage').textContent, '尚未加载分区表');
+  assert.match(node('externalResourceUsage').textContent, /资源包估算/);
   assert.match(node('deviceResourceVersions').textContent, /设备未连接/);
   assert.doesNotMatch(node('deviceResourceVersions').textContent, /v2|已校验/);
   installer.bind({});

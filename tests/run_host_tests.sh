@@ -91,12 +91,19 @@ if command -v node >/dev/null 2>&1; then
     node --test tests/test_ble_lifecycle.cjs
     node --test tests/test_resource_web.cjs
     node --test tests/test_resource_builder.cjs
+    node --test tests/test_resource_editor.cjs
+    node --test tests/test_resource_draft.cjs
+    node --test tests/test_resource_recovery.cjs
+    node --test tests/test_ui_tools.cjs
     node --test tests/test_font_builder.cjs
+    node --test tests/test_font_sources.cjs
     node --test tests/test_font_sync.cjs
     node --test tests/test_todo_calendar_web.cjs
     node --test tests/test_todo_custom_fonts.cjs
     node --test tests/test_todo_sync.cjs
     node --test tests/test_paint_tools.cjs
+    node --test tests/test_paint_schedule.cjs
+    node --test tests/test_image_workspace.cjs
     node --test tests/test_calendar_annotations_web.cjs
 else
     echo "Node.js unavailable; run node --test tests/test_ble_lifecycle.cjs separately."

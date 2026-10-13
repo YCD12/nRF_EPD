@@ -40,8 +40,11 @@ test('resource editor imports the seven-package template and retains custom font
     return elements.get(id);
   }
   const loaded = [], context = { EPDResourceBuilder: builder, EPDResourceStore: store,
+    EPDResourcePack: require('../html/js/ui_tools/resource_pack.js'),
+    EPDFontStoreTool: require('../html/js/ui_tools/font_store_tool.js'),
     Uint8Array, document: { getElementById: element }, atob: value => Buffer.from(value, 'base64').toString('binary'),
-    fetch: async () => ({ ok: true, json: async () => template }),
+    fetch: async url => ({ ok: true, arrayBuffer: async () =>
+      new Uint8Array(fs.readFileSync(require('node:path').join(__dirname, '../html', url))).buffer }),
     EPDWebFonts: { extendFonts: (input, requests) => glyphs.extendFonts(input, requests, { rasterize }) },
     ExternalResourceInstaller: { busy: () => false, getBundle: () => base, loadBundle: async entries => loaded.push(entries) },
   };
@@ -162,7 +165,8 @@ test('ordinary three-slot font upgrades preserve the custom slot and its identit
   const incomingFonts = baseFonts(), incoming = builder.wrap(7, builder.encodeFonts(incomingFonts), 9);
   const result = fontSync.preserve(incoming, installed, [{ id: 7, type: 7, size: 262144 }]);
   const pack = store.parsePackage(result.bytes), decoded = builder.decodeFonts(pack.payload);
-  assert.equal(pack.revision, 10); assert.equal(decoded.length, 4); assert.equal(decoded.customKey, fonts.customKey);
+  assert.equal(pack.revision, 9); assert.equal(decoded.length, 4); assert.equal(decoded.customKey, fonts.customKey);
+  assert.deepEqual(pack.payload, store.parsePackage(installed).payload);
   assert.deepEqual(decoded[3], fonts[3]);
   for (let slot = 0; slot < 3; slot++) assert.deepEqual(decoded[slot], incomingFonts[slot]);
   assert.ok(result.added.some(item => item.slot === 3));

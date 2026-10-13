@@ -17,6 +17,7 @@ let configReadWaiter = null;
 let configReadToken = 0;
 let migrationExport = null;
 let imageLoadToken = 0;
+let imageAdjustmentFrame = null, imageAdjustmentTimer = null, imageAdjustmentPending = false;
 
 // An operation owns the complete request/ACK sequence, across individual GATT writes.
 const DeviceOperations = {
@@ -585,6 +586,10 @@ async function sendImageOperation(owner) {
 
   const canvasSize = document.getElementById('canvasSize').value;
   const ditherMode = document.getElementById('ditherMode').value;
+  if (ditherMode === 'sixColor') {
+    const message = '当前固件不支持发送六色图片；可下载预览或导出数组。';
+    addLog(message); showToast(message); return;
+  }
   const epdDriverSelect = document.getElementById('epddriver');
   const selectedOption = epdDriverSelect.options[epdDriverSelect.selectedIndex];
   const driverSize = selectedOption.getAttribute('data-size');
@@ -1655,6 +1660,7 @@ function fillCanvas(style) {
 }
 
 function prepareCanvasExport() {
+  flushImageAdjustments();
   if (paintManager && typeof paintManager.prepareExport === 'function') paintManager.prepareExport();
 }
 
@@ -1682,6 +1688,7 @@ function setCanvasTitle(title) {
 function updateImage() {
   const imageFile = document.getElementById('imageFile');
   if (!imageFile || !canvas || !ctx) return;
+  flushImageAdjustments();
   const token = ++imageLoadToken;
   const clearInvalidCrop = () => {
     if (!cropManager || !cropManager.isCropMode()) return;
@@ -1779,11 +1786,15 @@ function updateCanvasSize() {
   const selectedSizeName = document.getElementById('canvasSize').value;
   const selectedSize = canvasSizes.find(size => size.name === selectedSizeName);
   if (!selectedSize) return;
+  flushImageAdjustments();
+  imageLoadToken++;
+  const wasCropping = cropManager?.isCropMode();
+  if (wasCropping) cropManager.exitCropMode();
 
   const previousBase = document.createElement('canvas');
   previousBase.width = canvas.width;
   previousBase.height = canvas.height;
-  if (paintManager) paintManager.drawBaseImage();
+  if (paintManager) paintManager.drawBaseImage(true);
   previousBase.getContext('2d').drawImage(canvas, 0, 0);
 
   canvas.width = selectedSize.width;
@@ -1798,10 +1809,10 @@ function updateCanvasSize() {
       paintManager.resizeElements(previousBase.width, previousBase.height, canvas.width, canvas.height);
     }
     if (typeof paintManager.fitScheduleToCanvas === 'function') paintManager.fitScheduleToCanvas(false);
-    paintManager.redrawAll();
+    convertDithering(false);
     paintManager.saveToHistory();
   }
-  updateImage();
+  if (wasCropping) updateImage();
   updateOrientationBadge();
 }
 
@@ -1822,12 +1833,13 @@ function applyCanvasTransform(transformType) {
     alert("请先完成图片裁剪！");
     return;
   }
+  flushImageAdjustments();
   imageLoadToken++;
 
   const sourceCanvas = document.createElement('canvas');
   sourceCanvas.width = canvas.width;
   sourceCanvas.height = canvas.height;
-  if (paintManager) paintManager.drawBaseImage();
+  if (paintManager) paintManager.drawBaseImage(true);
   sourceCanvas.getContext('2d').drawImage(canvas, 0, 0);
 
   const oldWidth = canvas.width;
@@ -1864,7 +1876,7 @@ function applyCanvasTransform(transformType) {
   if (paintManager) {
     paintManager.captureBaseImage();
     paintManager.transformElements(transformType, oldWidth, oldHeight, canvas.width, canvas.height);
-    paintManager.redrawAll();
+    convertDithering(false);
     paintManager.saveToHistory();
   }
 
@@ -1897,6 +1909,7 @@ function flipCanvas() {
 
 function clearCanvas() {
   if (confirm('清除画布内容?')) {
+    flushImageAdjustments();
     imageLoadToken++;
     const imageFile = document.getElementById('imageFile');
     if (imageFile) imageFile.value = '';
@@ -1912,49 +1925,106 @@ function clearCanvas() {
   return false;
 }
 
-function convertDithering() {
-  // Only dither the imported bitmap. Timetable grids and editable elements are rendered afterward.
-  paintManager.drawBaseImage();
-
-  const contrast = parseFloat(document.getElementById('ditherContrast').value);
-  const currentImageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
-  const imageData = new ImageData(
-    new Uint8ClampedArray(currentImageData.data),
-    currentImageData.width,
-    currentImageData.height
-  );
-
-  adjustContrast(imageData, contrast);
-
-  const alg = document.getElementById('ditherAlg').value;
-  const strength = parseFloat(document.getElementById('ditherStrength').value);
-  const mode = document.getElementById('ditherMode').value;
-  const processedData = processImageData(ditherImage(imageData, alg, strength, mode), mode);
-  const finalImageData = decodeProcessedData(processedData, canvas.width, canvas.height, mode);
-  ctx.putImageData(finalImageData, 0, 0);
-  paintManager.captureBaseImage();
-  paintManager.redrawAll();
-  paintManager.saveToHistory(); // Save dithered image to history
+function imageAdjustmentSettings() {
+  const number = (id, min, max, fallback) => {
+    const value = Number(document.getElementById(id)?.value);
+    return Number.isFinite(value) ? Math.max(min, Math.min(max, value)) : fallback;
+  };
+  return { algorithm: document.getElementById('ditherAlg').value,
+    strength: number('ditherStrength', 0, 5, 1), contrast: number('ditherContrast', 0.5, 2, 1.2),
+    mode: document.getElementById('ditherMode').value };
 }
 
-function applyDither() {
+function restoreImageAdjustments(settings) {
+  const values = { ditherAlg: settings.algorithm, ditherStrength: settings.strength,
+    ditherContrast: settings.contrast, ditherMode: settings.mode };
+  for (const [id, value] of Object.entries(values)) {
+    const node = document.getElementById(id);
+    if (node && value !== undefined) node.value = value;
+  }
+  syncImageAdjustmentControls();
+}
+
+function syncImageAdjustmentControls() {
+  const settings = imageAdjustmentSettings();
+  document.getElementById('ditherStrengthValue').textContent = settings.strength.toFixed(1);
+  document.getElementById('ditherContrastValue').textContent = settings.contrast.toFixed(1);
+  document.getElementById('ditherStrength').disabled = settings.algorithm === 'none';
+  const hint = document.getElementById('imageAdjustmentHint');
+  if (hint) hint.textContent = settings.mode === 'sixColor'
+    ? '六色模式支持预览和数组导出，当前固件不能发送。'
+    : '调整从原图重新计算；文字、画笔和课表保留。';
+}
+
+function renderImageAdjustments(original, settings) {
+  const image = new ImageData(new Uint8ClampedArray(original.data), original.width, original.height);
+  // Transparent source pixels have the same white backing as the canvas.
+  for (let i = 0; i < image.data.length; i += 4) {
+    const alpha = image.data[i + 3] / 255;
+    for (let channel = 0; channel < 3; channel++)
+      image.data[i + channel] = image.data[i + channel] * alpha + 255 * (1 - alpha);
+    image.data[i + 3] = 255;
+  }
+  adjustContrast(image, settings.contrast);
+  return ditherImage(image, settings.algorithm, settings.strength, settings.mode);
+}
+
+function convertDithering(saveHistory = true) {
+  // The source bitmap stays intact; vectors are composed after its preview.
+  const settings = imageAdjustmentSettings(), previous = paintManager.imageAdjustments;
+  const unchanged = previous && Object.keys(settings).every(key => settings[key] === previous[key]);
+  if (!unchanged || !paintManager.processedBaseImageData)
+    paintManager.processedBaseImageData = paintManager.baseImageData
+      ? renderImageAdjustments(paintManager.baseImageData, settings) : null;
+  paintManager.imageAdjustments = settings;
+  paintManager.workspaceRevision++;
+  paintManager.redrawAll();
+  if (saveHistory) paintManager.saveToHistory();
+}
+
+function flushImageAdjustments() {
+  if (imageAdjustmentFrame !== null) { cancelAnimationFrame(imageAdjustmentFrame); imageAdjustmentFrame = null; }
+  if (imageAdjustmentTimer !== null) { clearTimeout(imageAdjustmentTimer); imageAdjustmentTimer = null; }
+  if (!imageAdjustmentPending) return;
+  imageAdjustmentPending = false;
+  if (!cropManager?.isCropMode() && paintManager) convertDithering();
+}
+
+function applyDither(finishCrop = false) {
   if (!canvas || !ctx || !paintManager || !cropManager) return;
+  syncImageAdjustmentControls();
   if (!cropManager.isCropMode()) {
+    imageAdjustmentPending = false;
+    if (imageAdjustmentFrame !== null) { cancelAnimationFrame(imageAdjustmentFrame); imageAdjustmentFrame = null; }
+    if (imageAdjustmentTimer !== null) { clearTimeout(imageAdjustmentTimer); imageAdjustmentTimer = null; }
     convertDithering();
     return;
   }
-  cropManager.finishCrop(() => convertDithering());
+  if (finishCrop) cropManager.finishCrop(() => convertDithering());
 }
 
 function initEventHandlers() {
-  document.getElementById("ditherStrength").addEventListener("input", (e) => {
-    document.getElementById("ditherStrengthValue").innerText = parseFloat(e.target.value).toFixed(1);
-    applyDither();
-  });
-  document.getElementById("ditherContrast").addEventListener("input", (e) => {
-    document.getElementById("ditherContrastValue").innerText = parseFloat(e.target.value).toFixed(1);
-    applyDither();
-  });
+  syncImageAdjustmentControls();
+  for (const id of ['ditherStrength', 'ditherContrast']) {
+    const input = document.getElementById(id);
+    input.addEventListener('input', () => {
+      syncImageAdjustmentControls();
+      if (cropManager.isCropMode()) return;
+      imageAdjustmentPending = true;
+      if (imageAdjustmentFrame === null) imageAdjustmentFrame = requestAnimationFrame(() => {
+        imageAdjustmentFrame = null;
+        if (!cropManager.isCropMode()) convertDithering(false);
+      });
+      if (imageAdjustmentTimer !== null) clearTimeout(imageAdjustmentTimer);
+      imageAdjustmentTimer = setTimeout(flushImageAdjustments, 300);
+    });
+    input.addEventListener('change', flushImageAdjustments);
+  }
+  document.addEventListener('pointerdown', event => {
+    if (!['ditherStrength', 'ditherContrast'].includes(event.target?.id)) flushImageAdjustments();
+  }, true);
+  document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') flushImageAdjustments(); });
+  window.addEventListener?.('pagehide', flushImageAdjustments);
 }
 
 function checkDebugMode() {

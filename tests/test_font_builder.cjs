@@ -11,6 +11,82 @@ const baseFonts = () => builder.open(store.prepareBundle(template.files.map(file
   name: file.name, bytes: new Uint8Array(Buffer.from(file.base64, 'base64')),
 })))).fonts;
 const word = (bytes, offset) => bytes[offset] * 256 + bytes[offset + 1];
+
+test('batch generation reports progress, yields, and cancellation leaves the original fonts intact', async () => {
+  const input = baseFonts(), original = input.map(font => font.slice()), signal = { aborted: false }, progress = [];
+  let yields = 0;
+  await assert.rejects(codec.extendFonts(input, [{ slot: 0, text: '新书桌' }], { signal, batchSize: 1,
+    rasterize: async () => ({ width: 1, height: 1, x: 0, y: 0, advance: 2, pixels: Uint8Array.of(1) }),
+    onProgress: info => progress.push(info), yield: async () => { yields++; signal.aborted = true; } }), /取消/);
+  assert.equal(yields, 1); assert.equal(progress[0].completed, 0); assert.equal(progress[1].completed, 1);
+  assert.deepEqual(input, original);
+});
+
+test('redrawing a base slot replaces existing glyphs and retains all other slots byte for byte', async () => {
+  const input = baseFonts(), seen = new Set();
+  const result = await codec.extendFonts(input, [{ slot: 2, text: '012' }], { rebuildSlots: [2],
+    rasterize: async code => { seen.add(code); return { width: 1, height: 1, x: 0, y: 0, advance: 2, pixels: Uint8Array.of(1) }; } });
+  assert.ok(seen.has(48)); assert.ok(seen.has(57));
+  assert.deepEqual(result.fonts[0], input[0]); assert.deepEqual(result.fonts[1], input[1]);
+  assert.notDeepEqual(result.fonts[2], input[2]);
+  assert.equal(codec.glyph(result.fonts[2], 48, 2).advance, 2);
+  assert.doesNotThrow(() => codec.validateGlyphs(result.fonts[2], 2));
+});
+
+test('imported-font glyph caches reuse preview bitmaps and enforce the font budget during generation', async () => {
+  const input = baseFonts(), glyphCache = new Map(); let calls = 0;
+  const options = { rebuildSlots: [2], slotOptions: () => ({ glyphCache }),
+    rasterize: async () => { calls++; return { width: 1, height: 1, x: 0, y: 0, advance: 2, pixels: Uint8Array.of(1) }; } };
+  const first = await codec.extendFonts(input, [], options), count = calls;
+  const second = await codec.extendFonts(input, [], options);
+  assert.equal(calls, count); assert.deepEqual(first.fonts, second.fonts);
+  await assert.rejects(codec.extendFonts(input, [{ slot: 0, text: '新书' }], { ...options, rebuildSlots: [], maxPayloadBytes: 1 }), /容量/);
+});
+test('generated offsets fit the fixed device box without clipping pixels or changing advances', async () => {
+  const fonts = baseFonts(), bitmap = { ...glyph(), y: -1 }, original = structuredClone(bitmap);
+  assert.throws(() => codec.encodeGlyph(fonts[0], 0x65b0, bitmap), /偏移.*边界/);
+  const result = await codec.extendFonts(fonts, [{ slot: 0, text: '新' }], { rasterize: async () => bitmap });
+  const decoded = codec.glyph(result.fonts[0], 0x65b0, 0);
+  assert.equal(decoded.y, -2); assert.equal(decoded.height + decoded.y, 10);
+  assert.deepEqual(decoded.pixels, original.pixels); assert.equal(decoded.advance, original.advance);
+  assert.deepEqual(bitmap, original); assert.doesNotThrow(() => codec.validateGlyphs(result.fonts[0], 0));
+  // Corrupt just the biased Y field of a valid encoded record, retaining
+  // its compression stream. Import decoding must also check the boundary.
+  const record = codec.encodeGlyph(fonts[0], 0x65b0, { ...bitmap, y: -2 });
+  const bit = 24 + fonts[0][4] + fonts[0][5] + fonts[0][6];
+  const storedY = (2 ** (fonts[0][7] - 1)) - 1;
+  for (let i = 0; i < fonts[0][7]; i++) {
+    const index = (bit + i) >> 3, mask = 1 << ((bit + i) & 7);
+    record[index] = (record[index] & ~mask) | (((storedY >> i) & 1) ? mask : 0);
+  }
+  assert.throws(() => codec.decodeGlyph(fonts[0], 0x65b0, record), /偏移.*边界/);
+  const legacy = fonts.slice(); legacy[0] = fixture(fonts[0], [...records(result.fonts[0])].map(([code, bytes]) => [code, code === 0x65b0 ? record : bytes]));
+  const repaired = codec.normalizeFonts(legacy);
+  assert.deepEqual(repaired.changedSlots, [0]); assert.equal(codec.glyph(repaired.fonts[0], 0x65b0, 0).y, -2);
+  assert.deepEqual(codec.glyph(repaired.fonts[0], 0x65b0, 0).pixels, original.pixels);
+  assert.deepEqual(codec.normalizeFonts(repaired.fonts).changedSlots, []);
+});
+test('supplementing punctuation widens metric fields while preserving every existing glyph', async () => {
+  const fonts = baseFonts(), before = codec.glyphs(fonts[1], 1), original = fonts[1].slice();
+  const bitmap = { ...glyph(2, 2), x: 5, y: 9, advance: 2 ** (original[8] - 1) };
+  const result = await codec.extendFonts(fonts, [{ slot: 1, text: '"' }], { rasterize: async () => bitmap });
+  const after = codec.glyphs(result.fonts[1], 1);
+  assert.deepEqual(after.get(34), bitmap);
+  for (const [code, shape] of before) assert.deepEqual(after.get(code), shape);
+  assert.deepEqual(result.fonts[1].subarray(9, 17), original.subarray(9, 17));
+  assert.ok(result.fonts[1][7] > original[7]); assert.ok(result.fonts[1][8] > original[8]);
+  assert.deepEqual(fonts[1], original);
+  assert.equal(result.fonts[0], fonts[0]); assert.equal(result.fonts[2], fonts[2]);
+  assert.doesNotThrow(() => codec.validateGlyphs(result.fonts[1], 1));
+  await assert.rejects(codec.extendFonts(fonts, [{ slot: 1, text: '"' }], {
+    rasterize: async () => bitmap, maxPayloadBytes: 8 + 3 * 16 + fonts.reduce((sum, font) => sum + font.length, 0) + 1,
+  }), /容量/);
+  const browser = browserFixture({ '"': bitmap, tofu: glyph(4, 4) });
+  assert.deepEqual(await codec.rasterizeGlyph(34, 1, fonts[1], { document: browser.document }), bitmap);
+  const merged = codec.mergeFonts(fonts, result.fonts);
+  assert.deepEqual(codec.glyph(merged.fonts[1], 34, 1), bitmap);
+  for (const [code, shape] of before) assert.deepEqual(codec.glyph(merged.fonts[1], code, 1), shape);
+});
 function records(font) {
   const result = new Map();
   function walk(offset, unicode) {
@@ -96,7 +172,11 @@ test('missing requirements deduplicate per slot and reject unsupported text befo
 test('independent decoder verifies bit order, biased signed metrics, repeated pairs and split runs', () => {
   const fonts = baseFonts();
   for (const [slot, width, height] of [[0, 12, 12], [1, 16, 16], [2, 13, 22]]) {
-    const header = fonts[slot], halfX = 2 ** (header[6] - 1), halfY = 2 ** (header[7] - 1);
+    const header = fonts[slot].slice(), halfX = 2 ** (header[6] - 1), halfY = 2 ** (header[7] - 1);
+    // A deliberately wider fixture box exercises the complete signed bit
+    // range without creating glyphs outside the declared geometry.
+    header[9] = width + halfX; header[10] = height + 2 * halfY;
+    header[11] = 256 - halfX; header[12] = 256 - halfY;
     const patterns = [() => 0, () => 1, (_, y) => y >= height / 2, (x, y) => (y * width + x) % 2, (x, y) => (x * 7 + y * 11) % 13 < 6];
     for (const pattern of patterns) {
       const bitmap = { ...glyph(width, height, pattern), x: -halfX, y: halfY - 1 };
@@ -121,7 +201,8 @@ test('unsigned and signed bounds, geometry, bitmap values and record capacity ar
   const narrow = header.slice(); narrow[4] = 3;
   assert.throws(() => codec.encodeGlyph(narrow, 0xe000, glyph(8, 4)), /宽度/);
   const signed = { ...bitmap, x: 3, y: -8, advance: -16 };
-  assert.deepEqual(decode(header, 0xe000, codec.encodeGlyph(header, 0xe000, signed)), signed);
+  const signedBox = header.slice(); signedBox[9] = 16; signedBox[10] = 32; signedBox[12] = 248;
+  assert.deepEqual(decode(signedBox, 0xe000, codec.encodeGlyph(signedBox, 0xe000, signed)), signed);
   const large = header.slice(); large[2] = large[3] = large[4] = large[5] = 8; large[9] = large[10] = 255;
   assert.throws(() => codec.encodeGlyph(large, 0xe000, { ...glyph(255, 255), advance: 12 }), /255 字节/);
 });
@@ -185,17 +266,20 @@ test('merge retains device-only generated glyphs and gives incoming glyphs prior
   assert.deepEqual(again.added, []); again.fonts.forEach((font, slot) => assert.equal(font, merged.fonts[slot]));
 });
 
-test('merge transcodes installed-only glyphs across bit layouts and rejects incompatible geometry', () => {
+test('merge transcodes installed-only glyphs across bit layouts and retains compatible offsets', () => {
   const incoming = baseFonts(), installed = baseFonts();
   const changedHeader = installed[0].slice(0, 23); changedHeader[2] = 4; changedHeader[6] = 4;
-  const bitmap = { ...glyph(), x: -3 };
+  const bitmap = { ...glyph(2, 2), x: 1, y: 0 };
   installed[0] = fixture(changedHeader, [[0xe000, codec.encodeGlyph(changedHeader, 0xe000, bitmap)]]);
   const merged = codec.mergeFonts(incoming, installed), record = records(merged.fonts[0]).get(0xe000);
   assert.deepEqual(decode(incoming[0], 0xe000, record), bitmap);
   assert.notDeepEqual(record, records(installed[0]).get(0xe000));
   const outside = { ...bitmap, x: 7 };
   installed[0] = fixture(changedHeader, [[0xe000, codec.encodeGlyph(changedHeader, 0xe000, outside)]]);
-  assert.throws(() => codec.mergeFonts(incoming, installed), /X 偏移/);
+  const widened = codec.mergeFonts(incoming, installed);
+  assert.deepEqual(decode(widened.fonts[0], 0xe000, records(widened.fonts[0]).get(0xe000)), outside);
+  for (const [code, record] of records(incoming[0]))
+    assert.deepEqual(decode(widened.fonts[0], code, records(widened.fonts[0]).get(code)), decode(incoming[0], code, record));
 });
 
 test('merging different bit widths also retains control-code records already in source fonts', () => {
@@ -251,6 +335,91 @@ test('browser rasterizer awaits fonts, uses compact baseline metrics and detects
   const blank = browserFixture({ '龘': { width: 0, height: 0, x: 0, y: 0, advance: 12, pixels: [] }, tofu: glyph(4, 4) });
   await assert.rejects(codec.rasterizeGlyph(0x9f98, 0, header, { document: blank.document }), /未生成/);
   await assert.rejects(codec.rasterizeGlyph(0x9f98, 0, header, { document: {} }), /Canvas/);
+});
+
+test('a generation job caches missing-glyph reference bitmaps and refreshes them for the next job', async () => {
+  const fonts = baseFonts(), shapes = { '\uE000': glyph(2, 2), '\uE001': glyph(3, 3), tofu: glyph(4, 4) };
+  const browser = browserFixture(shapes), requests = [{ slot: 0, text: '\uE000\uE001' }];
+  await codec.extendFonts(fonts, requests, { document: browser.document });
+  assert.equal(browser.events.filter(event => event.startsWith('draw:')).length, 8, 'two targets share six reference scans');
+  assert.equal(browser.events.filter(event => event.startsWith('load:')).length, 2, 'each target still loads its own font unicode range');
+  // A newly available font can change its .notdef shape between jobs.
+  shapes.tofu = glyph(2, 2);
+  await assert.rejects(codec.extendFonts(fonts, requests, { document: browser.document }), /占位方框/);
+});
+
+test('missing-glyph reference caches distinguish font family, style, size and document', async () => {
+  const fonts = baseFonts(), bitmap = glyph(2, 2), browser = browserFixture({ '新': bitmap, tofu: glyph(4, 4) });
+  const missingGlyphCache = new Map(), options = { document: browser.document, missingGlyphCache, fontFamily: 'TestOne' };
+  await codec.rasterizeGlyph('新'.codePointAt(0), 0, fonts[0], options);
+  await codec.rasterizeGlyph('新'.codePointAt(0), 0, fonts[0], options);
+  assert.equal(browser.events.filter(event => event.startsWith('draw:')).length, 8);
+  for (const extra of [{ fontFamily: 'TestTwo' }, { fontSize: 12 }, { fontSize: 12, fontBold: true }, { fontSize: 12, fontItalic: true }])
+    await codec.rasterizeGlyph('新'.codePointAt(0), 0, fonts[0], { ...options, ...extra });
+  assert.equal(browser.events.filter(event => event.startsWith('draw:')).length, 36);
+  const other = browserFixture({ '新': bitmap, tofu: bitmap });
+  await assert.rejects(codec.rasterizeGlyph('新'.codePointAt(0), 0, fonts[0], { ...options, document: other.document }), /占位方框/);
+  // A CSS font name can resolve to a newly loaded unicode-range face during
+  // the same job. Its reference bitmap must not inherit the previous face.
+  const shapes = { '新': bitmap, tofu: glyph(4, 4) }, changing = browserFixture(shapes);
+  let face = {};
+  changing.document.fonts.load = async () => [face];
+  await codec.rasterizeGlyph('新'.codePointAt(0), 0, fonts[0], { ...options, document: changing.document });
+  face = {}; shapes.tofu = bitmap;
+  await assert.rejects(codec.rasterizeGlyph('新'.codePointAt(0), 0, fonts[0], { ...options, document: changing.document }), /占位方框/);
+});
+
+test('compatibility checking reports all missing and oversized glyphs without committing partial fonts', async () => {
+  const fonts = baseFonts(), snapshots = fonts.map(font => font.slice()), progress = [], seen = [];
+  await assert.rejects(codec.extendFonts(fonts, [{ slot: 0, text: '\uE000\uE001\uE002' }], {
+    collectIssues: true, onProgress: info => progress.push(info),
+    slotOptions: () => ({ validateCharacter(code) { if (code === 0xe000) throw new Error('导入字体不包含 U+E000，请更换字体'); } }),
+    rasterize: async code => { seen.push(code); return code === 0xe001 ? glyph(13, 12) : glyph(2, 2); },
+  }), error => {
+    assert.match(error.message, /2 个字符问题/);
+    assert.deepEqual(error.fontIssues.map(issue => [issue.slot, issue.codePoint]), [[0, 0xe000], [0, 0xe001]]);
+    assert.match(error.fontIssues[0].message, /不包含/); assert.match(error.fontIssues[1].message, /13×12.*12×12/);
+    return true;
+  });
+  assert.deepEqual(seen, [0xe001, 0xe002]); assert.equal(progress.at(-1).completed, 3); assert.equal(progress.at(-1).issues, 2);
+  assert.deepEqual(fonts, snapshots);
+  let calls = 0;
+  await assert.rejects(codec.extendFonts(fonts, [{ slot: 0, text: '\uE000\uE001' }], {
+    collectIssues: true, rasterize: async () => { calls++; throw new Error('Canvas unavailable'); },
+  }), /Canvas unavailable/);
+  assert.equal(calls, 1, 'environment failures abort immediately');
+  await assert.rejects(codec.extendFonts(fonts, [{ slot: 0, text: '\uE000\uE001' }], {
+    collectIssues: true, maxPayloadBytes: 1, rasterize: async () => glyph(2, 2),
+  }), /容量/);
+  const signal = { aborted: false };
+  await assert.rejects(codec.extendFonts(fonts, [{ slot: 0, text: '\uE000\uE001' }], {
+    collectIssues: true, signal, batchSize: 1, rasterize: async () => glyph(13, 12), yield: async () => { signal.aborted = true; },
+  }), error => error.name === 'AbortError');
+});
+
+test('font recovery discards only damaged glyph records and retains healthy custom glyphs', () => {
+  const fallback = baseFonts(), installed = baseFonts(), header = installed[0], shape = glyph(3, 3);
+  const broken = codec.encodeGlyph(header, 0xe000, shape), good = codec.encodeGlyph(header, 0xe001, shape);
+  const metricsEnd = 24 + [...header.subarray(4, 9)].reduce((sum, bits) => sum + bits, 0);
+  for (let bit = metricsEnd; bit < broken.length * 8; bit++) broken[bit >> 3] &= ~(1 << (bit & 7));
+  installed[0] = fixture(header, [...records(header), [0xe000, broken], [0xe001, good]]);
+  installed[3] = fixture(header, [[0xe000, broken], [0xe001, good]]); installed.customKey = 123;
+  const snapshots = installed.map(font => font.slice()), result = codec.recoverFonts(installed, fallback);
+  assert.deepEqual(result.damaged.map(issue => [issue.slot, issue.codePoint]), [[0, 0xe000], [3, 0xe000]]);
+  assert.equal(result.fonts.customKey, 123); assert.ok(result.recovered > 2);
+  for (const slot of [0, 3]) {
+    assert.equal(codec.glyph(result.fonts[slot], 0xe000, slot), null);
+    assert.deepEqual(codec.glyph(result.fonts[slot], 0xe001, slot), shape);
+    assert.doesNotThrow(() => codec.validateGlyphs(result.fonts[slot], slot));
+  }
+  for (const [code, value] of codec.glyphs(header, 0)) assert.deepEqual(codec.glyph(result.fonts[0], code, 0), value);
+  installed.forEach((font, slot) => assert.deepEqual(font, snapshots[slot]));
+  installed[0] = fixture(header, [[0xe000, broken]]); installed[3] = installed[0];
+  const empty = codec.recoverFonts(installed, fallback);
+  assert.equal(empty.fonts[0], fallback[0]); assert.equal(empty.fonts.length, 3); assert.equal(empty.fonts.customKey, undefined);
+  installed[1] = installed[1].slice(); installed[1][2] = 0;
+  const structural = codec.recoverFonts(installed, fallback);
+  assert.equal(structural.fonts[1], fallback[1]); assert.ok(structural.damaged.some(issue => issue.slot === 1 && issue.codePoint === undefined));
 });
 
 test('large TODO headers encode full glyph bounds with negative italic bearings without touching base fonts', async () => {

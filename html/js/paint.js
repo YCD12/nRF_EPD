@@ -46,6 +46,8 @@ class PaintManager {
     this.selectionOverlay = null;
     this.baseImageData = null;
     this.baseImageUrl = null;
+    this.processedBaseImageData = null;
+    this.imageAdjustments = null;
     this.historyStack = [];
     this.historyStep = -1;
     this.MAX_HISTORY = 25;
@@ -110,28 +112,35 @@ class PaintManager {
   captureBaseImage() {
     this.baseImageData = this.ctx.getImageData(0, 0, this.canvas.width, this.canvas.height);
     this.baseImageUrl = null;
+    this.processedBaseImageData = null;
     this.workspaceRevision++;
   }
 
   resetBaseImage() {
     this.baseImageData = null;
     this.baseImageUrl = null;
+    this.processedBaseImageData = null;
+    this.imageAdjustments = null;
     this.workspaceRevision++;
   }
 
-  drawBaseImage() {
+  drawBaseImage(original = false) {
+    if (!original && this.baseImageData && !this.processedBaseImageData && this.imageAdjustments &&
+        typeof renderImageAdjustments === 'function')
+      this.processedBaseImageData = renderImageAdjustments(this.baseImageData, this.imageAdjustments);
+    const image = !original && this.processedBaseImageData || this.baseImageData;
     this.ctx.save();
     this.ctx.setTransform(1, 0, 0, 1, 0, 0);
     this.ctx.fillStyle = '#ffffff';
     this.ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
-    if (this.baseImageData) {
-      if (this.baseImageData.width === this.canvas.width && this.baseImageData.height === this.canvas.height) {
-        this.ctx.putImageData(this.baseImageData, 0, 0);
+    if (image) {
+      if (image.width === this.canvas.width && image.height === this.canvas.height) {
+        this.ctx.putImageData(image, 0, 0);
       } else {
         const baseCanvas = document.createElement('canvas');
-        baseCanvas.width = this.baseImageData.width;
-        baseCanvas.height = this.baseImageData.height;
-        baseCanvas.getContext('2d').putImageData(this.baseImageData, 0, 0);
+        baseCanvas.width = image.width;
+        baseCanvas.height = image.height;
+        baseCanvas.getContext('2d').putImageData(image, 0, 0);
         this.ctx.drawImage(baseCanvas, 0, 0, this.canvas.width, this.canvas.height);
       }
     }
@@ -158,6 +167,8 @@ class PaintManager {
     this.historyStack.push({
       width: this.canvas.width, height: this.canvas.height,
       baseImageData: this.baseImageData,
+      processedBaseImageData: this.processedBaseImageData,
+      imageAdjustments: this.imageAdjustments && { ...this.imageAdjustments },
       textElements: JSON.parse(JSON.stringify(this.textElements)),
       lineSegments: JSON.parse(JSON.stringify(this.lineSegments)),
       todoItems: JSON.parse(JSON.stringify(this.todoItems)),
@@ -186,6 +197,7 @@ class PaintManager {
       }
       localStorage.setItem('canvasState', JSON.stringify({
         version: 2, baseDataUrl: this.baseImageUrl,
+        imageAdjustments: this.imageAdjustments,
         textElements: this.textElements, lineSegments: this.lineSegments,
         todoItems: this.todoItems, schedule: this.scheduleSnapshot(),
         width: this.canvas.width, height: this.canvas.height,
@@ -238,6 +250,10 @@ class PaintManager {
         if (revision !== this.workspaceRevision) return false;
         this.canvas.width = data.width;
         this.canvas.height = data.height;
+        this.processedBaseImageData = null;
+        this.imageAdjustments = data.imageAdjustments || null;
+        if (this.imageAdjustments && typeof restoreImageAdjustments === 'function')
+          restoreImageAdjustments(this.imageAdjustments);
         // Legacy caches store the composed image. Restore it as one bitmap to avoid duplicate text.
         const editable = data.version === 2 || (!data.imageDataUrl && !data.imageData);
         this.textElements = editable && Array.isArray(data.textElements) ? data.textElements : [];
@@ -251,6 +267,8 @@ class PaintManager {
         if (typeof restoreCanvasOrientation === 'function') restoreCanvasOrientation(data.orientation || 0);
         this.historyStack = []; this.historyStep = -1;
         this.saveToHistory();
+        if (imageUrl && !data.imageAdjustments)
+          this.report('已恢复旧画布。旧缓存底图可能已经转为点阵；若调整效果无变化，请重新导入原图。');
         return true;
       };
       const imageUrl = data.version === 2 ? data.baseDataUrl : data.imageDataUrl;
@@ -287,10 +305,12 @@ class PaintManager {
   }
 
   undo() {
+    if (typeof flushImageAdjustments === 'function') flushImageAdjustments();
     if (this.historyStep > 0) { this.historyStep--; this.restoreFromHistory(); }
   }
 
   redo() {
+    if (typeof flushImageAdjustments === 'function') flushImageAdjustments();
     if (this.historyStep < this.historyStack.length - 1) { this.historyStep++; this.restoreFromHistory(); }
   }
 
@@ -302,6 +322,10 @@ class PaintManager {
     this.canvas.height = state.height;
     this.baseImageData = state.baseImageData;
     this.baseImageUrl = null;
+    this.processedBaseImageData = state.processedBaseImageData || null;
+    this.imageAdjustments = state.imageAdjustments && { ...state.imageAdjustments };
+    if (this.imageAdjustments && typeof restoreImageAdjustments === 'function')
+      restoreImageAdjustments(this.imageAdjustments);
     this.textElements = JSON.parse(JSON.stringify(state.textElements));
     this.lineSegments = JSON.parse(JSON.stringify(state.lineSegments));
     this.todoItems = JSON.parse(JSON.stringify(state.todoItems));
@@ -551,6 +575,7 @@ class PaintManager {
   startPaint(e) {
     if (this.isCropMode() || (!this.touchActive && Date.now() < this.suppressMouseUntil) || !this.currentTool || (e.button !== undefined && e.button !== 0)) return;
     if (this.isTextPlacementMode || this.isTodoPlacementMode) return;
+    if (typeof flushImageAdjustments === 'function') flushImageAdjustments();
     if (['brush', 'eraser'].includes(this.currentTool)) {
       this.workspaceRevision++;
       this.painting = true; this.lastX = null; this.lastY = null; this.draw(e); return;

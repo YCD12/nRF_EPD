@@ -99,9 +99,42 @@ test('regular font resource upgrades retain device-only glyphs and incoming glyp
   const retained = sync.preserve(incoming, f.bytes, [{ id: 7, type: 7, size: 262144 }]);
   assert.equal(retained.added.length, 2);
   const pack = store.parsePackage(retained.bytes);
-  assert.equal(pack.revision, 10);
+  assert.equal(pack.revision, 9); // Explicit version bump, unchanged merged payload.
   assert.equal(glyphs.gatherMissing(builder.decodeFonts(pack.payload), requests).length, 0);
   assert.equal(sync.preserve(retained.bytes, f.bytes, [{ id: 7, type: 7, size: 262144 }]).bytes, retained.bytes);
+});
+
+test('repeated merges retain installed revision for identical content including revision exhaustion', async () => {
+  const f = fixture();
+  await sync.ensure(f.client, requests, { rasterize });
+  const incoming = builder.wrap(7, builder.encodeFonts(baseFonts()), 3);
+  let installed = f.bytes;
+  for (let index = 0; index < 3; index++) {
+    const result = sync.preserve(incoming, installed, [{ id: 7, type: 7, size: 262144 }]);
+    assert.deepEqual(result.bytes, installed);
+    assert.equal(store.parsePackage(result.bytes).revision, 4);
+    assert.equal(result.added.length, 2);
+    installed = result.bytes;
+  }
+  const exhausted = builder.wrap(7, store.parsePackage(installed).payload, 0xffffffff);
+  assert.deepEqual(sync.preserve(incoming, exhausted, [{ id: 7, type: 7, size: 262144 }]).bytes, exhausted);
+});
+
+test('RLE-damaged old fonts are backed up and repaired without discarding valid supplemental glyphs', async () => {
+  const extended = await glyphs.extendFonts(baseFonts(), [{ slot: 1, text: '生' }], { rasterize });
+  extended.fonts[0] = extended.fonts[0].slice();
+  extended.fonts[0][2] = extended.fonts[0][3] = 8;
+  const corrupt = builder.wrap(7, builder.encodeFonts(extended.fonts), 4);
+  const incoming = builder.wrap(7, builder.encodeFonts(baseFonts()), 3);
+  const result = sync.preserve(incoming, corrupt, [{ id: 7, type: 7, size: 262144 }]);
+  assert.equal(result.repair, true);
+  assert.ok(result.damaged.length);
+  assert.deepEqual(result.backup, corrupt);
+  const recovered = builder.decodeFonts(store.parsePackage(result.bytes).payload);
+  recovered.forEach((font, slot) => glyphs.validateGlyphs(font, slot));
+  assert.equal(glyphs.gatherMissing(recovered, [{ slot: 1, text: '生' }]).length, 0);
+  assert.throws(() => sync.preserve(corrupt, incoming, [{ id: 7, type: 7, size: 262144 }]), /字形|游程/);
+  assert.throws(() => sync.preserve(incoming, corrupt, [{ id: 7, type: 7, size: 4096 }]), /容量|超出/);
 });
 
 test('valid incoming font resources repair CRC-valid malformed old fonts', () => {

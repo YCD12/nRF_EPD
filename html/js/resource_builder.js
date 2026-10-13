@@ -175,28 +175,44 @@
     if (!(bytes instanceof Uint8Array) || bytes.length < 23 || !bytes[0] || bytes[0] === 255 ||
         !(slot === 3 ? [...metrics.slice(0, 2), ...todoMetrics] : [metrics[slot]]).some(metric => metric.every((n, i) => bytes[9 + i] === n)) ||
         Array.from(bytes.subarray(2, 9)).some(n => n < 1 || n > 8)) fail(`字体槽位 ${slot} 的头或几何不兼容`);
-    const v = view(bytes), glyphs = new Set();
+    const v = view(bytes), glyphs = new Set(), records = new Map(), positions = new Map();
     const offsets = [17, 19, 21].map(at => 23 + v.getUint16(at));
     if (offsets.some(at => at >= bytes.length)) fail('字体入口越界');
     function walk(start, unicode) {
-      const prefix = unicode ? 3 : 2;
+      const prefix = unicode ? 3 : 2, found = new Set();
       for (let at = start; ; ) {
         if (at + 2 > bytes.length) fail('字体表缺少结束符');
         const code = unicode ? v.getUint16(at) : bytes[at];
-        if (unicode && code === 0) return;
+        if (unicode && code === 0) return found;
         if (at + prefix > bytes.length) fail('字体记录越界');
         const size = bytes[at + prefix - 1];
-        if (!unicode && !size) return;
+        if (!unicode && !size) return found;
         if (size < prefix || at + size > bytes.length) fail('字体记录长度错误');
-        glyphs.add(code); at += size;
+        if (unicode && code <= 255) fail('Unicode 表不能包含 ASCII 编码');
+        if (records.has(at) && records.get(at) !== size) fail('字体入口指向重叠的记录');
+        if (positions.has(code) && positions.get(code) !== at)
+          fail(`字体包含重复编码 U+${code.toString(16).toUpperCase().padStart(4, '0')}；请重新生成字库`);
+        positions.set(code, at);
+        records.set(at, size); glyphs.add(code); found.add(code); at += size;
       }
     }
-    walk(23, false); walk(offsets[0], false); walk(offsets[1], false);
+    const ascii = [23, offsets[0], offsets[1]].map(at => walk(at, false));
+    // The device selects exactly one entry for each ASCII range. A union of
+    // the three walks can claim glyphs that its selected entry cannot reach.
+    for (const code of glyphs) {
+      if (!ascii[code >= 97 ? 2 : code >= 65 ? 1 : 0].has(code))
+        fail(`字体 ASCII 入口无法在设备端查找 U+${code.toString(16).toUpperCase().padStart(4, '0')}；请重新生成字库索引`);
+    }
     const table = offsets[2];
     if (table + 4 > bytes.length) fail('Unicode 索引越界');
     const jump = v.getUint16(table), first = v.getUint16(table + 2), start = table + jump;
     if (start >= bytes.length || (first && (first !== 0xffff || jump !== 4))) fail('字体必须使用单个 Unicode 块');
     if (first) walk(start, true);
+    let previousEnd = 23;
+    for (const [at, length] of [...records].sort((a, b) => a[0] - b[0])) {
+      if (at < previousEnd) fail('字体入口指向记录内部或重叠区域');
+      previousEnd = at + length;
+    }
     return glyphs;
   }
   function decodeFonts(bytes) {
@@ -258,19 +274,75 @@
     const payload = id => bundle.packages.find(item => item.pack.id === id).pack.payload;
     return { calendar: decodeCalendar(payload(5)), ui: decodeUI(payload(6)), fonts: decodeFonts(payload(7)) };
   }
-  function build(bundle, model, builtAt) {
+  function importCalendarData(calendar, data) {
+    if (!data || typeof data !== 'object' || Array.isArray(data)) fail('日历数据必须为 JSON 对象');
+    const next = { ...calendar, ...data };
+    if ((next.year_min !== calendar.year_min || next.year_max !== calendar.year_max) &&
+        !['lunar_month_days', 'solar_new_year', 'jieqi_year_bits'].every(key => Object.hasOwn(data, key)))
+      fail('修改年份范围时必须提供三个农历和节气计算表');
+    if (next.holiday_year !== calendar.holiday_year && !Object.hasOwn(data, 'holidays'))
+      fail('修改休班年份时必须提供 holidays 表');
+    // Accept the packed holiday integers used by resource_pack.py as well as editor rows.
+    if (Array.isArray(data.holidays)) next.holidays = data.holidays.map(row => {
+      if (typeof row !== 'number') return row;
+      integer(row, 0, 0x1fff, 'holidays');
+      return { month: row >> 8 & 15, day: row & 255, work: !!(row & 0x1000) };
+    });
+    encodeCalendar(next);
+    return next;
+  }
+  function recordPayload(magic, data) {
+    const bytes = new Uint8Array(16 + data.length), v = view(bytes);
+    v.setUint32(0, magic, true); v.setUint16(4, 1, true); v.setUint16(6, 16, true);
+    v.setUint16(8, data.length, true); v.setUint32(12, store.crc32(data), true);
+    bytes.set(data, 16); return bytes;
+  }
+  function decodeMigration(data) {
+    if (!data || data.format !== 'EPD-MIG1') fail('迁移备份格式必须为 EPD-MIG1');
+    function hex(key) {
+      const value = data[key];
+      if (typeof value !== 'string' || !/^(?:[0-9a-f]{2})+$/i.test(value) || value.length > 2080)
+        fail(`迁移备份 ${key} 不是有效的十六进制数据`);
+      return Uint8Array.from(value.match(/../g), byte => parseInt(byte, 16));
+    }
+    const config = hex('epd_config_hex'), annotations = hex('calendar_annotations_hex'), v = view(annotations);
+    if (config.length !== 14) fail('迁移设备配置必须为 14 字节');
+    if (annotations.length < 16 || v.getUint32(0, true) !== 0x4f4e4e41 || annotations[4] !== 1 ||
+        annotations[5] !== 16 || v.getUint16(6, true) > 64 ||
+        annotations.length !== 16 + v.getUint16(6, true) * 16 || annotations.subarray(8, 16).some(Boolean))
+      fail('迁移日期标注头或长度无效');
+    let previous = -1, text = '';
+    for (let at = 16; at < annotations.length; at += 16) {
+      const year = v.getUint16(at, true), month = annotations[at + 2], day = annotations[at + 3];
+      const flags = annotations[at + 4], length = annotations[at + 5], key = year * 65536 + month * 256 + day;
+      date(month, day, '迁移日期标注');
+      if (!(flags & 1) || flags & 0xc0 || (flags >> 1 & 3) > 2 || (flags >> 3 & 3) > 2 ||
+          length > 9 || annotations[at + 15] || key <= previous) fail('迁移日期标注无效或未按日期排序');
+      text += decoder.decode(annotations.subarray(at + 6, at + 6 + length)); previous = key;
+    }
+    return { config, annotations, text };
+  }
+  function build(bundle, model, builtAt, options = {}) {
+    if (options.revision !== undefined) integer(options.revision, 1, 0xffffffff, '资源版本');
     const payloads = new Map([[5, encodeCalendar(model.calendar)], [6, encodeUI(model.ui)], [7, encodeFonts(model.fonts)]]);
+    if (options.migration) {
+      const records = decodeMigration(options.migration);
+      payloads.set(2, recordPayload(0x31435045, records.config));
+      payloads.set(3, recordPayload(0x31434e41, records.annotations));
+    }
     const entries = bundle.packages.map(item => {
       const next = payloads.get(item.pack.id), old = item.pack.payload;
-      if (!next || (next.length === old.length && next.every((n, i) => n === old[i])))
+      const changed = next && (next.length !== old.length || next.some((n, i) => n !== old[i]));
+      if (!changed && !options.refreshStamp && options.revision === undefined)
         return { name: item.name, bytes: item.bytes.slice() };
-      const bytes = wrap(item.pack.id, next, item.pack.revision + 1, builtAt);
+      const bytes = wrap(item.pack.id, next || old,
+        options.revision ?? item.pack.revision + (changed ? 1 : 0), builtAt);
       store.validateTarget(store.parsePackage(bytes), bundle.partitions);
       return { name: item.name, bytes };
     });
     return store.prepareBundle(entries);
   }
-  const api = { encodeCalendar, decodeCalendar, encodeUI, decodeUI, validateFont, encodeFonts, decodeFonts, fontKey, todoFontGeometry, todoFontKey, wrap, open, build };
+  const api = { encodeCalendar, decodeCalendar, importCalendarData, decodeMigration, encodeUI, decodeUI, validateFont, encodeFonts, decodeFonts, fontKey, todoFontGeometry, todoFontKey, wrap, open, build };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   else root.EPDResourceBuilder = api;
 })(globalThis);

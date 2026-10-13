@@ -112,14 +112,33 @@
   function preserve(incomingBytes, installedBytes, partitions, options = {}) {
     const incoming = store.parsePackage(incomingBytes), installed = store.parsePackage(installedBytes);
     if (incoming.id !== PARTITION || installed.id !== PARTITION) throw new Error('不是字体资源包');
+    store.validateTarget(incoming, partitions);
     const incomingFonts = builder.decodeFonts(incoming.payload);
+    // Only damaged installed data may enter recovery. A bad incoming package
+    // or a later merge/capacity failure must still stop before any Flash write.
+    incomingFonts.forEach((font, slot) => fonts.validateGlyphs(font, slot));
     let installedFonts;
     try { installedFonts = builder.decodeFonts(installed.payload); }
-    catch (_) { return { bytes: incomingBytes, added: [], repair: true }; }
+    catch (error) { return { bytes: incomingBytes, added: [], repair: true,
+      backup: installedBytes.slice(), damaged: [{ message: error.message }] }; }
+    const recovered = fonts.recoverFonts(installedFonts, incomingFonts);
+    installedFonts = recovered.fonts;
     const result = fonts.mergeFonts(incomingFonts, installedFonts, { preserveCustom: options.preserveCustom !== false });
-    if (!result.added.length && !result.customPreserved) return { bytes: incomingBytes, added: [] };
+    const repair = recovered.damaged.length ? { repair: true, backup: installedBytes.slice(), damaged: recovered.damaged } : {};
+    const payload = builder.encodeFonts(result.fonts);
+    const equal = other => payload.length === other.length && payload.every((value, i) => value === other[i]);
+    // Device-only glyphs can make an old incoming package identical to the
+    // installed result. Preserve its revision instead of writing it again.
+    if (equal(installed.payload)) {
+      const bytes = incoming.revision > installed.revision
+        ? equal(incoming.payload) ? incomingBytes : builder.wrap(PARTITION, payload, incoming.revision) : installedBytes;
+      store.validateTarget(store.parsePackage(bytes), partitions);
+      return { bytes, added: result.added, customPreserved: result.customPreserved, ...repair };
+    }
+    if (equal(incoming.payload)) return { bytes: incomingBytes, added: result.added, ...repair };
     const original = { ...incoming, revision: Math.max(incoming.revision, installed.revision) };
-    return { bytes: updatedPackage(original, result.fonts, partitions), added: result.added, customPreserved: result.customPreserved };
+    return { bytes: updatedPackage(original, result.fonts, partitions), added: result.added,
+      customPreserved: result.customPreserved, ...repair };
   }
 
   const api = { ensure, preserve };

@@ -108,7 +108,7 @@
       const info = snapshot.modules.get(partition.id) || { state: 'error', note: '读取未完成' };
       const local = bundle?.packages.find(item => item.pack.id === partition.id)?.pack;
       const localHint = local ? `本地 v${local.revision} · ${snapshot.stale ? '待重新读取' : info.state === 'verified'
-        ? info.crc === local.crc && info.length === local.payload.length ? '内容一致' : '待更新'
+        ? info.crc === local.crc && info.length === local.payload.length && info.revision === local.revision ? '内容一致' : '待更新'
         : '一致性未确认'}` : '';
       return { partition, info, localHint };
     }) : [];
@@ -141,11 +141,13 @@
     box.textContent = '';
     const heading = bundle ? (bundleLabel ? `已加载 ${bundleLabel}，共 ${bundle.total} 字节` : `已就绪，共 ${bundle.total} 字节`) : message || '尚未选择资源目录';
     if (!canRenderDom()) {
-      box.textContent = [heading, ...(bundle ? bundle.packages.map(item => `${names[item.pack.id]}：v${item.pack.revision} · ${formatBuiltAt(item.pack.builtAt)}`) : [])].join('\n');
+      box.textContent = [heading, ...(bundle && message ? [`${message}（保留原资源）`] : []),
+        ...(bundle ? bundle.packages.map(item => `${names[item.pack.id]}：v${item.pack.revision} · ${formatBuiltAt(item.pack.builtAt)}`) : [])].join('\n');
       return;
     }
     panelHeading(box, '待烧录资源包', bundle ? '本地包已就绪' : error ? '资源包不可用' : '等待资源包', bundle ? 'ready' : error ? 'error' : 'pending');
     box.appendChild(element('p', 'resource-bundle-name', bundle ? bundleLabel || '本地资源目录' : heading));
+    if (bundle && message) box.appendChild(element('p', error ? 'external-resource-message error' : 'external-resource-message', `${message}（保留原资源）`));
     if (!bundle) return;
     box.appendChild(element('div', 'resource-inline-stats', `${bundle.packages.length} 个资源包 · 数据总大小 ${formatSize(bundle.total)}`));
     const details = element('details', 'resource-package-details');
@@ -170,6 +172,10 @@
   let offlineSupported = false, completionMessage = '';
   let bundleGeneration = 0;
   let bundleLabel = '', deviceSnapshot = null, readbackData = null;
+  // Retained across BLE reconnects until the next installation, so an erased
+  // font partition can be retried with the exact merged glyphs prepared before
+  // the failure. This is an in-page recovery journal, not an atomic rollback.
+  let recoveryData = null;
   const readbackFiles = [
     { id: 1, name: 'partition-table.ers' }, { id: 5, name: 'calendar.ers' },
     { id: 6, name: 'ui.ers' }, { id: 7, name: 'fonts.ers' },
@@ -199,20 +205,23 @@
 
   function controls() {
     const connected = !!client;
-    const busy = running || !!root.DeviceOperations?.current;
+    const busy = running || !!root.DeviceOperations?.current || !!root.ExternalResourceEditor?.busy();
     $('externalResourceInstall').disabled = busy || !connected || !bundle;
     $('externalResourceRefresh').disabled = busy || !connected;
     $('externalResourceFolder').disabled = busy;
     if ($('externalResourceReadback')) $('externalResourceReadback').disabled = busy || !connected;
     if ($('externalResourceSave')) $('externalResourceSave').disabled = running || !readbackData;
     if ($('externalResourceForce')) $('externalResourceForce').disabled = busy;
+    if ($('externalResourceSaveRecovery')) $('externalResourceSaveRecovery').disabled = running || !recoveryData;
+    if ($('externalResourceRetry')) $('externalResourceRetry').disabled = busy || !canRetry();
     const offline = $('externalResourceOffline');
     if (offline) offline.disabled = busy || !connected || !offlineSupported;
+    root.ExternalResourceEditor?.controls();
   }
 
   async function task(action, parent = null) {
     const session = client;
-    if (running || !session) return;
+    if (running || !session || root.ExternalResourceEditor?.busy()) return;
     let owner;
     try {
       owner = parent || root.DeviceOperations?.begin('resources');
@@ -250,6 +259,7 @@
     deviceSnapshot = null; readbackData = null;
     renderUsage(); renderVersions();
     renderReadback();
+    renderRecovery();
     controls();
   }
 
@@ -261,6 +271,7 @@
     const status = $('externalResourceStatus');
     if (status) status.textContent = completionMessage || (installationCompleted ? '资源已写入，设备已重启，请重新连接。' : '设备未连接');
     renderUsage(); renderVersions(); renderReadback();
+    renderRecovery();
     controls();
   }
 
@@ -519,8 +530,85 @@
     }
   }
 
-  async function install() { return task(installOperation); }
-  async function installOperation() {
+  function deviceIdentity(connection = characteristic) { return connection?.service?.device?.id || null; }
+  function canRetry() {
+    return !!(client && recoveryData?.state === 'failed' && bundleGeneration === recoveryData.selection &&
+      !root.ExternalResourceEditor?.isDirty?.() && (recoveryData.deviceId
+        ? deviceIdentity() === recoveryData.deviceId : client === recoveryData.session));
+  }
+  function renderRecovery() {
+    const note = $('externalResourceRecoveryStatus');
+    if (!note) return;
+    if (!recoveryData) { note.textContent = '发送前会保留待更新资源的恢复备份；关闭或刷新网页前请保存到本地。'; return; }
+    const labels = { pending: '未写入', writing: '写入中', committed: '已提交', skipped: '已校验一致', failed: '未完成' };
+    const state = recoveryData.state === 'complete' ? '发送完成' : recoveryData.state === 'failed' ? '发送未完成' : '正在发送';
+    note.textContent = `${state}。${recoveryData.tasks.map(item => `${names[item.pack.id]}：${labels[item.state]}`).join('；')}。` +
+      `${recoveryData.entries.length} 份更新前备份可保存；备份和重试进度仅保留在当前网页。` +
+      (recoveryData.state === 'failed' ? '连接同一设备后可重试未完成资源；已提交部分会重新校验。' : '') +
+      (recoveryData.diagnostics.length ? ` 修复说明：${recoveryData.diagnostics.slice(0, 4).join('；')}${recoveryData.diagnostics.length > 4 ? '；其余详情见恢复备份。' : ''}` : '');
+  }
+  function saveRecovery() {
+    if (running || !recoveryData) return;
+    let url;
+    try {
+      const manifest = { format: 'EPD-RESOURCE-RECOVERY-1', createdAt: recoveryData.createdAt,
+        deviceId: recoveryData.deviceId, initializing: recoveryData.initializing, state: recoveryData.state,
+        error: recoveryData.error, partitions: recoveryData.partitions, diagnostics: recoveryData.diagnostics,
+        resources: recoveryData.tasks.map(item => ({ id: item.pack.id, name: item.name, state: item.state,
+          revision: item.pack.revision, crc32: item.pack.crc.toString(16).padStart(8, '0') })) };
+      const entries = [...recoveryData.entries, ...recoveryData.tasks.map(item => ({ name: `planned/${item.name}`, bytes: item.bytes })),
+        { name: 'manifest.json', bytes: new TextEncoder().encode(JSON.stringify(manifest, null, 2) + '\n') }];
+      const archive = root.EPDResourceArchive.createZip(entries);
+      url = URL.createObjectURL(new Blob([archive], { type: 'application/zip' }));
+      const link = document.createElement('a');
+      link.href = url; link.download = `epd-resources-recovery-${recoveryData.createdAt.replace(/[-:]/g, '').replace('T', '-').slice(0, 15)}.zip`;
+      document.body.appendChild(link);
+      try { link.click(); } finally { link.remove(); }
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+      report('已发起下载恢复备份，before 为更新前数据，planned 为本次发送内容。');
+    } catch (error) {
+      if (url) URL.revokeObjectURL(url);
+      report(`保存恢复备份失败：${error.message}`, true);
+    }
+  }
+  async function retry() {
+    if (!canRetry()) return report('请连接原设备并保留原资源选择后重试；资源已编辑时请重新生成并发送。', true);
+    const previous = recoveryData;
+    return task(() => installOperation(previous));
+  }
+  async function inspectForRetry(session, item, partitions, verify) {
+    if (verify) return session.inspect(item.pack.id);
+    const partition = partitions.find(part => part.id === item.pack.id);
+    const header = await session.readRange(partition.offset, 32);
+    ensureCurrent(session);
+    let info;
+    try { info = api.parseHeader(header, partition); } catch (_) { return { code: 3 }; }
+    // Legacy firmware lacks VERIFY; check complete bytes locally rather than
+    // trusting the old journal or rewriting already committed partitions.
+    const bytes = await session.readRange(partition.offset, info.length + 32);
+    ensureCurrent(session);
+    try {
+      const pack = api.parsePackage(bytes);
+      return { code: 0, revision: pack.revision, crc: pack.crc, length: pack.payload.length };
+    } catch (_) { return { code: 3 }; }
+  }
+
+  async function install() {
+    // Generate before acquiring the device lock; generation itself must not
+    // run while BLE owns that lock. Failed validation must never send old data.
+    const editor = root.ExternalResourceEditor;
+    if (editor?.isDirty?.()) {
+      const session = client;
+      if (!await editor.generate()) return;
+      if (client !== session || editor.isDirty()) return report('资源或连接已变化，请重新发送', true);
+    }
+    if (bundle && root.EPDResourcePack?.validateBundle) {
+      try { root.EPDResourcePack.validateBundle(bundle); }
+      catch (error) { report(error.message, true); return; }
+    }
+    return task(installOperation);
+  }
+  async function installOperation(previous = null) {
     if (running) return;
     if (!client) return report('请先连接设备', true);
     if (!bundle) return report('请先选择资源目录', true);
@@ -528,7 +616,7 @@
     const session = client, connection = characteristic, selected = bundle;
     const progress = $('externalResourceProgress');
     progress.value = 0;
-    let entered = false;
+    let entered = false, attempt = null, activeItem = null;
     try {
       let current = await readStatus(true, session);
       ensureCurrent(session);
@@ -539,7 +627,15 @@
       }
       const initializing = current.status.code === 4;
       let packages = api.installationPlan(selected, current.status.code, current.partitions);
-      if (!initializing && root.EPDFontSync) {
+      const backups = new Map(), diagnostics = previous?.diagnostics.slice() || [];
+      if (previous) {
+        // Keep the original initialization plan even when its partition table
+        // already committed. Recomputing an ordinary update would omit config,
+        // annotations and TODO resources on a partially initialized device.
+        packages = previous.tasks.map(item => ({ ...item }));
+        if (!initializing) packages.forEach(item => api.validateTarget(item.pack, current.partitions));
+      }
+      if (!previous && !initializing && root.EPDFontSync) {
         const fontItem = packages.find(item => item.pack.id === 7);
         if (fontItem) {
           const fontPartition = current.partitions.find(item => item.id === 7);
@@ -551,34 +647,72 @@
             report('正在保留设备已补充的字模…');
             const installed = await session.readPackage(fontPartition);
             ensureCurrent(session);
+            backups.set(7, installed.slice());
             const retained = root.EPDFontSync.preserve(fontItem.bytes, installed, current.partitions, { preserveCustom: true });
-            if (retained.repair) report('设备字体格式无效，将使用所选字体资源修复');
+            if (retained.repair) {
+              diagnostics.push(`旧字体存在 ${retained.damaged?.length || 1} 处损坏，已备份原始资源，保留可解码字模并用所选字体修复`);
+              report(diagnostics.at(-1));
+              for (const item of retained.damaged || []) diagnostics.push(`${item.slot === undefined ? '' : `槽位 ${item.slot}：`}${item.message}`);
+            }
+            // Revision-only results also matter: they prevent a valid device
+            // package from being downgraded and rewritten on every send.
+            packages = packages.map(item => item === fontItem
+              ? { ...item, bytes: retained.bytes, pack: api.parsePackage(retained.bytes) } : item);
             if (retained.added.length || retained.customPreserved) {
-              packages = packages.map(item => item === fontItem
-                ? { ...item, bytes: retained.bytes, pack: api.parsePackage(retained.bytes) } : item);
               report(retained.customPreserved ? `已保留设备待办字体，保留了 ${retained.added.length} 个设备字模`
                 : `保留了 ${retained.added.length} 个设备字模`);
             }
           }
         }
       }
-      if (!initializing && current.status.verify && !$('externalResourceForce')?.checked) {
+      attempt = { createdAt: previous?.createdAt || new Date().toISOString(), deviceId: previous?.deviceId || deviceIdentity(),
+        session, selection: bundleGeneration, initializing: previous?.initializing || initializing,
+        partitions: previous?.partitions || current.partitions || selected.partitions,
+        entries: previous?.entries.slice() || [], diagnostics, state: 'preparing',
+        tasks: packages.map(item => ({ ...item, bytes: item.bytes.slice(), state: 'pending' })) };
+      recoveryData = attempt;
+      packages = attempt.tasks;
+      renderRecovery();
+      if (!initializing && (current.status.verify || previous) && (previous || !$('externalResourceForce')?.checked)) {
         const changed = [];
         report('正在校验设备资源，跳过未变化的内容…');
         for (const item of packages) {
-          const info = await session.inspect(item.pack.id);
+          const info = await inspectForRetry(session, item, current.partitions, current.status.verify);
           ensureCurrent(session);
-          if (info.code !== 0 || info.length !== item.pack.payload.length || info.crc !== item.pack.crc)
+          if (info.code !== 0 || info.length !== item.pack.payload.length || info.crc !== item.pack.crc || info.revision !== item.pack.revision)
             changed.push(item);
-          else report(`${names[item.pack.id]}内容一致，已跳过`);
+          else { item.state = 'skipped'; report(`${names[item.pack.id]}内容一致，已跳过`); }
         }
         packages = changed;
       }
+      // Complete every available backup before starting the first erase. A
+      // transport error is fatal here: it must not discard personal glyphs.
+      if (!attempt.initializing && typeof session.readPackage === 'function') {
+        for (const item of packages) {
+          const name = `before/${item.name}`;
+          if (attempt.entries.some(entry => entry.name === name || entry.name === name + '.raw.bin')) continue;
+          const partition = current.partitions.find(part => part.id === item.pack.id);
+          let bytes = backups.get(item.pack.id), raw = false;
+          if (!bytes) {
+            const info = current.status.verify ? await session.inspect(item.pack.id) : null;
+            ensureCurrent(session);
+            if (info?.code === 4) continue; // Uninstalled/uncommitted resources have no recoverable ERS.
+            if (info && info.code !== 0) {
+              bytes = await session.readRange(partition.offset, partition.size); raw = true;
+            } else bytes = await session.readPackage(partition);
+            ensureCurrent(session);
+          }
+          attempt.entries.push({ name: name + (raw ? '.raw.bin' : ''), bytes: bytes.slice() });
+          renderRecovery();
+        }
+      }
+      attempt.state = 'writing'; renderRecovery();
       const total = packages.reduce((sum, item) => sum + item.pack.payload.length, 0);
       let completedBytes = 0;
       for (let i = 0; i < packages.length; ++i) {
         ensureCurrent(session);
         const item = packages[i];
+        activeItem = item; item.state = 'writing'; renderRecovery();
         const title = names[item.pack.id] || `分区 ${item.pack.id}`;
         report(`正在写入 ${i + 1}/${packages.length}：${title}`);
         entered = true;
@@ -599,11 +733,13 @@
           $('externalResourceStatus').textContent = n === size ? `${title}已写入，正在校验并提交…` :
             `正在写入 ${i + 1}/${packages.length}：${title} · ${Math.round(done * 100 / total)}%`;
         }, current.partitions);
+        ensureCurrent(session);
+        item.state = 'committed'; activeItem = null; renderRecovery();
         completedBytes += item.pack.payload.length;
         if (item.pack.id === 1) current.partitions = selected.partitions;
       }
       ensureCurrent(session);
-      if (entered) {
+      if (entered || previous) {
         report('资源已提交，正在应用…');
         await session.leave();
       }
@@ -613,6 +749,7 @@
       await readStatus(true, session);
       ensureCurrent(session);
       installationCompleted = true;
+      attempt.state = 'complete'; renderRecovery();
       if (current.status.hotReload) {
         completionMessage = '资源已应用，设备已断开连接。';
         report(packages.length ? '资源已校验并应用，设备将刷新屏幕，无需断开连接。' : '设备资源内容一致，无需写入。');
@@ -625,10 +762,19 @@
         catch (_) { /* Legacy reset may close GATT before the write settles. */ }
       }
     } catch (error) {
+      if (attempt) {
+        if (activeItem) activeItem.state = 'failed';
+        attempt.state = 'failed'; attempt.error = error.message;
+        if (recoveryData === attempt) renderRecovery();
+      }
       if (client === session) report(error.message, true);
     } finally {
       if (entered && client === session) {
-        try { await session.leave(); } catch (_) { /* Disconnect cleanup also exits the session. */ }
+        try { await session.leave(); }
+        catch (error) {
+          if (attempt) attempt.error = `${attempt.error || '发送未完成'}；设备应用失败：${error.message}`;
+          if (client === session) report(`${attempt?.error || error.message}。请保留恢复备份并重试未完成资源。`, true);
+        }
       }
       if (client === session) { running = false; controls(); }
     }
@@ -663,24 +809,24 @@
 
   const resourcePackageNames = ['partition-table.ers', 'calendar.ers', 'ui.ers', 'fonts.ers', 'epd-config.ers', 'calendar-annotations.ers'];
   async function loadBundle(entries, folderLabel) {
-    if (running) throw new Error('请等待当前设备操作完成');
+    if (running || root.DeviceOperations?.current) throw new Error('请等待当前设备操作完成');
     ++bundleGeneration;
-    bundle = null;
-    renderBundle('正在校验资源目录…');
     try {
-      bundle = api.prepareBundle(entries);
+      const inspected = root.EPDResourcePack?.inspectBundle?.(entries, { repairFontBounds: true });
+      const next = inspected?.bundle || (root.EPDResourcePack?.validateBundle ? root.EPDResourcePack.validateBundle(entries) : api.prepareBundle(entries));
+      if (root.ExternalResourceEditor) root.ExternalResourceEditor.load(next, inspected?.model, inspected?.repairedSlots);
+      bundle = next;
       bundleLabel = folderLabel || '';
       renderBundle(); renderUsage(); renderVersions();
-      if (root.ExternalResourceEditor) root.ExternalResourceEditor.load(bundle);
     } catch (error) {
-      bundle = null;
       renderBundle(error.message, true); renderUsage(); renderVersions();
+      throw error;
+    } finally {
+      controls();
     }
-    controls();
   }
 
   function showBundleError(message) {
-    bundle = null;
     renderBundle(message, true); renderUsage(); renderVersions();
     controls();
   }
@@ -698,7 +844,7 @@
   }
 
   $('externalResourceFolder').addEventListener('change', async event => {
-    if (running) return;
+    if (running || root.DeviceOperations?.current || root.ExternalResourceEditor?.busy()) return;
     const token = ++bundleGeneration;
     const files = Array.from(event.target.files).filter(file => file.name.toLowerCase().endsWith('.ers'));
     const groups = resourceFolders(files);
@@ -711,7 +857,7 @@
     }
     try {
       const entries = await Promise.all(files.map(async file => ({ name: file.name, bytes: new Uint8Array(await file.arrayBuffer()) })));
-      if (token !== bundleGeneration || running) return;
+      if (token !== bundleGeneration || running || root.DeviceOperations?.current || root.ExternalResourceEditor?.busy()) return;
       const folder = [...groups.keys()][0] || '';
       await loadBundle(entries, folder ? folder.split('/').pop() : '');
     } catch (error) {
@@ -760,14 +906,15 @@
           if (response.ok) entries.push({ name: 'todo.ers', bytes: new Uint8Array(await response.arrayBuffer()) });
         } catch (_) { /* Older resource directories have no optional todo package. */ }
       }
-      if (token !== bundleGeneration || running) return;
+      if (token !== bundleGeneration || running || root.DeviceOperations?.current || root.ExternalResourceEditor?.busy()) return;
       if (!complete) continue;
       await loadBundle(entries, `output/${folder}`);
       return;
     }
   }
-  renderBundle(); renderUsage(); renderVersions(); renderReadback();
+  renderBundle(); renderUsage(); renderVersions(); renderReadback(); renderRecovery();
   controls();
-  root.ExternalResourceInstaller = { bind, disconnect, notification, refresh, readback, saveReadback, install, runOffline,
-    ensureFonts, saveTodo, readTodo, loadBundle, loadLatestOutput, controls, getBundle: () => bundle, busy: () => running };
+  root.ExternalResourceInstaller = { bind, disconnect, notification, refresh, readback, saveReadback, saveRecovery, retry, install, runOffline,
+    ensureFonts, saveTodo, readTodo, loadBundle, loadLatestOutput, controls, getBundle: () => bundle,
+    selectionVersion: () => bundleGeneration, busy: () => running };
 })(globalThis);

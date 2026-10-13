@@ -7,7 +7,7 @@
 	<title>墨水屏控制台</title>
 	<link rel="shortcut icon" type="image/png" href="favicon.png">
 	<meta name="theme-color" content="#2563eb">
-	<link rel="stylesheet" href="css/main.css?v=20261010a">
+	<link rel="stylesheet" href="css/main.css?v=20261012a">
 </head>
 
 <body class="workspace-shell">
@@ -175,6 +175,7 @@
 				</div>
 				<button id="resetImageAdjustmentsButton" type="button" class="secondary">重置效果</button>
 			</div>
+			<p id="imageAdjustmentHint" class="section-note">调整从原图重新计算；文字、画笔和课表保留。</p>
 			<div class="flex-container options">
 				<div class="flex-group debug">
 					<label for="mtusize">MTU:</label>
@@ -259,7 +260,7 @@
 				</div>
 				<div class="tool-panel crop-tools">
 					<div class="tool-panel-heading"><div><h3>图片裁剪</h3><p>拖动图片调整位置，用滚轮或双指缩放，填满画布后点击完成。</p></div></div>
-					<div class="tool-actions"><button id="crop-zoom-in" type="button" title="放大" class="secondary">放大</button><button id="crop-zoom-out" type="button" title="缩小" class="secondary">缩小</button><button id="crop-move-left" type="button" title="左移" aria-label="裁剪左移">←</button><button id="crop-move-up" type="button" title="上移" aria-label="裁剪上移">↑</button><button id="crop-move-down" type="button" title="下移" aria-label="裁剪下移">↓</button><button id="crop-move-right" type="button" title="右移" aria-label="裁剪右移">→</button><button type="button" class="primary" onclick="applyDither()">完成裁剪</button></div>
+					<div class="tool-actions"><button id="crop-zoom-in" type="button" title="放大" class="secondary">放大</button><button id="crop-zoom-out" type="button" title="缩小" class="secondary">缩小</button><button id="crop-move-left" type="button" title="左移" aria-label="裁剪左移">←</button><button id="crop-move-up" type="button" title="上移" aria-label="裁剪上移">↑</button><button id="crop-move-down" type="button" title="下移" aria-label="裁剪下移">↓</button><button id="crop-move-right" type="button" title="右移" aria-label="裁剪右移">→</button><button type="button" class="primary" onclick="applyDither(true)">完成裁剪</button></div>
 				</div>
 			</div>
 		</section>
@@ -344,15 +345,27 @@
 		</section>
 		<section id="externalResources" class="section" data-workspace-panel="externalResources" aria-labelledby="resourcesHeading" tabindex="-1" hidden>
 			<div class="section-heading"><div><p class="section-kicker">04 / RESOURCES</p><h2 id="resourcesHeading">设备资源</h2></div><span class="device-badge">日历 · 布局 · 字体</span></div>
-			<p class="section-note">选择资源目录，或展开编辑器生成资源包。已有分区表时，将保留设备配置与日期标注。</p>
+			<p class="section-note">进入此页优先恢复本地草稿；没有草稿时，浏览器生成默认资源并自动载入。可修改日历、布局或字模后重新生成，再通过蓝牙发送到设备。</p>
+			<div class="resource-generation-panel">
+				<div><h3>在浏览器中生成资源</h3><p class="resource-panel-note">包含分区表、日历、布局、字体、设备配置、日期标注和待办事项，共 7 个 ERS 文件。生成后自动载入下方待发送区。</p></div>
+				<div class="external-resource-actions">
+					<button id="resourceGenerateDefault" data-resource-editor-action type="button" class="secondary" onclick="ExternalResourceEditor.loadDefault()">生成默认资源</button>
+					<button id="resourceGenerate" data-resource-editor-action type="button" class="primary" onclick="ExternalResourceEditor.generate()">重新生成并载入</button>
+					<button id="resourceDownloadAll" data-resource-editor-action type="button" class="secondary" onclick="ExternalResourceEditor.downloadAll()">下载全部资源 ZIP</button>
+				</div>
+				<div id="resourceEditorStatus" class="external-resource-message" role="status" aria-live="polite">进入此页后自动准备资源，也可选择已有资源目录。</div>
+				<p id="resourceDirtyStatus" class="dfu-hint" role="status">资源准备中。</p>
+				<div class="resource-generation-progress"><progress id="resourceGenerationProgress" max="1" value="0" aria-label="资源生成进度"></progress><button id="resourceGenerationCancel" type="button" onclick="ExternalResourceEditor.cancel()" disabled>取消生成</button></div>
+			</div>
 			<div class="external-resource-actions">
 				<label for="externalResourceFolder" class="external-resource-picker">选择资源目录<input id="externalResourceFolder" class="picker-input" type="file" accept=".ers" multiple webkitdirectory directory aria-label="选择 ERS 资源目录"></label>
-				<button id="externalResourceInstall" type="button" class="primary" onclick="ExternalResourceInstaller.install()" disabled>一键烧录</button>
+				<button id="externalResourceInstall" type="button" class="primary" onclick="ExternalResourceInstaller.install()" disabled>发送资源到设备</button>
 				<button id="externalResourceRefresh" type="button" class="secondary" onclick="ExternalResourceInstaller.refresh()" disabled>读取分区</button>
 				<button id="externalResourceReadback" type="button" class="secondary" onclick="ExternalResourceInstaller.readback()" disabled>回读资源</button>
 				<button id="externalResourceSave" type="button" class="secondary" onclick="ExternalResourceInstaller.saveReadback()" disabled>保存到本地</button>
 				<button id="externalResourceOffline" type="button" class="secondary" onclick="ExternalResourceInstaller.runOffline()" disabled>应用并断开连接</button>
 			</div>
+			<p class="dfu-hint">空白设备安装完整资源；已有分区表的设备更新日历、布局和字体，保留设备配置、日期标注与待办事项。</p>
 			<div class="checkbox-options"><label><input id="externalResourceAutoOffline" type="checkbox" checked> 更新完成后自动断开连接</label>
 			<label><input id="externalResourceForce" type="checkbox"> 强制重写未变化资源</label>
 			</div>
@@ -379,36 +392,73 @@
 			<div id="externalResourceStatus" class="dfu-hint">连接设备后自动读取外置 Flash 分区状态。</div>
 			<progress id="externalResourceProgress" max="1" value="0" aria-label="设备资源传输进度"></progress>
 			<p id="externalResourceReadbackStatus" class="dfu-hint" role="status">完整回读设备资源后，可保存为 ZIP。</p>
-			<details class="resource-editor">
+			<div class="external-resource-actions">
+				<button id="externalResourceSaveRecovery" type="button" class="secondary" onclick="ExternalResourceInstaller.saveRecovery()" disabled>保存恢复备份</button>
+				<button id="externalResourceRetry" type="button" class="secondary" onclick="ExternalResourceInstaller.retry()" disabled>重试未完成资源</button>
+			</div>
+			<p id="externalResourceRecoveryStatus" class="dfu-hint" role="status">发送前备份待更新的旧资源；中断后可在此查看各模块结果并重试。</p>
+			<details class="resource-editor" open>
 				<summary>编辑并生成设备资源</summary>
-				<p>日历与布局在网页内生成，无需重新编译固件。先加载模板或资源目录，再编辑 JSON；生成后可直接烧录。布局预览显示组件位置，不代替屏幕实际排版。</p>
+				<p>日历与布局在网页内生成，无需重新编译固件。默认资源自动就绪后，可编辑 JSON 或导入自定义文件，再重新生成。布局预览显示组件位置。</p>
 				<div class="external-resource-actions">
-					<button type="button" onclick="ExternalResourceEditor.loadDefault()">加载默认模板</button>
-					<label class="external-resource-picker">导入资源工程<input id="resourceProjectImport" class="picker-input" type="file" accept=".json" aria-label="导入 JSON 资源工程"></label>
-					<button type="button" onclick="ExternalResourceEditor.exportProject()">导出完整工程</button>
+					<label class="external-resource-picker">导入资源工程<input id="resourceProjectImport" data-resource-editor-action class="picker-input" type="file" accept=".json" aria-label="导入 JSON 资源工程"></label>
+					<label class="external-resource-picker">导入日历数据<input id="resourceCalendarImport" data-resource-editor-action class="picker-input" type="file" accept=".json" aria-label="导入 calendar-data.json"></label>
+					<button data-resource-editor-action type="button" onclick="ExternalResourceEditor.exportProject()">导出完整工程</button>
 				</div>
+				<p class="dfu-hint">完整工程保存当前编辑内容、导入字体和设置，尚未写完的 JSON 也能备份；下载 ERS 或 ZIP 时会先生成并校验。</p>
+				<label for="resourceBuildRevision">资源版本（可选）</label>
+				<input id="resourceBuildRevision" data-resource-editor-action type="number" min="1" max="4294967295" step="1" placeholder="自动按模块更新">
+				<p class="dfu-hint">留空时仅为内容变化的模块增加版本；填写时为生成的全部资源使用指定版本。每次生成会更新生成时间。</p>
 				<label for="resourceCalendarSource">日历数据：节日、休班日期、文字与年份计算表</label>
-				<p class="dfu-hint">holidays 中 work=false 表示休假，true 表示补班。修改年份范围时须提供相应农历和节气计算表；默认模板覆盖 2025–2027，休班表为 2026 年。新增文字的缺失字模会由网页自动生成。</p>
-				<textarea id="resourceCalendarSource" rows="12" spellcheck="false" aria-label="日历资源 JSON"></textarea>
+				<p class="dfu-hint">holidays 中 work=false 表示休假，true 表示补班。修改年份范围时须提供相应农历和节气计算表；默认数据覆盖 2025–2027，休班表为 2026 年。新增文字的缺失字模会由网页自动生成。</p>
+				<textarea id="resourceCalendarSource" data-resource-editor-action rows="12" spellcheck="false" aria-label="日历资源 JSON"></textarea>
 				<label for="resourceLayoutSource">布局：19 个固定组件的坐标、尺寸和字体槽位</label>
-				<textarea id="resourceLayoutSource" rows="12" spellcheck="false" aria-label="布局资源 JSON"></textarea>
+				<textarea id="resourceLayoutSource" data-resource-editor-action rows="12" spellcheck="false" aria-label="布局资源 JSON"></textarea>
+				<details><summary>迁移设备配置与日期标注（可选）</summary>
+					<p class="dfu-hint">支持与批处理脚本相同的 EPD-MIG1 备份。导入后配置与标注将包含在生成的资源中，用于初始化空白设备；已有设备仍保留当前配置与标注。</p>
+					<label class="external-resource-picker">导入迁移备份<input id="resourceMigrationImport" data-resource-editor-action class="picker-input" type="file" accept=".json" aria-label="导入 EPD-MIG1 迁移备份"></label>
+					<label for="resourceMigrationSource">迁移备份 JSON</label>
+					<textarea id="resourceMigrationSource" data-resource-editor-action rows="6" spellcheck="false" aria-label="迁移备份 JSON" placeholder="留空时保留当前资源包中的配置与标注"></textarea>
+				</details>
 				<div class="external-resource-actions">
 					<select id="resourcePreviewMode" aria-label="预览模式" onchange="ExternalResourceEditor.preview()"><option value="1">日历</option><option value="2">分屏</option><option value="3">时钟</option></select>
 					<button type="button" onclick="ExternalResourceEditor.preview()">预览布局</button>
 				</div>
 				<canvas id="resourceLayoutPreview" width="800" height="480" aria-label="设备布局示意"></canvas>
-				<details><summary>替换字模（可选）</summary>
-					<p class="dfu-hint">未选择时保留原字模。支持与槽位几何一致的 u8g2 .bin 文件；TTF/BDF 仍需先转换成字模。</p>
-					<label>小字 WQY9 <input id="resourceFont0" type="file" accept=".bin"></label>
-					<label>中字 WQY12 <input id="resourceFont1" type="file" accept=".bin"></label>
-					<label>数字 HELVB18 <input id="resourceFont2" type="file" accept=".bin"></label>
+				<details open><summary>字体与补字</summary>
+					<p class="dfu-hint">新增文字会自动补字。也可导入自己的字体，先看设备点阵效果，再生成资源。</p>
+					<div id="resourceFontDrop" class="resource-font-drop">
+						<label class="external-resource-picker">导入 TTF / OTF 字体<input id="resourceFontImport" data-resource-editor-action class="picker-input" type="file" accept=".ttf,.otf" aria-label="导入本地字体"></label>
+						<span id="resourceFontSourceInfo" class="dfu-hint">可将字体拖到这里；文件仅在浏览器内处理。</span>
+					</div>
+					<div class="resource-font-options">
+						<label>生成字体<select id="resourceFontFamily" data-resource-editor-action><option value="">保留原字模，自动选字体补字</option><option value="imported">已导入的 TTF / OTF</option><option value='"Microsoft YaHei", sans-serif'>系统：微软雅黑</option><option value='"SimSun", serif'>系统：宋体</option><option value='"Noto Sans CJK SC", sans-serif'>系统：思源黑体</option><option value="sans-serif">系统：默认无衬线</option><option value="serif">系统：默认衬线</option></select></label>
+						<label>作用范围<select id="resourceFontTarget" data-resource-editor-action><option value="both">小字和中字</option><option value="0">小字 WQY9</option><option value="1">中字 WQY12</option><option value="2">数字 HELVB18</option></select></label>
+						<label>生成方式<select id="resourceFontMode" data-resource-editor-action><option value="supplement">仅补充缺字</option><option value="redraw">用所选字体重绘整个槽位</option></select></label>
+					</div>
+					<p class="dfu-hint">仅补字会保留已有字形；重绘会更新该槽位所有字形。字号与设备槽位固定，超出尺寸会提示。系统字体按浏览器可用字体回退；导入字体会严格检查缺字。</p>
+					<label for="resourceExtraText">额外需要的文字（可选）</label>
+					<textarea id="resourceExtraText" data-resource-editor-action rows="3" spellcheck="false" placeholder="输入将来要使用的文字，也可导入 UTF-8 TXT"></textarea>
+					<div class="external-resource-actions"><label class="external-resource-picker">导入补字 TXT<input id="resourceExtraImport" data-resource-editor-action class="picker-input" type="file" accept=".txt,text/plain" aria-label="导入补字文本"></label><button data-resource-editor-action type="button" onclick="ExternalResourceEditor.previewFonts()">检查字体并预览点阵</button></div>
+					<details id="resourceFontIssues" hidden open><summary>字体检查未通过的字符</summary><p class="dfu-hint">缺字时请换用包含这些字符的字体；尺寸超限时可更换字体，或使用“仅补充缺字”保留已有字形。</p><pre id="resourceFontIssueDetails" class="resource-font-issues"></pre></details>
+					<canvas id="resourceFontPreview" width="800" height="160" aria-label="最终字模的像素预览"></canvas>
+					<p id="resourceFontPreviewInfo" class="dfu-hint" role="status">预览显示最终字模的 4 倍点阵，横线为基线。</p>
+					<canvas id="resourceFontPreviewSecond" width="800" height="160" aria-label="第二字体槽位的像素预览" hidden></canvas>
+					<p id="resourceFontPreviewSecondInfo" class="dfu-hint" role="status" hidden></p>
 				</details>
+				<details><summary>导入已有 u8g2 字模 BIN（高级）</summary>
+					<p class="dfu-hint">未选择时保留原字模。支持与槽位几何一致的 u8g2 .bin；已有标注和待办需要的字模会一并检查和补充。</p>
+					<label>小字 WQY9 <input id="resourceFont0" data-resource-editor-action type="file" accept=".bin"></label>
+					<label>中字 WQY12 <input id="resourceFont1" data-resource-editor-action type="file" accept=".bin"></label>
+					<label>数字 HELVB18 <input id="resourceFont2" data-resource-editor-action type="file" accept=".bin"></label>
+				</details>
+				<div class="resource-draft"><p id="resourceDraftStatus" class="dfu-hint" role="status">编辑内容及导入字体会自动保存为本地草稿；浏览器清理站点数据后会丢失。</p><div class="external-resource-actions"><button data-resource-editor-action type="button" onclick="ExternalResourceEditor.saveDraft()">保存草稿</button><button data-resource-editor-action type="button" onclick="ExternalResourceEditor.restoreDraft()">恢复草稿</button><button data-resource-editor-action type="button" onclick="ExternalResourceEditor.clearDraft()">清除草稿</button></div></div>
+				<button id="resourceDraftRecoveryExport" data-resource-editor-action type="button" hidden onclick="ExternalResourceEditor.exportProject(true)">导出保留的原草稿</button>
 				<div class="external-resource-actions">
-					<button type="button" class="primary" onclick="ExternalResourceEditor.generate()">生成并载入烧录区</button>
-					<select id="resourceDownloadPart" aria-label="下载资源类型"><option value="5">日历</option><option value="6">布局</option><option value="7">字体</option><option value="1">分区表</option><option value="2">出厂配置</option><option value="3">出厂标注</option></select>
-					<button type="button" onclick="ExternalResourceEditor.download()">下载 ERS</button>
+					<button data-resource-editor-action type="button" class="primary" onclick="ExternalResourceEditor.generate()">重新生成并载入</button>
+					<select id="resourceDownloadPart" aria-label="下载资源类型"><option value="5">日历</option><option value="6">布局</option><option value="7">字体</option><option value="1">分区表</option><option value="2">设备配置</option><option value="3">日期标注</option><option value="9">待办事项</option></select>
+					<button data-resource-editor-action type="button" onclick="ExternalResourceEditor.download()">下载单个 ERS</button>
 				</div>
-				<div id="resourceEditorStatus" class="external-resource-message" role="status">请加载模板或选择资源目录。</div>
 			</details>
 		</section>
 		</div>
@@ -440,23 +490,29 @@
 		</div>
 	</div>
 	<div id="toast" class="toast-message" role="status" aria-live="polite" style="display:none;"></div>
-	<script defer src="js/dithering.js?v=20260402b"></script>
-	<script defer src="js/paint.js?v=20261005h"></script>
+	<script defer src="js/dithering.js?v=20261013a"></script>
+	<script defer src="js/paint.js?v=20261013a"></script>
 	<script defer src="js/paint_schedule.js?v=20261005b"></script>
 	<script defer src="js/crop.js?v=20261005a"></script>
 	<script defer src="js/ble_transfer.js?v=20260922a"></script>
 	<script defer src="js/calendar_annotations.js?v=20261005h"></script>
 	<script defer src="js/resource_store.js?v=20261005h"></script>
 	<script defer src="js/resource_archive.js?v=20261004a"></script>
-	<script defer src="js/resource_builder.js?v=20261005h"></script>
-	<script defer src="js/font_builder.js?v=20261005h"></script>
-	<script defer src="js/font_sync.js?v=20261005h"></script>
+	<script defer src="js/resource_builder.js?v=20261012a"></script>
+	<script defer src="js/ui_tools/resource_defaults.js?v=20261010d"></script>
+	<script defer src="js/ui_tools/font_store_tool.js?v=20261011a"></script>
+	<script defer src="js/ui_tools/resource_pack.js?v=20261011a"></script>
+	<script defer src="js/font_builder.js?v=20261012a"></script>
+	<script defer src="js/ui_tools/font_sources.js?v=20261011a"></script>
+	<script defer src="js/ui_tools/resource_project.js?v=20261011a"></script>
+	<script defer src="js/ui_tools/resource_draft.js?v=20261012a"></script>
+	<script defer src="js/font_sync.js?v=20261012a"></script>
 	<script defer src="js/todo_sync.js?v=20261005h"></script>
-	<script defer src="js/resource_installer.js?v=20261010b"></script>
+	<script defer src="js/resource_installer.js?v=20261012a"></script>
 	<script defer src="js/todo_calendar.js?v=20261005h"></script>
-	<script defer src="js/resource_editor.js?v=20261005h"></script>
-	<script defer src="js/console_ui.js?v=20261010b"></script>
-	<script defer src="js/main.js?v=20261010b"></script>
+	<script defer src="js/resource_editor.js?v=20261012a"></script>
+	<script defer src="js/console_ui.js?v=20261010d"></script>
+	<script defer src="js/main.js?v=20261013a"></script>
 	<script defer src="js/site_statistics.js?v=20261010b"></script>
 </body>
 
