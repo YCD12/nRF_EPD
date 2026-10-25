@@ -49,9 +49,8 @@ rs_result_t persistent_record_load(uint16_t partition_id, uint32_t record_magic,
     if (info == NULL || (capacity != 0U && data == NULL)) return RS_INVALID;
     memset(info, 0, sizeof(*info));
     rs_result_t r = resource_store_mount();
-    if (r == RS_OK) r = resource_store_info(partition_id, &package);
+    if (r == RS_OK) r = resource_store_open_info(partition_id, &package);
     if (r == RS_OK && package.length < sizeof(header)) r = RS_INCOMPATIBLE;
-    if (r == RS_OK) r = resource_store_open(partition_id, &package.length);
     if (r == RS_OK) r = resource_store_read(partition_id, 0, header, sizeof(header));
     if (r == RS_OK) {
         info->revision = package.revision;

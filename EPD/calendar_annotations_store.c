@@ -19,25 +19,34 @@ bool calendar_annotations_store_valid(void) { return m_committed_valid; }
 static bool store_reload(void)
 {
     uint16_t capacity = 0U;
+    /* CLEAR may arrive from BLE while SPI fills the shared live buffer. Keep
+     * that operation queued until this read and its validation have finished. */
+    m_busy = true;
     uint8_t *buffer = calendar_annotations_load_buffer(&capacity);
     persistent_record_info_t info;
-    if (buffer == NULL) return false;
+    if (buffer == NULL) {
+        m_busy = false;
+        return false;
+    }
+    m_committed_valid = false;
     rs_result_t r = persistent_record_load(RS_PART_CALENDAR_ANNOTATIONS,
                                           ANNOTATIONS_RECORD_MAGIC, buffer, capacity, &info);
-    if (r == RS_BUSY) return false;
-    if (r == RS_OK &&
+    bool complete = r != RS_BUSY && r != RS_IO;
+    if (!complete) {
+        m_due = app_uptime_seconds() + 1U;
+    } else if (r == RS_OK &&
         calendar_annotations_load_commit(info.length)) {
         m_revision = info.revision;
         m_data_crc = m_committed_crc = info.data_crc;
         m_committed_length = info.length;
         m_committed_valid = true;
-        return true;
+    } else {
+        calendar_annotations_reset();
+        m_committed_length = 0U;
+        m_committed_crc = 0U;
     }
-    calendar_annotations_reset();
-    m_committed_valid = false;
-    m_committed_length = 0U;
-    m_committed_crc = 0U;
-    return true;
+    m_busy = false;
+    return complete;
 }
 
 void calendar_annotations_store_init(void)
@@ -68,9 +77,11 @@ bool calendar_annotations_store_clear(void)
 {
     bool applied = false;
     CRITICAL_REGION_ENTER();
-    if (m_busy || m_save_pending || calendar_annotations_reload_pending()) {
+    if (m_busy || m_save_pending) {
         m_pending_clear = true;
     } else {
+        /* A new clear supersedes a deferred read, including persistent IO
+         * failure. Only an actual write must complete before clearing. */
         calendar_annotations_clear();
         calendar_annotations_set_live_locked(true);
         m_save_pending = true;
@@ -108,9 +119,7 @@ void calendar_annotations_store_process(void)
 {
     bool applied = false;
     uint32_t now = app_uptime_seconds();
-    if (m_busy) return;
-    if (calendar_annotations_process_reload() && m_on_applied != NULL) m_on_applied();
-    if (calendar_annotations_reload_pending() || (int32_t)(now - m_due) < 0) return;
+    if (m_busy || (int32_t)(now - m_due) < 0) return;
 
     CRITICAL_REGION_ENTER();
     if (!m_save_pending && m_pending_clear) {
@@ -124,6 +133,8 @@ void calendar_annotations_store_process(void)
     }
     CRITICAL_REGION_EXIT();
     if (applied && m_on_applied != NULL) m_on_applied();
+    if (calendar_annotations_process_reload() && m_on_applied != NULL) m_on_applied();
+    if (calendar_annotations_reload_pending()) return;
     if (!m_save_pending) {
         calendar_annotations_set_live_locked(false);
         return;
@@ -174,4 +185,10 @@ void calendar_annotations_store_process(void)
 bool calendar_annotations_store_busy(void)
 {
     return m_busy || m_save_pending || m_pending_clear || calendar_annotations_reload_pending();
+}
+
+bool calendar_annotations_store_maintenance_ready(void)
+{
+    return !m_busy && !m_save_pending && !m_pending_clear &&
+           (!calendar_annotations_rx_active() || calendar_annotations_reload_pending());
 }

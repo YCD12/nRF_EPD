@@ -20,6 +20,7 @@ enum { NRF_SUCCESS, NRF_ERROR_NULL, NRF_ERROR_INVALID_STATE,
        NRF_ERROR_INVALID_PARAM, NRF_ERROR_RESOURCES, TEST_CONFIG_ERROR };
 #define BLE_CONN_HANDLE_INVALID UINT16_MAX
 #define BLE_EPD_MAX_DATA_LEN 244U
+#define BLE_GATT_ATT_MTU_DEFAULT 23U
 #define BLE_GATT_HVX_NOTIFICATION 1U
 #define MODE_CLOCK_CALENDAR 2U
 #define EPD_UC8179_750_BWR 7U
@@ -38,6 +39,7 @@ typedef struct {
 static ble_epd_t *s_anno_epd;
 static epd_config_t stored_config;
 static uint32_t config_result, service_result, hvx_result;
+static bool config_read_failure, config_read_waiting;
 static unsigned config_reads, config_writes, store_inits, gpio_loads, service_inits;
 static unsigned hvx_calls, critical_depth;
 static void *resource_context;
@@ -55,8 +57,15 @@ uint32_t epd_config_init(epd_config_t *cfg)
     (void)cfg;
     return config_result;
 }
-void epd_config_read(epd_config_t *cfg) { *cfg = stored_config; config_reads++; }
-void epd_config_write(epd_config_t *cfg) { stored_config = *cfg; config_writes++; }
+void epd_config_read(epd_config_t *cfg) {
+    *cfg = stored_config; config_reads++;
+    config_read_waiting = config_read_failure;
+    if (config_read_failure) memset(cfg, 0xFF, sizeof(*cfg));
+}
+bool epd_config_read_pending(void) { return config_read_waiting; }
+void epd_config_write(epd_config_t *cfg) {
+    stored_config = *cfg; config_writes++; config_read_waiting = false;
+}
 bool epd_config_empty(epd_config_t *cfg)
 {
     const uint8_t *bytes = (const uint8_t *)cfg;
@@ -78,7 +87,7 @@ static void calendar_annotations_store_on_applied(void (*callback)(void))
 }
 static void EPD_GPIO_Load(epd_config_t *config)
 {
-    assert(memcmp(config, &stored_config, sizeof(*config)) == 0);
+    assert(config_read_waiting || memcmp(config, &stored_config, sizeof(*config)) == 0);
     gpio_loads++;
 }
 static uint32_t epd_service_init(ble_epd_t *p)
@@ -111,6 +120,7 @@ static void reset_shims(void)
         .full_refresh_minutes = 30,
     };
     config_result = service_result = hvx_result = NRF_SUCCESS;
+    config_read_failure = config_read_waiting = false;
     config_reads = config_writes = store_inits = gpio_loads = service_inits = 0U;
     hvx_calls = critical_depth = 0U;
     resource_context = NULL;
@@ -121,7 +131,7 @@ static void reset_shims(void)
 static void assert_idle(const ble_epd_t *p)
 {
     assert(p->conn_handle == BLE_CONN_HANDLE_INVALID);
-    assert(p->max_data_len == BLE_EPD_MAX_DATA_LEN);
+    assert(p->max_data_len == BLE_GATT_ATT_MTU_DEFAULT - 3U);
     assert(!p->is_notification_enabled && p->epd == NULL);
     assert(!p->force_full_refresh && !p->is_refreshing && !p->low_battery_screen_active);
     assert(!p->gpio_connection_ref && !p->disconnect_pending && !p->connection_generation);
@@ -176,6 +186,17 @@ static void test_init(void)
     assert(config_writes == 1U && p.config.mosi_pin == 20U);
     assert(p.config.display_mode == MODE_CLOCK_CALENDAR);
     assert(p.config.week_start == 0U && p.config.full_refresh_minutes == 0U);
+
+    /* I/O failure is not proof that the valid persistent record is absent. */
+    reset_shims();
+    stored_config.week_start = 4U;
+    epd_config_t before_failure = stored_config;
+    config_read_failure = true;
+    assert(ble_epd_init(&p) == NRF_SUCCESS);
+    assert_idle(&p);
+    assert(config_read_waiting && !config_writes && gpio_loads == 1U);
+    assert(p.config.week_start == 0U && p.config.display_mode == MODE_CLOCK_CALENDAR);
+    assert(!memcmp(&stored_config, &before_failure, sizeof(stored_config)));
 
     /* Invalid persisted display/model fields recover the complete defaults,
      * not just the pin prefix, with the same rules used by config updates. */
@@ -252,7 +273,8 @@ static void test_control_retry(void)
     epd_control_notifications_process(&p);
     assert(p.initial_notify == 2U && sent_length == sizeof(epd_config_t));
     epd_control_notifications_process(&p);
-    assert(p.initial_notify == 3U && sent_length == 7U);
+    assert(p.initial_notify == 3U && sent_length == 6U);
+    assert(memcmp(sent_data, "mtu=20", sent_length) == 0);
     epd_control_notifications_process(&p);
     assert(p.initial_notify == 0U && sent_length == 6U);
     p.mode_ack_pending = true;

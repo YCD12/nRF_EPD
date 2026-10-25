@@ -98,29 +98,6 @@ static bool UC8179_PartialAreaValid(const epd_model_t *epd, uint16_t x, uint16_t
            (uint32_t)y + h <= epd->height;
 }
 
-/* 按 src_stride 把窗口位图写入当前 DTM 流。 */
-static void UC8179_Write_Packed_Rows(const uint8_t *src, uint16_t src_stride,
-                                     uint16_t w, uint16_t h) {
-    uint16_t wb = w / 8U;
-
-    for (uint16_t row = 0; row < h; row++) {
-        const uint8_t *row_src = src + (uint32_t)row * src_stride;
-        uint16_t remaining = wb;
-        uint16_t offset = 0U;
-
-        while (remaining > 0U) {
-            uint8_t chunk = remaining > UC8179_ROW_CHUNK_SIZE
-                                ? UC8179_ROW_CHUNK_SIZE
-                                : (uint8_t)remaining;
-            EPD_WriteData((uint8_t *)&row_src[offset], chunk);
-            offset += chunk;
-            remaining -= chunk;
-        }
-
-        if ((row % UC8179_WDT_FEED_ROWS) == 0U) app_feed_wdt();
-    }
-}
-
 /* 同一 PTL 窗口写入打包的 OLD(DTM1) 与 NEW(DTM2)。 */
 bool UC8179_Partial_Diff_Push(const epd_model_t *epd, uint16_t x, uint16_t y,
                               uint16_t w, uint16_t h,
@@ -134,9 +111,9 @@ bool UC8179_Partial_Diff_Push(const epd_model_t *epd, uint16_t x, uint16_t y,
     EPD_WriteCmd(UC81xx_PTIN);
     UC8179_SetPartialRamArea(x, y, w, h);
     EPD_WriteCmd(UC81xx_DTM1);
-    UC8179_Write_Packed_Rows(old_bm, wb, w, h);
+    UC8179_Write_Image_Rows(old_bm, wb, h, 0xFF);
     EPD_WriteCmd(UC81xx_DTM2);
-    UC8179_Write_Packed_Rows(new_bm, wb, w, h);
+    UC8179_Write_Image_Rows(new_bm, wb, h, 0xFF);
     EPD_WriteCmd(UC81xx_PTOUT);
     return true;
 }

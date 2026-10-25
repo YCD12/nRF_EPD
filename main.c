@@ -964,7 +964,8 @@ int main(void) {
 
     // 看门狗复位且仍低于临界电压：上次已刷过最后一帧并关机，不要再刷屏。
     if (m_resetreas & NRF_POWER_RESETREAS_DOG_MASK) {
-        if (EPD_ReadVoltage() < CRITICAL_BATTERY_SHUTDOWN_MV) {
+        uint16_t voltage_mv = EPD_ReadVoltage();
+        if (voltage_mv != 0U && voltage_mv < CRITICAL_BATTERY_SHUTDOWN_MV) {
             NRF_POWER->SYSTEMOFF = 1;
             while (1); // 等待进入低功耗睡眠
         }

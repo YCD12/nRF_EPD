@@ -20,6 +20,7 @@ static const uint16_t holidays[39] = {0x0101,0x0102,0x0103,0x1104,0x120E,0x020F,
 static const char special_names[5][10] = {"除夕","母亲节","父亲节","感恩节","清明节"};
 
 bool calendar_resources_init(void) { return true; }
+bool calendar_resources_retry_init(void) { return true; }
 bool calendar_resources_ready(void) { return true; }
 uint16_t calendar_resources_year_min(void) { return 2025; }
 uint16_t calendar_resources_year_max(void) { return 2027; }

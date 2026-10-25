@@ -250,8 +250,11 @@ def check_slot(slot_name: str, data: bytes) -> dict:
         "x_offset", "max_char_width", "max_char_height", "y_offset",
         "ascent", "descent", "ascent_para", "descent_para",
     ))
-    if actual != expected:
-        raise ValueError(f"{slot_name}: header metrics {actual} != expected {expected}")
+    if not (1 <= header['max_char_width'] <= 64 and 1 <= header['max_char_height'] <= 80 and
+            -32 <= header['x_offset'] <= 32 and -64 <= header['y_offset'] <= 0 and
+            0 <= header['ascent'] <= 64 and -64 <= header['descent'] <= 0 and
+            0 <= header['ascent_para'] <= 80 and -64 <= header['descent_para'] <= 0):
+        raise ValueError(f"{slot_name}: header metrics outside supported bounds: {actual}")
     validate_font_records(data, header)
 
     missing = []

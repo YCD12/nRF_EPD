@@ -10,6 +10,8 @@
 static uint8_t flash[FM25Q04B_SIZE_BYTES], fonts[262144];
 static bool flash_initialized;
 static unsigned font_reads;
+static bool fail_once;
+static uint32_t fail_start, fail_end;
 void app_feed_wdt(void) {}
 ret_code_t fm25q04b_init(void) { flash_initialized = true; return NRF_SUCCESS; }
 ret_code_t fm25q04b_probe(fm25q04b_jedec_id_t *id) { memset(id, 0, sizeof(*id)); return NRF_SUCCESS; }
@@ -17,6 +19,10 @@ ret_code_t fm25q04b_read(uint32_t at, void *p, size_t n)
 {
     if (!flash_initialized) return NRF_ERROR_INVALID_STATE;
     assert(at <= sizeof(flash) && n <= sizeof(flash) - at);
+    if (fail_once && at >= fail_start && at < fail_end) {
+        fail_once = false;
+        return NRF_ERROR_INTERNAL;
+    }
     if (at >= 0x18000 && at < 0x58000) ++font_reads;
     memcpy(p, flash + at, n); return NRF_SUCCESS;
 }
@@ -55,18 +61,26 @@ int main(int argc, char **argv)
     assert(epd_resources_reload() == RS_IO && !epd_resources_ready());
     assert(fm25q04b_init() == NRF_SUCCESS);
     assert(epd_resources_reload() == RS_OK && epd_resources_ready());
-    uint8_t ui[396];
-    assert(resource_store_read(6, 0, ui, sizeof(ui)) == RS_OK);
+    uint8_t ui[4096];uint32_t ui_length;
+    assert(resource_store_open(6,&ui_length)==RS_OK&&ui_length<=sizeof(ui));
+    assert(resource_store_read(6, 0, ui, ui_length) == RS_OK);
     ui[16 + 8] = 12; /* Move calendar header from x=10 to x=12. */
-    replace(6, ui, sizeof(ui));
+    replace(6, ui, ui_length);
     unsigned before = font_reads;
     assert(epd_resources_apply() == RS_OK && font_reads == before);
     assert(ui_resource_component(1)->x == 12 && ui_resources_revision() == 2);
+    /* Reopen the persisted package as after a restart, including visual fields. */
+    ui[16+22*32+8]=0xf4;ui[16+22*32+9]=1; /* Temperature x=500. */
+    ui[16+22*32+20]=2;ui[16+3*32+14]=6; /* Red text and a 6px frame. */
+    replace(6,ui,ui_length);assert(epd_resources_reload()==RS_OK);
+    const ui_component_t *temperature=ui_resource_at(22);
+    assert(temperature->x==500&&temperature->foreground==2&&ui_resource_component(4)->h==6);
+    before=font_reads;
     ui[16 + 8] = 255; ui[16 + 9] = 127; /* Valid CRC, invalid geometry. */
-    replace(6, ui, sizeof(ui));
+    replace(6, ui, ui_length);
     assert(epd_resources_apply() == RS_INVALID && !epd_resources_ready() && font_reads == before);
     ui[16 + 8] = 10; ui[16 + 9] = 0;
-    replace(6, ui, sizeof(ui));
+    replace(6, ui, ui_length);
     assert(epd_resources_apply() == RS_OK && font_reads == before);
 
     uint32_t n;
@@ -90,5 +104,28 @@ int main(int argc, char **argv)
     assert(!font_store_get_source(0) && !epd_resources_ready());
     before = font_reads;
     assert(epd_resources_apply() == RS_OK && font_reads > before);
+    /* Every failed initialization is explicitly retryable without rewriting a
+     * healthy package. A successful font cache is still reused above. */
+    for (unsigned p = 0; p < 3U; ++p) {
+        epd_resources_invalidate();
+        fail_start = p == 0U ? 0x18000U : p == 1U ? 0x4000U : 0x8000U;
+        fail_end = fail_start + 0x1000U;
+        fail_once = true;
+        assert(epd_resources_apply() != RS_OK && !epd_resources_ready() && !fail_once);
+        assert(epd_resources_apply() == RS_OK && epd_resources_ready());
+    }
+    /* Consumers remain ready after a failed unrelated STATUS/config mount.
+     * Starting the next frame must restore the table without reloading fonts. */
+    int16_t params[UI_MAX_PARAMS];
+    const ui_component_t *component = ui_resource_at(0);
+    assert(component && ui_resource_params(component, params));
+    fail_start = 0U; fail_end = sizeof(flash); fail_once = true;
+    assert(resource_store_mount() == RS_IO && epd_resources_ready());
+    before = font_reads;
+    resource_store_render_begin();
+    assert(ui_resources_retry_init() && calendar_resources_retry_init());
+    assert(ui_resource_params(component, params) && resource_store_render_valid());
+    assert(font_reads == before);
+    puts("PASS: transient font/calendar/UI init retries and cached consumers after mount recovery");
     puts("PASS: selective UI reload, semantic rejection, repair, table invalidation and relocated font sources");
 }

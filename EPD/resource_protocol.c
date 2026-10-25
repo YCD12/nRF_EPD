@@ -76,7 +76,7 @@ uint8_t resource_protocol_execute(const uint8_t *q, uint8_t n, uint8_t *a)
         if (n != 3) break;
         r = resource_store_mount();
         a[4] = RESOURCE_CAP_WRITE | RESOURCE_CAP_LARGE_PACKETS | RESOURCE_CAP_VERIFY |
-               RESOURCE_CAP_BUFFERED_WRITE | (m_handler ? RESOURCE_CAP_ACTIVATE | RESOURCE_CAP_OFFLINE : 0U);
+               RESOURCE_CAP_BUFFERED_WRITE | RESOURCE_CAP_ERASE | (m_handler ? RESOURCE_CAP_ACTIVATE | RESOURCE_CAP_OFFLINE : 0U);
         a[5] = RS_ABI;
         a[6] = (uint8_t)resource_store_active();
         a[7] = m_entered;
@@ -108,20 +108,32 @@ uint8_t resource_protocol_execute(const uint8_t *q, uint8_t n, uint8_t *a)
                                      resource_get_u32(q + 8), resource_get_u32(q + 12));
         }
         break;
+    case 11: { /* ID:u16, relative sector offset:u32; ID 0 means the whole chip. */
+        if (!m_entered) { r = RS_WRITE_PROTECTED; break; }
+        if (n != 9) break;
+        if (resource_store_active()) { r = RS_BUSY; break; }
+        uint16_t id = q[3] | ((uint16_t)q[4] << 8);
+        uint16_t changed = id && id < 16U ? (uint16_t)(1U << id) : (1U << RS_PART_PARTITION_TABLE);
+        if (m_handler) {
+            r = m_handler(m_context, RESOURCE_INVALIDATE, changed);
+            if (r != RS_OK) break;
+        }
+        m_changed |= changed;
+        r = resource_store_erase(id, resource_get_u32(q + 5));
+        break;
+    }
     case 3:
         if (!m_entered) { r = RS_WRITE_PROTECTED; break; }
         if (n > 7 && n <= m_data_limit) r = resource_store_write(resource_get_u32(q + 3), q + 7, n - 7);
         break;
     case 9: { /* Verified metadata: never skip an upload using header CRC alone. */
         rs_package_info_t info;
-        uint32_t length;
         if (n != 4) break;
         if (resource_store_active()) { r = RS_BUSY; break; }
-        r = resource_store_info(q[3], &info);
-        if (r == RS_OK) r = resource_store_open(q[3], &length);
+        r = resource_store_open_info(q[3], &info);
         if (r == RS_OK) {
             resource_put_u32(a + 4, info.revision);
-            resource_put_u32(a + 8, length);
+            resource_put_u32(a + 8, info.length);
             resource_put_u32(a + 12, info.crc32);
             reply_length = 16;
         }

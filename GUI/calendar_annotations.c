@@ -301,6 +301,9 @@ uint8_t* calendar_annotations_load_buffer(uint16_t* capacity)
     if (m_live_locked) return NULL;
     abort_rx();
     m_live_len = 0U;
+    /* A short/failed SPI read must stay hidden and retryable even at boot,
+     * when no aborted BLE receive has set the reload request yet. */
+    m_reload_pending = true;
     return live_bytes();
 }
 
@@ -314,6 +317,7 @@ bool calendar_annotations_load_commit(uint16_t length)
     expected = CALENDAR_ANNOTATIONS_HEADER_SIZE +
                (size_t)read_u16_le(live_bytes() + 6) * CALENDAR_ANNOTATIONS_RECORD_SIZE;
     m_live_len = (uint16_t)expected;
+    m_reload_pending = false;
     return true;
 }
 

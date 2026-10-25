@@ -1,4 +1,5 @@
 #include "todo_items.h"
+#include "ui_resources.h"
 
 #include <stddef.h>
 #include <string.h>
@@ -178,7 +179,7 @@ bool todo_items_init(void)
     bool extended = header[9] > 12U || style != 0U;
     if ((typography && !extended) ||
         (extended ? ((!typography && !timing) || !custom || metrics == NULL ||
-                     header[8] > 384U / ((uint8_t)metrics->max_char_height + 6U)) :
+                     header[8] > ui_resources_todo_capacity((uint8_t)metrics->max_char_height, true)) :
                     (header[9] != 9U && header[9] != 12U)) ||
         (custom && !extended && header[11] == 0U)) return false;
     if (custom && header[11] != 0U &&

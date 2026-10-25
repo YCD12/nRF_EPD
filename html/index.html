@@ -7,7 +7,7 @@
 	<title>墨水屏控制台</title>
 	<link rel="shortcut icon" type="image/png" href="favicon.png">
 	<meta name="theme-color" content="#2563eb">
-	<link rel="stylesheet" href="css/main.css?v=20261012a">
+	<link rel="stylesheet" href="css/main.css?v=20261017f">
 </head>
 
 <body class="workspace-shell">
@@ -17,6 +17,10 @@
 			<div class="brand">
 				<div class="brand-mark" aria-hidden="true"><svg viewBox="0 0 32 32" fill="none"><rect x="5" y="6" width="22" height="17" rx="3" stroke="currentColor" stroke-width="2"/><path d="M10 12h12M10 17h7M12 27h8M16 23v4" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg></div>
 				<div><p class="page-kicker">EPD / WORKSPACE</p><h1>墨水屏控制台</h1><p class="page-subtitle">连接设备，让每一屏都恰到好处。</p></div>
+			</div>
+			<div class="device-info header-device-info" aria-label="设备信息" aria-live="polite">
+				<div class="device-metric"><span class="metric-label">设备电压</span><span id="batteryVoltage" class="metric-value">未连接</span><span id="batteryWarning" class="device-warning" style="display:none;"></span></div>
+				<div class="device-metric"><span class="metric-label">固件版本</span><span id="firmwareVersion" class="metric-value">未连接</span></div>
 			</div>
 			<div class="page-actions">
 				<span id="connectionBadge" class="connection-badge" data-state="disconnected" role="status"><span class="status-dot" aria-hidden="true"></span><span id="connectionLabel">未连接</span></span>
@@ -70,10 +74,6 @@
 					<button id="setDriverbutton" type="button" class="primary" onclick="setDriver()">确定</button>
 				</div>
 			</div>
-			<div class="device-info">
-				<div class="device-metric"><span class="metric-label">设备电压</span><span id="batteryVoltage" class="metric-value">未连接</span><span id="batteryWarning" class="device-warning" style="display:none;"></span></div>
-				<div class="device-metric"><span class="metric-label">固件版本</span><span id="firmwareVersion" class="metric-value">未连接</span></div>
-			</div>
 			<details class="help-details connection-log"><summary>连接日志与诊断</summary><div class="log-toolbar"><span class="dfu-hint">保留最近 200 条记录</span><div class="flex-group"><button id="exportLogButton" type="button" class="secondary">导出日志</button><button type="button" class="secondary" onclick="clearLog()">清空</button></div></div><div class="log-container" id="log" aria-label="蓝牙连接日志"></div></details>
 		</section>
 		<section id="deviceControls" class="section" aria-labelledby="controlsHeading">
@@ -99,7 +99,10 @@
 					<button id="todofullmodebutton" type="button" class="primary" onclick="syncTime(5)" disabled>全屏待办</button>
 					<button id="legacyclockbutton" type="button" class="primary" onclick="syncTimeLegacy()"
 						style="display:none;">全屏时钟</button>
+				</div>
+				<div class="flex-group system-actions">
 					<button id="clearscreenbutton" type="button" class="secondary" onclick="clearScreen()">清除屏幕</button>
+					<button id="restartbutton" type="button" class="secondary" onclick="restartDevice()" disabled>系统重启</button>
 				</div>
 				<div class="flex-group right debug">
 					<input type="text" id="cmdTXT" value="" aria-label="十六进制设备命令" placeholder="十六进制命令">
@@ -294,10 +297,10 @@
 				</div>
 				<aside class="todo-calendar-preview" aria-labelledby="todoCalendarPreviewHeading">
 					<div class="annotation-preview-heading"><h3 id="todoCalendarPreviewHeading">显示预览</h3><span id="todoCalendarPreviewLayout">左待办 · 右日历</span></div>
-					<div id="todoCalendarPreviewScreen" class="todo-calendar-screen" data-layout="split"><div class="todo-calendar-preview-left"><div class="todo-calendar-preview-header"><strong id="todoCalendarPreviewTitle" class="todo-calendar-preview-title">TODO 0/0</strong><span id="todoCalendarPreviewTemperature" class="todo-calendar-preview-temperature" aria-label="设备温度未知"><span class="todo-calendar-temperature-value">—</span><span class="todo-calendar-temperature-unit">℃</span></span></div><div id="todoCalendarPreviewItems" class="todo-calendar-preview-items" data-font="12"></div></div><div id="todoCalendarPreviewCalendar" class="todo-calendar-preview-calendar" aria-label="日历预览"></div></div>
+					<canvas id="todoCalendarResourceCanvas" width="800" height="480" class="todo-resource-canvas" aria-label="按当前显示资源绘制的设备预览"></canvas><div id="todoCalendarPreviewScreen" hidden class="todo-calendar-screen" data-layout="split"><div class="todo-calendar-preview-left"><div class="todo-calendar-preview-header"><strong id="todoCalendarPreviewTitle" class="todo-calendar-preview-title">TODO 0/0</strong><span id="todoCalendarPreviewTemperature" class="todo-calendar-preview-temperature" aria-label="设备温度未知"><span class="todo-calendar-temperature-value">—</span><span class="todo-calendar-temperature-unit">℃</span></span></div><div id="todoCalendarPreviewItems" class="todo-calendar-preview-items" data-font="12"></div></div><div id="todoCalendarPreviewCalendar" class="todo-calendar-preview-calendar" aria-label="日历预览"></div></div>
 					<p id="todoCalendarPreviewSummary" class="field-hint" aria-live="polite"></p>
 					<div class="todo-calendar-preview-controls"><label for="todoCalendarPreviewTime">模拟时间</label><input id="todoCalendarPreviewTime" type="datetime-local" step="1" min="2000-01-01T00:00" max="2099-12-31T23:59:59"><button id="todoCalendarPreviewNow" type="button" class="secondary">现在</button></div>
-					<p class="field-hint">留空使用当前时间。时间按网页所在时区设置；切换模式会同步设备时间。预览为排版示意，缺失字模会在网页生成并随待办保存到设备。</p>
+					<p class="field-hint">留空使用当前时间。时间按网页所在时区设置；切换模式会同步设备时间。预览使用当前 UIR2 布局和设备字模，需固件 0x3E 并发送布局资源后生效。缺失字模随待办保存到设备；温度未知时使用 25℃、电压使用 3.1V 示例。</p>
 				</aside>
 			</div>
 			<div id="todoCalendarList" class="todo-calendar-list" aria-label="编辑定时待办事项"></div>
@@ -320,7 +323,7 @@
 					</div>
 					<div class="annotation-edit-actions"><button id="calendarAnnotationSubmit" type="button" class="primary" onclick="CalendarAnnotations.addOrUpdate()">添加标注</button><button id="calendarAnnotationCancel" type="button" class="secondary" onclick="CalendarAnnotations.cancelEdit()" hidden>取消编辑</button></div>
 				</div>
-				<aside id="calendarAnnotationPreview" class="annotation-preview" data-position="below" data-color="black" data-font="follow" data-today="false" aria-labelledby="annotationPreviewHeading">
+				<canvas id="calendarAnnotationResourceCanvas" class="todo-resource-canvas" width="800" height="480" aria-label="按所选日期和当前资源模拟的日历画面"></canvas><aside hidden id="calendarAnnotationPreview" class="annotation-preview" data-position="below" data-color="black" data-font="follow" data-today="false" aria-labelledby="annotationPreviewHeading">
 					<div class="annotation-preview-heading"><h3 id="annotationPreviewHeading">显示示意</h3><span>单个日期</span></div>
 					<div class="annotation-day-card" aria-label="标注位置示意">
 						<div class="annotation-day-meta"><span id="calendarAnnotationPreviewMonth">选择日期</span><span id="calendarAnnotationPreviewWeekday"></span></div>
@@ -365,7 +368,7 @@
 				<button id="externalResourceSave" type="button" class="secondary" onclick="ExternalResourceInstaller.saveReadback()" disabled>保存到本地</button>
 				<button id="externalResourceOffline" type="button" class="secondary" onclick="ExternalResourceInstaller.runOffline()" disabled>应用并断开连接</button>
 			</div>
-			<p class="dfu-hint">空白设备安装完整资源；已有分区表的设备更新日历、布局和字体，保留设备配置、日期标注与待办事项。</p>
+			<p class="dfu-hint">空白设备安装完整资源；已有分区表的设备更新日历、布局和字体，保留已安装的设备配置、日期标注与待办事项；已删除或缺失的分区从待发送包恢复。</p>
 			<div class="checkbox-options"><label><input id="externalResourceAutoOffline" type="checkbox" checked> 更新完成后自动断开连接</label>
 			<label><input id="externalResourceForce" type="checkbox"> 强制重写未变化资源</label>
 			</div>
@@ -389,6 +392,15 @@
 					<p class="resource-panel-note">连接后显示各模块版本和校验状态，并与待烧录资源包比较。</p>
 				</div>
 			</div>
+			<details class="help-details">
+                <summary>删除设备资源</summary>
+                <p id="externalResourceEraseHint" class="dfu-hint">连接设备并读取分区后，可删除指定分区或清空全部外置 Flash。</p>
+                <div class="external-resource-actions">
+                    <select id="externalResourceErasePartition" aria-label="要删除的分区" onchange="ExternalResourceInstaller.controls()" disabled><option value="">选择要删除的分区</option></select>
+                    <button id="externalResourceErase" type="button" class="danger" onclick="ExternalResourceInstaller.erase()" disabled>删除所选分区</button>
+                    <button id="externalResourceEraseAll" type="button" class="danger" onclick="ExternalResourceInstaller.erase(true)" disabled>清空全部外置 Flash</button>
+                </div>
+            </details>
 			<div id="externalResourceStatus" class="dfu-hint">连接设备后自动读取外置 Flash 分区状态。</div>
 			<progress id="externalResourceProgress" max="1" value="0" aria-label="设备资源传输进度"></progress>
 			<p id="externalResourceReadbackStatus" class="dfu-hint" role="status">完整回读设备资源后，可保存为 ZIP。</p>
@@ -412,7 +424,7 @@
 				<label for="resourceCalendarSource">日历数据：节日、休班日期、文字与年份计算表</label>
 				<p class="dfu-hint">holidays 中 work=false 表示休假，true 表示补班。修改年份范围时须提供相应农历和节气计算表；默认数据覆盖 2025–2027，休班表为 2026 年。新增文字的缺失字模会由网页自动生成。</p>
 				<textarea id="resourceCalendarSource" data-resource-editor-action rows="12" spellcheck="false" aria-label="日历资源 JSON"></textarea>
-				<label for="resourceLayoutSource">布局：19 个固定组件的坐标、尺寸和字体槽位</label>
+				<label for="resourceLayoutSource">布局与样式：文字模板、坐标、颜色、字体及控件参数（UIR2）</label>
 				<textarea id="resourceLayoutSource" data-resource-editor-action rows="12" spellcheck="false" aria-label="布局资源 JSON"></textarea>
 				<details><summary>迁移设备配置与日期标注（可选）</summary>
 					<p class="dfu-hint">支持与批处理脚本相同的 EPD-MIG1 备份。导入后配置与标注将包含在生成的资源中，用于初始化空白设备；已有设备仍保留当前配置与标注。</p>
@@ -421,11 +433,12 @@
 					<textarea id="resourceMigrationSource" data-resource-editor-action rows="6" spellcheck="false" aria-label="迁移备份 JSON" placeholder="留空时保留当前资源包中的配置与标注"></textarea>
 				</details>
 				<div class="external-resource-actions">
-					<select id="resourcePreviewMode" aria-label="预览模式" onchange="ExternalResourceEditor.preview()"><option value="1">日历</option><option value="2">分屏</option><option value="3">时钟</option></select>
+					<select id="resourcePreviewMode" aria-label="预览模式" onchange="ExternalResourceEditor.preview()"><option value="1">日历</option><option value="2">分屏时钟</option><option value="3">全屏时钟</option><option value="4">待办 + 日历</option><option value="5">全屏待办</option></select>
 					<button type="button" onclick="ExternalResourceEditor.preview()">预览布局</button>
 				</div>
 				<canvas id="resourceLayoutPreview" width="800" height="480" aria-label="设备布局示意"></canvas>
 				<details open><summary>字体与补字</summary>
+                    <label for="resourceFontPixelSize">界面字体像素字号（留空保留字库度量）</label><input id="resourceFontPixelSize" data-resource-editor-action type="number" min="8" max="43" placeholder="8–43；选定字体后重绘所选槽位">
 					<p class="dfu-hint">新增文字会自动补字。也可导入自己的字体，先看设备点阵效果，再生成资源。</p>
 					<div id="resourceFontDrop" class="resource-font-drop">
 						<label class="external-resource-picker">导入 TTF / OTF 字体<input id="resourceFontImport" data-resource-editor-action class="picker-input" type="file" accept=".ttf,.otf" aria-label="导入本地字体"></label>
@@ -495,25 +508,29 @@
 	<script defer src="js/paint_schedule.js?v=20261005b"></script>
 	<script defer src="js/crop.js?v=20261005a"></script>
 	<script defer src="js/ble_transfer.js?v=20260922a"></script>
-	<script defer src="js/calendar_annotations.js?v=20261005h"></script>
-	<script defer src="js/resource_store.js?v=20261005h"></script>
+	<script defer src="js/calendar_annotations.js?v=20261017a"></script>
+	<script defer src="js/resource_store.js?v=20261017g"></script>
 	<script defer src="js/resource_archive.js?v=20261004a"></script>
-	<script defer src="js/resource_builder.js?v=20261012a"></script>
-	<script defer src="js/ui_tools/resource_defaults.js?v=20261010d"></script>
-	<script defer src="js/ui_tools/font_store_tool.js?v=20261011a"></script>
-	<script defer src="js/ui_tools/resource_pack.js?v=20261011a"></script>
-	<script defer src="js/font_builder.js?v=20261012a"></script>
+	<script defer src="js/ui_tools/ui_data.js?v=20261017a"></script>
+	<script defer src="js/ui_tools/ui_model.js?v=20261017a"></script>
+	<script defer src="js/ui_tools/ui_preview.js?v=20261017a"></script>
+	<script defer src="js/resource_builder.js?v=20261017a"></script>
+	<script defer src="js/ui_tools/resource_defaults.js?v=20261017a"></script>
+	<script defer src="js/ui_tools/default_fonts.js?v=20261017b"></script>
+	<script defer src="js/ui_tools/font_store_tool.js?v=20261017b"></script>
+	<script defer src="js/ui_tools/resource_pack.js?v=20261017c"></script>
+	<script defer src="js/font_builder.js?v=20261017a"></script>
 	<script defer src="js/ui_tools/font_sources.js?v=20261011a"></script>
-	<script defer src="js/ui_tools/resource_project.js?v=20261011a"></script>
+	<script defer src="js/ui_tools/resource_project.js?v=20261017a"></script>
 	<script defer src="js/ui_tools/resource_draft.js?v=20261012a"></script>
 	<script defer src="js/font_sync.js?v=20261012a"></script>
 	<script defer src="js/todo_sync.js?v=20261005h"></script>
-	<script defer src="js/resource_installer.js?v=20261012a"></script>
-	<script defer src="js/todo_calendar.js?v=20261005h"></script>
-	<script defer src="js/resource_editor.js?v=20261012a"></script>
-	<script defer src="js/console_ui.js?v=20261010d"></script>
-	<script defer src="js/main.js?v=20261013a"></script>
-	<script defer src="js/site_statistics.js?v=20261010b"></script>
+	<script defer src="js/resource_installer.js?v=20261017g"></script>
+	<script defer src="js/todo_calendar.js?v=20261017c"></script>
+	<script defer src="js/resource_editor.js?v=20261017a"></script>
+	<script defer src="js/console_ui.js?v=20261017f"></script>
+	<script defer src="js/main.js?v=20261017g"></script>
+	<script defer src="js/site_statistics.js?v=20261017g"></script>
 </body>
 
 </html>

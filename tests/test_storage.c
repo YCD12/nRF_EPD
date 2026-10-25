@@ -13,6 +13,7 @@
 
 static unsigned depth, saves[4], applied, loads;
 static bool in_irq;
+static bool clear_during_load;
 static rs_result_t load_forced = RS_OK;
 static uint32_t now = 1U;
 static rs_result_t forced = RS_OK;
@@ -47,7 +48,17 @@ rs_result_t persistent_record_load(uint16_t id, uint32_t magic, void *data,
     assert(id < 4 && info != NULL);
     assert(!in_irq);
     ++loads;
-    if (load_forced != RS_OK) return load_forced;
+    if (clear_during_load) {
+        clear_during_load = false;
+        in_irq = true;
+        assert(!calendar_annotations_store_clear());
+        assert(!calendar_annotations_store_maintenance_ready());
+        in_irq = false;
+    }
+    if (load_forced != RS_OK) {
+        if (load_forced == RS_IO && capacity) memset(data, 0xA5, capacity);
+        return load_forced;
+    }
     if (!records[id].valid || records[id].tombstone) return RS_NOT_FOUND;
     if (records[id].magic != magic || records[id].length > capacity) return RS_INCOMPATIBLE;
     memcpy(data, records[id].data, records[id].length);
@@ -162,6 +173,7 @@ static void test_annotations(void)
     calendar_annotations_store_on_applied(on_applied);
     assert(calendar_annotations_count() == 0);
     calendar_annotations_store_save();
+    assert(!calendar_annotations_store_maintenance_ready());
     calendar_annotations_store_process();
     assert(saves[RS_PART_CALENDAR_ANNOTATIONS] == 1);
     assert(calendar_annotations_store_take_save_result(&result, &revision, &crc) && result == RS_OK);
@@ -203,9 +215,207 @@ static void test_annotations(void)
     calendar_annotations_store_process();
     assert(calendar_annotations_store_busy() && calendar_annotations_blob(NULL) == 0);
     load_forced = RS_OK;
+    ++now;
     calendar_annotations_store_process();
     assert(!calendar_annotations_store_busy());
     assert(calendar_annotations_blob(NULL) == 16 && loads == before + 2);
+}
+
+static void test_config_read_recovery(void)
+{
+    epd_config_t saved = {0}, loaded, requested;
+    persistent_record_info_t info;
+    saved.week_start = 6;
+    assert(persistent_record_save(2, CFG_MAGIC, &saved, sizeof(saved), false, &info) == RS_OK);
+    epd_config_init(&loaded);
+    unsigned writes = saves[2];
+    load_forced = RS_IO;
+    epd_config_read(&loaded);
+    assert(epd_config_empty(&loaded) && epd_config_read_pending());
+    assert(!epd_config_is_saved(&loaded) && !epd_config_busy());
+    unsigned reads = loads;
+    for (unsigned i = 0; i < 30; ++i) {
+        assert(!epd_config_retry_read(&loaded));
+        epd_config_process();
+    }
+    assert(loads == reads && saves[2] == writes);
+    for (unsigned i = 0; i < 3; ++i) {
+        ++now;
+        assert(!epd_config_retry_read(&loaded) && epd_config_read_pending());
+        epd_config_process();
+    }
+    assert(loads == reads + 3U && saves[2] == writes && records[2].valid);
+    assert(!memcmp(records[2].data, &saved, sizeof(saved)));
+    load_forced = RS_OK;
+    ++now;
+    assert(epd_config_retry_read(&loaded) && !epd_config_read_pending());
+    assert(!memcmp(&loaded, &saved, sizeof(saved)) && epd_config_is_saved(&loaded));
+
+    /* Explicit settings and reset supersede a delayed boot read. */
+    load_forced = RS_IO;
+    epd_config_read(&loaded);
+    requested = saved; requested.week_start = 1;
+    epd_config_write(&requested);
+    assert(!epd_config_read_pending());
+    load_forced = RS_OK;
+    ++now;
+    epd_config_process();
+    assert(!epd_config_retry_read(&loaded) && epd_config_is_saved(&requested));
+    assert(!memcmp(records[2].data, &requested, sizeof(requested)));
+    load_forced = RS_IO;
+    epd_config_read(&loaded);
+    epd_config_clear(&loaded);
+    assert(!epd_config_read_pending());
+    load_forced = RS_OK;
+    ++now;
+    epd_config_process();
+    assert(records[2].tombstone && epd_config_clear_complete());
+    assert(!epd_config_retry_read(&loaded));
+
+    /* A confirmed missing record finishes recovery so service can initialize
+     * defaults; deadlines also work over uptime wrap. */
+    epd_config_init(&loaded);
+    now = UINT32_MAX;
+    load_forced = RS_BUSY;
+    epd_config_read(&loaded);
+    assert(epd_config_read_pending() && !epd_config_retry_read(&loaded));
+    load_forced = RS_OK;
+    now = 0;
+    assert(epd_config_retry_read(&loaded) && epd_config_empty(&loaded));
+    puts("PASS: config transient reads retry without writes; explicit settings/reset supersede recovery");
+}
+
+static void test_annotation_read_recovery(void)
+{
+    uint8_t blob[32];
+    persistent_record_info_t info;
+    make_annotation(blob);
+    assert(persistent_record_save(3, ANNO_MAGIC, blob, sizeof(blob), false, &info) == RS_OK);
+    unsigned writes = saves[3];
+    load_forced = RS_IO;
+    calendar_annotations_store_init();
+    assert(calendar_annotations_reload_pending() && calendar_annotations_store_busy());
+    assert(calendar_annotations_store_maintenance_ready());
+    assert(!calendar_annotations_store_valid() && calendar_annotations_blob(NULL) == 0);
+    unsigned reads = loads;
+    for (unsigned i = 0; i < 30; ++i) calendar_annotations_store_process();
+    assert(loads == reads && saves[3] == writes);
+    ++now;
+    calendar_annotations_store_process();
+    assert(loads == reads + 1U && calendar_annotations_reload_pending());
+    assert(calendar_annotations_store_maintenance_ready());
+    load_forced = RS_OK;
+    ++now;
+    calendar_annotations_store_process();
+    assert(!calendar_annotations_store_busy() && calendar_annotations_store_valid());
+    assert(calendar_annotations_count() == 1U && saves[3] == writes);
+
+    /* An aborted upload hides its partial live buffer until the original
+     * persisted annotation has been read successfully, including transient IO. */
+    assert(calendar_annotations_rx_write(0, sizeof(blob), blob, 16) == CALENDAR_ANNO_RX_MORE);
+    assert(!calendar_annotations_store_maintenance_ready());
+    assert(calendar_annotations_rx_cancel());
+    assert(calendar_annotations_store_maintenance_ready());
+    load_forced = RS_IO;
+    calendar_annotations_store_process();
+    assert(calendar_annotations_reload_pending() && calendar_annotations_blob(NULL) == 0);
+    assert(records[3].valid && records[3].length == sizeof(blob));
+    load_forced = RS_OK;
+    ++now;
+    calendar_annotations_store_process();
+    assert(calendar_annotations_count() == 1U && calendar_annotations_store_valid());
+    assert(saves[3] == writes);
+
+    /* Explicit clear supersedes a deferred read. It must not wait forever for
+     * damaged storage to become readable before attempting the new request. */
+    load_forced = RS_BUSY;
+    calendar_annotations_store_init();
+    reads = loads;
+    assert(calendar_annotations_store_clear());
+    assert(!calendar_annotations_reload_pending());
+    assert(!calendar_annotations_store_maintenance_ready());
+    ++now;
+    calendar_annotations_store_process();
+    assert(!calendar_annotations_store_busy() && calendar_annotations_count() == 0);
+    assert(calendar_annotations_store_maintenance_ready());
+    assert(loads == reads);
+    assert(records[3].length == 16U && saves[3] == writes + 1U);
+
+    /* Persistent read IO plus an explicit clear cannot starve resource repair.
+     * If writing also fails, report failure after the existing finite retries. */
+    load_forced = RS_IO;
+    calendar_annotations_store_init();
+    assert(calendar_annotations_reload_pending());
+    reads = loads; writes = saves[3];
+    assert(calendar_annotations_store_clear());
+    assert(!calendar_annotations_reload_pending() && calendar_annotations_blob(NULL) == 16U);
+    forced = RS_IO;
+    uint8_t result;
+    uint32_t revision, crc;
+    for (unsigned i = 0; i < 4U; ++i) {
+        ++now;
+        calendar_annotations_store_process();
+        assert(loads == reads && saves[3] == writes + i + 1U);
+        if (i < 3U) {
+            assert(!calendar_annotations_store_maintenance_ready());
+            assert(!calendar_annotations_store_take_save_result(&result, &revision, &crc));
+        }
+    }
+    assert(calendar_annotations_store_take_save_result(&result, &revision, &crc) && result == RS_IO);
+    assert(!calendar_annotations_store_busy() && calendar_annotations_store_maintenance_ready());
+    ++now;
+    calendar_annotations_store_process();
+    assert(loads == reads && saves[3] == writes + 4U);
+    forced = RS_OK;
+
+    /* A permanently invalid record settles on empty without a retry loop. */
+    load_forced = RS_CRC;
+    calendar_annotations_store_init();
+    assert(!calendar_annotations_reload_pending() && !calendar_annotations_store_valid());
+    reads = loads;
+    ++now;
+    calendar_annotations_store_process();
+    assert(loads == reads);
+    load_forced = RS_OK;
+    puts("PASS: boot/aborted annotation read IO stays hidden and retries; explicit clear and invalid records settle");
+}
+
+static void test_annotation_clear_during_reload(void)
+{
+    uint8_t blob[32], result;
+    uint32_t revision, crc;
+    persistent_record_info_t info;
+    make_annotation(blob);
+    for (unsigned fail = 0; fail < 2U; ++fail) {
+        assert(persistent_record_save(3, ANNO_MAGIC, blob, sizeof(blob), false, &info) == RS_OK);
+        load_forced = fail ? RS_IO : RS_OK;
+        clear_during_load = true;
+        calendar_annotations_store_init();
+        assert(!clear_during_load && calendar_annotations_store_busy());
+        assert(!calendar_annotations_store_maintenance_ready());
+        assert(calendar_annotations_reload_pending() == (fail != 0U));
+        assert(calendar_annotations_count() == (fail ? 0U : 1U));
+        unsigned reads = loads, writes = saves[3];
+        forced = fail ? RS_IO : RS_OK;
+        unsigned attempts = fail ? 4U : 1U;
+        for (unsigned i = 0; i < attempts; ++i) {
+            ++now;
+            calendar_annotations_store_process();
+            assert(loads == reads && saves[3] == writes + i + 1U);
+        }
+        assert(calendar_annotations_count() == 0U && !calendar_annotations_reload_pending());
+        assert(!calendar_annotations_store_busy() && calendar_annotations_store_maintenance_ready());
+        assert(records[3].valid == (fail == 0U));
+        if (!fail) assert(records[3].length == 16U && records[3].data[6] == 0U);
+        assert(calendar_annotations_store_take_save_result(&result, &revision, &crc) &&
+               result == (fail ? RS_IO : RS_OK));
+        ++now;
+        calendar_annotations_store_process();
+        assert(loads == reads && saves[3] == writes + attempts);
+        forced = RS_OK;
+    }
+    load_forced = RS_OK;
+    puts("PASS: IRQ clear during successful/failed read is deferred safely and supersedes retry");
 }
 
 int main(void)
@@ -213,6 +423,9 @@ int main(void)
     assert(CFG_MAGIC == 0x31435045UL && ANNO_MAGIC == 0x31434E41UL);
     test_config();
     test_annotations();
+    test_config_read_recovery();
+    test_annotation_read_recovery();
+    test_annotation_clear_during_reload();
     puts("PASS: external config/annotation records, dedup, retry, tombstone and deferred clear");
     return 0;
 }

@@ -31,6 +31,28 @@ static void test_only_minutes_changed_covers_tens_rollover(void)
     assert(!clock_only_minutes_changed(0U, 43800U));
 }
 
+static void test_minute_changes_at_time_boundaries(void)
+{
+    static const struct {
+        uint32_t previous, current;
+        bool ones, minutes;
+    } cases[] = {
+        {86340U, 86400U, false, false}, /* Midnight changes the hour. */
+        {86400U, 86460U, true, true},
+        {43205U, 43805U, false, true},  /* Exactly ten minutes, same hour. */
+        {43205U, 43806U, false, false}, /* Just beyond the permitted jump. */
+        {60001U, 60059U, false, false}, /* Seconds alone never change HH:MM. */
+        {UINT32_MAX - 60U, UINT32_MAX, true, true},
+        {UINT32_MAX, 59U, false, false}, /* Wrapped/backwards time is rejected. */
+        {UINT32_MAX, UINT32_MAX, false, false},
+        {0U, 60U, false, false},       /* No previous frame. */
+    };
+    for (unsigned i = 0; i < sizeof(cases) / sizeof(cases[0]); ++i) {
+        assert(clock_only_minute_ones_changed(cases[i].previous, cases[i].current) == cases[i].ones);
+        assert(clock_only_minutes_changed(cases[i].previous, cases[i].current) == cases[i].minutes);
+    }
+}
+
 static void test_hhmm_window_adds_two_pixel_margin(void)
 {
     clock_refresh_window_t w =
@@ -130,6 +152,7 @@ int main(void)
     test_only_minute_ones_shrinks();
     test_tens_or_hour_or_jump_does_not_shrink();
     test_only_minutes_changed_covers_tens_rollover();
+    test_minute_changes_at_time_boundaries();
     test_hhmm_window_adds_two_pixel_margin();
     test_align_window_keeps_8px_and_expands_end();
     test_local_window_follows_mode_geom();

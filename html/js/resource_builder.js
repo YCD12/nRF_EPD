@@ -1,6 +1,7 @@
 (function (root) {
   'use strict';
   const store = typeof module !== 'undefined' && module.exports ? require('./resource_store.js') : root.EPDResourceStore;
+  const uiModel = typeof module !== 'undefined' && module.exports ? require('./ui_tools/ui_model.js') : root.EPDUIModel;
   const encoder = new TextEncoder(), decoder = new TextDecoder('utf-8', { fatal: true });
   const view = b => new DataView(b.buffer, b.byteOffset, b.byteLength);
   const fail = message => { throw new Error(message); };
@@ -136,19 +137,9 @@
           c.height > 208 || span > c.width || 20 * scale + 4 > c.height) fail(`组件 ${c.id} 的时钟几何不兼容`);
     }
   }
-  function encodeUI(model) {
-    const components = list(model.components, 19, 'components'), bytes = new Uint8Array(396), v = view(bytes);
-    v.setUint32(0, 0x31524955, true);
-    [1, 19, 800, 480, 20, 0].forEach((n, i) => v.setUint16(4 + i * 2, n, true));
-    components.forEach((c, i) => {
-      validateComponent(c, i);
-      const at = 16 + 20 * i;
-      bytes.set([c.mode, c.id, c.kind, c.flags, ...c.fonts, 0], at);
-      fields.forEach((key, j) => v.setInt16(at + 8 + j * 2, c[key], true));
-    });
-    return bytes;
-  }
-  function decodeUI(bytes) {
+  function encodeUI(model) { return uiModel.encode(model); }
+
+  function decodeLegacyUI(bytes) {
     const v = view(bytes);
     if (bytes.length !== 396 || v.getUint32(0, true) !== 0x31524955 ||
         [1,19,800,480,20,0].some((n, i) => v.getUint16(4 + 2 * i, true) !== n)) fail('不支持的 UIR1 资源');
@@ -158,7 +149,11 @@
       const c = { mode: bytes[at], id: bytes[at + 1], kind: bytes[at + 2], flags: bytes[at + 3], fonts: Array.from(bytes.subarray(at + 4, at + 7)) };
       fields.forEach((key, j) => { c[key] = v.getInt16(at + 8 + j * 2, true); }); return c;
     }) };
-    encodeUI(model); return model;
+    model.components.forEach(validateComponent); return uiModel.migrate(model);
+  }
+
+  function decodeUI(bytes) {
+    return bytes.length >= 4 && view(bytes).getUint32(0,true) === 0x31524955 ? decodeLegacyUI(bytes) : uiModel.decode(bytes);
   }
 
   // Same slot geometry and bounded record walks as the firmware/font_store_tool.
@@ -170,10 +165,17 @@
     return [pixels + overhang, pixels + descent, -overhang, -descent, pixels, -descent, pixels, -descent];
   }
   const todoMetrics = todoSizes.map(size => todoFontGeometry(size).map(n => n & 255));
+  function fontGeometryValid(bytes) {
+    const signed=n=>n>127?n-256:n;
+    return bytes[9]>=1&&bytes[9]<=64&&bytes[10]>=1&&bytes[10]<=80&&
+      signed(bytes[11])>=-32&&signed(bytes[11])<=32&&signed(bytes[12])>=-64&&signed(bytes[12])<=0&&
+      signed(bytes[13])>=0&&bytes[13]<=64&&signed(bytes[14])>=-64&&signed(bytes[14])<=0&&
+      signed(bytes[15])>=0&&bytes[15]<=80&&signed(bytes[16])>=-64&&signed(bytes[16])<=0&&signed(bytes[13])-signed(bytes[14])<=100&&signed(bytes[15])-signed(bytes[16])<=127;
+  }
   function validateFont(bytes, slot) {
     integer(slot, 0, 3, '字体槽位');
     if (!(bytes instanceof Uint8Array) || bytes.length < 23 || !bytes[0] || bytes[0] === 255 ||
-        !(slot === 3 ? [...metrics.slice(0, 2), ...todoMetrics] : [metrics[slot]]).some(metric => metric.every((n, i) => bytes[9 + i] === n)) ||
+        !fontGeometryValid(bytes) ||
         Array.from(bytes.subarray(2, 9)).some(n => n < 1 || n > 8)) fail(`字体槽位 ${slot} 的头或几何不兼容`);
     const v = view(bytes), glyphs = new Set(), records = new Map(), positions = new Map();
     const offsets = [17, 19, 21].map(at => 23 + v.getUint16(at));

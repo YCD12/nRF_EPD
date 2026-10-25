@@ -30,11 +30,22 @@ typedef struct {
 rs_result_t resource_store_mount(void);
 rs_result_t resource_store_find(uint16_t id, rs_partition_t *partition);
 rs_result_t resource_store_info(uint16_t id, rs_package_info_t *info);
+/* Verify the complete payload and return metadata from the same header read.
+ * With non-NULL info, failures clear it and invalidate the previous read cache. */
+rs_result_t resource_store_open_info(uint16_t id, rs_package_info_t *info);
 rs_result_t resource_store_open(uint16_t id, uint32_t *length);
 rs_result_t resource_store_read(uint16_t id, uint32_t offset, void *data, size_t length);
+/* Main-context rendering transaction: retry an unavailable table once per frame.
+ * Failed payload reads, transient mount/open failures or active updates prevent
+ * frame commit. Missing packages permit NO DATA. */
+void resource_store_render_begin(void);
+bool resource_store_render_valid(void);
 /* Table (ID 1) is repairable at the fixed locator even when mount fails.
  * Updates require callers to enter an exclusive resource-write session first. */
 rs_result_t resource_store_begin(uint16_t id, uint32_t length, uint32_t crc, uint32_t revision);
+/* Erase one aligned 4 KiB sector and verify it. ID 0 addresses the whole chip;
+ * other IDs use a relative offset in the freshly validated partition. */
+rs_result_t resource_store_erase(uint16_t id, uint32_t offset);
 rs_result_t resource_store_write(uint32_t offset, const uint8_t *data, size_t length);
 /* Buffered DATA reports accepted bytes separately; full/final pages are durable. */
 rs_result_t resource_store_buffered_write(uint32_t offset, const uint8_t *data, size_t length);

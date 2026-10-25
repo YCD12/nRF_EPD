@@ -138,20 +138,37 @@
       const at = 16 + i * 16, flags = records.annotations[at + 4];
       const text = decoder.decode(records.annotations.subarray(at + 6, at + 6 + records.annotations[at + 5]));
       const size = flags >> 1 & 3;
-      const slots = /[a-z]/i.test(text) || size === 1 ? [0] : size === 2 ? [1] : [0, 1];
+      const grids=model.ui.components.filter(c=>c.kind===3);
+      const slots=[...new Set(grids.flatMap(c=>/[a-z]/i.test(text)&&c.style.ascii_small || size===1?[c.style.annotation_small_font]:size===2?[c.style.annotation_large_font]:[c.style.annotation_small_font,c.style.annotation_large_font]))];
       slots.forEach(slot => requests.push({ slot, text }));
     }
     let todoConfig = null, todoBytes = packs.get(9)?.payload;
     if (model.todo !== undefined) todoBytes = todoPayload(model.todo);
     if (todoBytes) {
       todoConfig = todo().unpack(todoBytes);
-      requests.push(...todo().fontRequests.call({ ...todo(), ...todoConfig }));
+      // Fields absent from older TODO versions use defaults, never the local editing draft.
+      const ui = (node ? require('./ui_model.js') : root.EPDUIModel);
+      const slot = todo().usesTypography(todoConfig)||todoConfig.fontFamily?3:todoConfig.fontSize===9?0:1;
+      const h = model.fonts[slot]?.[10] || builder.todoFontGeometry(todoConfig.fontSize)[1];
+      if (todoConfig.limit > ui.todoCapacity(model.ui,h,todo().usesTypography(todoConfig)||h>16))
+        throw new Error('待办数量超过当前布局正文区域可容纳的行数');
+      const todoRequests=todo().fontRequests({ ...todoConfig,ui:model.ui });
+      requests.push(...todoRequests);
+      const bodyRequest = todoRequests.find(r => r.slot===3) ||
+        {slot:todoConfig.fontSize===9?0:1,text:''};
+      const ellipsis = model.ui.components.filter(c=>c.kind===6).map(c=>c.text[2]).join('');
+      if (todoConfig.items.length) requests.push({...bodyRequest,text:ellipsis});
     }
     return { requests, todoConfig, todoBytes };
   }
   function validateBundle(input, options = {}) {
     let bundle = store.prepareBundle(input.packages || input);
     const model = builder.open(bundle), glyphs = node ? require('../font_builder.js') : root.EPDWebFonts;
+    const oldUI=bundle.packages.find(item=>item.pack.id===6);
+    if(view(oldUI.pack.payload).getUint32(0,true)===0x31524955) {
+      const bytes=builder.wrap(6,builder.encodeUI(model.ui),oldUI.pack.revision+1);
+      bundle=store.prepareBundle(bundle.packages.map(item=>item===oldUI?{name:item.name,bytes}:item));
+    }
     if (options.repairFontBounds) {
       const repaired = glyphs.normalizeFonts(model.fonts);
       if (repaired.changedSlots.length) {
@@ -165,7 +182,7 @@
       throw new Error('资源分区 ID 与类型不匹配');
     model.fonts.forEach((font, slot) => fonts.checkSlot(slot, font));
     const required = dependencies(bundle, model);
-    const custom = required.requests.find(request => request.slot === 3);
+    const custom = required.todoConfig && todo().fontRequests({...required.todoConfig,ui:model.ui}).find(request => request.slot === 3);
     if (custom) {
       const typography = todo().usesTypography(required.todoConfig);
       const key = typography ? builder.todoFontKey(custom.fontFamily, custom.fontSize, custom.fontBold, custom.fontItalic)
@@ -240,7 +257,7 @@
     const json = (name, data) => files.push({ name, bytes: encoder.encode(JSON.stringify(data, null, 2) + '\n') });
     files.push({ name: 'partition-table.payload.bin', bytes: packs.get(1).payload.slice() });
     json('fonts.json', fontManifest); json('calendar.json', calendar);
-    json('ui.json', { format: 'UIR1', revision: ui.revision, screen_width: 800, screen_height: 480,
+    json('ui.json', { format: 'UIR2', revision: ui.revision, screen_width: 800, screen_height: 480, version: 2,
       payload_bytes: ui.payload.length, components: decoded.ui.components });
     json('records.json', records);
     if (packs.has(9)) {

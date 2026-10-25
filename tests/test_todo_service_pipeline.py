@@ -19,10 +19,10 @@ def function(source, name):
 
 
 source = (ROOT / 'EPD/EPD_service.c').read_text(encoding='utf-8')
-retry_state = re.search(r'static volatile uint32_t s_todo_retry_at;\s*'
-                        r'static volatile uint8_t s_todo_retry_step;', source).group(0)
+retry_state = re.search(r'static volatile uint32_t s_display_retry_at;\s*'
+                        r'static volatile uint8_t s_display_retry_step;', source).group(0)
 handlers = retry_state + '\n' + '\n'.join(function(source, name) for name in (
-    'epd_todo_retry_reset', 'epd_todo_retry_failed',
+    'epd_display_retry_reset', 'epd_display_retry_failed',
     'epd_display_request', 'epd_display_complete',
     'epd_perform_full_refresh', 'epd_gui_update',
     'epd_parse_time_payload', 'epd_config_pins_valid', 'epd_config_validate',
@@ -40,6 +40,6 @@ subprocess.run(shlex.split(os.environ.get('HOST_CC', 'gcc')) +
                ['-Wall', '-Werror', '-std=c11', '-Itests/font_transfer_stubs',
                 '-Itests/stubs', '-IEPD', '-IGUI', str(generated),
                 'EPD/resource_transfer.c', 'EPD/epd_refresh_policy.c',
-                'GUI/todo_items.c', 'GUI/font_geometry.c', '-o', str(exe)], cwd=ROOT, check=True)
+                'tests/stubs/ui_resources_stub.c', 'GUI/todo_items.c', 'GUI/font_geometry.c', '-o', str(exe)], cwd=ROOT, check=True)
 for mode in (4, 5):
     subprocess.run([str(exe.resolve()), str(mode)], check=True)

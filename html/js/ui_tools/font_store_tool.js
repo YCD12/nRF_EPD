@@ -3,6 +3,7 @@
   const node = typeof module !== 'undefined' && module.exports;
   const builder = node ? require('../resource_builder.js') : root.EPDResourceBuilder;
   const store = node ? require('../resource_store.js') : root.EPDResourceStore;
+  const bundled = node ? require('./default_fonts.js') : root.EPDDefaultFonts;
   const slots = ['WQY9', 'WQY12', 'HELVB18'];
   const files = ['u8g2_font_wqy9_t_lunar.bin', 'u8g2_font_wqy12_t_lunar.bin', 'u8g2_font_helvB18_tn.bin'];
   const uiText = '年月日星期周正月二月三月四月五月六月七月八月九月十月冬月腊月闰初一二三四五六七八九十廿' +
@@ -14,6 +15,7 @@
   const word = (bytes, at) => bytes[at] * 256 + bytes[at + 1];
   const signed = value => value > 127 ? value - 256 : value;
   const cached = new WeakMap();
+  let bundledCache = null;
   function inspect(bytes, slot) {
     const glyphs = builder.validateFont(bytes, slot);
     const header = {
@@ -41,7 +43,15 @@
     return builder.encodeFonts(fonts);
   }
   async function loadDefault(fetcher = root.fetch) {
-    if (typeof fetcher !== 'function') throw new Error('无法加载基础字模，请通过本地 HTTP 或 HTTPS 打开网页');
+    // Classic scripts load from file://; fetch() cannot read the sibling BINs.
+    if (root.location?.protocol === 'file:' || typeof fetcher !== 'function') {
+      if (!bundledCache) bundledCache = files.map((file, slot) => {
+        if (typeof bundled?.[file] !== 'string') throw new Error('网页随附字模缺失，请更新完整网页目录');
+        const bytes = Uint8Array.from(root.atob(bundled[file]), char => char.charCodeAt(0));
+        checkSlot(slot, bytes); return bytes;
+      });
+      return bundledCache.map(bytes => bytes.slice());
+    }
     if (!cached.has(fetcher)) {
       const loading = Promise.all(files.map(async (file, slot) => {
         const response = await fetcher(`resources/fonts/${file}`, { cache: 'no-cache' });
@@ -69,18 +79,25 @@
     if (ui) {
       // Voltage, signed temperature, SSIDs and the SYNC TIME URL use the
       // text slot selected by each component, including printable ASCII.
-      const roles = { 1: ['-0123456789', '年月', text + asciiText + '年周'], 2: [calendar.weekday_names.join('')],
-        3: ['0123456789', text, '休班'], 7: [text + asciiText], 8: [calendar.weekday_names.join('')],
-        9: ['0123456789', text, '休班'], 10: ['-0123456789', text + '年月日℃'],
-        14: [text + '年周0123456789'], 15: ['-0123456789', '年月日', text + asciiText + '星期℃'],
-        19: [text + '年周0123456789'] };
       for (const component of ui.components) {
-        (roles[component.id] || []).forEach((required, index) => {
-          const slot = component.fonts[index];
-          if (slot === 2 && /[^\x20-\x7e]/.test(required))
-            throw new Error(`布局组件 ${component.id} 的文字字体不能使用数字槽位 HELVB18`);
-          result.push({ slot, text: required });
-        });
+        if (ui.version !== 2) throw new Error('请先迁移旧版布局');
+        const add = (role, required) => result.push({slot:component.fonts[role],text:required});
+        if (component.kind === 1) {
+          let role=0;
+          for (const part of component.text[0].split(/(\{[^{}]+\})/)) {
+            if (/^\{f[0-2]\}$/.test(part)) role=Number(part[2]);
+            else if (/^\{c[0-2]\}$/.test(part)) continue;
+            else if (part.startsWith('{')) {
+              const token=part.slice(1,-1);
+              add(role,['year','month','day','month2','day2','week','todo_count','todo_daily','jieqi_days'].includes(token)?'0123456789':
+                token==='temperature'?'-0123456789':token==='voltage'?'0123456789.':
+                ['ssid','name_tail'].includes(token)?asciiText:text);
+            } else add(role,part);
+          }
+        } else if (component.kind===3) {
+          add(0,'0123456789');add(1,text);add(2,component.text.join(''));
+        } else if (component.kind===5) add(0,calendar.weekday_names.join(''));
+        else if (component.kind===6) add(0,component.text.slice(0,2).join(''));
       }
     }
     return result;

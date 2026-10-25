@@ -39,7 +39,7 @@ test('resource editor imports the seven-package template and retains custom font
       classList: { toggle() {} }, getContext: () => canvasContext, addEventListener(name, listener) { this[name] = listener; } });
     return elements.get(id);
   }
-  const loaded = [], context = { EPDResourceBuilder: builder, EPDResourceStore: store,
+  const loaded = [], context = { EPDUIModel: require('../html/js/ui_tools/ui_model.js'), EPDUIRenderer: require('../html/js/ui_tools/ui_preview.js'), EPDResourceBuilder: builder, EPDResourceStore: store,
     EPDResourcePack: require('../html/js/ui_tools/resource_pack.js'),
     EPDFontStoreTool: require('../html/js/ui_tools/font_store_tool.js'),
     Uint8Array, document: { getElementById: element }, atob: value => Buffer.from(value, 'base64').toString('binary'),
@@ -60,7 +60,7 @@ test('resource editor imports the seven-package template and retains custom font
 
 function todoFixture(read = null) {
   const owner = {}, context = { Uint8Array, DataView, TextEncoder, TextDecoder, Date, Set, Map,
-    EPDResourceBuilder: builder, appVersion: 0x3b, epdCharacteristic: {},
+    EPDUIModel: require('../html/js/ui_tools/ui_model.js'), EPDUIRenderer: require('../html/js/ui_tools/ui_preview.js'), EPDResourceBuilder: builder, appVersion: 0x3b, epdCharacteristic: {},
     ExternalResourceInstaller: { busy: () => false, readTodo: async () => read, saveTodo: async () => true },
     DeviceOperations: { current: null, assert(actual) { assert.equal(actual, owner); assert.equal(this.current, owner); } },
   };
@@ -150,7 +150,7 @@ test('four-slot FPK packages round-trip the custom font key and reject malformed
     (copy, v) => v.setUint32(20, 123, true),
     (copy, v) => v.setUint16(6, 5, true),
     (copy, v) => v.setUint32(56, 56, true),
-    (copy, v) => { const at = v.getUint32(56, true), len = v.getUint32(60, true); copy[at + 9] = 17;
+    (copy, v) => { const at = v.getUint32(56, true), len = v.getUint32(60, true); copy[at + 9] = 65;
       v.setUint32(64, store.crc32(copy.subarray(at, at + len)), true); },
     (copy, v) => copy[v.getUint32(56, true) + 23] ^= 1,
   ]) {

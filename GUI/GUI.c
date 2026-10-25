@@ -9,6 +9,7 @@
 #include "clock_layout.h"
 #include "clock_text.h"
 #include "fonts.h"
+#include "resource_store.h"
 #include "ui_resources.h"
 #include "todo_items.h"
 
@@ -33,33 +34,18 @@
  * worker's stack frame and a nested clock-only refresh frame. GFX_begin resets
  * this context before every render, including external-font revision state. */
 static Adafruit_GFX m_gui_gfx;
-static bool s_todo_render_valid;
+static bool s_render_valid;
+static uint16_t ui_color(uint8_t color);
+static char m_todo_ellipsis[UI_TEXT_BYTES];
 
-bool GUI_TodoRenderValid(void) { return s_todo_render_valid; }
+bool GUI_RenderValid(void) { return s_render_valid; }
+bool GUI_TodoRenderValid(void) { return GUI_RenderValid(); }
 
 /* Page culling is independent of the external layout's decorative lines. */
 static bool gui_page_hits(const Adafruit_GFX *gfx, int32_t top, int32_t bottom)
 {
     int32_t y = gfx->py + (int32_t)gfx->current_page * gfx->page_height;
     return gfx->rotation != GFX_ROTATE_0 || (top < y + gfx->page_height && bottom > y);
-}
-
-/* Font slots have validated geometry. Include the complete glyph bounding box
- * and the missing-glyph placeholder, not only the Latin capital-A ascent.
- * The two baselines describe a union, in either vertical order. */
-static bool gui_text_page_hits(const Adafruit_GFX *gfx, uint8_t font,
-                               int16_t first, int16_t last)
-{
-    const gui_font_metrics_t *m = GUI_GetFontMetrics((gui_font_id_t)font);
-    if (m == NULL) return true;
-    int16_t ascent = m->max_char_height + m->y_offset;
-    int16_t descent = -m->y_offset;
-    if (ascent < m->ascent) ascent = m->ascent;
-    if (descent < m->max_char_height - m->ascent)
-        descent = m->max_char_height - m->ascent;
-    int16_t top = first < last ? first : last;
-    int16_t bottom = first > last ? first : last;
-    return gui_page_hits(gfx, top - ascent, bottom + descent);
 }
 
 static u8g2_font_placeholder_t gui_font_placeholder(gui_font_id_t font_id)
@@ -125,31 +111,6 @@ static size_t gui_format_int(char *out, size_t out_size, int value, uint8_t min_
     return pos;
 }
 
-static void gui_print_int(Adafruit_GFX *gfx, int value, uint8_t min_digits)
-{
-    char text[12];
-    size_t length = gui_format_int(text, sizeof(text), value, min_digits);
-    GFX_write(gfx, text, length);
-}
-
-static void gui_set_text_style(Adafruit_GFX *gfx, uint16_t fg, uint16_t bg,
-                               gui_font_id_t font_id)
-{
-    GFX_setTextColor(gfx, fg, bg);
-    gui_set_font(gfx, font_id);
-}
-
-/* Calendar and clock dates share the same numeric/unit font pair. */
-static void gui_print_date_part(Adafruit_GFX *gfx, int value, uint8_t min_digits,
-                                uint16_t color, const char *unit,
-                                gui_font_id_t number_font, gui_font_id_t unit_font)
-{
-    gui_set_text_style(gfx, color, GFX_WHITE, number_font);
-    gui_print_int(gfx, value, min_digits);
-    gui_set_text_style(gfx, GFX_BLACK, GFX_WHITE, unit_font);
-    GFX_puts(gfx, unit);
-}
-
 /* 拼「闰」+月份名，最多 9 字节。 */
 static void format_lunar_month(char* out, const char* prefix, const char* month) {
     size_t pos = 0;
@@ -157,20 +118,6 @@ static void format_lunar_month(char* out, const char* prefix, const char* month)
     while (*prefix != '\0' && pos < 9U) out[pos++] = *prefix++;
     while (*month != '\0' && pos < 9U) out[pos++] = *month++;
     out[pos] = '\0';
-}
-
-static void gui_print_lunar_md(Adafruit_GFX *gfx, const struct Lunar_Date *lunar)
-{
-    char text[16];
-    clock_format_lunar_md(text, sizeof(text), LUNAR_LeapName(lunar->IsLeap),
-                          LUNAR_MonthName(lunar->Month), LUNAR_DateName(lunar->Date));
-    GFX_puts(gfx, text);
-}
-
-static void gui_print_lunar_year(Adafruit_GFX *gfx, const struct Lunar_Date *lunar)
-{
-    GFX_puts(gfx, LUNAR_StemName(LUNAR_GetStem(lunar)));
-    GFX_puts(gfx, LUNAR_BranchName(LUNAR_GetBranch(lunar)));
 }
 
 // 公历节日数据表
@@ -272,47 +219,6 @@ static bool GetFestival(uint16_t year, uint8_t mon, uint8_t day, uint8_t week, c
  *
  * 系统时间未同步时(如 2025 年 1 月)在屏幕中央提示用户访问网页校时。
  */
-static void DrawTimeSyncTip(Adafruit_GFX* gfx, const gui_data_t* data) {
-    const char* title = "SYNC TIME!";
-    const char* url = "https://ycd12.github.io/EPD-nRF5_DYC/";
-
-    const ui_component_t *layout = ui_resource_component(
-        data->mode == MODE_CLOCK ? UI_COMP_CLOCK_HEADER : UI_COMP_CAL_HEADER);
-    if (!layout) return;
-    gui_set_font(gfx, (gui_font_id_t)layout->font_tertiary);
-
-    // 计算提示框尺寸和位置
-    int16_t fh = GFX_getFontHeight(gfx);
-    int16_t box_w = GFX_getUTF8Width(gfx, url) + 20;  // URL宽度+边距
-    int16_t box_h = fh * 2 + 20;  // 两行文字+边距
-    int16_t box_x = (GUI_WIDTH(data) - box_w) / 2;  // 水平居中
-    int16_t box_y = GUI_HEIGHT(data) / 2 - box_h / 2;  // 垂直居中
-
-    // 绘制白色背景框
-    GFX_fillRect(gfx, box_x, box_y, box_w, box_h, GFX_WHITE);
-    // 绘制圆角边框
-    GFX_drawRoundRect(gfx, box_x, box_y, box_w, box_h, 5, GFX_BLACK);
-    // 绘制红色标题
-    GFX_setTextColor(gfx, GFX_RED, GFX_WHITE);
-    GFX_setCursor(gfx, box_x + (box_w - GFX_getUTF8Width(gfx, title)) / 2, box_y + 5 + fh);
-    GFX_puts(gfx, title);
-    // 绘制黑色URL
-    GFX_setTextColor(gfx, GFX_BLACK, GFX_WHITE);
-    GFX_setCursor(gfx, box_x + 10, box_y + box_h - GFX_getFontAscent(gfx));
-    GFX_puts(gfx, url);
-}
-
-/* 右对齐绘制「x.xV」。 */
-static void DrawVoltage(Adafruit_GFX* gfx, int16_t right_x, int16_t y, uint16_t voltage_mv,
-                        gui_font_id_t font) {
-    char voltage[8];
-
-    clock_format_voltage(voltage, sizeof(voltage), voltage_mv);
-    gui_set_font(gfx, font);
-    GFX_setCursor(gfx, right_x - GFX_getUTF8Width(gfx, voltage), y + 9);
-    GFX_puts(gfx, voltage);
-}
-
 /**
  * @brief 用纯整数计算 ISO 8601 周数
  *
@@ -375,69 +281,6 @@ static uint8_t GetWeekOfYear(uint8_t year, uint8_t mon, uint8_t mday, uint8_t wd
 }
 
 /**
- * @brief 绘制日期头部（MODE_CALENDAR）
- *
- * @param gfx    图形上下文
- * @param x      起始 X
- * @param y      起始 Y
- * @param tm     公历时间
- * @param Lunar  农历日期
- * @param data   GUI 数据
- *
- * 第1行：年月 + 农历日期 + ISO 周数；第2行：干支年 + 生肖；右上角：电压与名称。
- */
-static void DrawDateHeader(Adafruit_GFX* gfx, const ui_component_t *layout, const tm_t* tm,
-                           const struct Lunar_Date* Lunar, const gui_data_t* data) {
-    int16_t x = layout->x;
-    int16_t y = layout->y;
-    if (!gui_text_page_hits(gfx, layout->font_primary, y - 2, y - 2) &&
-        !gui_text_page_hits(gfx, layout->font_secondary, y - 2, y - 2) &&
-        !gui_text_page_hits(gfx, layout->font_tertiary, y - 14, y) &&
-        !gui_text_page_hits(gfx, layout->font_tertiary, layout->value0 + 9,
-                            layout->value0 + 9)) return;
-    // 绘制公历年月(大字体)
-    GFX_setCursor(gfx, x, y - 2);
-    gui_print_date_part(gfx, tm->tm_year + YEAR0, 1U, GFX_RED, "年",
-                        (gui_font_id_t)layout->font_primary,
-                        (gui_font_id_t)layout->font_secondary);
-    gui_print_date_part(gfx, tm->tm_mon + 1, 1U, GFX_RED, "月",
-                        (gui_font_id_t)layout->font_primary,
-                        (gui_font_id_t)layout->font_secondary);
-
-    int16_t tx = gfx->tx;  // 记录当前文字位置
-    int16_t ty = y;
-
-    // 绘制农历日期和周数
-    gui_set_font(gfx, (gui_font_id_t)layout->font_tertiary);
-    GFX_setCursor(gfx, tx, ty);
-    if (Lunar->IsLeap) GFX_puts(gfx, " ");  // 闰月前加空格对齐
-    gui_print_lunar_md(gfx, Lunar);
-    GFX_setTextColor(gfx, GFX_RED, GFX_WHITE);
-    GFX_puts(gfx, " [");
-    gui_print_int(gfx, GetWeekOfYear(tm->tm_year, tm->tm_mon, tm->tm_mday, tm->tm_wday), 1U);
-    GFX_puts(gfx, "周]");
-
-    // 绘制农历干支年和生肖
-    GFX_setCursor(gfx, tx, ty - 14);
-    GFX_setTextColor(gfx, GFX_BLACK, GFX_WHITE);
-    GFX_puts(gfx, " ");
-    gui_print_lunar_year(gfx, Lunar);
-    GFX_puts(gfx, "年");
-    GFX_setTextColor(gfx, GFX_RED, GFX_WHITE);
-    GFX_puts(gfx, " [");
-    GFX_puts(gfx, LUNAR_ZodiacName(LUNAR_GetZodiac(Lunar)));
-    GFX_puts(gfx, "]");
-
-    // 绘制右侧信息：电压和WiFi名称
-    GFX_setTextColor(gfx, GFX_BLACK, GFX_WHITE);
-    DrawVoltage(gfx, GUI_WIDTH(data) - layout->value1, layout->value0, data->voltage_mv,
-                (gui_font_id_t)layout->font_tertiary);
-    GFX_setCursor(gfx, GUI_WIDTH(data) - GFX_getUTF8Width(gfx, data->ssid) -
-                  (layout->value1 - 2), y);
-    GFX_puts(gfx, data->ssid);
-}
-
-/**
  * @brief 绘制星期栏
  *
  * @param gfx         图形上下文
@@ -449,34 +292,27 @@ static void DrawDateHeader(Adafruit_GFX* gfx, const ui_component_t *layout, cons
  * 周末（六/日）红底。
  */
 static void DrawWeekHeader(Adafruit_GFX* gfx, const ui_component_t *layout,
-                           const gui_data_t* data) {
+                           const gui_data_t* data,const int16_t *s) {
     int16_t x = layout->x;
     int16_t y = layout->y;
     int16_t span_width = layout->w;
     calendar_week_header_metrics_t hdr = {
         .col_w = (uint8_t)(span_width / 7),
         .remainder = (uint8_t)(span_width % 7),
-        .row_h = (uint8_t)layout->h,
+        .row_h = layout->h,
     };
 
     gui_set_font(gfx, (gui_font_id_t)layout->font_primary);
-    uint8_t fh = (hdr.row_h - GFX_getFontHeight(gfx)) / 2 + GFX_getFontAscent(gfx) + 1;
-    if (!gui_page_hits(gfx, y, y + hdr.row_h) &&
-        !gui_text_page_hits(gfx, layout->font_primary, y + fh, y + fh)) return;
+    int16_t fh = (hdr.row_h - GFX_getFontHeight(gfx)) / 2 + GFX_getFontAscent(gfx) + s[UI_WEEK_BASELINE_SHIFT];
     int16_t cw = GFX_getUTF8Width(gfx, LUNAR_WeekdayName(0));
     for (int i = 0; i < 7; i++) {
         uint8_t day = (data->week_start + i) % 7;
-        uint16_t bg = (day == 0 || day == 6) ? GFX_RED : GFX_BLACK;
+        uint16_t bg = ui_color((day == 0 || day == 6) ? s[UI_WEEK_WEEKEND_BG] : s[UI_WEEK_WEEKDAY_BG]);
         GFX_fillRect(gfx, x + i * hdr.col_w, y, i == 6 ? (hdr.col_w + hdr.remainder) : hdr.col_w, hdr.row_h, bg);
-        GFX_setTextColor(gfx, GFX_WHITE, bg);
+        GFX_setTextColor(gfx, ui_color(layout->foreground), bg);
         GFX_setCursor(gfx, x + (hdr.col_w - cw) / 2 + i * hdr.col_w, y + fh);
         GFX_puts(gfx, LUNAR_WeekdayName(day));
     }
-}
-
-static gui_font_id_t annotation_wqy_font(uint8_t pixel)
-{
-    return pixel == CALENDAR_ANNOTATION_FONT_LARGE ? GUI_FONT_WQY12 : GUI_FONT_WQY9;
 }
 
 static void annotation_prepare_style(const calendar_annotation_t* anno, bool large,
@@ -502,7 +338,7 @@ static void annotation_prepare_style(const calendar_annotation_t* anno, bool lar
  * @brief 在给定矩形内绘制月历格（全屏与分屏共用）
  */
 static void DrawMonthGrid(Adafruit_GFX* gfx, const tm_t* tm, const gui_data_t* data,
-                          const ui_component_t *layout) {
+                          const ui_component_t *layout,const int16_t *s) {
     calendar_grid_rect_t rect = {
         .x = layout->x,
         .y = layout->y,
@@ -518,13 +354,13 @@ static void DrawMonthGrid(Adafruit_GFX* gfx, const tm_t* tm, const gui_data_t* d
     calendar_grid_metrics_t m = calendar_grid_compute(&rect, &in);
     struct Lunar_Date dayLunar;
 
-    if (m.large) {
+    if (s[UI_GRID_GRID_DOT] > 0) {
         for (uint8_t i = 1; i < m.month_day_rows; i++)
             GFX_drawDottedLine(gfx, rect.x, rect.y + i * m.cell_h, rect.x + 7 * m.cell_w - 1,
-                               rect.y + i * m.cell_h, GFX_BLACK, 1, 5);
+                               rect.y + i * m.cell_h, ui_color(s[UI_GRID_GRID_COLOR]), s[UI_GRID_GRID_DOT], s[UI_GRID_GRID_GAP]);
         for (uint8_t i = 1; i < 7; i++)
             GFX_drawDottedLine(gfx, rect.x + i * m.cell_w, rect.y, rect.x + i * m.cell_w,
-                               rect.y + m.month_day_rows * m.cell_h - 1, GFX_BLACK, 1, 5);
+                               rect.y + m.month_day_rows * m.cell_h - 1, ui_color(s[UI_GRID_GRID_COLOR]), s[UI_GRID_GRID_DOT], s[UI_GRID_GRID_GAP]);
     }
 
     for (uint8_t i = 0; i < m.month_max_days; i++) {
@@ -532,22 +368,25 @@ static void DrawMonthGrid(Adafruit_GFX* gfx, const tm_t* tm, const gui_data_t* d
         uint8_t month = tm->tm_mon + 1;
         uint8_t day = i + 1;
         calendar_cell_pos_t cell = calendar_grid_cell(&rect, &m, i);
+        cell.cr=s[UI_GRID_DATE_HALF];
+        cell.bx=rect.x+(m.cell_w-2*cell.cr)/2+cell.display_week*m.cell_w;
+        cell.by=rect.y+(m.cell_h-2*cell.cr)/2+((i+m.adjusted_first_day)/7)*m.cell_h+s[UI_GRID_CELL_Y];
 
         /* Include overhanging date circles, labels and holiday corner marks.
          * Drawing order within every intersecting page remains unchanged. */
         int16_t cell_y;
         calendar_grid_cell_origin(&rect, &m, i, NULL, &cell_y);
-        if (!gui_page_hits(gfx, cell_y - 32, cell_y + m.cell_h + 32)) {
+        if (!gui_page_hits(gfx, cell_y - 192, cell_y + m.cell_h + 192)) {
             continue;
         }
 
         LUNAR_SolarToLunar(&dayLunar, year, month, day);
 
         if (day == tm->tm_mday) {
-            GFX_fillCircle(gfx, cell.bx + cell.cr, cell.by + cell.cr - 3, 2 * cell.cr, GFX_RED);
-            GFX_setTextColor(gfx, GFX_WHITE, GFX_RED);
+            GFX_fillCircle(gfx, cell.bx + cell.cr, cell.by + cell.cr + s[UI_GRID_TODAY_Y], s[UI_GRID_TODAY_RADIUS], ui_color(layout->accent));
+            GFX_setTextColor(gfx, ui_color(s[UI_GRID_TODAY_TEXT]), ui_color(layout->accent));
         } else {
-            GFX_setTextColor(gfx, cell.weekend ? GFX_RED : GFX_BLACK, GFX_WHITE);
+            GFX_setTextColor(gfx, ui_color(cell.weekend ? s[UI_GRID_WEEKEND_COLOR] : layout->foreground), ui_color(layout->background));
         }
 
         gui_set_font(gfx, (gui_font_id_t)layout->font_primary);
@@ -570,12 +409,14 @@ static void DrawMonthGrid(Adafruit_GFX* gfx, const tm_t* tm, const gui_data_t* d
 
         if (has_anno && calendar_annotation_has_text(&anno)) {
             annotation_prepare_style(&anno, m.large, &anno_pixel, &anno_fg);
+            if(!s[UI_GRID_ASCII_SMALL]) anno_pixel=anno.font_size ? anno.font_size :
+                (m.large ? CALENDAR_ANNOTATION_FONT_LARGE : CALENDAR_ANNOTATION_FONT_SMALL);
         }
 
         GFX_setFontMode(gfx, 1);
         if (GetFestival(year, month, day, (uint8_t)cell.actual_week, &dayLunar, festival_buf)) {
             festival = festival_buf;
-            if (day != tm->tm_mday) GFX_setTextColor(gfx, GFX_RED, GFX_WHITE);
+            if (day != tm->tm_mday) GFX_setTextColor(gfx, ui_color(s[UI_GRID_FESTIVAL_COLOR]), ui_color(layout->background));
         } else if (dayLunar.Date == 1) {
             format_lunar_month(festival_buf, LUNAR_LeapName(dayLunar.IsLeap),
                                LUNAR_MonthName(dayLunar.Month));
@@ -585,42 +426,62 @@ static void DrawMonthGrid(Adafruit_GFX* gfx, const tm_t* tm, const gui_data_t* d
         }
         if (replace_below) {
             festival = anno.label;
-            gui_set_font(gfx, annotation_wqy_font(anno_pixel));
-            GFX_setTextColor(gfx, anno_fg, (day == tm->tm_mday) ? GFX_RED : GFX_WHITE);
+            gui_set_font(gfx, (gui_font_id_t)s[anno_pixel==CALENDAR_ANNOTATION_FONT_SMALL?UI_GRID_ANNOTATION_SMALL_FONT:UI_GRID_ANNOTATION_LARGE_FONT]);
+            GFX_setTextColor(gfx, anno_fg, ui_color((day == tm->tm_mday) ? layout->accent : layout->background));
         } else {
             gui_set_font(gfx, (gui_font_id_t)layout->font_secondary);
         }
+        GFX_setFontMode(gfx,1);
         GFX_setCursor(gfx, cell.bx + (2 * cell.cr - GFX_getUTF8Width(gfx, festival)) / 2,
-                      gfx->ty + GFX_getFontHeight(gfx) + 3);
+                      gfx->ty + GFX_getFontHeight(gfx) + s[UI_GRID_LABEL_GAP]);
         GFX_puts(gfx, festival);
 
         if (has_anno && calendar_annotation_draws_corner(&anno)) {
             int16_t mark_x;
             int16_t mark_y;
 
-            gui_set_font(gfx, annotation_wqy_font(anno_pixel));
-            GFX_setTextColor(gfx, anno_fg, GFX_WHITE);
-            calendar_annotation_corner_cursor(&rect, &m, i, GFX_getUTF8Width(gfx, anno.label),
-                                              GFX_getFontAscent(gfx), &mark_x, &mark_y);
+            gui_set_font(gfx, (gui_font_id_t)s[anno_pixel==CALENDAR_ANNOTATION_FONT_SMALL?UI_GRID_ANNOTATION_SMALL_FONT:UI_GRID_ANNOTATION_LARGE_FONT]);
+            GFX_setFontMode(gfx,1);
+            GFX_setTextColor(gfx, anno_fg, ui_color(layout->background));
+            int16_t cell_x,cell_y;
+            calendar_grid_cell_origin(&rect,&m,i,&cell_x,&cell_y);
+            mark_x=cell_x+m.cell_w-s[UI_GRID_CORNER_PAD]-GFX_getUTF8Width(gfx,anno.label);
+            if(mark_x<cell_x+s[UI_GRID_CORNER_PAD]) mark_x=cell_x+s[UI_GRID_CORNER_PAD];
+            mark_y=cell_y+s[UI_GRID_CORNER_PAD]+GFX_getFontAscent(gfx);
             GFX_setCursor(gfx, mark_x, mark_y);
             GFX_puts(gfx, anno.label);
         }
 
         if (has_holiday) {
-            calendar_holiday_mark_t holiday =
-                calendar_holiday_mark(&rect, &m, &cell, i,
-                                      has_anno && calendar_annotation_draws_corner(&anno));
+            calendar_holiday_mark_t holiday;
+            holiday.circle_r=s[UI_GRID_HOLIDAY_RADIUS];
+            if(has_anno && calendar_annotation_draws_corner(&anno)) {
+                int16_t cx,cy;calendar_grid_cell_origin(&rect,&m,i,&cx,&cy);
+                holiday.text_x=cx+s[UI_GRID_HOLIDAY_PAD];
+                holiday.text_y=cy+m.cell_h-s[UI_GRID_HOLIDAY_PAD];
+                holiday.circle_x=holiday.text_x+holiday.circle_r;
+                holiday.circle_y=holiday.text_y+s[UI_GRID_HOLIDAY_BASELINE];
+            } else {
+                holiday.text_x=cell.bx+s[UI_GRID_HOLIDAY_TEXT_X];
+                holiday.text_y=cell.by+s[UI_GRID_HOLIDAY_TEXT_Y];
+                holiday.circle_x=cell.bx+s[UI_GRID_HOLIDAY_CIRCLE_X];
+                holiday.circle_y=cell.by+s[UI_GRID_HOLIDAY_CIRCLE_Y];
+            }
 
             if (day == tm->tm_mday) {
                 GFX_fillCircle(gfx, holiday.circle_x, holiday.circle_y, holiday.circle_r,
-                               GFX_WHITE);
-                GFX_drawCircle(gfx, holiday.circle_x, holiday.circle_y, holiday.circle_r,
-                               GFX_RED);
+                               ui_color(layout->background));
+                GFX_drawCircle(gfx, holiday.circle_x, holiday.circle_y, holiday.circle_r, ui_color(layout->accent));
             }
             gui_set_font(gfx, (gui_font_id_t)layout->font_tertiary);
-            GFX_setTextColor(gfx, work ? GFX_BLACK : GFX_RED, GFX_WHITE);
+            GFX_setFontMode(gfx,1);
+            GFX_setTextColor(gfx, ui_color(work ? s[UI_GRID_WORK_COLOR] : s[UI_GRID_REST_COLOR]), ui_color(layout->background));
             GFX_setCursor(gfx, holiday.text_x, holiday.text_y);
-            GFX_puts(gfx, work ? "班" : "休");
+            char label[UI_TEXT_BYTES];
+            if (ui_resource_text(layout, work ? 0 : 1, label, sizeof(label)))
+                GFX_puts(gfx, label);
+            else
+                s_render_valid = false;
         }
 
         if (has_anno && calendar_annotation_draws_dot(&anno)) {
@@ -628,151 +489,35 @@ static void DrawMonthGrid(Adafruit_GFX* gfx, const tm_t* tm, const gui_data_t* d
             int16_t mark_y;
             uint8_t mark_r;
 
-            calendar_annotation_dot_center(&rect, &m, i, has_holiday,
-                                           &mark_x, &mark_y, &mark_r);
+            int16_t cx,cy;calendar_grid_cell_origin(&rect,&m,i,&cx,&cy);
+            mark_x=cx+(has_holiday?s[UI_GRID_DOT_PAD]:m.cell_w-s[UI_GRID_DOT_PAD]);
+            mark_y=cy+s[UI_GRID_DOT_Y];mark_r=s[UI_GRID_DOT_RADIUS];
             /* 当日红底在分屏小格中会延伸到角落，白边让红点保持可辨认。 */
             if (day == tm->tm_mday) {
-                GFX_fillCircle(gfx, mark_x, mark_y, mark_r + 1U, GFX_WHITE);
+                GFX_fillCircle(gfx, mark_x, mark_y, mark_r + s[UI_GRID_DOT_BORDER], ui_color(layout->background));
             }
-            GFX_fillCircle(gfx, mark_x, mark_y, mark_r, GFX_RED);
+            GFX_fillCircle(gfx, mark_x, mark_y, mark_r, ui_color(layout->accent));
         }
     }
 }
-
-/**
- * @brief 绘制完整日历（MODE_CALENDAR）
- *
- * @param gfx    图形上下文
- * @param tm     公历时间
- * @param Lunar  农历日期
- * @param data   GUI 数据
- */
-static void DrawCalendar(Adafruit_GFX* gfx, const tm_t* tm, const struct Lunar_Date* Lunar,
-                          const gui_data_t* data) {
-    const ui_component_t *header = ui_resource_component(UI_COMP_CAL_HEADER);
-    const ui_component_t *week = ui_resource_component(UI_COMP_CAL_WEEK);
-    const ui_component_t *grid = ui_resource_component(UI_COMP_CAL_GRID);
-    if (!header || !week || !grid) return;
-    DrawDateHeader(gfx, header, tm, Lunar, data);
-    DrawWeekHeader(gfx, week, data);
-    DrawMonthGrid(gfx, tm, data, grid);
-}
-
-/* 七段字模和段位几何放在 Flash，避免每次绘制时在栈上创建数组。
- * 当前时钟只显示非负的 HH/MM 数值，不保留负号和空白字模。 */
-typedef struct {
-    uint8_t x_scale;
-    uint8_t x_bias;
-    uint8_t y_scale;
-    uint8_t y_bias;
-    bool horizontal;
-} seven_segment_geometry_t;
-
-static const uint8_t s_seven_segment_digits[10] = {
-    0x3F, 0x06, 0x5B, 0x4F, 0x66,
-    0x6D, 0x7D, 0x07, 0x7F, 0x6F,
-};
-
-static const seven_segment_geometry_t s_seven_segment_geometry[7] = {
-    {1U, 1U, 0U, 0U, true},  /* top */
-    {7U, 1U, 1U, 1U, false}, /* top right */
-    {7U, 1U, 10U, 2U, false},/* bottom right */
-    {1U, 1U, 18U, 2U, true}, /* bottom */
-    {0U, 0U, 10U, 2U, false},/* bottom left */
-    {0U, 0U, 1U, 1U, false}, /* top left */
-    {1U, 1U, 9U, 1U, true},  /* middle */
-};
 
 static void Draw7Segment(Adafruit_GFX* gfx, uint16_t x, uint16_t y,
                          uint16_t cS, uint16_t horizontal_width,
                          uint16_t vertical_width, bool horizontal,
                          uint16_t color)
 {
-    uint16_t i;
-
-    if (horizontal) {
-        for (i = 0U; i < cS; ++i) {
-            GFX_drawFastHLine(gfx, (int16_t)(x + cS - i), (int16_t)(y + i),
-                              (int16_t)(horizontal_width + 2U * i), color);
-        }
-        for (i = 0U; i < cS; ++i) {
-            GFX_drawFastHLine(gfx, (int16_t)(x + i), (int16_t)(y + cS + i),
-                              (int16_t)(horizontal_width + 2U * (cS - i)), color);
-        }
-    } else {
-        for (i = 0U; i < cS; ++i) {
-            GFX_drawFastVLine(gfx, (int16_t)(x + i), (int16_t)(y + cS - i),
-                              (int16_t)(vertical_width + 2U * i), color);
-        }
-        for (i = 0U; i < cS; ++i) {
-            GFX_drawFastVLine(gfx, (int16_t)(x + cS + i), (int16_t)(y + i),
-                              (int16_t)(vertical_width + 2U * (cS - i)), color);
-        }
+    /* Both orientations use the same widening/narrowing scanline profile. */
+    for (uint16_t i = 0U; i < 2U * cS; ++i) {
+        uint16_t inset = i < cS ? cS - i : i - cS;
+        uint16_t length = (horizontal ? horizontal_width : vertical_width) + 2U * (cS - inset);
+        if (horizontal)
+            GFX_drawFastHLine(gfx, (int16_t)(x + inset), (int16_t)(y + i), (int16_t)length, color);
+        else
+            GFX_drawFastVLine(gfx, (int16_t)(x + i), (int16_t)(y + inset), (int16_t)length, color);
     }
 }
 
 /* 仅用于时钟 HH/MM，数字右对齐，前面补 0。宽度公式与 clock_layout.h 保持一致。 */
-static void Draw7Number(Adafruit_GFX* gfx, unsigned int n, unsigned int xLoc,
-                        unsigned int yLoc, uint16_t cS, uint16_t fC,
-                        uint16_t bC, uint16_t nD)
-{
-    uint16_t count = nD;
-    uint16_t digit_step;
-    uint16_t horizontal_width;
-    uint16_t vertical_width;
-    uint8_t segment;
-    unsigned int num = n;
-
-    if (count == 0U) {
-        count = 1U;
-    } else if (count > 10U) {
-        count = 10U;
-    }
-
-    horizontal_width = (uint16_t)(5U * cS);
-    vertical_width = (uint16_t)(7U * cS);
-    digit_step = (uint16_t)(11U * cS + 2U);
-    xLoc += (unsigned int)count * digit_step;
-
-    while (count-- > 0U) {
-        uint8_t digit = (uint8_t)(num % 10U);
-
-        xLoc -= digit_step;
-        for (segment = 0U; segment < 7U; ++segment) {
-            const seven_segment_geometry_t* geometry = &s_seven_segment_geometry[segment];
-            uint16_t x = (uint16_t)(xLoc + geometry->x_scale * cS + geometry->x_bias);
-            uint16_t y = (uint16_t)(yLoc + geometry->y_scale * cS + geometry->y_bias);
-            uint16_t color = (s_seven_segment_digits[digit] & (1U << segment)) ? fC : bC;
-
-            Draw7Segment(gfx, x, y, cS, horizontal_width, vertical_width,
-                         geometry->horizontal, color);
-        }
-        num /= 10U;
-    }
-}
-
-/**
- * @brief 绘制时钟时间显示(HH:MM格式，7段数码管样式)
- *
- * @param gfx 图形上下文
- * @param tm  时间结构体
- * @param x   起始X坐标（数字左上角）
- * @param y   起始Y坐标
- * @param cS  缩放因子
- * @param nD  每个数字的位数(通常为2)
- */
-static void DrawTime(Adafruit_GFX* gfx, const tm_t* tm, int16_t x, int16_t y, uint16_t cS, uint16_t nD) {
-    // 绘制小时
-    Draw7Number(gfx, tm->tm_hour, x, y, cS, GFX_BLACK, GFX_WHITE, nD);
-    x += clock_digit_block_width(cS, nD) + 2 * cS;
-    // 绘制冒号(两个方块)
-    GFX_fillRect(gfx, x, clock_colon_top_y((uint16_t)y, cS), 2 * cS, 2 * cS, GFX_BLACK);
-    GFX_fillRect(gfx, x, clock_colon_bot_y((uint16_t)y, cS), 2 * cS, 2 * cS, GFX_BLACK);
-    x += 4 * cS;
-    // 绘制分钟
-    Draw7Number(gfx, tm->tm_min, x, y, cS, GFX_BLACK, GFX_WHITE, nD);
-}
-
 // 动态时间刷新窗口的状态(用于局部刷新)
 // 这些变量追踪TIME_REFRESH区域内最后选择的子窗口
 static uint16_t s_time_window_x = 0;  // TIME_REFRESH区域内的本地X坐标
@@ -792,118 +537,10 @@ static clock_refresh_geom_t gui_clock_geom(const gui_data_t *data)
     return geometry;
 }
 
-/* 在几何约定的屏幕位置画 HH:MM。 */
-static void DrawTimeFromGeom(Adafruit_GFX *gfx, const tm_t *tm, const clock_refresh_geom_t *geom)
-{
-    uint16_t x = 0;
-    uint16_t y = 0;
-
-    clock_hhmm_screen_xy(geom, &x, &y);
-    DrawTime(gfx, tm, (int16_t)x, (int16_t)y, geom->cS, geom->nD);
-}
-
-// 在分屏的右侧绘制日历(从x=SPLIT_RIGHT_START开始)
-/**
- * @brief 在分屏右侧绘制日历
- *
- * @param gfx    图形上下文
- * @param tm     公历时间
- * @param Lunar  农历日期
- * @param data   GUI 数据
- *
- * 从 x=392 起宽 408px；有分隔线；顶部为名称与电压；标准星期头 + 日期网格。
- */
-static void DrawCalendar_Right(Adafruit_GFX* gfx, const tm_t* tm, const struct Lunar_Date* Lunar,
-                               const gui_data_t* data) {
-    (void)Lunar;
-    const ui_component_t *separator = ui_resource_component(UI_COMP_SPLIT_SEPARATOR);
-    const ui_component_t *header = ui_resource_component(UI_COMP_SPLIT_RIGHT_HEADER);
-    const ui_component_t *week = ui_resource_component(UI_COMP_SPLIT_WEEK);
-    const ui_component_t *grid = ui_resource_component(UI_COMP_SPLIT_GRID);
-    if (!separator || !header || !week || !grid) return;
-
-    GFX_drawFastVLine(gfx, separator->x, separator->y, separator->h, GFX_BLACK);
-
-    if (gui_text_page_hits(gfx, header->font_primary, header->y, header->value0 + 9)) {
-        GFX_setTextColor(gfx, GFX_BLACK, GFX_WHITE);
-        DrawVoltage(gfx, header->value1, header->value0, data->voltage_mv,
-                    (gui_font_id_t)header->font_primary);
-        GFX_setCursor(gfx, header->x, header->y);
-        GFX_puts(gfx, data->ssid);
-    }
-
-    DrawWeekHeader(gfx, week, data);
-    DrawMonthGrid(gfx, tm, data, grid);
-}
-
-/* 绘制「YYYY年M月D日」；pad2 时月日两位。 */
-static void DrawYmd(Adafruit_GFX* gfx, const tm_t* tm, uint16_t num_color, bool pad2,
-                    const ui_component_t *layout)
-{
-    gui_font_id_t number = (gui_font_id_t)layout->font_primary;
-    gui_font_id_t unit = (gui_font_id_t)layout->font_secondary;
-    gui_print_date_part(gfx, tm->tm_year + YEAR0, 1U, num_color, "年", number, unit);
-    gui_print_date_part(gfx, tm->tm_mon + 1, pad2 ? 2U : 1U, num_color, "月", number, unit);
-    gui_print_date_part(gfx, tm->tm_mday, pad2 ? 2U : 1U, num_color,
-                        pad2 ? "日 " : "日", number, unit);
-}
-
-/* 右对齐节气名或倒计时两行。 */
-static void DrawJieqiRight(Adafruit_GFX* gfx, const tm_t* tm,
-                           int16_t right_x, int16_t y1, int16_t y2,
-                           uint16_t line1_color, uint16_t line2_color,
-                           gui_font_id_t font)
-{
-    char line1[16];
-    char line2[16];
-    uint8_t days = 0;
-    uint8_t jq = GetJieQiStr(tm->tm_year + YEAR0, tm->tm_mon + 1, tm->tm_mday, &days);
-
-    gui_set_font(gfx, font);
-    clock_format_jieqi_countdown(line1, sizeof(line1), line2, sizeof(line2),
-                                 LUNAR_JieQiName(jq % 24), days);
-    GFX_setTextColor(gfx, line1_color, GFX_WHITE);
-    GFX_setCursor(gfx, right_x - GFX_getUTF8Width(gfx, line1), y1);
-    GFX_puts(gfx, line1);
-    if (line2[0] != '\0') {
-        GFX_setTextColor(gfx, line2_color, GFX_WHITE);
-        GFX_setCursor(gfx, right_x - GFX_getUTF8Width(gfx, line2), y2);
-        GFX_puts(gfx, line2);
-    }
-}
-
-/* TODO text has a smaller writable area than the complete page buffer. Clip
- * font scanlines too: generated glyph offsets and narrow custom UI panes must
- * never overwrite another row, the split calendar, or the footer. Rendering
- * is serial, like m_gui_gfx, so this costs no nested stack context. */
-static struct {
-    void (*forward)(u8g2_font_t *, int16_t, int16_t, int16_t, uint8_t, uint16_t);
-    int16_t left, right, top, bottom;
-} m_todo_clip;
-
-static void todo_clip_line(u8g2_font_t *font, int16_t x, int16_t y,
-                           int16_t length, uint8_t direction, uint16_t color)
-{
-#if !GFX_FIXED_FONT_DIRECTION_0
-    if (direction == 2U) { x -= length - 1; direction = 0U; }
-    if (direction == 3U) { y -= length - 1; direction = 1U; }
-#endif
-    if (direction == 0U) {
-        if (y < m_todo_clip.top || y >= m_todo_clip.bottom) return;
-        if (x < m_todo_clip.left) { length -= m_todo_clip.left - x; x = m_todo_clip.left; }
-        if ((int32_t)x + length > m_todo_clip.right) length = m_todo_clip.right - x;
-    } else {
-        if (x < m_todo_clip.left || x >= m_todo_clip.right) return;
-        if (y < m_todo_clip.top) { length -= m_todo_clip.top - y; y = m_todo_clip.top; }
-        if ((int32_t)y + length > m_todo_clip.bottom) length = m_todo_clip.bottom - y;
-    }
-    if (length > 0) m_todo_clip.forward(font, x, y, length, direction, color);
-}
-
 /* Measure the furthest painted pixel, including placeholder glyphs and the
  * actual advances between letters. Separately adding the widths of a title
  * and its ellipsis loses the final title glyph's trailing advance. */
-static int16_t todo_text_extent(Adafruit_GFX *gfx, const char *text, int16_t *left)
+static int16_t todo_text_extent(Adafruit_GFX *gfx, const char *text, int16_t *left,int16_t *advance_out)
 {
     int16_t cursor = 0, right = 0;
     if (left != NULL) *left = 0;
@@ -931,20 +568,21 @@ static int16_t todo_text_extent(Adafruit_GFX *gfx, const char *text, int16_t *le
         cursor += advance;
         text += length;
     }
+    if(advance_out) *advance_out=cursor;
     return right;
 }
 
 static int16_t todo_text_width(Adafruit_GFX *gfx, const char *text)
 {
-    return todo_text_extent(gfx, text, NULL);
+    return todo_text_extent(gfx, text, NULL,NULL);
 }
 
 /* Draw a bounded UTF-8 line, wrapping at glyph boundaries. The final line
  * reserves space for an ellipsis when the title is wider than the pane. */
 static void DrawTodoText(Adafruit_GFX *gfx, const char **cursor, int16_t width,
-                         bool last_line, bool strike)
+                         bool last_line, bool strike,const int16_t *s)
 {
-    char line[TODO_ITEMS_TEXT_MAX + 4U];
+    char line[TODO_ITEMS_TEXT_MAX + UI_TEXT_BYTES];
     size_t length = 0U;
     const char *text = *cursor;
     const char *draw = text;
@@ -953,8 +591,9 @@ static void DrawTodoText(Adafruit_GFX *gfx, const char **cursor, int16_t width,
         *cursor = text + strlen(text);
         goto draw_line;
     }
-    const char *dots = last_line ? "..." : "";
-    while (*dots != '\0' && todo_text_width(gfx, dots) > width) dots++;
+    const char *dots = last_line ? m_todo_ellipsis : "";
+    while (*dots != '\0' && todo_text_width(gfx, dots) > width)
+        dots+=(uint8_t)*dots<0x80U?1U:(uint8_t)*dots<0xe0U?2U:3U;
     while (*text != '\0') {
         unsigned char first = (unsigned char)*text;
         size_t bytes = first < 0x80U ? 1U : (first < 0xE0U ? 2U : 3U);
@@ -976,268 +615,19 @@ draw_line:
     GFX_puts(gfx, draw);
     if (strike) {
         int16_t left;
-        int16_t end = origin_x + todo_text_extent(gfx, draw, &left);
+        int16_t end = origin_x + todo_text_extent(gfx, draw, &left,NULL);
         int16_t start = origin_x + left;
-        int16_t y = origin_y - gfx->u8g2.font_info.ascent_A / 2;
-        if (start < m_todo_clip.left) start = m_todo_clip.left;
-        if (end > m_todo_clip.right) end = m_todo_clip.right;
-        if (y >= m_todo_clip.top && y < m_todo_clip.bottom && end > start)
-            GFX_drawFastHLine(gfx, start, y, end - start, GFX_BLACK);
+        int16_t y = origin_y - gfx->u8g2.font_info.ascent_A / s[UI_TODO_STRIKE_DIVISOR];
+        if (start < gfx->clip_left) start = gfx->clip_left;
+        if (end > gfx->clip_right) end = gfx->clip_right;
+        if (y >= gfx->clip_top && y < gfx->clip_bottom && end > start)
+            GFX_fillRect(gfx, start, y, end - start, s[UI_TODO_STRIKE_WIDTH], ui_color(s[UI_TODO_TEXT_COLOR]));
     }
 }
 
 /* TODO owns its pane from title to final row. Clock date/status components
  * deliberately do not constrain this layout or reduce the selected count. */
-static void DrawTodo(Adafruit_GFX *gfx, const gui_data_t *data)
-{
-    todo_selection_t selection;
-    const int16_t x = 23, first_y = 62, bottom = GUI_HEIGHT(data) - 30;
-    int16_t right = data->mode == MODE_TODO ? GUI_WIDTH(data) - 25 : 367;
-    const ui_component_t *calendar = ui_resource_component(UI_COMP_SPLIT_GRID);
-    if (data->mode == MODE_TODO_CALENDAR && calendar != NULL && right > calendar->x - 10)
-        right = calendar->x - 10;
-    const int16_t width = right - x - 14;
-    if (width < 1 || bottom - first_y < 24) {
-        todo_items_suspend_display();
-        s_todo_render_valid = false;
-        return;
-    }
-    m_todo_clip.forward = gfx->u8g2.draw_hv_line;
-    m_todo_clip.left = x; m_todo_clip.right = right;
-    m_todo_clip.top = 12; m_todo_clip.bottom = bottom;
-    gfx->u8g2.draw_hv_line = todo_clip_line;
-    gui_set_font(gfx, GUI_FONT_WQY9);
-    GFX_setTextColor(gfx, GFX_BLACK, GFX_WHITE);
-    /* Share the calendar frame geometry; split mode draws one continuous line. */
-    if (data->mode == MODE_TODO) {
-        const ui_component_t *top = ui_resource_component(UI_COMP_SPLIT_FRAME_TOP);
-        if (top) GFX_fillRect(gfx, top->x, top->y, top->w, top->h, GFX_BLACK);
-    }
-    char temperature[9];
-    gui_format_int(temperature, sizeof(temperature), data->temperature, 1U);
-    const ui_component_t *calendar_header = ui_resource_component(UI_COMP_CAL_HEADER);
-    gui_font_id_t temp_number_font = calendar_header ? (gui_font_id_t)calendar_header->font_primary : GUI_FONT_HELVB18;
-    gui_font_id_t temp_unit_font = calendar_header ? (gui_font_id_t)calendar_header->font_secondary : GUI_FONT_WQY12;
-    int16_t heading_width = right - x;
-    gui_set_font(gfx, temp_number_font);
-    int16_t number_advance = 0;
-    for (const char *digit = temperature; *digit != '\0'; ++digit) {
-        int8_t advance = 0;
-        if (!u8g2_GetGlyphWidthIfPresent(&gfx->u8g2, (uint8_t)*digit, &advance))
-            advance = gfx->u8g2.placeholder.advance;
-        number_advance += advance;
-    }
-    gui_set_font(gfx, temp_unit_font);
-    int16_t temp_width = number_advance + todo_text_width(gfx, "℃");
-    if (temp_width + 8 < heading_width) {
-        GFX_setCursor(gfx, right - temp_width, 36);
-        gui_set_font(gfx, temp_number_font);
-        GFX_puts(gfx, temperature);
-        gui_set_font(gfx, temp_unit_font);
-        GFX_puts(gfx, "℃");
-        heading_width -= temp_width + 8;
-    }
-    gui_set_font(gfx, GUI_FONT_WQY9);
-    GFX_setCursor(gfx, x, 36);
-    const char *cursor;
-    const gui_font_id_t font = (gui_font_id_t)todo_items_font_slot();
-    if (font == GUI_FONT_TODO &&
-        !GUI_TodoFontMatches(todo_items_font_size(), todo_items_font_key()))
-        todo_items_suspend_display();
-    if (!todo_items_select(data->timestamp, &selection)) {
-        s_todo_render_valid = false;
-        cursor = "TODO DATA ERROR";
-        DrawTodoText(gfx, &cursor, heading_width, true, false);
-        goto finish;
-    }
-    char heading[16] = "TODO ";
-    size_t heading_pos = clock_text_append_u8(heading, sizeof(heading), 5U, selection.count);
-    heading_pos = clock_text_append(heading, sizeof(heading), heading_pos, "/");
-    clock_text_append_u8(heading, sizeof(heading), heading_pos, selection.daily_count);
-    cursor = heading;
-    DrawTodoText(gfx, &cursor, heading_width, true, false);
-    if (selection.count == 0U) {
-        GFX_setCursor(gfx, x, first_y + 20);
-        cursor = "NO ACTIVE TASKS";
-        DrawTodoText(gfx, &cursor, right - x, true, false);
-        goto finish;
-    }
-    const int16_t row_height = (bottom - first_y - 4) / todo_items_display_limit();
-    const gui_font_metrics_t *metrics = GUI_GetFontMetrics(font);
-    int16_t descent = metrics != NULL ? metrics->max_char_height - metrics->ascent : 5;
-    if (metrics != NULL && descent < -metrics->y_offset) descent = -metrics->y_offset;
-    const bool extended = todo_items_extended_font();
-    int16_t text_x = x + 14;
-    int16_t text_width = width;
-    int16_t first_baseline = 15, line_step = 18;
-    bool two_lines;
-    if (extended) {
-        if (metrics == NULL || row_height < metrics->max_char_height + 6) {
-            todo_items_suspend_display();
-            s_todo_render_valid = false;
-            goto finish;
-        }
-        /* Reserve the complete italic bearing on the first glyph as well as
-         * its ascent/descent. Larger glyphs must not overlap the next row. */
-        if (metrics->x_offset < 0) text_x -= metrics->x_offset;
-        text_width = right - text_x;
-        first_baseline = metrics->ascent + 3;
-        line_step = metrics->max_char_height + 4;
-        two_lines = row_height >= 2 * metrics->max_char_height + 10;
-    } else {
-        two_lines = row_height >= 52 + descent;
-    }
-    for (uint8_t row = 0U; row < selection.count; ++row) {
-        int16_t y = first_y + row * row_height;
-        if (!gui_page_hits(gfx, y, y + row_height)) continue;
-        m_todo_clip.top = y; m_todo_clip.bottom = y + row_height;
-        todo_item_t item;
-        if (!todo_items_read(selection.index[row], &item)) {
-            s_todo_render_valid = false;
-            continue;
-        }
-        int16_t marker_y = y + (extended ? 3 + (metrics->max_char_height - 7) / 2 : 4);
-        uint16_t marker_color = data->color > 1 &&
-            (selection.phase[row] == TODO_PHASE_ACTIVE || selection.phase[row] == TODO_PHASE_EXPIRED) ? GFX_RED : GFX_BLACK;
-        if (item.flags & TODO_ITEM_RESIDENT)
-            GFX_fillRect(gfx, x, marker_y, 7, 7, marker_color);
-        else
-            GFX_drawRect(gfx, x, marker_y, 7, 7, marker_color);
-        gui_set_font(gfx, font);
-        GFX_setTextColor(gfx, GFX_BLACK, GFX_WHITE);
-        cursor = item.text;
-        GFX_setCursor(gfx, text_x, y + first_baseline);
-        bool strike = selection.phase[row] == TODO_PHASE_EXPIRED;
-        DrawTodoText(gfx, &cursor, text_width, !two_lines, strike);
-        if (two_lines && *cursor != '\0') {
-            GFX_setCursor(gfx, text_x, y + first_baseline + line_step);
-            DrawTodoText(gfx, &cursor, text_width, true, strike);
-        }
-    }
-finish:
-    gfx->u8g2.draw_hv_line = m_todo_clip.forward;
-}
-
-/* Full and split clocks share the face and footer; their headers use different
- * arrangements from the external UI package. Both render in black for partial refresh. */
-
-static void DrawClock(Adafruit_GFX* gfx, const tm_t* tm, const struct Lunar_Date* Lunar,
-                      const gui_data_t* data) {
-    bool fullscreen = data->mode == MODE_CLOCK;
-    const ui_component_t *header = ui_resource_component(
-        fullscreen ? UI_COMP_CLOCK_HEADER : UI_COMP_SPLIT_LEFT_HEADER);
-    const ui_component_t *top_line = ui_resource_component(
-        fullscreen ? UI_COMP_CLOCK_TOP_LINE : UI_COMP_SPLIT_LEFT_TOP_LINE);
-    const ui_component_t *bottom_line = ui_resource_component(
-        fullscreen ? UI_COMP_CLOCK_BOTTOM_LINE : UI_COMP_SPLIT_LEFT_BOTTOM_LINE);
-    const ui_component_t *bottom = ui_resource_component(
-        fullscreen ? UI_COMP_CLOCK_BOTTOM_INFO : UI_COMP_SPLIT_BOTTOM_INFO);
-    if (!header || !top_line || !bottom_line || !bottom) return;
-
-    if (gui_text_page_hits(gfx, header->font_primary, header->y,
-                           fullscreen ? header->y : header->value0) ||
-        gui_text_page_hits(gfx, header->font_secondary, header->y,
-                           fullscreen ? header->y : header->value0) ||
-        (fullscreen && gui_text_page_hits(gfx, header->font_tertiary,
-                                          header->y - 2, header->value0))) {
-        GFX_setCursor(gfx, header->x, header->y);
-        DrawYmd(gfx, tm, GFX_BLACK, fullscreen, header);
-        if (fullscreen) {
-            GFX_setCursor(gfx, header->x, header->value0);
-            gui_set_font(gfx, (gui_font_id_t)header->font_tertiary);
-            GFX_puts(gfx, "星期");
-            GFX_puts(gfx, LUNAR_WeekdayName(tm->tm_wday));
-            GFX_setCursor(gfx, header->value1, header->value0);
-            gui_print_lunar_md(gfx, Lunar);
-
-            DrawVoltage(gfx, header->x + header->w, header->y - 11, data->voltage_mv,
-                        (gui_font_id_t)header->font_tertiary);
-            char ssid[5] = {0};
-            int16_t sw = GFX_getUTF8Width(gfx, "25℃[1234]");
-            clock_ssid_tail4(ssid, sizeof(ssid), data->ssid);
-            GFX_setCursor(gfx, header->x + header->w - sw - 2, header->value0);
-            gui_set_font(gfx, (gui_font_id_t)header->font_tertiary);
-            gui_print_int(gfx, data->temperature, 1U);
-            GFX_puts(gfx, "℃[");
-            GFX_puts(gfx, ssid);
-            GFX_puts(gfx, "]");
-        } else {
-            gui_set_font(gfx, (gui_font_id_t)header->font_secondary);
-            GFX_setCursor(gfx, header->x, header->value0);
-            gui_print_lunar_md(gfx, Lunar);
-
-            /* Keep the existing numeric/unit font widths and alignment. */
-            gui_set_font(gfx, (gui_font_id_t)header->font_primary);
-            int8_t temp = data->temperature;
-            int16_t digit_width = GFX_getUTF8Width(gfx, "0");
-            int16_t temp_num_width = digit_width;
-            if (temp < 0) {
-                temp_num_width += GFX_getUTF8Width(gfx, "-");
-                temp = -temp;
-            }
-            if (temp >= 10) temp_num_width += digit_width;
-            if (temp >= 100) temp_num_width += digit_width;
-            gui_set_font(gfx, (gui_font_id_t)header->font_secondary);
-            int16_t total_temp_width = temp_num_width + GFX_getUTF8Width(gfx, "℃");
-            gui_set_font(gfx, (gui_font_id_t)header->font_primary);
-            GFX_setCursor(gfx, header->value1 - total_temp_width, header->value0);
-            gui_print_int(gfx, data->temperature, 1U);
-            gui_set_font(gfx, (gui_font_id_t)header->font_secondary);
-            GFX_puts(gfx, "℃");
-        }
-    }
-
-    GFX_drawFastHLine(gfx, top_line->x, top_line->y, top_line->w, GFX_BLACK);
-    clock_refresh_geom_t geom = gui_clock_geom(data);
-    DrawTimeFromGeom(gfx, tm, &geom);
-    GFX_drawFastHLine(gfx, bottom_line->x, bottom_line->y, bottom_line->w, GFX_BLACK);
-
-    if (!gui_text_page_hits(gfx, bottom->font_primary, bottom->y, bottom->value0)) return;
-    gui_set_font(gfx, (gui_font_id_t)bottom->font_primary);
-    GFX_setTextColor(gfx, GFX_BLACK, GFX_WHITE);
-    GFX_setCursor(gfx, bottom->x, bottom->y);
-    gui_print_lunar_year(gfx, Lunar);
-    if (fullscreen) GFX_puts(gfx, LUNAR_ZodiacName(LUNAR_GetZodiac(Lunar)));
-    GFX_puts(gfx, "年");
-
-    GFX_setCursor(gfx, bottom->x, bottom->value0);
-    if (fullscreen) GFX_puts(gfx, " ");
-    gui_print_int(gfx, GetWeekOfYear(tm->tm_year, tm->tm_mon, tm->tm_mday, tm->tm_wday), 1U);
-    GFX_puts(gfx, "周");
-
-    DrawJieqiRight(gfx, tm, fullscreen ? bottom->value1 : bottom->x + bottom->w,
-                   bottom->y, bottom->value0, GFX_BLACK, GFX_BLACK,
-                   (gui_font_id_t)bottom->font_primary);
-}
-
-// 绘制完整的分屏界面，包含时钟和日历(用于初始的全屏刷新)
-/**
- * @brief 绘制分屏时钟+日历（MODE_CLOCK_CALENDAR，首次全刷）
- *
- * @param gfx    图形上下文
- * @param tm     公历时间
- * @param Lunar  农历日期
- * @param data   GUI 数据
- *
- * 左 0–392：时钟（之后可局刷）；右 392–800：月历；中间分隔线。
- */
-static void DrawClockCalendar_Full(Adafruit_GFX* gfx, const tm_t* tm, const struct Lunar_Date* Lunar,
-                                   const gui_data_t* data) {
-    const ui_component_t *top = ui_resource_component(UI_COMP_SPLIT_FRAME_TOP);
-    const ui_component_t *bottom = ui_resource_component(UI_COMP_SPLIT_FRAME_BOTTOM);
-    if (!top || !bottom) return;
-    const ui_component_t *separator = ui_resource_component(UI_COMP_SPLIT_SEPARATOR);
-    GFX_fillRect(gfx, top->x, top->y, top->w, top->h, GFX_BLACK);
-    int16_t frame_x = data->mode == MODE_TODO_CALENDAR && separator ? separator->x : bottom->x;
-    GFX_fillRect(gfx, frame_x, bottom->y, bottom->x + bottom->w - frame_x, bottom->h, GFX_BLACK);
-
-    // 在右侧绘制日历
-    DrawCalendar_Right(gfx, tm, Lunar, data);
-
-    // 在左侧绘制时钟
-    if (data->mode == MODE_TODO_CALENDAR) DrawTodo(gfx, data);
-    else DrawClock(gfx, tm, Lunar, data);
-}
+#include "ui_render.h"
 
 /* An application-only update may leave the external UI package absent.
  * Use a tiny built-in message so the panel does not refresh to blank white.
@@ -1278,15 +668,16 @@ static void DrawMissingResources(Adafruit_GFX* gfx, const gui_data_t* data) {
  * 支持黑白/三色/四色；使用静态缓冲分页，入口仅可串行调用。
  */
 void DrawGUI(gui_data_t* data, buffer_callback callback, void* callback_data) {
-    s_todo_render_valid = true;
-    const bool todo_mode = data->mode == MODE_TODO || data->mode == MODE_TODO_CALENDAR;
+    s_render_valid = true;
+    resource_store_render_begin();
     // 验证一周起始日参数
     if (data->week_start > 6) data->week_start = 0;
 
     tm_t tm = {0};
     struct Lunar_Date Lunar = {0};
 
-    bool layout_ready = ui_resources_init();
+    bool layout_ready = ui_resources_retry_init();
+    if (layout_ready) (void)calendar_resources_retry_init();
 
     // 将UNIX时间戳转换为tm结构
     transformTime(data->timestamp, &tm);
@@ -1304,7 +695,7 @@ void DrawGUI(gui_data_t* data, buffer_callback callback, void* callback_data) {
 #endif
     else
         GFX_begin(gfx, GUI_WIDTH(data), GUI_HEIGHT(data), ph);  // 黑白屏幕
-    gfx->u8g2.font_stop_after_io = todo_mode;
+    gfx->u8g2.font_stop_after_io = true;
 
     if (layout_ready)
         LUNAR_SolarToLunar(&Lunar, tm.tm_year + YEAR0, tm.tm_mon + 1, tm.tm_mday);
@@ -1320,38 +711,19 @@ void DrawGUI(gui_data_t* data, buffer_callback callback, void* callback_data) {
         if (!layout_ready) {
             DrawMissingResources(gfx, data);
         } else {
-            switch (data->mode) {
-                case MODE_CALENDAR:
-                    DrawCalendar(gfx, &tm, &Lunar, data);  // 全屏日历
-                    break;
-                case MODE_CLOCK:
-                    DrawClock(gfx, &tm, &Lunar, data);  // 全屏时钟
-                    break;
-                case MODE_TODO:
-                    DrawTodo(gfx, data);
-                    break;
-                case MODE_CLOCK_CALENDAR:
-                case MODE_TODO_CALENDAR:
-                    DrawClockCalendar_Full(gfx, &tm, &Lunar, data);  // 分屏模式
-                    break;
-                default:
-                    break;
-            }
+            DrawResourceScene(gfx,&tm,&Lunar,data);
         }
-        // 如果是2025年1月且未同步时间，显示同步提示
-        if (layout_ready && (data->mode == MODE_CALENDAR || data->mode == MODE_CLOCK) &&
-            (tm.tm_year + YEAR0 == 2025 && tm.tm_mon + 1 == 1)) {
-            DrawTimeSyncTip(gfx, data);
-        }
-        /* Do not write a known invalid TODO page or render the remaining
+        /* Do not write a known invalid page or render the remaining
          * pages. GFX_begin clears this frame's I/O latch on the next attempt. */
-        if (todo_mode && (!s_todo_render_valid || gfx->u8g2.font_frame_io_error)) break;
+        if (!resource_store_render_valid() || gfx->u8g2.font_frame_io_error)
+            s_render_valid = false;
+        if (!s_render_valid) break;
     } while (GFX_nextPage(gfx, callback, callback_data));  // 分页绘制
 
     /* Later glyphs and font switches may recover their local read state,
      * while an earlier page already contains placeholders from failed I/O.
-     * Keep that frame out of the TODO scheduling snapshot so main retries. */
-    if (gfx->u8g2.font_frame_io_error) s_todo_render_valid = false;
+     * Do not allow any mode to commit that frame or advance its baseline. */
+    if (gfx->u8g2.font_frame_io_error) s_render_valid = false;
     GFX_end(gfx);
 }
 
@@ -1365,9 +737,13 @@ void DrawGUI(gui_data_t* data, buffer_callback callback, void* callback_data) {
  * 只画时间区；配合 GFX_setWindow 可缩到单个数字；黑白局刷，减少刷新面积。
  */
 void DrawGUI_ClockOnly(const gui_data_t* data, buffer_callback callback, void* callback_data) {
+    s_render_valid = false;
+    resource_store_render_begin();
+    if (!ui_resources_retry_init()) return;
     tm_t tm = {0};
     clock_refresh_geom_t geom = gui_clock_geom(data);
     if (geom.canvas_w == 0U || geom.canvas_h == 0U) return;
+    s_render_valid = true;
     if (s_time_window_w == 0U || s_time_window_h == 0U) {
         s_time_window_x = s_time_window_y = 0U;
         s_time_window_w = geom.canvas_w;
@@ -1379,16 +755,24 @@ void DrawGUI_ClockOnly(const gui_data_t* data, buffer_callback callback, void* c
     Adafruit_GFX *gfx = &m_gui_gfx;
     /* 页高 0：GFX_begin 使用静态页缓冲 */
     GFX_begin(gfx, geom.canvas_w, geom.canvas_h, 0);
+    gfx->u8g2.font_stop_after_io = true;
     GFX_setWindow(gfx, s_time_window_x, s_time_window_y, s_time_window_w, s_time_window_h);
 
     GFX_firstPage(gfx);
     do {
         GFX_fillScreen(gfx, GFX_WHITE);
-        DrawTime(gfx, &tm,
-                 (int16_t)clock_hhmm_local_x_gap(geom.canvas_w, geom.cS, geom.nD,
-                                                 geom.span_gap),
-                 (int16_t)clock_hhmm_local_y(geom.canvas_h, geom.cS),
-                 geom.cS, geom.nD);
+        const ui_component_t *clock = ui_resource_component(
+            data->mode == MODE_CLOCK ? UI_COMP_CLOCK_TIME : UI_COMP_SPLIT_TIME);
+        int16_t style[UI_MAX_PARAMS];
+        if (!ui_resource_params(clock, style)) {
+            s_render_valid = false;
+            break;
+        }
+        DrawClockFace(gfx, &tm, clock, style, true);
+        if (!resource_store_render_valid() || gfx->u8g2.font_frame_io_error) {
+            s_render_valid = false;
+            break;
+        }
     } while (GFX_nextPage(gfx, callback, callback_data));
 
     GFX_end(gfx);
@@ -1398,17 +782,20 @@ void DrawGUI_ClockOnly(const gui_data_t* data, buffer_callback callback, void* c
 void GetTimeRefreshAreaFromLocal(const gui_data_t *data,
                                  uint16_t lx, uint16_t ly, uint16_t lw, uint16_t lh,
                                  uint16_t *x, uint16_t *y, uint16_t *w, uint16_t *h) {
-    clock_refresh_geom_t geom = gui_clock_geom(data);
-
     s_time_window_x = lx;
     s_time_window_y = ly;
     s_time_window_w = lw;
     s_time_window_h = lh;
 
+    /* Strip rendering only sets the window; it does not need a second
+     * external geometry read before DrawGUI_ClockOnly validates its own. */
+    if (!x && !y && !w && !h) return;
+    clock_refresh_geom_t geom = gui_clock_geom(data);
+    bool valid = geom.canvas_w != 0U && geom.canvas_h != 0U;
     if (x) *x = (uint16_t)(geom.origin_x + lx);
     if (y) *y = (uint16_t)(geom.origin_y + ly);
-    if (w) *w = lw;
-    if (h) *h = lh;
+    if (w) *w = valid ? lw : 0U;
+    if (h) *h = valid ? lh : 0U;
 }
 
 /* 屏幕坐标 HH:MM（或个位）窗，并记下 DrawGUI_ClockOnly 用的局部窗口。 */

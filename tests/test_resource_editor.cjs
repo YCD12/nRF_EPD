@@ -33,7 +33,7 @@ async function fixture(options = {}) {
   };
   const document = { getElementById: node, querySelectorAll: () => [], visibilityState: 'visible',
     addEventListener(type, listener) { events.set('document:' + type, listener); } };
-  const context = { Uint8Array, TextEncoder, EPDResourceBuilder: builder, EPDResourcePack: packer,
+  const context = { Uint8Array, TextEncoder, EPDUIModel: require('../html/js/ui_tools/ui_model.js'), EPDUIRenderer: require('../html/js/ui_tools/ui_preview.js'), EPDResourceBuilder: builder, EPDResourcePack: packer,
     EPDResourceProject: project, EPDResourceDraft: { create: () => draft },
     EPDWebFonts: { extendFonts: options.extendFonts }, ExternalResourceInstaller: installer, document,
     setTimeout(callback) { const id = ++sequence; timers.set(id, callback); return id; },

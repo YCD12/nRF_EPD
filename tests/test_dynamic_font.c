@@ -53,16 +53,10 @@ rs_result_t resource_store_find(uint16_t id, rs_partition_t *partition)
                                  RS_OFFSET_FONTS, RS_SIZE_FONTS};
     return RS_OK;
 }
-rs_result_t resource_store_info(uint16_t id, rs_package_info_t *package)
+rs_result_t resource_store_open_info(uint16_t id, rs_package_info_t *package)
 {
     if (id != RS_PART_FONTS) return RS_NOT_FOUND;
     *package = (rs_package_info_t){font_revision, font_pack_length, 0U};
-    return RS_OK;
-}
-rs_result_t resource_store_open(uint16_t id, uint32_t *length)
-{
-    if (id != RS_PART_FONTS) return RS_NOT_FOUND;
-    *length = font_pack_length;
     return RS_OK;
 }
 rs_result_t resource_store_read(uint16_t id, uint32_t offset,

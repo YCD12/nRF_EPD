@@ -23,7 +23,7 @@ source, count = re.subn(
 )
 assert count == 1, "Reference must disable exactly one page predicate"
 exports = ("DrawGUI", "DrawGUI_ClockOnly", "GetTimeRefreshArea", "GetTimeRefreshAreaFromLocal",
-           "GUI_TodoRenderValid")
+           "GUI_TodoRenderValid", "GUI_RenderValid")
 reference = OUT / "GUI_unculled.c"
 reference.write_text("".join(f"#define {name} {name}_Unclipped\n" for name in exports) + source,
                      encoding="utf-8")

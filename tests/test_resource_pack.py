@@ -2,6 +2,7 @@ import base64
 import copy
 import importlib.util
 import json
+import re
 from pathlib import Path
 import struct
 import subprocess
@@ -17,6 +18,29 @@ spec.loader.exec_module(pack)
 
 
 class ResourcePackTests(unittest.TestCase):
+    def test_firmware_range_dictionary_preserves_schema(self):
+        schema = json.loads((ROOT / 'resources/ui-schema.json').read_text(encoding='utf-8'))
+        expected = [(field[1], field[2]) for fields in schema['styles'].values() for field in fields]
+        header = (ROOT / 'GUI/ui_schema.h').read_text(encoding='utf-8')
+        indices = [int(n) for n in re.findall(r'\d+', re.search(
+            r'ui_style_bound_index\[\] = \{([^;]+)\};', header).group(1))]
+        values = [int(n) for n in re.findall(r'-?\d+', re.search(
+            r'ui_style_bounds\[\]\[2\] = \{([^;]+)\};', header).group(1))]
+        ranges = list(zip(values[::2], values[1::2]))
+        self.assertTrue(all(0 <= index < len(ranges) and index < 256 for index in indices))
+        self.assertEqual([ranges[index] for index in indices], expected)
+
+    def test_ui_text_rejects_unsupported_unicode_and_broken_templates(self):
+        for text in ('bad\x7f', 'bad\u200b', '\U0001f600', '{year', 'year}', '{}', '{unknown}'):
+            with self.subTest(text=repr(text)), tempfile.TemporaryDirectory() as directory:
+                model = json.loads((ROOT / 'resources/ui-layout.json').read_text(encoding='utf-8'))
+                label = next(c for c in model['components'] if c['kind'] == 1)
+                label['text'] = [text]
+                source = Path(directory) / 'layout.json'
+                source.write_text(json.dumps(model), encoding='utf-8')
+                with self.assertRaises(ValueError):
+                    pack.ui_payload(source)
+
     def test_canonical_layout_and_generated_files(self):
         layout = pack.load_layout()
         pack.generate(layout, check=True)
@@ -120,17 +144,30 @@ class ResourcePackTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'calculation tables'):
                 pack.calendar_payload(ROOT / 'tools/dist', path)
 
-    def test_ui_payload_is_bounded_fixed_component_schema(self):
+    def test_ui_payload_is_bounded_versioned_component_schema(self):
         payload, records = pack.ui_payload()
         self.assertEqual(struct.unpack_from('<I6H', payload),
-                         (0x31524955, 1, 19, 800, 480, 20, 0))
-        self.assertEqual(len(payload), 16 + 19 * 20)
-        self.assertEqual([r['id'] for r in records], list(range(1, 20)))
+                         (0x32524955, 2, 46, 800, 480, 32, 0))
+        self.assertGreater(len(payload), 16 + 46 * 32)
+        self.assertEqual([r['id'] for r in records], list(range(1, 47)))
+        tail=16+len(records)*32
         for i, record in enumerate(records):
-            raw = struct.unpack_from('<8B6h', payload, 16 + i * 20)
+            raw = struct.unpack_from('<8B6h4BHBBHH', payload, 16 + i * 32)
             self.assertEqual(raw[1], record['id'])
             self.assertGreater(raw[10], 0)
             self.assertGreater(raw[11], 0)
+            self.assertEqual(raw[18],tail)
+            self.assertEqual(raw[21],tail+raw[19]*2)
+            tail=raw[21]+raw[22]
+        self.assertEqual(tail,len(payload))
+        with tempfile.TemporaryDirectory() as directory:
+            result = subprocess.run([sys.executable, str(ROOT / 'tools/resource_pack.py'),
+                                     '--ui', '--output', directory], capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            image = (Path(directory) / 'ui.ers').read_bytes()
+            metadata = json.loads((Path(directory) / 'ui.json').read_text(encoding='utf-8'))
+            self.assertEqual(metadata['revision'], struct.unpack_from('<I', image, 8)[0])
+            self.assertEqual(image[32:32 + len(payload)], payload)
 
     def test_single_record_payload_and_legacy_validation(self):
         config, annotations = pack.default_record_data()

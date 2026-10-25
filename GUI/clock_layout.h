@@ -101,7 +101,7 @@ static inline uint16_t clock_minute_ones_local_x(uint16_t hhmm_x, uint16_t cS, u
 #define CLOCK_REFRESH_JUMP_MAX_S 600U /* 超过则不当成「只变分」 */
 #define CLOCK_REFRESH_MARGIN_Y 2
 #define CLOCK_REFRESH_WINDOWS_MAX 2
-#define CLOCK_OLD_WINDOW_STRIDE_MAX (CLOCK_TIME_WIDTH / 8U)
+#define CLOCK_OLD_WINDOW_STRIDE_MAX ((CLOCK_TIME_WIDTH + 2U * TIME_CS + 7U) / 8U)
 #define CLOCK_OLD_WINDOW_STORE_H 128U
 #define CLOCK_OLD_WINDOW_BYTES (CLOCK_OLD_WINDOW_STRIDE_MAX * CLOCK_OLD_WINDOW_STORE_H)
 
@@ -115,45 +115,29 @@ typedef struct {
 /* 仅分钟个位变化（可缩到单数字窗）。 */
 static inline bool clock_only_minute_ones_changed(uint32_t prev_ts, uint32_t curr_ts)
 {
-    uint32_t prev_minutes;
-    uint32_t curr_minutes;
-    uint8_t prev_hour;
-    uint8_t prev_min;
-    uint8_t curr_hour;
-    uint8_t curr_min;
-
     if (prev_ts == 0U || curr_ts <= prev_ts ||
         (curr_ts - prev_ts) > CLOCK_REFRESH_JUMP_MAX_S) {
         return false;
     }
 
-    prev_minutes = (prev_ts / 60U) % (24U * 60U);
-    curr_minutes = (curr_ts / 60U) % (24U * 60U);
-    prev_hour = (uint8_t)(prev_minutes / 60U);
-    prev_min = (uint8_t)(prev_minutes % 60U);
-    curr_hour = (uint8_t)(curr_minutes / 60U);
-    curr_min = (uint8_t)(curr_minutes % 60U);
-    return (prev_hour / 10U) == (curr_hour / 10U) &&
-           (prev_hour % 10U) == (curr_hour % 10U) &&
-           (prev_min / 10U) == (curr_min / 10U) &&
-           (prev_min % 10U) != (curr_min % 10U);
+    /* Within the allowed forward jump, equal absolute ten-minute buckets
+     * mean the hour and minute tens are unchanged, including at midnight. */
+    uint32_t prev_minutes = prev_ts / 60U;
+    uint32_t curr_minutes = curr_ts / 60U;
+    return prev_minutes / 10U == curr_minutes / 10U && prev_minutes != curr_minutes;
 }
 
 /* 同时分变、小时不变（可缩到 MM）。 */
 static inline bool clock_only_minutes_changed(uint32_t prev_ts, uint32_t curr_ts)
 {
-    uint32_t prev_minutes;
-    uint32_t curr_minutes;
-
     if (prev_ts == 0U || curr_ts <= prev_ts ||
         (curr_ts - prev_ts) > CLOCK_REFRESH_JUMP_MAX_S) {
         return false;
     }
 
-    prev_minutes = (prev_ts / 60U) % (24U * 60U);
-    curr_minutes = (curr_ts / 60U) % (24U * 60U);
-    return (prev_minutes / 60U) == (curr_minutes / 60U) &&
-           (prev_minutes % 60U) != (curr_minutes % 60U);
+    uint32_t prev_minutes = prev_ts / 60U;
+    uint32_t curr_minutes = curr_ts / 60U;
+    return prev_minutes / 60U == curr_minutes / 60U && prev_minutes != curr_minutes;
 }
 
 static inline uint16_t clock_digit_draw_width(uint16_t cS)
@@ -246,7 +230,11 @@ typedef struct {
     uint16_t canvas_h;
     uint16_t cS;
     uint16_t nD;
-    uint8_t span_gap; /* split legacy centering=4, full draw width=6 */
+    uint8_t span_gap; /* legacy geometry */
+    bool resource_geometry;
+    bool partial_allowed;
+    bool partial_sync_overlay;
+    uint16_t face_x,face_y,face_w,face_h,digit_step,digit_w,minute_x;
 } clock_refresh_geom_t;
 
 /*
@@ -257,7 +245,7 @@ static inline clock_refresh_geom_t clock_refresh_geom(bool fullscreen,
                                                       uint16_t screen_w,
                                                       uint16_t screen_h)
 {
-    clock_refresh_geom_t g;
+    clock_refresh_geom_t g = {0};
 
     g.nD = TIME_ND;
     if (!fullscreen) {
@@ -307,6 +295,14 @@ static inline clock_refresh_window_t clock_refresh_local_window(const clock_refr
     }
     win = clock_hhmm_window_local_gap(g->canvas_w, g->canvas_h, g->cS, g->nD,
                                       g->span_gap);
+    if(g->resource_geometry) {
+        win.x=g->face_x;win.y=g->face_y;win.w=g->face_w;win.h=g->face_h;
+        if(clock_only_minute_ones_changed(prev_ts,curr_ts)) {
+            win.x+=g->minute_x+g->digit_step;win.w=g->digit_w;
+        }
+        clock_align_window_x(&win.x,&win.w,g->canvas_w);
+        return win;
+    }
     if (clock_only_minute_ones_changed(prev_ts, curr_ts)) {
         win.x = clock_minute_ones_local_x(win.x, g->cS, g->nD);
         win.w = clock_digit_single_width(g->cS);
@@ -341,6 +337,24 @@ static inline uint8_t clock_refresh_local_windows(const clock_refresh_geom_t *g,
         return 0U;
     }
 
+    if(g->resource_geometry) {
+        base.x=g->face_x;base.y=g->face_y;base.w=g->face_w;base.h=g->face_h;
+        if(clock_only_minute_ones_changed(prev_ts,curr_ts)) {
+            base.x+=g->minute_x+g->digit_step;base.w=g->digit_w;
+        } else if(clock_only_minutes_changed(prev_ts,curr_ts)) {
+            base.x+=g->minute_x;base.w=g->digit_step+g->digit_w;
+        }
+        clock_align_window_x(&base.x,&base.w,g->canvas_w);
+        if(clock_refresh_window_fits_old(&base)) {out[0]=base;return 1;}
+        if(clock_only_minutes_changed(prev_ts,curr_ts) && max>=2) {
+            for(uint8_t n=0;n<2;n++) {
+                out[n]=base;out[n].x=g->face_x+g->minute_x+n*g->digit_step;out[n].w=g->digit_w;
+                clock_align_window_x(&out[n].x,&out[n].w,g->canvas_w);
+            }
+            return clock_refresh_window_fits_old(&out[0]) && clock_refresh_window_fits_old(&out[1])?2:0;
+        }
+        out[0]=base;return 1;
+    }
     base = clock_hhmm_window_local_gap(g->canvas_w, g->canvas_h, g->cS, g->nD,
                                        g->span_gap);
     hhmm_x = base.x;

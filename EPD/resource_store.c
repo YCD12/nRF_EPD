@@ -5,6 +5,7 @@
 
 /* Only metadata is cached; payloads remain on SPI Flash. */
 static uint16_t m_count;
+static bool m_render_valid = true;
 static struct {
     rs_partition_t partition;
     uint32_t length;
@@ -32,9 +33,26 @@ void resource_put_u32(uint8_t *p, uint32_t v)
     for (unsigned i = 0; i < 4U; ++i) p[i] = (uint8_t)(v >> (8U * i));
 }
 
+void resource_store_render_begin(void)
+{
+    m_render_valid = true;
+    /* A failed STATUS/config mount clears the table while consumers may still
+     * cache their validated metadata. Retry once per frame, never per glyph.
+     * Mount still rejects invalid tables and active updates, so an old mapping
+     * cannot survive table replacement or a maintenance transaction. */
+    if (!m_count || m_update.active) (void)resource_store_mount();
+}
+bool resource_store_render_valid(void) { return m_render_valid; }
+
+static rs_result_t render_error(rs_result_t result)
+{
+    m_render_valid = false;
+    return result;
+}
+
 static rs_result_t read_flash(uint32_t address, void *data, size_t length)
 {
-    return fm25q04b_read(address, data, length) == NRF_SUCCESS ? RS_OK : RS_IO;
+    return fm25q04b_read(address, data, length) == NRF_SUCCESS ? RS_OK : render_error(RS_IO);
 }
 
 static rs_result_t entry_read(unsigned index, rs_partition_t *p)
@@ -110,11 +128,12 @@ rs_result_t resource_store_mount(void)
 {
     uint8_t b[RS_HEADER_SIZE];
     rs_partition_t table = {1, 1, RS_ABI, 0, 0, RS_SECTOR_SIZE};
-    if (m_update.active) return RS_BUSY;
+    if (m_update.active) return render_error(RS_BUSY);
     m_count = 0;
     m_read_cache.valid = false;
     rs_result_t r = header_read(&table, b);
     if (r == RS_OK) r = resource_crc32_flash(RS_HEADER_SIZE, resource_get_u32(b + 12), resource_get_u32(b + 16));
+    if (r == RS_IO) render_error(r);
     if (r == RS_OK) r = table_validate(resource_get_u32(b + 12));
     if (r == RS_OK) m_count = resource_get_u32(b + 12) / RS_ENTRY_SIZE;
     return r;
@@ -130,22 +149,26 @@ rs_result_t resource_store_find(uint16_t id, rs_partition_t *p)
     return RS_NOT_FOUND;
 }
 
-rs_result_t resource_store_open(uint16_t id, uint32_t *length)
+static rs_result_t package_info(uint16_t id, rs_package_info_t *info, bool verify)
 {
     rs_partition_t p;
     uint8_t header[RS_HEADER_SIZE];
-    if (!length) return RS_INVALID;
-    *length = 0;
+    if (!info) return RS_INVALID;
+    memset(info, 0, sizeof(*info));
     /* Never retain a previously verified view when this validation fails. */
-    m_read_cache.valid = false;
-    if (m_update.active == id) return RS_BUSY;
+    if (verify) m_read_cache.valid = false;
+    if (m_update.active == id) return render_error(RS_BUSY);
     rs_result_t r = package_header(id, &p, header);
     if (r == RS_OK) {
         uint32_t payload_length = resource_get_u32(header + 12);
-        r = resource_crc32_flash(p.offset + RS_HEADER_SIZE, payload_length, resource_get_u32(header + 16));
+        if (verify)
+            r = resource_crc32_flash(p.offset + RS_HEADER_SIZE, payload_length, resource_get_u32(header + 16));
+        if (r == RS_IO) render_error(r);
         if (r == RS_OK) {
-            cache_package(id, &p, payload_length);
-            *length = payload_length;
+            if (verify) cache_package(id, &p, payload_length);
+            info->revision = resource_get_u32(header + 8);
+            info->length = payload_length;
+            info->crc32 = resource_get_u32(header + 16);
         }
     }
     return r;
@@ -153,17 +176,20 @@ rs_result_t resource_store_open(uint16_t id, uint32_t *length)
 
 rs_result_t resource_store_info(uint16_t id, rs_package_info_t *info)
 {
-    rs_partition_t p;
-    uint8_t b[RS_HEADER_SIZE];
-    if (!info) return RS_INVALID;
-    memset(info, 0, sizeof(*info));
-    if (m_update.active == id) return RS_BUSY;
-    rs_result_t r = package_header(id, &p, b);
-    if (r == RS_OK) {
-        info->revision = resource_get_u32(b + 8);
-        info->length = resource_get_u32(b + 12);
-        info->crc32 = resource_get_u32(b + 16);
-    }
+    return package_info(id, info, false);
+}
+
+rs_result_t resource_store_open_info(uint16_t id, rs_package_info_t *info)
+{
+    return package_info(id, info, true);
+}
+
+rs_result_t resource_store_open(uint16_t id, uint32_t *length)
+{
+    rs_package_info_t info;
+    if (!length) return RS_INVALID;
+    rs_result_t r = resource_store_open_info(id, &info);
+    *length = info.length;
     return r;
 }
 
@@ -171,17 +197,17 @@ rs_result_t resource_store_read(uint16_t id, uint32_t offset, void *data, size_t
 {
     rs_partition_t p;
     uint8_t b[RS_HEADER_SIZE];
-    if ((!data && length) || m_update.active == id) return RS_INVALID;
+    if ((!data && length) || m_update.active == id) return render_error(RS_INVALID);
     if (m_read_cache.valid && m_read_cache.id == id) {
         if (offset > m_read_cache.length || length > m_read_cache.length - offset)
-            return RS_INVALID;
+            return render_error(RS_INVALID);
         return read_flash(m_read_cache.partition.offset + RS_HEADER_SIZE + offset,
                           data, length);
     }
     rs_result_t r = package_header(id, &p, b);
-    if (r != RS_OK) return r;
+    if (r != RS_OK) return render_error(r);
     uint32_t n = resource_get_u32(b + 12);
-    if (offset > n || length > n - offset) return RS_INVALID;
+    if (offset > n || length > n - offset) return render_error(RS_INVALID);
     /* Cache only validated metadata. Consumers must still open (full CRC)
      * once before using a package; a cache hit never bypasses open(). */
     cache_package(id, &p, n);
@@ -192,6 +218,27 @@ static rs_result_t fail_io(void)
 {
     m_update.failed = true;
     return RS_IO;
+}
+
+rs_result_t resource_store_erase(uint16_t id, uint32_t offset)
+{
+    uint32_t address = 0U, size = id ? RS_SECTOR_SIZE : RS_CAPACITY;
+    if (m_update.active) return RS_BUSY;
+    if (id > RS_PART_PARTITION_TABLE) {
+        rs_partition_t p;
+        rs_result_t r = resource_store_mount();
+        if (r == RS_OK) r = resource_store_find(id, &p);
+        if (r != RS_OK) return r;
+        address = p.offset;
+        size = p.size;
+    }
+    if (offset % RS_SECTOR_SIZE || offset >= size) return RS_INVALID;
+    m_read_cache.valid = false;
+    if (id <= RS_PART_PARTITION_TABLE) m_count = 0U;
+    address += offset;
+    if (fm25q04b_erase_sector(address) != NRF_SUCCESS) return RS_IO;
+    /* CRC32 of 4096 erased (0xFF) bytes; verification also feeds the watchdog. */
+    return resource_crc32_flash(address, RS_SECTOR_SIZE, 0xF154670AUL);
 }
 
 rs_result_t resource_store_begin(uint16_t id, uint32_t length, uint32_t crc, uint32_t revision)

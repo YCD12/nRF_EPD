@@ -28,6 +28,10 @@ run test_resource_store -Itests/font_transfer_stubs -I. -IEPD \
     -ISDK/17.1.0_ddde560/components/libraries/util \
     -ISDK/17.1.0_ddde560/components/softdevice/s112/headers \
     EPD/resource_store.c EPD/resource_crc.c EPD/resource_crc_flash.c EPD/persistent_record.c EPD/resource_protocol.c EPD/resource_transfer.c tests/test_resource_store.c
+run test_resource_erase -Itests/font_transfer_stubs -I. -IEPD \
+    -ISDK/17.1.0_ddde560/components/libraries/util \
+    -ISDK/17.1.0_ddde560/components/softdevice/s112/headers \
+    EPD/resource_store.c EPD/resource_crc.c EPD/resource_crc_flash.c EPD/persistent_record.c EPD/resource_protocol.c EPD/resource_transfer.c tests/test_resource_erase.c
 run test_advertising -DSVCALL_AS_NORMAL_FUNCTION -DS112 \
     -Itests/advertising_stubs -Itests/storage_stubs -IEPD \
     -ISDK/17.1.0_ddde560/components/softdevice/s112/headers \
@@ -67,7 +71,7 @@ run test_external_font_sources -I. -IEPD -IGUI -ISDK/17.1.0_ddde560/components/l
     -ISDK/17.1.0_ddde560/components/softdevice/s112/headers \
     -DGUI_USE_EXTERNAL_FONTS=1 -DGUI_INCLUDE_INTERNAL_FONTS=0 GUI/fonts.c GUI/font_geometry.c tests/test_external_font_sources.c
 run test_clock_layout -IGUI tests/test_clock_layout.c
-run test_todo_items -IEPD -IGUI GUI/todo_items.c GUI/font_geometry.c tests/test_todo_items.c
+run test_todo_items -IEPD -IGUI GUI/todo_items.c GUI/font_geometry.c tests/stubs/ui_resources_stub.c tests/test_todo_items.c
 run test_calendar_grid -IGUI tests/test_calendar_grid.c
 run test_clock_refresh_window -IGUI tests/test_clock_refresh_window.c
 run test_clock_text -IGUI tests/test_clock_text.c
@@ -88,13 +92,19 @@ run test_uc8179 -IEPD -Itests/stubs -Itools/test/host/shim EPD/UC8179.c tests/uc
 
 if command -v node >/dev/null 2>&1; then
     node --test tests/test_dfu_layout.cjs
+    node --test tests/test_dfu_resume.cjs
+    node --test tests/test_dfu_transport.cjs
     node --test tests/test_ble_lifecycle.cjs
+    node --test tests/test_resource_erase.cjs
     node --test tests/test_resource_web.cjs
+    node --test tests/test_resource_timing.cjs
+    node --test tests/test_site_statistics.cjs
     node --test tests/test_resource_builder.cjs
     node --test tests/test_resource_editor.cjs
     node --test tests/test_resource_draft.cjs
     node --test tests/test_resource_recovery.cjs
     node --test tests/test_ui_tools.cjs
+    node --test tests/test_ui_model.cjs
     node --test tests/test_font_builder.cjs
     node --test tests/test_font_sources.cjs
     node --test tests/test_font_sync.cjs
@@ -113,11 +123,14 @@ python3 tests/test_font_store_tool.py
 python3 tests/test_protocol_sync.py
 python3 tests/test_resource_pack.py
 python3 tools/export_web_template.py --check
+python3 tools/ui_resource_codec.py --check
 python3 tests/test_dfu_release.py
 python3 tests/test_service_lifecycle.py
+python3 tests/test_adc_voltage.py
 python3 tests/test_resources_reload.py
 python3 tests/test_dynamic_font.py
 python3 tests/test_gui_layout.py
+python3 tests/test_ui_render.py
 python3 tests/test_todo_integration.py
 python3 tests/test_todo_service_pipeline.py
 

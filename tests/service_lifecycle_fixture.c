@@ -24,6 +24,7 @@ uint32_t app_sched_event_put(void *data, uint16_t length, app_sched_event_handle
 #define NRF_LOG_ERROR(...) ((void)0)
 #define UNUSED_PARAMETER(x) ((void)(x))
 #define BLE_CONN_HANDLE_INVALID 65535U
+#define BLE_GATT_ATT_MTU_DEFAULT 23U
 #define NRF_ERROR_RESOURCES 19U
 #define NRF_ERROR_INVALID_STATE 8U
 #define EPD_IMAGE_RX_TIMEOUT_S 30U
@@ -88,6 +89,7 @@ static void EPD_RequestBusyAbort(void) { busy_abort = true; }
 static void UC8179_ClearBusyTimeout(void) {}
 static bool UC8179_HadBusyTimeout(void) { return busy_timeout; }
 static void epd_clock_refresh_invalidate(void) {}
+static void epd_display_retry_failed(void) { assert(!"unexpected refresh failure"); }
 #define epd_config_write(p) ((void)(p))
 static unsigned app_uptime_seconds(void) { return now; }
 static unsigned timestamp(void) { return 1000U + now; }
@@ -121,6 +123,7 @@ static rs_result_t epd_resources_apply(void) {
     return reload_result;
 }
 void epd_config_read(epd_config_t *cfg) { *cfg = current->config; }
+bool epd_config_read_pending(void) { return false; }
 static void calendar_annotations_store_init(void) {}
 static bool calendar_annotations_store_valid(void) { return true; }
 static bool todo_items_available = true;
@@ -135,7 +138,7 @@ static unsigned todo_font_checks;
 static uint8_t todo_items_font_slot(void) { return todo_font_slot; }
 static uint8_t todo_items_font_size(void) { return 12U; }
 static uint32_t todo_items_font_key(void) { return 123U; }
-static void todo_items_suspend_display(void) { todo_items_loaded = false; }
+static void todo_items_suspend_display(void) { todo_items_loaded = false; todo_items_invalidate(); }
 static bool GUI_TodoFontMatches(uint8_t size, uint32_t key)
 { assert(size == 12U && key == 123U); todo_font_checks++; return todo_font_matches; }
 static void epd_display_complete(ble_epd_t *p) { (void)p; }
@@ -172,6 +175,7 @@ int main(void) {
     epd_send_mtu(current); assert(strcmp(last_text, "mtu=244") == 0);
     ble_evt_t event = {.evt = {.gap_evt = {.conn_handle = 1}}};
     on_connect(current, &event);
+    assert(current->max_data_len == 20U); /* Never reuse a previous connection's MTU. */
     assert(refs == 0); /* The IRQ does no hardware work. */
     epd_connection_process(current);
     assert(refs == 1 && current->gpio_connection_ref);
@@ -204,7 +208,7 @@ int main(void) {
     ack_error = 0;
     epd_init_process(current);
     assert(init_calls == 1 && !current->init_ack_pending && ack_calls == 2);
-    assert(last_ack[0] == EPD_RSP_INIT && last_ack[1] == 42 && last_ack[2] == 0 && last_ack[3] == 244);
+    assert(last_ack[0] == EPD_RSP_INIT && last_ack[1] == 42 && last_ack[2] == 0 && last_ack[3] == 20);
     uint8_t queued[] = {0};
     assert(epd_cmd_queue_push(&current->cmd_queue, queued, sizeof(queued)));
     cmd_init(current, init, sizeof(init));
@@ -341,6 +345,12 @@ int main(void) {
     todo_font_matches = true;
     assert(epd_resource_event(current, RESOURCE_ACTIVATE, 1U << RS_PART_FONTS) == RS_OK);
     assert(todo_items_ready() && requests == before_requests + 1U && todo_font_checks == 2U);
+    /* Full-chip/table erasure invalidates the RAM list before activation can
+     * fail on the missing config. Layout-only edits keep its metadata cached. */
+    assert(epd_resource_event(current, RESOURCE_INVALIDATE, 1U << RS_PART_UI_RESOURCES) == RS_OK);
+    assert(todo_items_ready());
+    assert(epd_resource_event(current, RESOURCE_INVALIDATE, 1U << RS_PART_PARTITION_TABLE) == RS_OK);
+    assert(!todo_items_ready() && !resources_ready);
     puts("PASS: real INIT/disconnect/timeout/refresh cleanup and optional GPIO handlers");
     return 0;
 }

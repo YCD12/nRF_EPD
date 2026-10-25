@@ -9,7 +9,7 @@
   let draftEpoch = 0, draftPending = false;
   const fontSource = root.EPDFontSources?.create(), draft = root.EPDResourceDraft?.create();
   const sourceIds = ['resourceCalendarSource', 'resourceLayoutSource', 'resourceMigrationSource', 'resourceBuildRevision',
-    'resourceFontFamily', 'resourceFontTarget', 'resourceFontMode', 'resourceExtraText'];
+    'resourceFontFamily', 'resourceFontPixelSize', 'resourceFontTarget', 'resourceFontMode', 'resourceExtraText'];
   function state() {
     return JSON.stringify([draftVersion, sourceIds.map(id => $(id)?.value || ''), fontSource?.get()?.family || '',
       [0, 1, 2].map(i => {
@@ -24,6 +24,7 @@
   }
   function changed() {
     ++draftVersion; showDirty();
+    if(base) {preview();root.TodoCalendar?.renderResourcePreview?.();root.CalendarAnnotations?.renderResourcePreview?.();}
     root.ExternalResourceInstaller.controls?.();
     if ($('resourceFontPreviewInfo')) $('resourceFontPreviewInfo').textContent = '编辑内容已变化，请重新预览点阵与容量。';
     if (draft && !draftBlocked) {
@@ -65,7 +66,7 @@
     }).join('\n');
   }
   function load(bundle, checkedModel, repairedSlots = []) {
-    // This editor changes fixed CAL1/UIR1 records; it is not a device-side JSON engine.
+    // Compile the edited CAL1/UIR2 model into validated external resources.
     const validated = checkedModel ? bundle : packer.validateBundle(bundle), next = checkedModel || builder.open(validated);
     base = validated; model = next;
     $('resourceCalendarSource').value = JSON.stringify(model.calendar, null, 2);
@@ -75,6 +76,7 @@
     if (!loadingGenerated) {
       for (const id of ['resourceBuildRevision', 'resourceMigrationSource', 'resourceExtraText']) if ($(id)) $(id).value = '';
       if ($('resourceFontFamily')) $('resourceFontFamily').value = '';
+      if ($('resourceFontPixelSize')) $('resourceFontPixelSize').value = '';
       if ($('resourceFontMode')) $('resourceFontMode').value = 'supplement';
       fontSource?.clear();
       if ($('resourceFontSourceInfo')) $('resourceFontSourceInfo').textContent = '可将字体拖到这里；文件仅在浏览器内处理。';
@@ -83,7 +85,7 @@
       if ($('resourceFontPreviewSecondInfo')) $('resourceFontPreviewSecondInfo').hidden = true;
       if ($('resourceFontPreviewInfo')) $('resourceFontPreviewInfo').textContent = '资源已载入，请预览最终点阵与容量。';
     }
-    preview();
+    preview(); root.TodoCalendar?.renderResourcePreview?.(); root.CalendarAnnotations?.renderResourcePreview?.();
     report('资源已载入，可编辑后生成。新增文字的缺失字模会自动生成。');
     if (repairedSlots.length) report('资源已载入，旧字模的偏移已校正，完整点阵已保留。可编辑后生成。');
     cleanState = state(); showDirty();
@@ -102,7 +104,10 @@
     const family = $('resourceFontFamily')?.value || '';
     const selected = family === 'imported' ? fontSource?.options() : family ? { fontFamily: family } : {};
     if (family === 'imported' && !selected) throw new Error('请先导入 TTF / OTF 字体');
-    const redraw = $('resourceFontMode')?.value === 'redraw';
+    const pixelSize=Number($('resourceFontPixelSize')?.value)||0;
+    if(pixelSize && (!Number.isInteger(pixelSize)||pixelSize<8||pixelSize>43)) throw new Error('界面字体像素字号应为 8–43');
+    if(pixelSize) selected.pixelSize=pixelSize;
+    const redraw = $('resourceFontMode')?.value === 'redraw' || !!pixelSize;
     if (redraw && !family) throw new Error('重绘字体前请选择系统字体或导入 TTF / OTF');
     return { slots, rebuildSlots: redraw ? slots : [], slotOptions: slot => slots.includes(slot) ? selected : {} };
   }
@@ -272,20 +277,18 @@
     try {
       const next = editModel();
       builder.encodeUI(next.ui);
-      const canvas = $('resourceLayoutPreview'), ctx = canvas.getContext('2d');
-      ctx.clearRect(0, 0, 800, 480); ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, 800, 480);
       const mode = Number($('resourcePreviewMode').value);
-      ctx.font = '14px sans-serif';
-      next.ui.components.filter(c => c.mode === mode).forEach(c => {
-        ctx.strokeStyle = c.kind === 4 ? '#b42318' : '#6b7280';
-        ctx.fillStyle = c.kind === 4 ? '#fff1f0' : '#eef3f7';
-        ctx.fillRect(c.x, c.y, c.width, c.height); ctx.strokeRect(c.x, c.y, c.width, c.height);
-        ctx.fillStyle = '#182431';
-        if (c.height > 15) ctx.fillText(`${c.id} · ${['', '文字组', '分隔线', '月历', '时钟'][c.kind]}`, c.x + 3, c.y + 15);
-      });
+      root.EPDUIRenderer.draw($('resourceLayoutPreview'),next.ui,next.calendar,next.fonts,
+        previewRuntime(mode),root.TodoCalendar||{},root.CalendarAnnotations?.annotations||[]);
       return true;
     } catch (error) { report(error.message, true); return false; }
   }
+  function previewRuntime(mode) {
+    return {mode,timestamp:root.TodoCalendar?.previewNow?.() ?? Math.floor(Date.now()/1000),
+      temperature:root.TodoCalendar?._temperature ?? 25,voltage_mv:3100,ssid:root.bleDevice?.name||'EPD-1234',
+      week_start:Number($('weekStart')?.value)||0};
+  }
+  function previewModel() { return base ? editModel() : null; }
   async function generate() {
     return work(async () => {
       const next = editModel(), selectedBase = base;
@@ -467,7 +470,7 @@
   document.addEventListener?.('visibilitychange', () => { if (document.visibilityState === 'hidden') flushDraft(); });
   root.addEventListener?.('pagehide', flushDraft);
   root.ExternalResourceEditor = { load, loadDefault, ensureReady, preview, generate, download, downloadAll, exportProject,
-    previewFonts, importFont, saveDraft, restoreDraft, clearDraft, isDirty,
+    previewFonts, previewModel, previewRuntime, importFont, saveDraft, restoreDraft, clearDraft, isDirty,
     cancel: () => { if (cancelled) cancelled.aborted = true; }, controls, busy: () => working };
   const bundle = root.ExternalResourceInstaller.getBundle();
   if (bundle) {

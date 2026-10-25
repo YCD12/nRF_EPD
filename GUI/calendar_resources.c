@@ -18,9 +18,9 @@ static uint16_t u16(const uint8_t *p) { return p[0] | ((uint16_t)p[1] << 8); }
 
 bool calendar_resources_init(void)
 {
-    static const uint16_t sizes[CAL_SECTIONS] = {7,4,7,4,4,4,4,7,4,4,1,1,12,12,2,10};
+    static const uint8_t sizes[CAL_SECTIONS] = {7,4,7,4,4,4,4,7,4,4,1,1,12,12,2,10};
     /* Zero denotes a variable-length section, validated against its metadata. */
-    static const uint16_t counts[CAL_SECTIONS] = {13,2,31,7,12,10,12,24,0,0,0,24,0,0,0,5};
+    static const uint8_t counts[CAL_SECTIONS] = {13,2,31,7,12,10,12,24,0,0,0,24,0,0,0,5};
     uint8_t header[CAL_HEADER_SIZE];
     uint32_t length;
     if (m_attempted) return m_ready;
@@ -71,6 +71,11 @@ bool calendar_resources_init(void)
 }
 
 bool calendar_resources_ready(void) { return calendar_resources_init(); }
+bool calendar_resources_retry_init(void)
+{
+    m_attempted = m_ready;
+    return calendar_resources_init();
+}
 uint16_t calendar_resources_year_min(void) { return calendar_resources_init() ? m_year_min : 0U; }
 uint16_t calendar_resources_year_max(void) { return calendar_resources_init() ? m_year_max : 0U; }
 uint16_t calendar_resources_holiday_year(void) { return calendar_resources_init() ? m_holiday_year : 0U; }

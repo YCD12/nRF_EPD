@@ -458,9 +458,22 @@ void EPD_LED_BLINK(void) {
  * - 输入: VDD的1/3分压
  * - 参考电压: VBG(1.2V)
  */
+/* Also used before app_timer is initialized at boot. Bound the wait with a
+ * microsecond delay rather than depending on an RTC that may not be running. */
+static bool epd_adc_wait(volatile uint32_t *event) {
+    for (uint32_t remaining = 5000U; remaining != 0U; --remaining) {
+        if (*event) return true;
+        nrf_delay_us(1);
+    }
+    return *event != 0U;
+}
+
 uint16_t EPD_ReadVoltage(void) {
+    /* SAADC and its EasyDMA buffer belong exclusively to main context. */
+    if (__get_IPSR() != 0U) return 0U;
     // 使用SAADC
     volatile int16_t value = 0;
+    bool sampled = false;
     // 设置10位分辨率
     NRF_SAADC->RESOLUTION = SAADC_RESOLUTION_VAL_10bit;
     // 使能SAADC
@@ -477,17 +490,21 @@ uint16_t EPD_ReadVoltage(void) {
     NRF_SAADC->CH[0].PSELP = SAADC_CH_PSELP_PSELP_VDD;  // 正端连接VDD
     NRF_SAADC->RESULT.PTR = (uint32_t)&value;  // 结果存储地址
     NRF_SAADC->RESULT.MAXCNT = 1;  // 最大采样数
+    NRF_SAADC->EVENTS_STARTED = 0U;
+    NRF_SAADC->EVENTS_END = 0U;
+    NRF_SAADC->EVENTS_STOPPED = 0U;
     NRF_SAADC->TASKS_START = 0x01UL;  // 启动ADC
-    while (!NRF_SAADC->EVENTS_STARTED);  // 等待启动完成
-    NRF_SAADC->EVENTS_STARTED = 0x00UL;
-    NRF_SAADC->TASKS_SAMPLE = 0x01UL;  // 开始采样
-    while (!NRF_SAADC->EVENTS_END);  // 等待采样完成
-    NRF_SAADC->EVENTS_END = 0x00UL;
+    if (epd_adc_wait(&NRF_SAADC->EVENTS_STARTED)) {
+        NRF_SAADC->TASKS_SAMPLE = 0x01UL;  // 开始采样
+        sampled = epd_adc_wait(&NRF_SAADC->EVENTS_END);
+    }
     NRF_SAADC->TASKS_STOP = 0x01UL;  // 停止ADC
-    while (!NRF_SAADC->EVENTS_STOPPED);  // 等待停止完成
-    NRF_SAADC->EVENTS_STOPPED = 0x00UL;
-    if (value < 0) value = 0;  // 处理负值
+    bool stopped = epd_adc_wait(&NRF_SAADC->EVENTS_STOPPED);
     NRF_SAADC->ENABLE = (SAADC_ENABLE_ENABLE_Disabled << SAADC_ENABLE_ENABLE_Pos);  // 禁用SAADC
+    NRF_SAADC->EVENTS_STARTED = 0U;
+    NRF_SAADC->EVENTS_END = 0U;
+    NRF_SAADC->EVENTS_STOPPED = 0U;
+    if (!sampled || !stopped || value <= 0) return 0U;
     NRF_LOG_DEBUG("ADC value: %d\n", value);
     // 返回电压值(单位:毫伏)
     // 原公式: (value * 3.6V) / 1024 返回伏特
@@ -511,8 +528,9 @@ static uint16_t m_cached_voltage = 3300;  // 默认为正常电压(3.3V = 3300mV
  * 3. 电压值基于最近一次屏幕刷新,具有时效性
  */
 uint16_t EPD_ReadVoltageAndCache(void) {
-    m_cached_voltage = EPD_ReadVoltage();
-    return m_cached_voltage;
+    uint16_t voltage = EPD_ReadVoltage();
+    if (voltage != 0U) m_cached_voltage = voltage;
+    return voltage;
 }
 
 /* One UC8179 model exposes both the full-refresh and true OLD/NEW paths. */

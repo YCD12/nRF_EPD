@@ -52,7 +52,7 @@ typedef struct {
 typedef struct {
     uint8_t col_w;
     uint8_t remainder; /* 最后一列多出的像素 */
-    uint8_t row_h;
+    int16_t row_h;
 } calendar_week_header_metrics_t;
 
 /* 星期栏：7 列均分，余数加在最后一列。 */

@@ -58,8 +58,8 @@ async function runDeviceOperation(kind, action, parent = null) {
 }
 
 // APP版本号 (便于调试)
-const APP_VERSION = '2.1.0';
-const APP_BUILD_DATE = '2026-10-05';
+const APP_VERSION = '2.3.3';
+const APP_BUILD_DATE = '2026-10-17';
 const EPD_DEVICE_NAME_PREFIX = 'NRF_EPD';
 const SCAN_DURATION_MS = 5000;
 const LOG_CONSOLE_STORAGE_KEY = 'epd_log_to_console';
@@ -535,6 +535,38 @@ async function clearScreen() {
   }
 }
 
+async function restartDevice() {
+  return runDeviceOperation('restarting', async owner => {
+    if (!gattServer?.connected || !bleDevice?.gatt.connected)
+      throw new Error('请先连接设备再重启');
+    const device = bleDevice;
+    let disconnected = false, resolveDisconnect;
+    const disconnectedPromise = new Promise(resolve => { resolveDisconnect = resolve; });
+    const onDisconnect = () => { disconnected = true; resolveDisconnect(); };
+    device.addEventListener('gattserverdisconnected', onDisconnect);
+    try {
+      addLog('正在发送系统重启指令…');
+      const sent = await write(EpdCmd.SYS_RESET, null, true, true, true, owner);
+      if (!disconnected && owner.generation !== connectionGeneration) return false;
+      if (!disconnected) {
+        try { await withTimeout(disconnectedPromise, 5000, '等待重启断连超时'); }
+        catch (_) { /* GATT acceptance does not confirm that the MCU rebooted. */ }
+      }
+      if (device !== bleDevice || (owner.generation !== connectionGeneration &&
+          (gattServer?.connected || isConnecting || DeviceOperations.current))) return false;
+      const message = disconnected
+        ? '设备已断开，请稍后点击“重连”确认重启后的状态。'
+        : sent ? '系统重启指令已发送，尚未检测到断连，请稍后重连确认。'
+          : '系统重启指令发送失败，请检查蓝牙连接后重试。';
+      addLog(message);
+      showToast(message, 4200);
+      return sent || disconnected;
+    } finally {
+      device.removeEventListener('gattserverdisconnected', onDisconnect);
+    }
+  });
+}
+
 async function sendcmd() {
   const cmdTXT = document.getElementById('cmdTXT').value;
   if (cmdTXT == '') return;
@@ -818,7 +850,7 @@ function updateButtonStatus(forceDisabled = false) {
   const reconnect = document.getElementById('reconnectbutton');
   if (reconnect) reconnect.disabled = !bleDevice || connected || isConnecting;
   for (const id of ['sendcmdbutton', 'calendarmodebutton', 'clockmodebutton',
-                    'clearscreenbutton', 'sendimgbutton', 'setDriverbutton']) {
+                    'clearscreenbutton', 'restartbutton', 'sendimgbutton', 'setDriverbutton']) {
     const button = document.getElementById(id);
     if (button) button.disabled = !!status;
   }
@@ -1091,7 +1123,7 @@ async function requestBleDevice() {
 
   const scanResult = await scanFilteredDevices();
   if (scanResult.status === 'unsupported') {
-    addLog(`当前浏览器不支持信号扫描排序，退回系统窗口并仅筛选 ${EPD_DEVICE_NAME_PREFIX} 设备`);
+    addLog(`使用系统蓝牙选择窗口，仅筛选 ${EPD_DEVICE_NAME_PREFIX} 设备（当前浏览器不支持按信号排序）`);
     return await navigator.bluetooth.requestDevice({
       optionalServices: ['62750001-d828-918d-fb46-b6c11c675aec'],
       filters: [{ namePrefix: EPD_DEVICE_NAME_PREFIX }]

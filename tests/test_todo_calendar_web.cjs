@@ -32,7 +32,7 @@ function fixture({ dom = false, storage = new Map(), installer = {}, connected =
   const owner = { kind: 'todo', generation: 1 };
   const context = {
     Uint8Array, DataView, TextEncoder, TextDecoder, Date, Set, Map,
-    EPDResourceBuilder: require('../html/js/resource_builder.js'),
+    EPDUIModel: require('../html/js/ui_tools/ui_model.js'), EPDUIRenderer: require('../html/js/ui_tools/ui_preview.js'), EPDResourceBuilder: require('../html/js/resource_builder.js'),
     epdCharacteristic: connected ? {} : null,
     appVersion: version,
     addLog: message => logs.push(message),
@@ -235,9 +235,9 @@ test('font requests include queued, future, resident and completed text in the s
   assert.deepEqual(plain(api.fontRequests()), []);
   api.items = [item(1), item(2, { start: start + 1 }), item(3, { resident: true }), item(4, { completed: true })];
   const text = api.items.map(item => item.text).join('');
-  assert.deepEqual(plain(api.fontRequests()), [{ slot: 1, text }]);
+  assert.deepEqual(plain(api.fontRequests()), [{ slot: 1, text: '...'+text }]);
   api.fontSize = 9;
-  assert.deepEqual(plain(api.fontRequests()), [{ slot: 0, text }]);
+  assert.deepEqual(plain(api.fontRequests()), [{ slot: 0, text: '...'+text }]);
 });
 
 test('editor safely renders literal text, edits, completes and removes records', () => {
@@ -370,7 +370,7 @@ test('successful device saves pass the same operation owner with the snapshot an
   const saved = calls.find(call => call[0] === 'save');
   assert.equal(saved[3], owner); assert.equal(typeof saved[4], 'function');
   assert.deepEqual(plain(api.unpack(saved[1]).items), [item(1)]);
-  assert.deepEqual(plain(saved[2]), [{ slot: 1, text: '事项 1' }]);
+  assert.deepEqual(plain(saved[2]), [{ slot: 1, text: '...事项 1' }]);
   assert.match(logs.at(-1), /已保存 1 条/); assert.equal(context.DeviceOperations.current, null);
 });
 
@@ -657,7 +657,7 @@ test('custom font requests target slot 3 and retain the selected standard size m
   api.fontSize = 9;
   assert.deepEqual(plain(api.fontRequests()), [{ slot: 3, sourceSlot: 0, text: ' ...事项 1', fontFamily: 'SimSun' }]);
   api.fontFamily = '';
-  assert.deepEqual(plain(api.fontRequests()), [{ slot: 0, text: '事项 1' }]);
+  assert.deepEqual(plain(api.fontRequests()), [{ slot: 0, text: '...事项 1' }]);
 });
 
 test('font family survives local and JSON backups, with legacy data defaulting to the device font', () => {

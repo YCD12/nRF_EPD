@@ -10,7 +10,8 @@ enum {
     RESOURCE_CAP_OFFLINE = 4U,
     RESOURCE_CAP_LARGE_PACKETS = 8U,
     RESOURCE_CAP_VERIFY = 16U,
-    RESOURCE_CAP_BUFFERED_WRITE = 32U
+    RESOURCE_CAP_BUFFERED_WRITE = 32U,
+    RESOURCE_CAP_ERASE = 64U
 };
 typedef enum { RESOURCE_ENTER, RESOURCE_INVALIDATE, RESOURCE_ACTIVATE, RESOURCE_OFFLINE } resource_event_t;
 typedef rs_result_t (*resource_event_handler_t)(void *context, resource_event_t event,

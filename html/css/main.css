@@ -108,7 +108,8 @@ body.workspace-shell { height: 100vh; height: 100dvh; overflow: hidden; }
 body.debug-mode .debug { display: flex !important; }
 .mode-actions { width: 100%; margin-top: 6px; }
 .mode-actions button { flex: 1 1 auto; min-height: 48px; }
-.mode-actions #clearscreenbutton { flex-basis: 100%; min-height: 40px; margin-top: 2px; }
+.system-actions { width: 100%; }
+.system-actions button { flex: 1; min-height: 40px; }
 .connection-badge, .device-badge, #orientationBadge { display: inline-flex; align-items: center; gap: 6px; padding: 4px 10px; border: 1px solid var(--border-color); border-radius: 6px; background: var(--surface-soft); color: var(--muted-color); font-size: 12px; font-weight: 500; }
 .connection-badge { border-radius: 999px; }
 .status-dot { width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
@@ -116,6 +117,9 @@ body.debug-mode .debug { display: flex !important; }
 .connection-badge.is-connecting, .connection-badge.is-busy { background: var(--accent-bg); color: var(--accent-text); border-color: var(--primary-color); }
 .connection-badge.is-unsupported { color: var(--warning-color); background: var(--warning-bg); }
 .device-info { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; margin-top: 18px; }
+.header-device-info { display: grid; grid-template-columns: minmax(0, 1.35fr) minmax(0, 1fr); flex: 1 1 280px; min-width: 0; gap: 10px; margin-top: 0; }
+.header-device-info .device-metric { min-width: 0; padding: 10px 12px; }
+.header-device-info .device-warning { line-height: 1.5; }
 .device-metric { flex: 1; min-width: 130px; align-self: stretch; padding: 12px 15px; border-radius: 9px; background: var(--surface-soft); }
 .metric-label { display: block; color: var(--muted-color); font-size: 11px; margin-bottom: 4px; }
 .metric-value { display: block; font-size: 15px; font-weight: 600; font-variant-numeric: tabular-nums; }
@@ -273,6 +277,9 @@ canvas.text-placement-mode { border: 2px dashed var(--primary-color) !important;
 .todo-calendar-actions button { min-height: 34px; padding: 5px 9px; font-size: 12px; }
 #todoCalendarStatus.error, #todoCalendarTextHint.error { color: var(--error-color); }
 @media (max-width: 1000px) {
+    .console-page .page-header { flex-wrap: wrap; gap: 12px 24px; }
+    .console-page .page-actions { margin-left: auto; }
+    .header-device-info { order: 1; flex-basis: 100%; }
     .todo-calendar-workbench { grid-template-columns: minmax(0, 1fr); }
     .todo-calendar-preview { max-width: 620px; }
 }
@@ -586,7 +593,7 @@ progress::-webkit-progress-value { border-radius: 10px; background: var(--primar
     .console-page .page-kicker, .console-page .page-subtitle { display: none; }
     .console-page h1 { font-size: 22px; margin-bottom: 0; }
     .console-page .brand-mark { width: 40px; height: 40px; }
-    .console-page .page-actions { width: 100%; }
+    .console-page .page-actions { width: 100%; order: 2; }
     .console-page .page-actions .connection-badge { margin-right: auto; }
     .console-page .page-actions button { min-height: 34px; padding: 6px 10px; font-size: 12px; }
     .console-page .workspace-nav { margin-bottom: 12px; }
@@ -671,3 +678,6 @@ progress::-webkit-progress-value { border-radius: 10px; background: var(--primar
     html { scroll-behavior: auto; }
     *, *::before, *::after { animation: none !important; transition: none !important; }
 }
+
+.todo-resource-canvas { display:block; width:100%; height:auto; aspect-ratio:5 / 3; border:1px solid #d7dde5; image-rendering:pixelated; background:#fff; }
+.todo-calendar-screen[hidden], .annotation-preview[hidden] { display:none; }

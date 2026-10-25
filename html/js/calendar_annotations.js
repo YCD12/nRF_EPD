@@ -207,6 +207,34 @@ const CalendarAnnotations = {
     if (colorConflict) note += ' 当日红字会与红色背景重合，请改用白色或黑色。';
     if (text && color === this.COLOR_WHITE && !onRedBackground) note += ' 白字在浅色背景上可能不易辨认。';
     setText('calendarAnnotationPreviewNote', note);
+    this.renderResourcePreview();
+  },
+
+  async renderResourcePreview() {
+    const canvas=document.getElementById('calendarAnnotationResourceCanvas'),editor=globalThis.ExternalResourceEditor;
+    if(!canvas?.getContext || !editor || !globalThis.EPDUIRenderer) return;
+    const date=(document.getElementById('calendarAnnotationDate')||{}).value;
+    const parts=this.dateParts(date);if(!parts)return;
+    const token=this._resourcePreviewToken=(this._resourcePreviewToken||0)+1;
+    try {
+      const label=this.assertLabel((document.getElementById('calendarAnnotationLabel')||{}).value||'');
+      const annotation={date,label,position:this.selectedPosition(),
+        color:Number(document.getElementById('calendarAnnotationColor')?.value)||0,
+        fontSize:Number(document.getElementById('calendarAnnotationFontSize')?.value)||0};
+      if(!editor.previewModel())await editor.ensureReady();
+      const model=editor.previewModel();if(!model||token!==this._resourcePreviewToken)return;
+      const requests=[];
+      for(const c of model.ui.components.filter(c=>c.kind===3)) {
+        const small=annotation.fontSize===9||c.style.ascii_small&&/[a-z]/i.test(label);
+        requests.push({slot:small?c.style.annotation_small_font:c.style.annotation_large_font,text:label});
+      }
+      const fonts=(await globalThis.EPDWebFonts.extendFonts(model.fonts,requests)).fonts;
+      if(token!==this._resourcePreviewToken)return;
+      const annotations=this.annotations.filter(a=>a.date!==date).concat(annotation);
+      globalThis.EPDUIRenderer.draw(canvas,model.ui,model.calendar,fonts,
+        {...editor.previewRuntime(1),timestamp:Math.floor(Date.UTC(parts.year,parts.month-1,parts.day,12)/1000)},
+        globalThis.TodoCalendar||{},annotations);
+    } catch(_) { /* Keep the last valid frame while the label is being composed. */ }
   },
 
   updateEditorState() {

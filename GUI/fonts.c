@@ -371,7 +371,11 @@ const gui_font_metrics_t* GUI_GetFontMetrics(gui_font_id_t font_id) {
     if ((unsigned)font_id >= 3U) {
         return NULL;
     }
+#if GUI_USE_EXTERNAL_FONTS
+    return font_store_font_metrics((font_store_slot_t)font_id);
+#else
     return &font_slot_geometry[font_id];
+#endif
 }
 
 bool GUI_TodoFontMatches(uint8_t size, uint32_t key) {

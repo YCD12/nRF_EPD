@@ -29,7 +29,9 @@ typedef struct {
 // 按显示模式绘制完整界面
 // data：显示参数；callback / callback_data：分页缓冲回调
 void DrawGUI(gui_data_t* data, buffer_callback callback, void* callback_data);
-bool GUI_TodoRenderValid(void); /* A failed task read must not commit a partial list. */
+/* Check after either draw entry point, before triggering a panel refresh. */
+bool GUI_RenderValid(void);
+bool GUI_TodoRenderValid(void); /* Compatibility alias for existing TODO callers. */
 
 // 仅绘制 HH:MM，供时钟局刷。画布尺寸由 clock_refresh_geom() 决定（分屏 TIME_REFRESH_* 或全屏数字框）
 void DrawGUI_ClockOnly(const gui_data_t* data, buffer_callback callback, void* callback_data);

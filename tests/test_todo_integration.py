@@ -50,6 +50,7 @@ typedef struct {
     epd_config_t config;
     struct { bool transfer_active; } transfer_ctx;
     bool is_refreshing, low_battery_screen_active, force_full_refresh;
+    bool battery_poll_pending, battery_blink_pending;
     bool annotations_rx_abort_requested;
     uint32_t annotations_rx_last_activity, last_refresh_start, last_full_clear;
 } ble_epd_t;
@@ -93,9 +94,9 @@ static void make_payload(void)
     second[13]=5U; memcpy(second+14U,"timed",5U);
 }
 bool resource_protocol_entered(void) { return entered; }
+static bool epd_resources_ready(void) { return true; }
 static bool calendar_annotations_rx_active(void) { return false; }
 static uint32_t app_uptime_seconds(void) { return now; }
-static uint16_t EPD_ReadVoltageAndCache(void) { return 3300U; }
 static void epd_display_request(ble_epd_t *p, uint32_t ts)
 { assert(p==current); requests++; requested_timestamp=ts; }
 static void app_feed_wdt(void) {}
@@ -133,7 +134,7 @@ void DrawGUI(gui_data_t *data, buffer_callback callback, void *ctx)
         if (!todo_items_read(selection.index[i],&item)) render_valid=false;
     }
 }
-bool GUI_TodoRenderValid(void) { return render_valid; }
+bool GUI_RenderValid(void) { return render_valid; }
 
 /* PRODUCTION_HANDLERS */
 
@@ -338,10 +339,10 @@ int main(int argc, char **argv)
 '''
 
 source = (ROOT / 'EPD/EPD_service.c').read_text(encoding='utf-8')
-retry_state = re.search(r'static volatile uint32_t s_todo_retry_at;\s*'
-                        r'static volatile uint8_t s_todo_retry_step;', source).group(0)
+retry_state = re.search(r'static volatile uint32_t s_display_retry_at;\s*'
+                        r'static volatile uint8_t s_display_retry_step;', source).group(0)
 handlers = retry_state + '\n' + '\n'.join(extract_function(source, name) for name in
-                     ('epd_todo_retry_reset', 'epd_todo_retry_failed',
+                     ('epd_display_retry_reset',
                       'ble_epd_on_timer', 'epd_perform_full_refresh'))
 out = Path(os.environ.get('HOST_TEST_OUT', ROOT / '_build/host_tests'))
 out.mkdir(parents=True, exist_ok=True)
@@ -350,7 +351,7 @@ generated.write_text(fixture.replace('/* PRODUCTION_HANDLERS */', handlers), enc
 exe = out / ('test_todo_integration.exe' if os.name == 'nt' else 'test_todo_integration')
 subprocess.run(shlex.split(os.environ.get('HOST_CC', 'gcc')) +
                ['-Wall', '-Werror', '-std=c11', '-IEPD', '-IGUI', str(generated),
-                'GUI/todo_items.c', 'GUI/font_geometry.c', 'EPD/epd_refresh_policy.c', '-o', str(exe)],
+                'tests/stubs/ui_resources_stub.c', 'GUI/todo_items.c', 'GUI/font_geometry.c', 'EPD/epd_refresh_policy.c', '-o', str(exe)],
                cwd=ROOT, check=True)
 for mode in (4, 5):
     subprocess.run([str(exe.resolve()), str(mode)], check=True)

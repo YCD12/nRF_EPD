@@ -485,6 +485,8 @@ static uint8_t color4(uint16_t color) {
 */
 /**************************************************************************/
 void GFX_drawPixel(Adafruit_GFX* gfx, int16_t x, int16_t y, uint16_t color) {
+    if (gfx->clip_enabled && (x < gfx->clip_left || x >= gfx->clip_right ||
+                             y < gfx->clip_top || y >= gfx->clip_bottom)) return;
     // 边界检查：确保坐标在屏幕范围内 | Boundary check: ensure coordinates are within screen
     if (x < 0 || x >= gfx->_width || y < 0 || y >= gfx->_height) return;
 
@@ -554,28 +556,19 @@ void GFX_drawPixel(Adafruit_GFX* gfx, int16_t x, int16_t y, uint16_t color) {
         }
     } else
 #endif
-    if (gfx->color != NULL) {  // 3c 三色模式
-        // 三色模式：使用两个独立的缓冲区
-        // - buffer: 黑白信息（1=白，0=黑）
-        // - color: 彩色信息（0=彩色，1=非彩色）
-        // 3-color mode: uses two separate buffers
-        // - buffer: black/white info (1=white, 0=black)
-        // - color: color info (0=colored, 1=not colored)
+    {
         uint16_t i = x / 8 + y * (gfx->pw / 8);
-        gfx->buffer[i] |= 0x80 >> (x & 7);  // 默认设为白色 | Default to white
-        gfx->color[i] |= 0x80 >> (x & 7);   // 默认设为非彩色 | Default to not colored
-        if (color == GFX_BLACK)
-            gfx->buffer[i] &= ~(0x80 >> (x & 7));  // 黑色：清除buffer位 | Black: clear buffer bit
-        else if (color != GFX_WHITE)
-            gfx->color[i] &= ~(0x80 >> (x & 7));   // 彩色：清除color位 | Colored: clear color bit
-    } else {
-        // 单色模式：每像素1位，每字节存储8个像素
-        // Monochrome mode: 1 bit per pixel, 8 pixels per byte
-        uint16_t i = x / 8 + y * (gfx->pw / 8);
-        if (color == GFX_WHITE)
-            gfx->buffer[i] |= 0x80 >> (x & 7);   // 白色：设置位为1 | White: set bit to 1
-        else
-            gfx->buffer[i] &= ~(0x80 >> (x & 7));  // 黑色：设置位为0 | Black: set bit to 0
+        uint8_t mask = 0x80U >> (x & 7);
+        uint8_t *plane = gfx->buffer;
+        if (gfx->color != NULL) {
+            /* BWR starts white in both planes; clear only the selected ink. */
+            gfx->buffer[i] |= mask;
+            gfx->color[i] |= mask;
+            if (color != GFX_BLACK) plane = gfx->color;
+        }
+        /* Mono maps every non-white color to black; BWR uses the plane above. */
+        if (color == GFX_WHITE) plane[i] |= mask;
+        else plane[i] &= (uint8_t)~mask;
     }
 }
 

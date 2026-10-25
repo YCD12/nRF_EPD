@@ -14,6 +14,67 @@ const create = () => packer.create({ fonts: fonts() }, { builtAt: 12345 });
 const payload = (bundle, id) => bundle.packages.find(item => item.pack.id === id).pack.payload;
 const json = (files, name) => JSON.parse(new TextDecoder().decode(files.find(file => file.name === name).bytes));
 
+function browserResources() {
+  const context = { Uint8Array, DataView, TextEncoder, TextDecoder, Date, atob,
+    location: { protocol: 'file:' } };
+  for (const name of ['resource_store.js', 'ui_tools/ui_data.js', 'ui_tools/ui_model.js', 'resource_builder.js', 'todo_calendar.js',
+    'ui_tools/resource_defaults.js', 'ui_tools/default_fonts.js', 'ui_tools/font_store_tool.js', 'font_builder.js', 'ui_tools/resource_pack.js'])
+    vm.runInNewContext(fs.readFileSync(path.join(__dirname, '../html/js', name), 'utf8'), context);
+  return context;
+}
+
+test('bundle validation reads TODO font settings from the package independently of the browser draft', async () => {
+  const context = browserResources(), base = create();
+  const timed = packer.create({ fonts: fonts(), todo: { items: [
+    {id:1,text:'年',start:0,end:0,resident:true,completed:false}
+  ], limit: 5, fontSize: 9 } });
+  for (const draft of [
+    { fontFamily: 'SimSun', fontBold: false, fontItalic: false },
+    { fontFamily: '', fontBold: true, fontItalic: true },
+    { fontFamily: 'KaiTi', fontBold: true, fontItalic: false }
+  ]) {
+    Object.assign(context.TodoCalendar, draft, { fontSize: 32, limit: 1 });
+    for (const bundle of [base, timed]) {
+      const inspected = context.EPDResourcePack.inspectBundle(bundle, { repairFontBounds: true });
+      assert.equal(inspected.bundle.packages.length, 7);
+      assert.equal(context.EPDResourcePack.dependencies(bundle).requests.filter(request => request.slot === 3).length, 0);
+      assert.deepEqual(payload(inspected.bundle, 9), payload(bundle, 9));
+    }
+    const generated = await context.EPDResourcePack.generateDefault({ builtAt: 12345 });
+    assert.deepEqual(payload(generated, 7), payload(base, 7));
+    assert.deepEqual(payload(generated, 9), payload(base, 9));
+    assert.equal(context.TodoCalendar.fontFamily, draft.fontFamily);
+    assert.equal(context.TodoCalendar.fontBold, draft.fontBold);
+    assert.equal(context.TodoCalendar.fontItalic, draft.fontItalic);
+  }
+});
+
+test('matching custom TODO fonts remain valid with a different browser draft and mismatches still fail', async () => {
+  const config = { items: [], limit: 5, fontSize: 9, fontFamily: 'SimSun' };
+  const customFonts = (await require('../html/js/font_builder.js').extendFonts(fonts(),
+    [{ slot: 3, sourceSlot: 0, text: ' ...', fontFamily: config.fontFamily }],
+    { rasterize: async () => ({ width: 1, height: 1, x: 0, y: 0, advance: 2, pixels: Uint8Array.of(1) }) })).fonts;
+  const timed = todo.pack(config), legacy = timed.slice(0, 16 + timed[11]);
+  legacy[4] = 2; legacy.set(timed.subarray(21), 16);
+  const context = browserResources();
+  Object.assign(context.TodoCalendar, { fontFamily: 'KaiTi', fontBold: true, fontItalic: true, fontSize: 32, limit: 1 });
+  for (const bytes of [timed, legacy]) {
+    const base = packer.create({ fonts: customFonts, todo: bytes });
+    const inspected = context.EPDResourcePack.inspectBundle(base, { repairFontBounds: true });
+    assert.equal(inspected.model.fonts.customKey, builder.fontKey('SimSun', 0));
+    assert.deepEqual(require('../html/js/font_builder.js').gatherMissing(inspected.model.fonts,
+      context.EPDResourcePack.dependencies(inspected.bundle, inspected.model).requests), []);
+    assert.deepEqual(payload(inspected.bundle, 9), bytes);
+    const next = context.EPDResourcePack.build(inspected.bundle, inspected.model);
+    assert.deepEqual(payload(next, 7), payload(base, 7));
+    assert.deepEqual(payload(next, 9), bytes);
+    const invalid = customFonts.slice(); invalid.customKey = (customFonts.customKey ^ 1) >>> 0;
+    const mismatched = base.packages.map(item => item.pack.id === 7
+      ? {name:item.name,bytes:builder.wrap(7,builder.encodeFonts(invalid),1)} : item);
+    assert.throws(() => context.EPDResourcePack.inspectBundle(mismatched, { repairFontBounds: true }), /自定义字体/);
+  }
+});
+
 test('all seven packages are built from raw sources and match the Python reference payloads', () => {
   // This saved fixture is only a test oracle. The generator never loads it.
   const reference = require('../html/resources/default-project.json');
@@ -26,7 +87,7 @@ test('all seven packages are built from raw sources and match the Python referen
     assert.equal(item.pack.revision, old.revision);
     assert.deepEqual(item.bytes, builder.wrap(old.id, old.payload, old.revision, 12345));
   }
-  assert.equal(generated.total, 11644);
+  assert.equal(generated.total,reference.files.reduce((n,f)=>n+store.parsePackage(new Uint8Array(Buffer.from(f.base64,'base64'))).payload.length,0));
 });
 
 test('default source models are independent editable values', () => {
@@ -69,12 +130,13 @@ test('font validation reports signed metrics and requires every fixed UI glyph',
 
 test('browser globals generate resources by fetching only three raw fonts and reuse clean cached copies', async () => {
   const calls = [], context = { Uint8Array, DataView, TextEncoder, TextDecoder, Date,
+    location: { protocol: 'https:' },
     fetch: async url => {
       calls.push(url); assert.match(url, /^resources\/fonts\/u8g2_font_[\w]+\.bin$/);
       return { ok: true, arrayBuffer: async () => new Uint8Array(fs.readFileSync(path.join(__dirname, '../html', url))).buffer };
     } };
-  for (const name of ['resource_store.js', 'resource_builder.js', 'todo_calendar.js',
-    'ui_tools/resource_defaults.js', 'ui_tools/font_store_tool.js', 'ui_tools/resource_pack.js'])
+  for (const name of ['resource_store.js', 'ui_tools/ui_data.js', 'ui_tools/ui_model.js', 'resource_builder.js', 'todo_calendar.js',
+    'ui_tools/resource_defaults.js', 'ui_tools/default_fonts.js', 'ui_tools/font_store_tool.js', 'ui_tools/resource_pack.js'])
     vm.runInNewContext(fs.readFileSync(path.join(__dirname, '../html/js', name), 'utf8'), context);
   const [first, second] = await Promise.all([context.EPDResourcePack.generateDefault({ builtAt: 12345 }),
     context.EPDResourcePack.generateDefault({ builtAt: 23456 })]);
@@ -85,17 +147,45 @@ test('browser globals generate resources by fetching only three raw fonts and re
   assert.notEqual((await context.EPDFontStoreTool.loadDefault())[0][0], 0);
 });
 
+test('file URL generates the same seven packages without fetching BINs and returns independent fonts', async () => {
+  let calls = 0;
+  const context = { Uint8Array, DataView, TextEncoder, TextDecoder, Date, atob,
+    location: { protocol: 'file:' },
+    fetch: async () => { calls++; throw new TypeError('Failed to fetch'); } };
+  for (const name of ['resource_store.js', 'ui_tools/ui_data.js', 'ui_tools/ui_model.js', 'resource_builder.js', 'todo_calendar.js',
+    'ui_tools/resource_defaults.js', 'ui_tools/default_fonts.js', 'ui_tools/font_store_tool.js', 'ui_tools/resource_pack.js'])
+    vm.runInNewContext(fs.readFileSync(path.join(__dirname, '../html/js', name), 'utf8'), context);
+  const result = await context.EPDResourcePack.generateDefault({ builtAt: 12345 });
+  assert.equal(result.packages.length, 7);
+  for (const item of result.packages) assert.deepEqual(item.bytes, create().packages.find(row => row.pack.id === item.pack.id).bytes);
+  const first = await context.EPDFontStoreTool.loadDefault();
+  first[0].fill(0);
+  (await context.EPDFontStoreTool.loadDefault()).forEach((bytes, slot) => assert.deepEqual(bytes, fonts()[slot]));
+  assert.equal(calls, 0);
+  const html = fs.readFileSync(path.join(__dirname, '../html/index.html'), 'utf8');
+  assert.ok(html.indexOf('src="js/ui_tools/default_fonts.js') < html.indexOf('src="js/ui_tools/font_store_tool.js'));
+});
+
+test('file URL reports an incomplete webpage directory without attempting blocked fetches', async () => {
+  let calls = 0;
+  const context = { Uint8Array, atob, EPDResourceBuilder: builder, EPDResourceStore: store,
+    location: { protocol: 'file:' }, fetch: async () => { calls++; throw new Error('Blocked'); } };
+  vm.runInNewContext(fs.readFileSync(require.resolve('../html/js/ui_tools/font_store_tool.js'), 'utf8'), context);
+  await assert.rejects(context.EPDFontStoreTool.loadDefault(), /网页随附字模缺失/);
+  assert.equal(calls, 0);
+});
+
 test('complete rebuild preserves personal records and TODO bytes while updating changed versions', async () => {
   const config = { items: [{ id: 1, text: '看书', start: 0, end: 0, resident: true, completed: false }],
     limit: 5, fontSize: 12, leadMinutes: 10, retainMinutes: 5 };
-  const extended = await require('../html/js/font_builder.js').extendFonts(fonts(), [{ slot: 1, text: '看书' }],
+  const extended = await require('../html/js/font_builder.js').extendFonts(fonts(), [{ slot: 1, text: '看书.' }],
     { rasterize: async () => ({ width: 1, height: 1, x: 0, y: 0, advance: 2, pixels: Uint8Array.of(1) }) });
   const base = packer.create({ fonts: extended.fonts, todo: config }, { builtAt: 12345 });
   const model = builder.open(base); model.ui.components[0].x++;
   const next = packer.build(base, model, { builtAt: 23456 });
   assert.deepEqual(todo.unpack(payload(next, 9)).items, config.items);
   for (const item of next.packages) {
-    assert.equal(item.pack.revision, item.pack.id === 1 || item.pack.id === 6 ? 2 : 1);
+    assert.equal(item.pack.revision, item.pack.id === 6 ? 3 : item.pack.id === 1 ? 2 : 1);
     assert.equal(item.pack.builtAt, 23456);
     if (item.pack.id !== 6) assert.deepEqual(item.pack.payload, payload(base, item.pack.id));
   }
@@ -145,7 +235,7 @@ test('exported sidecars describe the actual binary resources and section CRCs', 
     assert.equal(section.length, section.count * section.item_size);
     assert.equal(Number(section.crc32), store.crc32(data));
   }
-  assert.equal(json(files, 'ui.json').components.length, 19);
+  assert.equal(json(files, 'ui.json').components.length, 46);
   assert.equal(json(files, 'fonts.json').slots.length, 3);
   assert.equal(json(files, 'records.json').epd_config.bytes, 14);
   assert.equal(json(files, 'todo.json').record_size, 80);
@@ -179,9 +269,9 @@ test('semantic validation rejects inner REC1 corruption and unavailable or incom
   assert.throws(() => packer.create({ fonts: fonts(), todo: { items: [{ id: 1, text: '新', start: 0, end: 0, resident: true, completed: false }], limit: 5, fontSize: 12 } }), /所需字符/);
 });
 
-test('UI text roles cannot use a numeric font and default placeholders create no missing glyphs', () => {
+test('UI text roles require matching glyphs and default placeholders create no missing glyphs', () => {
   const ui = defaults.ui(); ui.components[1].fonts[0] = 2;
-  assert.throws(() => packer.create({ fonts: fonts(), ui }), /组件 2.*数字槽位/);
+  assert.throws(() => packer.create({ fonts: fonts(), ui }), /槽位 2.*缺少/);
   const base = create();
   assert.deepEqual(require('../html/js/font_builder.js').gatherMissing(fonts(), packer.dependencies(base).requests), []);
   const calendar = defaults.calendar(); calendar.solar_festivals[0].name = '新 年';

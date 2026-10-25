@@ -50,6 +50,7 @@
       image: '正在传送图片',
       mode: '正在切换显示模式',
       control: '正在执行设备操作',
+      restarting: '正在重启设备，断开后可重新连接',
       export: '正在导出设备备份',
       resources: '正在更新设备资源',
       resource: '正在更新设备资源',

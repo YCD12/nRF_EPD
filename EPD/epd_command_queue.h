@@ -2,8 +2,7 @@
 #define EPD_COMMAND_QUEUE_H
 
 #include <string.h>
-#include "app_scheduler.h"
-#include "app_util_platform.h"
+#include "epd_work_queue.h"
 
 /* The wire limits are supplied by the service. */
 typedef struct {
@@ -68,11 +67,7 @@ static inline void epd_cmd_queue_schedule(epd_cmd_queue_t *queue, void *context,
         post = true;
     }
     CRITICAL_REGION_EXIT();
-    if (post && app_sched_event_put(&context, sizeof(context), worker) != 0U) {
-        CRITICAL_REGION_ENTER();
-        queue->is_scheduled = false; /* Main loop / next tick retries. */
-        CRITICAL_REGION_EXIT();
-    }
+    if (post) epd_work_post(&queue->is_scheduled, context, worker);
 }
 
 #endif

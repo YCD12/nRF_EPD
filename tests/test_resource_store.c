@@ -16,7 +16,7 @@ static unsigned mutations, reads, depth, executions, sent;
 static unsigned watchdog_feeds;
 static int read_fail = -1;
 static size_t read_fail_prefix;
-static bool init_fail, probe_fail;
+static bool init_fail, probe_fail, erase_fail, erase_partial;
 static bool block_send;
 static uint8_t reply[RESOURCE_PACKET_MAX];
 static unsigned invalidations, activations, offline_requests;
@@ -74,7 +74,9 @@ ret_code_t fm25q04b_write(uint32_t at, const void *p, size_t n) { mutate(at, p, 
 ret_code_t fm25q04b_erase_sector(uint32_t at)
 {
     assert(at % 4096 == 0);
+    if (erase_fail) return NRF_ERROR_INTERNAL;
     mutate(at, NULL, 4096);
+    if (erase_partial) flash[at + 4095] = 0;
     return NRF_SUCCESS;
 }
 static uint32_t crc(const uint8_t *p, size_t n) { return resource_crc32(UINT32_MAX, p, n) ^ UINT32_MAX; }
@@ -146,6 +148,106 @@ static void test_boundaries(void)
     assert(upload(1, table, sizeof(table)) == RS_OK); /* damaged table is repairable */
     table[16] = 1;
     assert(upload(1, table, sizeof(table)) == RS_INVALID); /* duplicate ID */
+}
+static void test_verified_metadata(void)
+{
+    blank();
+    const uint8_t data[] = {1, 2, 3, 4};
+    assert(upload(2, data, sizeof(data)) == RS_OK);
+    rs_package_info_t info, old_info;
+    uint32_t length;
+    unsigned start = reads;
+    assert(resource_store_info(2, &old_info) == RS_OK);
+    assert(resource_store_open(2, &length) == RS_OK);
+    unsigned separate_reads = reads - start;
+    start = reads;
+    assert(resource_store_open_info(2, &info) == RS_OK);
+    assert(reads - start < separate_reads);
+    assert(info.length == length && info.length == sizeof(data));
+    assert(info.revision == old_info.revision && info.crc32 == crc(data, sizeof(data)));
+    assert(resource_store_open_info(2, NULL) == RS_INVALID);
+
+    /* Full verification must still read the payload even with a warm cache. */
+    flash[4096 + RS_HEADER_SIZE] ^= 1;
+    assert(resource_store_info(2, &info) == RS_OK);
+    assert(resource_store_open_info(2, &info) == RS_CRC);
+    assert(info.length == 0 && info.revision == 0 && info.crc32 == 0);
+    flash[4096 + RS_HEADER_SIZE] ^= 1;
+    assert(resource_store_open_info(2, &info) == RS_OK);
+    read_fail = 0;
+    assert(resource_store_open_info(2, &info) == RS_IO);
+    assert(info.length == 0 && info.revision == 0 && info.crc32 == 0);
+    read_fail = -1;
+    /* A failed open must not leave stale metadata available to read(). */
+    flash[4096 + 28] = 0;
+    uint8_t value;
+    assert(resource_store_read(2, 0, &value, 1) == RS_NOT_FOUND);
+    assert(upload(2, data, sizeof(data)) == RS_OK);
+    assert(resource_store_begin(2, sizeof(data), crc(data, sizeof(data)), 2) == RS_OK);
+    memset(&info, 0xff, sizeof(info));
+    assert(resource_store_open_info(2, &info) == RS_BUSY);
+    assert(info.length == 0 && info.revision == 0 && info.crc32 == 0);
+    resource_store_abort();
+}
+static void test_render_mount_recovery(void)
+{
+    blank();
+    const uint8_t data[] = {0x51, 0x52};
+    uint8_t actual[sizeof(data)], status[] = {0x26, 0, 0};
+    uint32_t length;
+    assert(upload(2, data, sizeof(data)) == RS_OK);
+    assert(resource_store_open(2, &length) == RS_OK);
+    unsigned before = reads;
+    resource_store_render_begin();
+    assert(resource_store_render_valid() && reads == before);
+    assert(resource_store_read(2, 0, actual, sizeof(actual)) == RS_OK);
+    assert(reads == before + 1U && !memcmp(actual, data, sizeof(data)));
+
+    /* STATUS runs outside maintenance. One failed mount must not leave the
+     * otherwise cached consumers permanently unable to find their packages. */
+    read_fail = 0;
+    assert(resource_protocol_execute(status, sizeof(status), reply) == 16U);
+    assert(reply[3] == RS_IO && !resource_protocol_entered());
+    before = reads;
+    resource_store_render_begin();
+    assert(!resource_store_render_valid() && reads == before + 1U);
+    assert(resource_store_read(2, 0, actual, sizeof(actual)) == RS_NOT_FOUND);
+    assert(reads == before + 1U); /* No repeated mount per payload/glyph read. */
+    read_fail = -1;
+    before = reads;
+    resource_store_render_begin();
+    assert(resource_store_render_valid() && reads > before);
+    assert(resource_store_read(2, 0, actual, sizeof(actual)) == RS_OK);
+    assert(!memcmp(actual, data, sizeof(data)));
+    before = reads;
+    resource_store_render_begin();
+    assert(resource_store_read(2, 0, actual, sizeof(actual)) == RS_OK);
+    assert(resource_store_render_valid() && reads == before + 1U);
+
+    /* A mounted table does not permit rendering during a package write. */
+    assert(resource_store_begin(2, sizeof(data), crc(data, sizeof(data)), 2) == RS_OK);
+    before = reads;
+    resource_store_render_begin();
+    assert(!resource_store_render_valid() && reads == before);
+    resource_store_abort();
+    assert(upload(2, data, sizeof(data)) == RS_OK);
+
+    /* Table replacement clears the view; neither an active nor an aborted
+     * incomplete replacement may silently reuse the old partition addresses. */
+    assert(resource_store_begin(1, sizeof(table), crc(table, sizeof(table)), 2) == RS_OK);
+    before = reads;
+    resource_store_render_begin();
+    assert(!resource_store_render_valid() && reads == before);
+    assert(resource_store_read(2, 0, actual, sizeof(actual)) == RS_NOT_FOUND);
+    resource_store_abort();
+    resource_store_render_begin();
+    assert(resource_store_read(2, 0, actual, sizeof(actual)) == RS_NOT_FOUND);
+    assert(!resource_store_render_valid());
+    assert(upload(1, table, sizeof(table)) == RS_OK);
+    resource_store_render_begin();
+    assert(resource_store_read(2, 0, actual, sizeof(actual)) == RS_OK);
+    assert(resource_store_render_valid() && !memcmp(actual, data, sizeof(data)));
+    puts("render mount: STATUS IO recovery, bounded retries, maintenance exclusion and table invalidation OK");
 }
 static void test_power_loss(unsigned id, bool buffered)
 {
@@ -566,7 +668,7 @@ static void test_protocol_defined_replies(void)
         expect_protocol_reply(q, 3U, RS_INVALID, NULL, 0U, dirty);
         q[0] = 0x26; q[1] = 0U;
         body[0] = RESOURCE_CAP_WRITE | RESOURCE_CAP_LARGE_PACKETS |
-                  RESOURCE_CAP_VERIFY | RESOURCE_CAP_BUFFERED_WRITE;
+                  RESOURCE_CAP_VERIFY | RESOURCE_CAP_BUFFERED_WRITE | RESOURCE_CAP_ERASE;
         body[1] = RS_ABI;
         resource_put_u32(body + 8, FM25Q04B_SIZE_BYTES);
         expect_protocol_reply(q, 3U, RS_OK, body, 12U, dirty);
@@ -672,6 +774,8 @@ int main(void)
 {
     assert(crc((const uint8_t *)"123456789", 9) == 0xCBF43926UL);
     test_boundaries();
+    test_verified_metadata();
+    test_render_mount_recovery();
     test_power_loss(1, false);
     test_power_loss(2, false);
     test_power_loss(1, true);

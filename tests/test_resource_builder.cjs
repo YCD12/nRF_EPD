@@ -48,8 +48,8 @@ test('rejects UTF-8 overflow, wrong table years, duplicate dates and incompatibl
     m => { m.ui.components[11].x = 1; },
     m => { m.ui.components[16].value0 = 9; },
     m => { m.ui.components[0].fonts[1] = 255; },
-    m => { m.ui.components[0].flags = 1; },
-    m => { m.ui.components[18].value0 = 0; },
+    m => { m.ui.components[0].flags = 16; },
+    m => { m.ui.components[18].style.baseline = 999; },
     m => { m.ui.components[0].width = 801; },
   ];
   for (const edit of edits) {
@@ -61,7 +61,7 @@ test('rejects UTF-8 overflow, wrong table years, duplicate dates and incompatibl
 test('font replacement checks metrics, bounded records, CRC and overlapping directories', () => {
   const { fonts } = builder.open(bundle());
   assert.ok(builder.validateFont(fonts[0], 0).has('年'.codePointAt(0)));
-  for (const edit of [b => { b[9]++; }, b => { b[2] = 0; }, b => { b[24] = 1; }, b => { b[21] = 255; b[22] = 255; }]) {
+  for (const edit of [b => { b[9]=65; }, b => { b[2] = 0; }, b => { b[24] = 1; }, b => { b[21] = 255; b[22] = 255; }]) {
     const corrupt = fonts[0].slice(); edit(corrupt);
     assert.throws(() => builder.validateFont(corrupt, 0));
   }
@@ -132,7 +132,7 @@ test('TODO geometry accepts six point sizes only in the custom slot and keys dis
     assert.deepEqual(builder.todoFontGeometry(size), geometry);
     const custom = fonts[0].slice(); custom.set(geometry.map(n => n & 255), 9);
     assert.doesNotThrow(() => builder.validateFont(custom, 3));
-    for (let slot = 0; slot < 3; ++slot) assert.throws(() => builder.validateFont(custom, slot));
+    for (let slot = 0; slot < 3; ++slot) assert.doesNotThrow(() => builder.validateFont(custom, slot));
     for (const bold of [false, true]) for (const italic of [false, true]) {
       const key = builder.todoFontKey(' SimSun ', size, bold, italic);
       assert.equal(key, store.crc32(new TextEncoder().encode(`todo-v3:${size}:${+bold}:${+italic}:SimSun`)) || 1);
@@ -167,7 +167,8 @@ function editorFixture(options = {}) {
       addEventListener(type, callback) { listeners.set(`${id}:${type}`, callback); }, classList: { toggle() {} },
       width: 800, height: 160,
       getContext: () => ({ clearRect() {}, fillRect() {}, strokeRect: (...args) => drawings.push(args), fillText() {},
-        beginPath() {}, moveTo() {}, lineTo() {}, stroke() {} }) });
+        beginPath() {}, moveTo() {}, lineTo() {}, stroke() {},
+        createImageData(w,h) {return {data:new Uint8ClampedArray(w*h*4)};},putImageData(image) {drawings.push(image);} }) });
     return nodes.get(id);
   };
   let current = null, busy = false, saved = null, version = 0;
@@ -177,7 +178,7 @@ function editorFixture(options = {}) {
     async loadLatestOutput() { if (options.latest) await options.latest(installer); },
     async loadBundle(entries) { current = store.prepareBundle(entries); ++version; context.ExternalResourceEditor.load(current); },
   };
-  const context = { EPDResourceBuilder: builder, EPDResourceStore: store, EPDResourcePack: packer,
+  const context = { EPDUIModel: require('../html/js/ui_tools/ui_model.js'), EPDUIRenderer: require('../html/js/ui_tools/ui_preview.js'), EPDResourceBuilder: builder, EPDResourceStore: store, EPDResourcePack: packer,
     EPDFontStoreTool: fontTool, ExternalResourceInstaller: installer,
     EPDWebFonts: { ...require('../html/js/font_builder.js'), extendFonts: options.extendFonts || ((fonts, requests, settings) => require('../html/js/font_builder.js').extendFonts(fonts, requests,
       { ...settings, rasterize: async () => ({ width: 2, height: 2, x: 0, y: 0, advance: 3, pixels: Uint8Array.of(1,0,0,1) }) })) },
@@ -200,7 +201,8 @@ function editorFixture(options = {}) {
 test('editor loads, previews, generates, exports a complete reusable project and respects the operation lock', async () => {
   const f = editorFixture();
   f.editor.load(bundle());
-  assert.equal(f.drawings.length, 3);
+  assert.equal(f.drawings.length, 1);
+  assert.equal(f.drawings[0].data.length,800*480*4);
   const calendar = JSON.parse(f.node('resourceCalendarSource').value);
   calendar.solar_festivals[0].name = '新年';
   f.node('resourceCalendarSource').value = JSON.stringify(calendar);
@@ -369,7 +371,7 @@ test('download all exports a reusable ZIP containing seven verified ERS files an
   assert.equal(builder.open(saved).calendar.solar_festivals[0].name, '新年');
   const manifest = JSON.parse(new TextDecoder().decode(entries.find(item => item.name === 'manifest.json').bytes));
   assert.equal(manifest.resources.length, 7);
-  for (const [name, format] of [['fonts.json', 'FPK1'], ['calendar.json', 'CAL1'], ['ui.json', 'UIR1'],
+  for (const [name, format] of [['fonts.json', 'FPK1'], ['calendar.json', 'CAL1'], ['ui.json', 'UIR2'],
     ['records.json', 'REC1'], ['todo.json', 'TODO']])
     assert.equal(JSON.parse(new TextDecoder().decode(entries.find(item => item.name === name).bytes)).format, format);
   assert.deepEqual(JSON.parse(new TextDecoder().decode(entries.find(item => item.name === 'calendar-data.json').bytes)), calendar);
@@ -429,7 +431,7 @@ test('regenerating untouched defaults preserves every payload and revision witho
 test('replacement base fonts regain glyphs needed by preserved annotations and TODO items', async () => {
   const f = editorFixture(), api = require('../html/js/font_builder.js'), migration = migrationFixture();
   const original = bundle(), extended = await api.extendFonts(builder.open(original).fonts,
-    [{ slot: 0, text: '新' }, { slot: 1, text: '新书' }], { rasterize: async () => ({ width: 1, height: 1, x: 0, y: 0, advance: 2, pixels: Uint8Array.of(1) }) });
+    [{ slot: 0, text: '新' }, { slot: 1, text: '新书.' }], { rasterize: async () => ({ width: 1, height: 1, x: 0, y: 0, advance: 2, pixels: Uint8Array.of(1) }) });
   const source = packer.create({ fonts: extended.fonts, annotations: migration.annotations,
     todo: { items: [{ id: 1, text: '书', start: 0, end: 0, resident: true, completed: false }], limit: 5, fontSize: 12 } });
   await f.installer.loadBundle(source.packages);
@@ -505,7 +507,7 @@ test('full project export keeps unfinished edits, pending BINs and settings with
 test('changing the clock text slot generates its voltage, temperature, SSID and sync URL glyphs', async () => {
   const f = editorFixture(); await f.editor.ensureReady();
   const layout = JSON.parse(f.node('resourceLayoutSource').value);
-  layout.components.find(c => c.id === 15).fonts[2] = 1;
+  for(const id of [36,37,43,44]) layout.components.find(c=>c.id===id).fonts[0]=1;
   f.node('resourceLayoutSource').value = JSON.stringify(layout);
   const result = await f.editor.generate(); assert.ok(result);
   const glyphs = builder.validateFont(builder.open(result).fonts[1], 1);

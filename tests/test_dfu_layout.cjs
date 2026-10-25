@@ -13,7 +13,9 @@ const endOfModule = /\}\)\(\);\s*$/;
 assert.match(source, endOfModule, 'DFU module must remain an IIFE');
 // Expose the real private function only in this VM; the browser API is unchanged.
 const instrumented = source.replace(endOfModule,
-  'window.__dfuLayoutPrecheck = updateVersionPrecheck;\n})();');
+  'window.__dfuLayoutPrecheck = updateVersionPrecheck;\n' +
+  'window.__dfuPackage = () => dfuPackage;\n' +
+  'window.__setDfuSession = setPendingManualSession;\n})();');
 
 function fixture() {
   const elements = new Map();
@@ -48,6 +50,9 @@ function fixture() {
     visible: () => element('dfuPrecheck').style.display,
     warned: () => element('dfuPrecheck').classes.has('warn'),
     status: () => element('dfuStatus').textContent,
+    loadedName: () => window.__dfuPackage()?.file.name,
+    pending: value => window.__setDfuSession(value),
+    fileDisabled: () => element('dfuPackageFile').disabled,
     select: file => element('dfuPackageFile').listeners.get('change')({ target: { files: [file] } }),
   };
 }
@@ -172,4 +177,72 @@ test('empty precheck does not invent application size or a bootloader migration'
   assert.equal(result.capacityWarn, false);
   assert.doesNotMatch(f.text(), /应用镜像:|需要已安装/);
   assert.equal(f.warned(), false);
+});
+
+function deferred() {
+  let resolve, reject;
+  const promise = new Promise((res, rej) => { resolve = res; reject = rej; });
+  return { promise, resolve, reject };
+}
+
+test('an invalid replacement ZIP cannot leave the previous firmware selected', async () => {
+  const f = fixture();
+  await f.select(packageFile('old.zip', 32));
+  await f.select({ name: 'broken.zip', arrayBuffer: async () => new ArrayBuffer(0) });
+  assert.match(f.status(), /固件包加载失败/);
+  assert.equal(f.loadedName(), undefined);
+  assert.equal(f.visible(), 'none');
+});
+
+for (const manifest of [{}, { application: { dat_file: 'missing.dat', bin_file: 'missing.bin' } }]) {
+  test(`a parsed manifest without usable images cannot become the active package: ${JSON.stringify(manifest)}`, async () => {
+    const f = fixture();
+    await f.select(packageFile('old.zip', 32));
+    const zip = createZip([{ name: 'manifest.json',
+      bytes: new TextEncoder().encode(JSON.stringify({ manifest })) }]);
+    await f.select({ name: 'invalid-images.zip', arrayBuffer: async () => zip.buffer });
+    assert.match(f.status(), /固件包加载失败/);
+    assert.equal(f.loadedName(), undefined);
+    assert.equal(f.visible(), 'none');
+  });
+}
+
+test('selecting or clearing a file immediately invalidates the previously loaded package', async () => {
+  const f = fixture();
+  await f.select(packageFile('old.zip', 32));
+  const bytes = deferred();
+  const loading = f.select({ name: 'slow.zip', arrayBuffer: () => bytes.promise });
+  assert.equal(f.loadedName(), undefined, 'starting during parsing must not use the old package');
+  await f.select(null);
+  assert.match(f.status(), /未选择 DFU 固件包/);
+  bytes.resolve(await packageFile('slow.zip', 64).arrayBuffer());
+  await loading;
+  assert.equal(f.loadedName(), undefined, 'clearing must invalidate an in-flight ZIP load');
+});
+
+for (const fails of [false, true]) {
+  test(`latest file selection owns the package and status when an old load finishes (fails=${fails})`, async () => {
+    const f = fixture();
+    const bytes = deferred();
+    const oldLoad = f.select({ name: 'old.zip', arrayBuffer: () => bytes.promise });
+    await f.select(packageFile('latest.zip', 64));
+    if (fails) bytes.reject(new Error('old read failed'));
+    else bytes.resolve(await packageFile('old.zip', 32).arrayBuffer());
+    await oldLoad;
+    assert.equal(f.loadedName(), 'latest.zip');
+    assert.match(f.status(), /固件包已就绪：latest\.zip/);
+  });
+}
+
+test('firmware selection is locked while a resumable DFU session owns its images', async () => {
+  const f = fixture();
+  await f.select(packageFile('active.zip', 32));
+  f.pending({ remainingImages: [] });
+  assert.equal(f.fileDisabled(), true);
+  await f.select(packageFile('other.zip', 64));
+  assert.equal(f.loadedName(), 'active.zip');
+  f.pending(null);
+  assert.equal(f.fileDisabled(), false);
+  await f.select(packageFile('other.zip', 64));
+  assert.equal(f.loadedName(), 'other.zip');
 });

@@ -212,7 +212,9 @@ LIB_FILES += \
 # 发布构建不预留堆，GUI 使用静态分页缓冲；保留 2 KiB 栈。
 # gcc_sbrk.c 仍拒绝超出链接器预留区的分配，避免意外引入动态分配后踩栈。
 # =============================================================================
-OPT = -Os -g3 -flto
+# Keep this small application's LTO code in one partition so shared helpers
+# remain visible to the size optimizer. The SDK's -fno-lto exceptions stay below.
+OPT = -Os -g3 -flto -flto-partition=one
 
 GUI_USE_EXTERNAL_FONTS ?= 1
 GUI_INCLUDE_INTERNAL_FONTS ?= 0

@@ -1,6 +1,7 @@
 (function (root) {
   'use strict';
   const builder = typeof module !== 'undefined' && module.exports ? require('./resource_builder.js') : root.EPDResourceBuilder;
+  const uiModel = typeof module !== 'undefined' && module.exports ? require('./ui_tools/ui_model.js') : root.EPDUIModel;
 
   // Times are seconds on the device's local wall clock, as used by SYNC_TIME.
   // They are intentionally independent of the browser's UTC offset.
@@ -123,9 +124,11 @@
     },
     usesTypography(config = this) { return config.fontSize > 12 || config.fontBold === true || config.fontItalic === true; },
     maxVisible(config = this) {
-      if (!this.usesTypography(config)) return 8;
-      const pixels = Math.ceil(config.fontSize * 4 / 3), height = pixels + Math.ceil(pixels / 3);
-      return Math.min(8, Math.floor(384 / (height + 6)));
+      const selected=root.ExternalResourceEditor?.previewModel?.();
+      const slot=this.usesTypography(config)||config.fontFamily?3:config.fontSize===9?0:1;
+      const pixels=Math.ceil(config.fontSize*4/3);
+      const height=this.usesTypography(config)?pixels+Math.ceil(pixels/3):selected?.fonts[slot]?.[10]||(config.fontSize===9?12:16);
+      return uiModel.todoCapacity(config.ui||selected?.ui||uiModel.defaults(),height,this.usesTypography(config)||height>16);
     },
     compare(a, b) {
       return Number(b.resident) - Number(a.resident) || a.start - b.start || a.end - b.end || a.id - b.id;
@@ -150,7 +153,7 @@
     },
     setTemperature(value) {
       this._temperature = Number.isInteger(value) && value >= -128 && value <= 127 ? value : null;
-      this.renderHeader(this.previewNow());
+      this.renderHeader(this.previewNow()); this.renderResourcePreview(this.previewNow());
     },
     renderHeader(now) {
       const title = this.element('todoCalendarPreviewTitle'), total = this.dailyCount(now), current = this.visibleItems(now).length;
@@ -251,15 +254,17 @@
       }
       return config;
     },
-    fontRequests() {
-      const config = this.normalizeConfig(this);
+    fontRequests(source = this) {
+      const config = this.normalizeConfig(source);
+      const ui=source.ui||root.ExternalResourceEditor?.previewModel?.()?.ui||uiModel.defaults();
+      const ellipsis=[...new Set(ui.components.filter(c=>c.kind===6).map(c=>c.text[2]))].join('');
       const text = config.items.map(item => item.text).join('');
-      const fontFamily = this.normalizeFontFamily(this.fontFamily);
+      const fontFamily = this.normalizeFontFamily(source.fontFamily);
       // Match the firmware's three-dot truncation marker, including its glyph.
-      if (this.usesTypography(config)) return [{ slot: 3, sourceSlot: config.fontSize === 9 ? 0 : 1, text: ' ...' + text,
+      if (this.usesTypography(config)) return [{ slot: 3, sourceSlot: config.fontSize === 9 ? 0 : 1, text: ' ' + ellipsis + text,
         fontFamily, fontSize: config.fontSize, fontBold: !!config.fontBold, fontItalic: !!config.fontItalic }];
-      if (fontFamily) return [{ slot: 3, sourceSlot: config.fontSize === 9 ? 0 : 1, text: ' ...' + text, fontFamily }];
-      return text ? [{ slot: config.fontSize === 9 ? 0 : 1, text }] : [];
+      if (fontFamily) return [{ slot: 3, sourceSlot: config.fontSize === 9 ? 0 : 1, text: ' ' + ellipsis + text, fontFamily }];
+      return text ? [{ slot: config.fontSize === 9 ? 0 : 1, text: ellipsis + text }] : [];
     },
     changed() {
       ++this._revision;
@@ -620,11 +625,14 @@
       parent.appendChild(node); return node;
     },
     previewGeometry() {
+      if (this.element('todoCalendarResourceCanvas')?.getContext) return;
       const screen = this.element('todoCalendarPreviewScreen'), preview = this.element('todoCalendarPreviewItems');
       if (!preview?.style) return;
       const scale = screen?.clientWidth ? screen.clientWidth / 800 : 0.6;
       const pixels = Math.ceil(this.fontSize * 4 / 3), height = pixels + Math.ceil(pixels / 3);
-      const rowHeight = Math.floor(384 / this.limit), lines = rowHeight >= 2 * height + 10 ? 2 : 1;
+      const ui=this.ui||root.ExternalResourceEditor?.previewModel?.()?.ui||uiModel.defaults();
+      const pane=ui.components.find(c=>c.kind===6&&(c.modes&(1<<(this.previewMode-1)))), style=pane.style;
+      const rowHeight=Math.floor(pane.height/this.limit),lines=rowHeight>=2*height+style.two_line_padding?2:1;
       preview.dataset.typography = String(this.usesTypography());
       preview.dataset.lines = String(lines);
       preview.style.fontSize = `${pixels * scale}px`;
@@ -638,8 +646,8 @@
       }
       // Keep text spacing and the available body height proportional to 800×480.
       for (const [name, value] of [['--todo-row-height', rowHeight * scale], ['--todo-line-height', (height + 4) * scale],
-        ['--todo-body-height', 384 * scale], ['--todo-marker-size', 7 * scale],
-        ['--todo-marker-top', (3 + Math.floor((height - 7) / 2)) * scale], ['--todo-copy-inset', (14 + Math.ceil(pixels / 4)) * scale]]) {
+        ['--todo-body-height', pane.height * scale], ['--todo-marker-size', style.marker_size * scale],
+        ['--todo-marker-top', (style.text_top + Math.floor((height - style.marker_size) / 2)) * scale], ['--todo-copy-inset', (style.text_inset + Math.ceil(pixels / 4)) * scale]]) {
         if (typeof preview.style.setProperty === 'function') preview.style.setProperty(name, `${value}px`);
         else preview.style[name] = `${value}px`;
       }
@@ -691,6 +699,23 @@
       const summary = this.element('todoCalendarPreviewSummary');
       if (summary) summary.textContent = `${this.displayTime(now)} · 显示 ${shown.length} / ${this.limit} 项${active.length > shown.length ? ` · ${active.length - shown.length} 项等待空位` : ''}`;
       this.renderCalendar(now); this.updateEditor(); this.controls();
+      this.renderResourcePreview(now);
+    },
+    async renderResourcePreview(now = this.previewNow()) {
+      const canvas=this.element('todoCalendarResourceCanvas');
+      if (!canvas?.getContext || !root.ExternalResourceEditor || !root.EPDUIRenderer) return;
+      const token=this._resourcePreviewToken=(this._resourcePreviewToken||0)+1;
+      try {
+        if (!root.ExternalResourceEditor.previewModel()) await root.ExternalResourceEditor.ensureReady();
+        const model=root.ExternalResourceEditor.previewModel();
+        if (!model || token!==this._resourcePreviewToken) return;
+        const requests=this.fontRequests();
+        const fonts=(await root.EPDWebFonts.extendFonts(model.fonts,requests,{fontFamily:this.fontFamily||undefined})).fonts;
+        if (token!==this._resourcePreviewToken) return;
+        root.EPDUIRenderer.draw(canvas,model.ui,model.calendar,fonts,
+          {...root.ExternalResourceEditor.previewRuntime(this.previewMode),timestamp:now},this,root.CalendarAnnotations?.annotations||[]);
+        canvas.hidden=false;
+      } catch(error) { if(token===this._resourcePreviewToken) this.report(`预览失败：${error.message}`,true); }
     },
     renderCalendar(now) {
       const calendar = this.element('todoCalendarPreviewCalendar'); if (!calendar) return;

@@ -72,6 +72,26 @@ function setupTimedImageSend(version = 0x39) {
   return { ...state, layers, writes, advanceClock: context.advanceClock };
 }
 
+function setupRestart() {
+  const state = setup(), listeners = new Set(), writes = [], toasts = [];
+  const device = {name: 'NRF_EPD_test', gatt: {connected: true},
+    addEventListener(type, listener) { assert.equal(type, 'gattserverdisconnected'); listeners.add(listener); },
+    removeEventListener(type, listener) { assert.equal(type, 'gattserverdisconnected'); listeners.delete(listener); },
+  };
+  state.context.restartTestDevice = device;
+  state.context.captureRestart = data => writes.push(Array.from(data));
+  state.context.showToast = message => toasts.push(message);
+  state.run(`bleDevice = restartTestDevice; appVersion = 0x40;
+    epdCharacteristic = {writeValueWithResponse: async data => captureRestart(data)};`);
+  const drop = () => {
+    device.gatt.connected = false;
+    state.run('disconnect()');
+    for (const listener of listeners) listener();
+  };
+  state.context.dropRestartConnection = drop;
+  return {...state, device, listeners, writes, toasts, drop};
+}
+
 test('time packets preserve local wall time in whole, half and quarter-hour zones', () => {
   const utc = 1767225300;
   for (const offsetMinutes of [480, 330, 345, -210, -150, 765, 0, -240]) {
@@ -152,6 +172,88 @@ test('driver setup does not report success after a failed INIT', async () => {
   await run('setDriver()');
   assert.equal(logs.some(message => message.includes('驱动配置已设置')), false);
   assert.equal(logs.some(message => message.includes('驱动初始化失败')), true);
+});
+
+test('system restart sends only SYS_RESET, holds the operation until disconnect and allows reconnect', async () => {
+  const {run, elements, listeners, writes, toasts, drop} = setupRestart();
+  const work = run('restartDevice()');
+  await new Promise(setImmediate);
+  assert.deepEqual(writes, [[0x91]]);
+  assert.equal(run('DeviceOperations.current.kind'), 'restarting');
+  assert.equal(elements.get('restartbutton').disabled, true);
+  assert.equal(await run('sendTimeCommand(1, "calendar")'), false);
+  drop();
+  assert.equal(await work, true);
+  assert.equal(run('DeviceOperations.current'), null);
+  assert.equal(elements.get('restartbutton').disabled, true);
+  assert.equal(elements.get('reconnectbutton').disabled, false);
+  assert.equal(listeners.size, 0);
+  assert.match(toasts.at(-1), /已断开.*重连/);
+});
+
+test('restart tolerates disconnect before GATT acknowledgement without claiming confirmed reboot', async () => {
+  const {run, writes, logs, listeners} = setupRestart();
+  run(`epdCharacteristic.writeValueWithResponse = async data => {
+    captureRestart(data); dropRestartConnection(); throw new Error('GATT disconnected');
+  };`);
+  assert.equal(await run('restartDevice()'), true);
+  assert.deepEqual(writes, [[0x91]]);
+  assert.equal(listeners.size, 0);
+  assert.ok(logs.some(message => /已断开.*重连/.test(message)));
+  assert.ok(!logs.some(message => /重启成功|重启完成|重启指令发送失败/.test(message)));
+});
+
+test('restart reports accepted command without inventing a reboot when the device stays connected', async () => {
+  const {run, context, logs, listeners} = setupRestart();
+  context.setTimeout = (callback, delay) => setTimeout(callback, delay === 5000 ? 0 : delay);
+  assert.equal(await run('restartDevice()'), true);
+  assert.equal(run('gattServer.connected'), true);
+  assert.equal(run('DeviceOperations.current'), null);
+  assert.equal(listeners.size, 0);
+  assert.ok(logs.some(message => /指令已发送.*尚未检测到断连/.test(message)));
+  assert.ok(!logs.some(message => /重启成功|重启完成/.test(message)));
+});
+
+test('restart transport failure releases the operation and reports failure while still connected', async () => {
+  const {run, context, logs, listeners} = setupRestart();
+  context.setTimeout = (callback, delay) => setTimeout(callback, delay === 5000 ? 0 : delay);
+  run('epdCharacteristic.writeValueWithResponse = async () => { throw new Error("radio error"); };');
+  assert.equal(await run('restartDevice()'), false);
+  assert.equal(run('DeviceOperations.current'), null);
+  assert.equal(run('gattServer.connected'), true);
+  assert.equal(listeners.size, 0);
+  assert.ok(logs.some(message => /重启指令发送失败/.test(message)));
+});
+
+test('restart is blocked offline or during resource updates without writing a reset command', async () => {
+  const {run, writes, listeners, elements} = setupRestart();
+  run('globalThis.resourceOwner = DeviceOperations.begin("resources")');
+  assert.equal(elements.get('restartbutton').disabled, true);
+  assert.equal(await run('restartDevice()'), false);
+  assert.equal(run('DeviceOperations.current === resourceOwner'), true);
+  run('DeviceOperations.end(resourceOwner); gattServer.connected = false; restartTestDevice.gatt.connected = false; updateButtonStatus()');
+  assert.equal(await run('restartDevice()'), false);
+  assert.equal(elements.get('restartbutton').disabled, true);
+  assert.equal(listeners.size, 0);
+  assert.deepEqual(writes, []);
+});
+
+test('a late restart result cannot notify or unlock a replacement connection', async () => {
+  const {run, context, drop, toasts, listeners} = setupRestart();
+  let release;
+  context.delayedRestartWrite = () => new Promise(resolve => { release = resolve; });
+  run('epdCharacteristic.writeValueWithResponse = delayedRestartWrite');
+  const work = run('restartDevice()');
+  await new Promise(setImmediate);
+  drop();
+  run(`gattServer = {connected:true}; epdCharacteristic = {};
+    bleDevice = {gatt:{connected:true}}; globalThis.newOwner = DeviceOperations.begin('resources');`);
+  release();
+  assert.equal(await work, false);
+  assert.equal(run('DeviceOperations.current === newOwner'), true);
+  assert.equal(toasts.length, 0);
+  assert.equal(listeners.size, 0);
+  run('DeviceOperations.end(newOwner)');
 });
 
 test('display operation waits for matching completion, rejects BUSY, and cancels on disconnect', async () => {

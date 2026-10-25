@@ -5,7 +5,8 @@
 #include "ui_resources.h"
 #include "resource_layout.h"
 
-static bool m_ready;
+/* Main publishes activation state; the scheduling timer only reads it. */
+static volatile bool m_ready;
 
 void epd_resources_invalidate(void)
 {
@@ -35,13 +36,13 @@ rs_result_t epd_resources_apply(void)
     rs_result_t result = resource_store_mount();
     if (result != RS_OK) return result;
 #if GUI_USE_EXTERNAL_FONTS
-    if (!GUI_ExternalFontsInit()) return RS_INVALID;
+    if (font_store_retry_init() != NRF_SUCCESS) return RS_INVALID;
     for (unsigned slot = 0; slot < FONT_STORE_SLOT_COUNT; ++slot)
         if (font_store_get_source((font_store_slot_t)slot) == NULL) return RS_NOT_FOUND;
 #elif !GUI_INCLUDE_INTERNAL_FONTS
     return RS_NOT_FOUND;
 #endif
-    if (!calendar_resources_init() || !ui_resources_init()) return RS_INVALID;
+    if (!calendar_resources_retry_init() || !ui_resources_retry_init()) return RS_INVALID;
     m_ready = true;
     return RS_OK;
 }

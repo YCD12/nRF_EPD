@@ -21,7 +21,7 @@ MODULE_VERSIONS = {
     2: 1,  # epd config
     3: 1,  # calendar annotations
     5: 1,  # calendar
-    6: 1,  # ui
+    6: 2,  # UIR2 display styles and templates
     7: 1,  # fonts
     9: 1,  # todo items
 }
@@ -237,37 +237,14 @@ def calendar_payload(input_dir, calendar_data=None):
     return bytes(header + body), records
 
 
-def ui_payload():
-    none = 0xff
-    group, line, grid, clock = 1, 2, 3, 4
-    records = [
-        # mode, id, kind, flags, fonts[3], reserved, x, y, w, h, value0, value1
-        (1, 1, group, 0, 2, 1, 0, 0, 10, 38, 780, 38, 16, 12),
-        (1, 2, group, 0, 1, none, none, 0, 10, 44, 780, 32, 0, 0),
-        (1, 3, grid,  0, 2, 1, 0, 0, 10, 84, 780, 386, 0, 0),
-        (2, 4, line,  0, none, none, none, 0, 15, 45, 770, 2, 0, 0),
-        (2, 5, line,  0, none, none, none, 0, 15, 435, 770, 2, 0, 0),
-        (2, 6, line,  0, none, none, none, 0, 390, 70, 1, 350, 0, 0),
-        (2, 7, group, 0, 0, none, none, 0, 400, 86, 388, 16, 77, 788),
-        (2, 8, group, 0, 1, none, none, 0, 397, 96, 398, 32, 0, 0),
-        (2, 9, grid,  0, 2, 1, 0, 0, 397, 136, 398, 284, 0, 0),
-        (2,10, group, 0, 2, 1, none, 0, 15, 92, 362, 36, 115, 377),
-        (2,11, line,  0, none, none, none, 0, 15, 128, 362, 1, 0, 0),
-        (2,12, clock, 0, none, none, none, 0, 0, 169, 384, 150, 6, 2),
-        (2,13, line,  0, none, none, none, 0, 15, 360, 362, 1, 0, 0),
-        (2,14, group, 0, 1, none, none, 0, 15, 380, 362, 44, 404, 420),
-        (3,15, group, 0, 2, 1, 0, 0, 100, 36, 600, 32, 58, 138),
-        (3,16, line,  0, none, none, none, 0, 90, 68, 620, 1, 0, 0),
-        (3,17, clock, 0, none, none, none, 0, 160, 136, 480, 208, 10, 2),
-        (3,18, line,  0, none, none, none, 0, 90, 412, 620, 1, 0, 0),
-        (3,19, group, 0, 1, none, none, 0, 100, 442, 600, 38, 462, 700),
-    ]
-    header = struct.pack('<I6H', 0x31524955, 1, len(records), 800, 480, 20, 0)
-    body = b''.join(struct.pack('<8B6h', *record) for record in records)
-    manifest = [dict(mode=r[0], id=r[1], kind=r[2], flags=r[3],
-                     fonts=list(r[4:7]), x=r[8], y=r[9], width=r[10], height=r[11],
-                     value0=r[12], value1=r[13]) for r in records]
-    return header + body, manifest
+def ui_payload(source=None):
+    import importlib.util
+    spec = importlib.util.spec_from_file_location('ui_resource_codec', ROOT / 'tools/ui_resource_codec.py')
+    codec = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(codec)
+    default_ui, encode_ui = codec.default_ui, codec.encode_ui
+    model = json.loads(Path(source).read_text(encoding="utf-8")) if source else default_ui()
+    return encode_ui(model), model['components']
 
 
 def generate(layout, check=False):
@@ -303,6 +280,7 @@ def main():
     parser.add_argument('--calendar', action='store_true', help='build calendar resource package')
     parser.add_argument('--calendar-dir', type=Path, default=ROOT / 'tools/dist')
     parser.add_argument('--calendar-data', type=Path, help='JSON overrides for calendar years and calculation/holiday tables')
+    parser.add_argument('--ui-layout', type=Path, help='UIR2 source JSON exported by the web editor')
     parser.add_argument('--ui', action='store_true', help='build fixed-component UI layout package')
     parser.add_argument('--todo', action='store_true', help='build empty TODO items with factory display settings')
     parser.add_argument('--records', action='store_true', help='build default config and empty annotation records')
@@ -359,15 +337,15 @@ def main():
     if args.ui:
         if not args.output:
             parser.error('--ui requires --output')
-        payload, records = ui_payload()
+        payload, records = ui_payload(args.ui_layout)
         ui = next(p for p in layout['partitions'] if p['id'] == 6)
         if len(payload) > ui['size_bytes'] - 32:
             parser.error('UI package exceeds its partition')
         args.output.mkdir(parents=True, exist_ok=True)
         (args.output / 'ui.ers').write_bytes(package(6, payload, MODULE_VERSIONS[6], built_at))
         (args.output / 'ui.json').write_text(json.dumps({
-            'format': 'UIR1', 'revision': args.revision,
-            'screen_width': 800, 'screen_height': 480,
+            'format': 'UIR2', 'revision': MODULE_VERSIONS[6],
+            'screen_width': 800, 'screen_height': 480, 'version': 2,
             'payload_bytes': len(payload), 'components': records,
         }, ensure_ascii=False, indent=2) + '\n', encoding='utf-8')
     if args.todo:

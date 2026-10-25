@@ -4,8 +4,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 
-#include "app_scheduler.h"
-#include "app_util_platform.h"
+#include "epd_work_queue.h"
 
 typedef struct {
     volatile uint32_t timestamp;
@@ -42,11 +41,7 @@ static inline void epd_display_queue_schedule(epd_display_queue_t *queue,
         post = true;
     }
     CRITICAL_REGION_EXIT();
-    if (post && app_sched_event_put(&context, sizeof(context), worker) != 0U) {
-        CRITICAL_REGION_ENTER();
-        queue->scheduled = false;
-        CRITICAL_REGION_EXIT();
-    }
+    if (post) epd_work_post(&queue->scheduled, context, worker);
 }
 
 static inline bool epd_display_queue_begin(epd_display_queue_t *queue,

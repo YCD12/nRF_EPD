@@ -3,6 +3,56 @@
 #include <stdio.h>
 #include "Adafruit_GFX.h"
 
+/* Every RGB565 input must retain the mono/BWR color mapping, regardless of
+ * the previous pixel or its position within the byte. */
+static void test_pixel_planes(void)
+{
+    static const uint8_t seeds[] = {0x00, 0xff, 0xa5};
+    Adafruit_GFX gfx;
+    for (unsigned three_color = 0; three_color < 2; ++three_color) {
+        if (three_color) GFX_begin_3c(&gfx, 8, 1, 2);
+        else GFX_begin(&gfx, 8, 1, 1);
+        for (unsigned seed = 0; seed < sizeof(seeds); ++seed) {
+            for (unsigned x = 0; x < 8; ++x) {
+                const uint8_t mask = 0x80U >> x;
+                for (uint32_t color = 0; color <= UINT16_MAX; ++color) {
+                    gfx.buffer[0] = gfx.buffer[1] = seeds[seed];
+                    gfx.buffer[2] = 0x5a;
+                    GFX_drawPixel(&gfx, x, 0, (uint16_t)color);
+                    bool black = three_color ? color == GFX_BLACK : color != GFX_WHITE;
+                    assert(((gfx.buffer[0] & mask) == 0) == black);
+                    assert((gfx.buffer[0] & (uint8_t)~mask) == (seeds[seed] & (uint8_t)~mask));
+                    if (three_color) {
+                        bool red = color != GFX_BLACK && color != GFX_WHITE;
+                        assert(((gfx.color[0] & mask) == 0) == red);
+                        assert((gfx.color[0] & (uint8_t)~mask) == (seeds[seed] & (uint8_t)~mask));
+                    } else {
+                        assert(gfx.buffer[1] == seeds[seed]);
+                    }
+                    assert(gfx.buffer[2] == 0x5a);
+                }
+            }
+        }
+    }
+#if !GFX_FIXED_BWR_PANEL
+    /* The packed four-color branch shares neither BWR plane. */
+    static const uint16_t colors[] = {GFX_BLACK, GFX_WHITE, GFX_YELLOW, GFX_RED};
+    GFX_begin_4c(&gfx, 8, 1, 2);
+    for (unsigned x = 0; x < 8; ++x) {
+        const unsigned shift = 6U - 2U * (x % 4U);
+        const uint8_t mask = 3U << shift;
+        for (unsigned color = 0; color < 4; ++color) {
+            memset(gfx.buffer, 0xa5, 3);
+            GFX_drawPixel(&gfx, x, 0, colors[color]);
+            assert(((gfx.buffer[x / 4U] & mask) >> shift) == color);
+            assert((gfx.buffer[x / 4U] & (uint8_t)~mask) == (0xa5 & (uint8_t)~mask));
+            assert(gfx.buffer[1U - x / 4U] == 0xa5);
+            assert(gfx.buffer[2] == 0xa5);
+        }
+    }
+#endif
+}
+
 /* Preserve the original full-circle rasterizer as a pixel equivalence oracle. */
 static void reference_circle(Adafruit_GFX* gfx, int16_t x0, int16_t y0,
                              int16_t r, uint16_t color)
@@ -119,7 +169,8 @@ int main(void)
     GFX_drawFastVLine(&gfx, 9, -3, 39, GFX_BLACK);
     assert(memcmp(expected, gfx.buffer, sizeof(expected)) == 0);
     GFX_end(&gfx);
+    test_pixel_planes();
     test_circle_pixels();
-    puts("PASS: placeholder edges, clipped/empty/negative H/V lines and circle pixel equivalence");
+    puts("PASS: all RGB565 mono/BWR pixel mappings, placeholder/line edges and circle pixel equivalence");
     return 0;
 }

@@ -83,12 +83,18 @@ test('failed rasterization and changed connection never reach Flash writes', asy
   assert.equal(f.uploaded, null);
 });
 
-test('upload, CRC verification and reload failures reject and attempt maintenance cleanup', async () => {
+test('persistent upload, CRC verification and reload failures report incomplete recovery', async () => {
   for (const options of [{ uploadFail: true }, { verifyFail: true }, { leaveFail: true }]) {
-    const f = fixture(options);
-    await assert.rejects(sync.ensure(f.client, requests, { rasterize }));
+    const f = fixture(options), original = f.bytes.slice();
+    await assert.rejects(sync.ensure(f.client, requests, { rasterize }), error => {
+      assert.equal(error.recoveryIncomplete, true);
+      assert.match(error.message, /旧字库恢复未完成/);
+      return true;
+    });
     assert.ok(f.calls.includes('request:5'));
-    assert.equal(f.calls.at(-1), 'leave');
+    assert.equal(f.calls.filter(call => call === 'upload').length, 2);
+    assert.deepEqual(f.bytes, original);
+    if (!options.leaveFail) assert.equal(f.calls.includes('leave'), false);
   }
 });
 
@@ -174,3 +180,53 @@ test('unrecoverable deferred font write failure preserves the original error and
   assert.equal(f.calls.includes('request:5'), true);
   assert.equal(f.calls.includes('leave'), false);
 });
+
+test('ordinary annotation font update restores old committed fonts after an interrupted erase/write', async () => {
+  const f = fixture(), original = f.bytes.slice(), progress = [];
+  let flash = original, uploads = 0, applications = 0;
+  f.client.upload = async bytes => {
+    f.calls.push('upload');
+    flash = null; // BEGIN invalidates the single-copy package before DATA.
+    if (++uploads === 1) throw new Error('injected DATA failure');
+    flash = bytes.slice();
+  };
+  f.client.inspect = async () => {
+    f.calls.push('verify');
+    if (!flash) return { code: 4 };
+    const pack = store.parsePackage(flash);
+    return { code: 0, revision: pack.revision, crc: pack.crc, length: pack.payload.length };
+  };
+  f.client.leave = async () => {
+    ++applications;
+    assert.deepEqual(flash, original, 'the panel must only resume with the restored font package');
+  };
+  await assert.rejects(sync.ensure(f.client, requests, { rasterize, progress: message => progress.push(message) }), /injected DATA failure/);
+  assert.deepEqual(flash, original);
+  assert.equal(uploads, 2);
+  assert.equal(applications, 1);
+  assert.deepEqual(f.calls.slice(-3), ['request:5', 'upload', 'verify']);
+  assert.ok(progress.some(message => message.includes('旧字库已恢复')));
+});
+
+for (const disconnected of [true, false]) {
+  test(`ordinary font recovery cannot write after its connection is lost or replaced (disconnected=${disconnected})`, async () => {
+    const f = fixture();
+    let current = true, uploads = 0;
+    f.client.upload = async () => {
+      ++uploads;
+      if (disconnected) f.client.closed = true;
+      else current = false;
+      throw new Error('interrupted font write');
+    };
+    await assert.rejects(sync.ensure(f.client, requests, { rasterize,
+      assertCurrent: () => { if (!current) throw new Error('connection changed'); }
+    }), error => {
+      assert.equal(error.recoveryIncomplete, true);
+      assert.match(error.message, /interrupted font write.*旧字库恢复未完成/);
+      return true;
+    });
+    assert.equal(uploads, 1);
+    assert.equal(f.calls.includes('request:5'), false);
+    assert.equal(f.calls.includes('leave'), false);
+  });
+}

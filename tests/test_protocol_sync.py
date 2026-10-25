@@ -26,13 +26,13 @@ assert all(name not in fw_ids and name not in web_ids for name in
 
 fw_version = int(re.search(r"#define APP_VERSION\s+(0x[0-9a-fA-F]+)", service).group(1), 16)
 web_min = int(re.search(r"const MIN_FIRMWARE_VERSION\s*=\s*(0x[0-9a-fA-F]+)", web).group(1), 16)
-assert fw_version == 0x3D and web_min == 0x38
+assert fw_version == 0x40 and web_min == 0x38
 todo_web = (ROOT / "html/js/todo_calendar.js").read_text(encoding="utf-8")
 gui_header = (ROOT / "GUI/GUI.h").read_text(encoding="utf-8")
 assert int(re.search(r"MIN_VERSION:\s*(0x[0-9a-fA-F]+)", todo_web).group(1), 16) == 0x3A
 assert int(re.search(r"FULL_MIN_VERSION:\s*(0x[0-9a-fA-F]+)", todo_web).group(1), 16) == 0x3B
 assert int(re.search(r"TYPOGRAPHY_MIN_VERSION:\s*(0x[0-9a-fA-F]+)", todo_web).group(1), 16) == 0x3C
-assert int(re.search(r"TIMING_MIN_VERSION:\s*(0x[0-9a-fA-F]+)", todo_web).group(1), 16) == fw_version
+assert int(re.search(r"TIMING_MIN_VERSION:\s*(0x[0-9a-fA-F]+)", todo_web).group(1), 16) == 0x3D
 assert re.search(r"MODE_TODO_CALENDAR\s*=\s*4\b", gui_header)
 assert re.search(r"MODE_TODO\s*=\s*5\b", gui_header)
 print("PASS: firmware/web command IDs and minimum version match")

@@ -5,11 +5,16 @@
 #include <string.h>
 
 #include "epd_clock_refresh.h"
+#include "ui_resources.h"
 
 void ui_resources_stub_set_revision(uint32_t value);
+void ui_resources_stub_set_component(ui_component_id_t id, const ui_component_t *value);
+static unsigned clock_draws;
+bool GUI_RenderValid(void) { return true; }
 
 void DrawGUI_ClockOnly(const gui_data_t *data, buffer_callback callback, void *callback_data)
 {
+    clock_draws++;
     (void)data;
     (void)callback;
     (void)callback_data;
@@ -113,11 +118,37 @@ static void test_try_rejects_non_clock_mode(void)
     assert(!epd_clock_refresh_try(&model, &data));
 }
 
+static void test_conditional_clock_never_regenerates_old(void)
+{
+    const uint8_t flags[] = {UI_FLAG_SYNC_ONLY, UI_FLAG_JIEQI_AHEAD, UI_FLAG_JIEQI_TODAY};
+    epd_driver_t drv = {.diff_push = dummy_diff_push, .refresh_partial = dummy_refresh_partial};
+    epd_model_t model = {.drv = &drv, .width = 800, .height = 480};
+    gui_data_t data = {.width = 800, .height = 480, .timestamp = 1789347660U};
+    for (unsigned full = 0; full < 2; full++) {
+        ui_component_id_t id = full ? UI_COMP_CLOCK_TIME : UI_COMP_SPLIT_TIME;
+        const ui_component_t original = *ui_resource_component(id);
+        data.mode = full ? MODE_CLOCK : MODE_CLOCK_CALENDAR;
+        for (unsigned f = 0; f < sizeof(flags); f++) {
+            ui_component_t conditional = original;
+            conditional.flags = flags[f];
+            ui_resources_stub_set_component(id, &conditional);
+            /* Even a successful preceding full refresh must not authorize
+             * OLD/NEW regeneration for a conditionally hidden clock. */
+            epd_clock_refresh_mark_valid(data.timestamp - 60U);
+            clock_draws = 0;
+            assert(!epd_clock_refresh_try(&model, &data));
+            assert(clock_draws == 0);
+        }
+        ui_resources_stub_set_component(id, &original);
+    }
+}
+
 int main(void)
 {
     test_invalidate_then_mark_valid();
     test_try_rejects_null_and_invalid_state();
     test_try_rejects_non_clock_mode();
+    test_conditional_clock_never_regenerates_old();
     puts("PASS: clock refresh");
     return 0;
 }

@@ -53,7 +53,7 @@
     if (!Array.isArray(requests)) fail('字体需求必须为数组');
     const fonts = inputFonts.slice();
     if (inputFonts.length === 4) fonts.customKey = inputFonts.customKey;
-    const custom = requests.filter(request => request?.slot === 3);
+    const custom = requests.filter(request => request?.slot === 3 && request.sourceSlot !== undefined);
     let rebuild = false;
     if (custom.length) {
       const { sourceSlot, fontFamily } = custom[0];
@@ -81,7 +81,8 @@
       }
       fonts.customKey = key;
     }
-    return { fonts, rebuild, custom: custom[0] };
+    if(requests.some(r=>r?.slot===3)&&fonts.length!==4) fail('布局引用了尚未安装的字体槽位 3');
+    return { fonts, rebuild, custom: custom[0] || {sourceSlot:1,pixelSize:fonts[3]?.[13]} };
   }
   function gatherMissing(inputFonts, requests) {
     const { fonts, rebuild } = prepareRequests(inputFonts, requests);
@@ -280,7 +281,7 @@
     if (!document || !document.fonts || typeof document.fonts.load !== 'function') fail('浏览器不支持字体加载和 Canvas 字形生成');
     const v3 = Object.hasOwn(options, 'fontSize');
     if (v3) builder.todoFontKey(options.fontFamily ?? '', options.fontSize, options.fontBold ?? false, options.fontItalic ?? false);
-    const family = options.fontFamily || defaultFamily, size = v3 ? Math.ceil(options.fontSize * 4 / 3) : sizes[slot];
+    const family = options.fontFamily || defaultFamily, size = v3 ? Math.ceil(options.fontSize * 4 / 3) : options.pixelSize || sizes[slot];
     const css = `${v3 && options.fontItalic ? 'italic ' : ''}${v3 ? options.fontBold ? 'bold ' : '' : slot === 2 ? 'bold ' : ''}${size}px ${family}`, char = String.fromCodePoint(code);
     let loadedFaces;
     try { loadedFaces = await document.fonts.load(css, char) || []; await document.fonts.ready; }
@@ -347,6 +348,13 @@
       integer(slot, 0, 2, '重绘字体槽位');
       const old = readFont(fonts[slot], slot), original = fonts[slot];
       fonts[slot] = original.slice(); fonts[slot].set([4, 4, 7, 7, 8, 8, 8], 2);
+      const pixelSize=options.slotOptions?.(slot)?.pixelSize;
+      if(pixelSize) {
+        integer(pixelSize,8,43,'界面字体像素字号');
+        const descent=Math.ceil(pixelSize/3),overhang=Math.ceil(pixelSize/4);
+        fonts[slot].set([pixelSize+overhang,pixelSize+descent,-overhang&255,-descent&255,
+          pixelSize,-descent&255,pixelSize,-descent&255],9);
+      }
       const preserved = new Map();
       for (const [code, record] of old) {
         if (/[\p{Control}\p{Format}]/u.test(String.fromCodePoint(code)))
@@ -354,6 +362,15 @@
         else pending.set(`${slot}:${code}`, { slot, codePoint: code });
       }
       records.set(slot, preserved);
+    }
+    // Resizing a base slot also changes the geometry of a family-only TODO
+    // font derived from that slot. Rebuild it in the same atomic generation.
+    const refreshed=prepareRequests(fonts,requests);
+    if(refreshed.rebuild) {
+      fonts[3]=refreshed.fonts[3];fonts.customKey=refreshed.fonts.customKey;
+      prepared.rebuild=true;prepared.custom=refreshed.custom;
+      for(const request of requests.filter(r=>r.slot===3))for(const char of request.text)
+        pending.set(`3:${char.codePointAt(0)}`,{slot:3,codePoint:char.codePointAt(0)});
     }
     const missing = Array.from(pending.values()).sort((a, b) => a.slot - b.slot || a.codePoint - b.codePoint);
     const estimated = fonts.map((font, slot) => records.has(slot) ? 31 + [...records.get(slot).values()].reduce((sum, record) => sum + record.length, 0)
@@ -378,7 +395,7 @@
         slotOptions.validateCharacter?.(code);
         phase = 'rasterize';
         const bitmap = slotOptions.glyphCache?.get(cacheKey) || await rasterize(code, sourceSlot, fonts[slot].slice(0, 23),
-          slot === 3 ? { ...options, ...Object.fromEntries(['fontFamily', 'fontSize', 'fontBold', 'fontItalic']
+          slot === 3 ? { ...options, ...Object.fromEntries(['fontFamily', 'fontSize', 'fontBold', 'fontItalic', 'pixelSize']
             .filter(name => Object.hasOwn(prepared.custom, name)).map(name => [name, prepared.custom[name]])), canvasCache, missingGlyphCache }
             : { ...options, ...slotOptions, canvasCache, missingGlyphCache });
         phase = 'encoding';

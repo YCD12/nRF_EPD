@@ -11,7 +11,7 @@
 /* BLE handlers may replace the requested value while main is writing. The
  * snapshot remains immutable for the complete erase/program/commit cycle. */
 static epd_config_t m_requested, m_snapshot, m_committed;
-static volatile bool m_pending, m_busy, m_clear, m_clear_done, m_result_pending;
+static volatile bool m_pending, m_busy, m_clear, m_clear_done, m_result_pending, m_read_pending;
 static bool m_committed_valid;
 static uint8_t m_attempts, m_result;
 static uint32_t m_due, m_revision, m_data_crc;
@@ -20,6 +20,7 @@ uint32_t epd_config_init(epd_config_t *cfg)
 {
     (void)cfg;
     m_pending = m_busy = m_clear = m_clear_done = m_result_pending = false;
+    m_read_pending = false;
     m_committed_valid = false;
     m_attempts = 0U;
     m_due = 0U;
@@ -34,6 +35,8 @@ void epd_config_read(epd_config_t *cfg)
     memset(cfg, 0xFF, sizeof(*cfg));
     rs_result_t r = persistent_record_load(RS_PART_EPD_CONFIG, EPD_CONFIG_RECORD_MAGIC,
                                            cfg, sizeof(*cfg), &info);
+    m_read_pending = r == RS_IO || r == RS_BUSY;
+    if (m_read_pending) m_due = app_uptime_seconds() + 1U;
     if (r == RS_OK && info.length == sizeof(*cfg)) {
         m_committed = *cfg;
         m_committed_valid = true;
@@ -47,11 +50,22 @@ void epd_config_read(epd_config_t *cfg)
     }
 }
 
+bool epd_config_read_pending(void) { return m_read_pending; }
+
+bool epd_config_retry_read(epd_config_t *cfg)
+{
+    if (!m_read_pending || m_busy || m_pending || m_clear ||
+        (int32_t)(app_uptime_seconds() - m_due) < 0) return false;
+    epd_config_read(cfg);
+    return !m_read_pending;
+}
+
 void epd_config_write(epd_config_t *cfg)
 {
     if (cfg == NULL) return;
     CRITICAL_REGION_ENTER();
     if (!m_clear) {
+        m_read_pending = false; /* An explicit new setting wins over boot recovery. */
         m_requested = *cfg;
         m_pending = true;
     }
@@ -62,6 +76,7 @@ void epd_config_clear(epd_config_t *cfg)
 {
     (void)cfg;
     CRITICAL_REGION_ENTER();
+    m_read_pending = false;
     m_clear = true;
     m_clear_done = false;
     m_pending = false;

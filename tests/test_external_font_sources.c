@@ -35,6 +35,9 @@ const u8g2_font_source_t* font_store_get_source(font_store_slot_t slot) {
     return ready && slot < FONT_STORE_MAX_SLOTS &&
         (slot != FONT_STORE_SLOT_TODO || todo_font_size != 0U) ? &sources[slot] : NULL;
 }
+const u8g2_font_placeholder_t *font_store_font_metrics(font_store_slot_t slot) {
+    return slot<3?&font_slot_geometry[slot]:NULL;
+}
 uint8_t font_store_todo_font_size(void) { return todo_font_size; }
 uint32_t font_store_todo_font_key(void) { return todo_font_size != 0U ? 0x12345678UL : 0U; }
 const u8g2_font_placeholder_t *font_store_todo_font_metrics(void) {

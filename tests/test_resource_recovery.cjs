@@ -13,7 +13,7 @@ const fonts = ['wqy9_t_lunar', 'wqy12_t_lunar', 'helvB18_tn'].map(name =>
 const base = packer.create({ fonts }, { builtAt: 1 });
 const rasterize = async () => ({ width: 2, height: 2, x: 0, y: 0, advance: 3, pixels: Uint8Array.of(1, 0, 0, 1) });
 
-function fixture({ blank = false, verify = true } = {}) {
+function fixture({ blank = false, verify = true, offline = false } = {}) {
   const installed = new Map(blank ? [] : base.packages.map(item => [item.pack.id, item.bytes]));
   const nodes = new Map(), uploads = [], backups = [], state = { fail: null, backupFail: false, leaveFail: false };
   const node = id => {
@@ -21,7 +21,8 @@ function fixture({ blank = false, verify = true } = {}) {
     return nodes.get(id);
   };
   class Client {
-    status() { const bytes = new Uint8Array(16); bytes.set([0xa7, 0, 0, installed.has(1) ? 0 : 4, verify ? 0x13 : 0x3, 1]);
+    status() { if (state.panelBusy) throw new Error('资源请求超时：屏幕正在刷新');
+      const bytes = new Uint8Array(16); bytes.set([0xa7, 0, 0, installed.has(1) ? 0 : 4, (verify ? 0x13 : 0x3) | (offline ? 4 : 0), 1]);
       new DataView(bytes.buffer).setUint32(12, 524288, true); return bytes; }
     partitions() { return base.partitions; }
     inspect(id) { if (!installed.has(id)) return { code: 4 };
@@ -35,7 +36,8 @@ function fixture({ blank = false, verify = true } = {}) {
     upload(bytes) { const pack = store.parsePackage(bytes); uploads.push(pack.id);
       if (state.fail === pack.id) { installed.delete(pack.id); throw new Error(`upload ${pack.id} failed after erase`); }
       installed.set(pack.id, bytes.slice()); }
-    leave() { if (state.leaveFail) throw new Error('reload failed'); }
+    leave() { if (state.leaveFail) throw new Error('reload failed'); state.panelBusy = !!state.refreshAfterLeave; }
+    runOffline() { if (state.offlineFail) throw new Error('资源请求超时（应用资源并断开连接）'); }
     disconnect() {}
   }
   const context = { document: { getElementById: node }, Uint8Array, TextEncoder,
@@ -65,6 +67,29 @@ test('regular installer does not rewrite identical merged fonts or downgrade the
   await f.installer.install(); await f.installer.install();
   assert.deepEqual(f.uploads, []);
   assert.deepEqual(f.installed.get(7), bytes);
+});
+
+test('confirmed activation completes installation without polling status during the first panel refresh', async () => {
+  const f = fixture({blank:true});
+  f.state.refreshAfterLeave = true;
+  await f.installer.loadBundle(base.packages); f.bind();
+  await f.installer.install();
+  assert.equal(f.installed.size, 7);
+  assert.deepEqual(f.uploads, [1,5,6,7,2,3,9]);
+  assert.match(f.node('externalResourceStatus').textContent, /资源已校验并应用/);
+  assert.doesNotMatch(f.node('externalResourceStatus').textContent, /超时|失败/);
+  assert.match(f.node('externalResourceRecoveryStatus').textContent, /发送完成/);
+  assert.equal(f.node('externalResourceRetry').disabled, true);
+});
+
+test('a later auto-offline timeout reports that phase without marking confirmed packages for reinstall', async () => {
+  const f=fixture({blank:true,offline:true});f.state.offlineFail=true;
+  f.node('externalResourceAutoOffline').checked=true;
+  await f.installer.loadBundle(base.packages);f.bind();await f.installer.install();
+  assert.equal(f.installed.size,7);
+  assert.match(f.node('externalResourceStatus').textContent,/资源已校验并应用.*自动断开未完成.*超时/);
+  assert.match(f.node('externalResourceRecoveryStatus').textContent,/发送完成/);
+  assert.equal(f.node('externalResourceRetry').disabled,true);
 });
 
 test('normal and forced installs repair malformed RLE and retain downloadable original bytes', async () => {

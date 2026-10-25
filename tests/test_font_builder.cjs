@@ -458,7 +458,7 @@ test('browser TODO glyphs rasterize actual bold and italic at point-derived pixe
 });
 
 test('browser UMD exposes the same API without Node dependencies', () => {
-  const context = { EPDResourceBuilder: builder, Uint8Array };
+  const context = { EPDUIModel: require('../html/js/ui_tools/ui_model.js'), EPDUIRenderer: require('../html/js/ui_tools/ui_preview.js'), EPDResourceBuilder: builder, Uint8Array };
   vm.runInNewContext(fs.readFileSync(require.resolve('../html/js/font_builder.js'), 'utf8'), context);
   assert.deepEqual(Object.keys(context.EPDWebFonts), Object.keys(codec));
   assert.equal(context.EPDWebFonts.gatherMissing(baseFonts(), [{ slot: 0, text: '龘' }])[0].codePoint, 0x9f98);

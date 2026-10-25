@@ -51,6 +51,7 @@ typedef struct {
     const epd_model_t *epd;
     bool init_pending, init_ack_pending, disconnect_pending, gpio_connection_ref;
     bool is_refreshing, force_full_refresh, low_battery_screen_active;
+    bool battery_poll_pending, battery_blink_pending;
     bool annotations_rx_abort_requested, is_notification_enabled;
     bool mode_ack_pending;
     uint8_t mode_ack[4], initial_notify;
@@ -72,6 +73,7 @@ static uint32_t rendered_timestamp;
 static bool custom_font_matches = true;
 static unsigned custom_font_checks;
 static uint8_t last_resource_result;
+static bool resources_ready = true, flash_erased;
 static uint8_t payload[TODO_ITEMS_HEADER_SIZE + TODO_ITEMS_RECORD_SIZE + TODO_ITEMS_TEXT_MAX + 5U];
 static uint32_t payload_length = TODO_ITEMS_HEADER_SIZE + TODO_ITEMS_RECORD_SIZE;
 static app_sched_event_handler_t scheduled_worker;
@@ -115,6 +117,7 @@ static void put32(uint8_t *p, uint32_t value)
 rs_result_t resource_store_open(uint16_t id, uint32_t *length)
 {
     assert(!timer_active && id == RS_PART_TODO_ITEMS);
+    if (flash_erased) return RS_NOT_FOUND;
     *length = payload_length;
     return RS_OK;
 }
@@ -164,9 +167,9 @@ static uint32_t resource_notification_send(void *context, uint32_t generation,
     else { assert(data[0] == EPD_RSP_MODE); mode_acks++; }
     return NRF_SUCCESS;
 }
-static bool epd_resources_ready(void) { return true; }
-static rs_result_t epd_resources_apply(void) { resource_applies++; return RS_OK; }
-static void epd_resources_invalidate_partitions(uint16_t mask) { (void)mask; }
+static bool epd_resources_ready(void) { return resources_ready; }
+static rs_result_t epd_resources_apply(void) { resource_applies++; resources_ready = !flash_erased; return flash_erased ? RS_NOT_FOUND : RS_OK; }
+static void epd_resources_invalidate_partitions(uint16_t mask) { (void)mask; resources_ready = false; }
 static bool epd_resource_idle(const ble_epd_t *p) { (void)p; return true; }
 static bool nrf_gpio_pin_present_check(unsigned pin) { return pin < 32U; }
 static void epd_clock_refresh_invalidate(void) { clock_valid = false; }
@@ -193,7 +196,8 @@ static bool GUI_TodoFontMatches(uint8_t size, uint32_t key)
     return custom_font_matches;
 }
 void epd_config_write(epd_config_t *cfg) { (void)cfg; }
-void epd_config_read(epd_config_t *cfg) { *cfg = current->config; }
+bool epd_config_read_pending(void) { return false; }
+void epd_config_read(epd_config_t *cfg) { if (flash_erased) memset(cfg, 255, sizeof(*cfg)); else *cfg = current->config; }
 void transformTime(uint32_t ts, tm_t *tm) { memset(tm, 0, sizeof(*tm)); tm->tm_hour = ts / 3600U % 24U; }
 static battery_guard_result_t epd_battery_guard(ble_epd_t *p)
 { (void)p; return (battery_guard_result_t){3300U, false, false}; }
@@ -203,6 +207,7 @@ void DrawGUI(gui_data_t *data, buffer_callback callback, void *ctx)
     draw_attempts++;
     rendered_timestamp = data->timestamp;
     assert(epd_is_todo_mode(data->mode) && callback == panel_write && ctx == &panel);
+    if (!resources_ready) { render_valid = true; tick(); return; } /* NO DATA */
     todo_selection_t selection;
     todo_item_t item;
     render_valid = todo_items_select(data->timestamp, &selection);
@@ -213,7 +218,7 @@ void DrawGUI(gui_data_t *data, buffer_callback callback, void *ctx)
     if (fail_font_frame) render_valid = false;
     tick();
 }
-bool GUI_TodoRenderValid(void) { return render_valid; }
+bool GUI_RenderValid(void) { return render_valid; }
 
 /* PRODUCTION_HANDLERS */
 
@@ -366,48 +371,48 @@ int main(int argc, char **argv)
     ble_epd_on_timer(&p,now,true); main_turn();
     for(unsigned i=0U;i<30U;i++) {tick();main_turn();}
     assert(draw_attempts-before_draw <= 6U && draw_attempts-before_draw >= 3U);
-    assert(full_refreshes==before_panel && p.force_full_refresh && s_todo_retry_step==4U);
+    assert(full_refreshes==before_panel && p.force_full_refresh && s_display_retry_step==4U);
     printf("persistent I/O: %u failed draws across 30 timer/main turns, zero panel refreshes\n",draw_attempts-before_draw);
     /* A new font activation bypasses the pending retry deadline and resets it. */
     fail_font_frame=false;
     activate(1U<<RS_PART_FONTS,48U); main_turn();
-    assert(full_refreshes==before_panel+1U && !s_todo_retry_step && !p.force_full_refresh);
+    assert(full_refreshes==before_panel+1U && !s_display_retry_step && !p.force_full_refresh);
 
     /* Backoff follows uptime, not a small backward wall-clock correction. */
     p.force_full_refresh=true;
-    for(unsigned i=0U;i<4U;i++) epd_todo_retry_failed();
-    uint32_t deadline=s_todo_retry_at;
+    for(unsigned i=0U;i<4U;i++) epd_display_retry_failed();
+    uint32_t deadline=s_display_retry_at;
     now-=30U; ble_epd_on_timer(&p,now,false); main_turn();
-    assert(full_refreshes==before_panel+1U && s_todo_retry_step==4U);
+    assert(full_refreshes==before_panel+1U && s_display_retry_step==4U);
     uptime=deadline; tick(); main_turn();
-    assert(full_refreshes==before_panel+2U && !s_todo_retry_step);
+    assert(full_refreshes==before_panel+2U && !s_display_retry_step);
 
     /* Explicit requests and day rollover start immediately despite backoff. */
     p.force_full_refresh=true;
-    for(unsigned i=0U;i<4U;i++) epd_todo_retry_failed();
+    for(unsigned i=0U;i<4U;i++) epd_display_retry_failed();
     ble_epd_on_timer(&p,now,true); main_turn();
-    assert(full_refreshes==before_panel+3U && !s_todo_retry_step);
+    assert(full_refreshes==before_panel+3U && !s_display_retry_step);
     p.force_full_refresh=true;
-    for(unsigned i=0U;i<4U;i++) epd_todo_retry_failed();
+    for(unsigned i=0U;i<4U;i++) epd_display_retry_failed();
     now+=86400U; ble_epd_on_timer(&p,now,false); main_turn();
-    assert(full_refreshes==before_panel+4U && !s_todo_retry_step);
+    assert(full_refreshes==before_panel+4U && !s_display_retry_step);
 
-    /* Leaving TODO clears stale retry state before switching back. */
-    for(unsigned i=0U;i<4U;i++) epd_todo_retry_failed();
-    p.config.display_mode=MODE_CALENDAR; ble_epd_on_timer(&p,now,false);
-    assert(!s_todo_retry_step && !p.display_queue.pending);
+    /* Picture mode has no redrawable frame and clears pending retries. */
+    for(unsigned i=0U;i<4U;i++) epd_display_retry_failed();
+    p.config.display_mode=MODE_PICTURE; ble_epd_on_timer(&p,now,false);
+    assert(!s_display_retry_step && !p.display_queue.pending);
     p.config.display_mode=mode;
 
     /* Uptime wrapping and disconnected operation still reach the retry. */
     uptime=UINT32_MAX-2U;
     p.force_full_refresh=true;
-    for(unsigned i=0U;i<4U;i++) epd_todo_retry_failed();
-    assert(s_todo_retry_at==27U);
+    for(unsigned i=0U;i<4U;i++) epd_display_retry_failed();
+    assert(s_display_retry_at==27U);
     ble_epd_on_timer(&p,now,false); assert(!p.display_queue.pending);
     uptime=26U; ble_epd_on_timer(&p,now,false); assert(!p.display_queue.pending);
     p.conn_handle=BLE_CONN_HANDLE_INVALID;
     uptime=27U; ble_epd_on_timer(&p,now,false); main_turn();
-    assert(full_refreshes==before_panel+5U && !s_todo_retry_step && !p.force_full_refresh && !refs);
+    assert(full_refreshes==before_panel+5U && !s_display_retry_step && !p.force_full_refresh && !refs);
 
     /* The queued wall clock must not survive a long ACK/maintenance hold.
      * Keep a resident-only list so its selection and daily total stay equal
@@ -440,6 +445,30 @@ int main(int argc, char **argv)
     assert(full_refreshes==before_midnight+1U && rendered_timestamp>=1791590400U);
     for(unsigned i=0U;i<90U;i++) {tick();main_turn();}
     assert(full_refreshes==before_midnight+1U && !p.force_full_refresh && !p.display_queue.pending);
+    /* Simulate full-chip erase followed by LEAVE: missing config returns before
+     * consumer activation, but stale TODO metadata must already be suspended.
+     * A connection-triggered NO DATA frame is allowed; timer retries are not. */
+    assert(epd_resource_event(&p, RESOURCE_INVALIDATE, 1U << RS_PART_PARTITION_TABLE) == RS_OK);
+    flash_erased = true;
+    assert(!todo_items_ready() && !epd_resources_ready());
+    before_panel = full_refreshes;
+    unsigned before_ack = resource_acks;
+    activate(1U << RS_PART_PARTITION_TABLE, 49U); main_turn();
+    assert(last_resource_result == RS_INVALID && resource_acks == before_ack + 1U);
+    assert(full_refreshes == before_panel && !p.display_queue.pending);
+    ble_epd_on_timer(&p, now, true); main_turn();
+    assert(full_refreshes == before_panel + 1U);
+    for (unsigned i = 0U; i < 180U; ++i) { tick(); main_turn(); }
+    assert(full_refreshes == before_panel + 1U && !p.display_queue.pending && !scheduled_worker && !refs);
+    /* Reinstall all packages, then receive the reliable activation ACK before
+     * the first restored frame. Subsequent ticks settle back to idle. */
+    flash_erased = false;
+    activate(1U << RS_PART_PARTITION_TABLE, 50U); main_turn();
+    assert(last_resource_result == RS_OK && resource_acks == before_ack + 2U);
+    assert(epd_resources_ready() && todo_items_ready() && full_refreshes == before_panel + 2U);
+    for (unsigned i = 0U; i < 180U; ++i) { tick(); main_turn(); }
+    assert(full_refreshes == before_panel + 2U && !p.display_queue.pending && !scheduled_worker && !refs);
+    puts("PASS: erased Flash rejects activation, idles after fallback, and accepts reinstall ACK before the restored TODO frame");
     puts("PASS: TODO uptime backoff, resource/user/day/mode resets, wraparound and disconnected recovery");
     puts("PASS: delayed TODO worker uses current time; resident-only calendar updates across midnight exactly once");
     puts("PASS: reliable ACK before TODO workers, v4 lead/trigger/deadline/removal, phase failure retry and no repeated redraw");

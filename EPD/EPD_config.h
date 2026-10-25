@@ -33,6 +33,11 @@ void epd_config_process(void);             // Main-context external-Flash save/d
 bool epd_config_clear_complete(void);
 bool epd_config_busy(void);
 bool epd_config_is_saved(const epd_config_t* cfg);
+/* Transient boot/activation read errors must not be saved as defaults.
+ * Retry in main at most once per second; true means cfg has a terminal result
+ * (valid bytes or erased bytes for absent/invalid data). Explicit writes cancel. */
+bool epd_config_read_pending(void);
+bool epd_config_retry_read(epd_config_t* cfg);
 bool epd_config_take_save_result(uint8_t* result, uint32_t* revision, uint32_t* data_crc);
 void epd_config_read(epd_config_t* cfg);   // 从 Flash 读取
 void epd_config_write(epd_config_t* cfg);  // 写入 Flash

@@ -86,7 +86,7 @@
       entered = false;
       return { changed: true, added: extended.added };
     } catch (error) {
-      if (entered && options.deferApply) {
+      if (entered) {
         try {
           check();
           if (client.closed) throw new Error('蓝牙已断开');
@@ -97,10 +97,6 @@
           progress('旧字库已恢复，请重试保存。');
         } catch (failure) { throw recoveryFailure(error, failure); }
         throw error;
-      }
-      if (entered && !client.closed) {
-        try { check(); await client.request(5); await client.leave(); }
-        catch (_) { /* Keep the original failure; never continue saving text. */ }
       }
       throw error;
     }

@@ -48,7 +48,7 @@ void ble_epd_evt_handler(ble_evt_t const* p_ble_evt, void* p_context);
     static ble_epd_t _name; \
     NRF_SDH_BLE_OBSERVER(_name##_obs, BLE_EPD_BLE_OBSERVER_PRIO, ble_epd_evt_handler, &_name)
 
-#define APP_VERSION 0x3D  // TODO lead/grace timing and visible phase markers
+#define APP_VERSION 0x40  // Keep missing/erased resources idle until activation
 
 // EPD 服务的 128 位基础 UUID（自定义服务）
 #define BLE_UUID_EPD_SVC_BASE \
@@ -122,6 +122,8 @@ typedef struct {
     uint32_t last_full_clear;       /**< 上次全屏清除/刷新时间戳（秒）。0 表示从未全刷 */
     volatile bool is_refreshing;    /**< 面板操作进行中；中断不得重入 */
     bool low_battery_screen_active; /**< 低电量保持：暂停周期刷新，仍显示月历/时钟 */
+    volatile bool battery_poll_pending; /**< Timer requests; main owns ADC/GPIO. */
+    volatile bool battery_blink_pending;
     volatile bool gpio_connection_ref;
     volatile bool disconnect_pending;
     volatile uint32_t connection_generation;

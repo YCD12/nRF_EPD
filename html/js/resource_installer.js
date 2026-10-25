@@ -169,7 +169,7 @@
   }
   const $ = id => document.getElementById(id);
   let client = null, characteristic = null, binding = 0, bundle = null, running = false, installationCompleted = false;
-  let offlineSupported = false, completionMessage = '';
+  let offlineSupported = false, eraseSupported = false, completionMessage = '';
   let bundleGeneration = 0;
   let bundleLabel = '', deviceSnapshot = null, readbackData = null;
   // Retained across BLE reconnects until the next installation, so an erased
@@ -214,6 +214,16 @@
     if ($('externalResourceForce')) $('externalResourceForce').disabled = busy;
     if ($('externalResourceSaveRecovery')) $('externalResourceSaveRecovery').disabled = running || !recoveryData;
     if ($('externalResourceRetry')) $('externalResourceRetry').disabled = busy || !canRetry();
+    renderErasePartitions();
+    const deletionReady = !busy && connected && eraseSupported;
+    const eraseSelect = $('externalResourceErasePartition');
+    if (eraseSelect) eraseSelect.disabled = !deletionReady;
+    if ($('externalResourceErase')) $('externalResourceErase').disabled = !deletionReady || !Number(eraseSelect?.value);
+    if ($('externalResourceEraseAll')) $('externalResourceEraseAll').disabled = !deletionReady;
+    if ($('externalResourceEraseHint')) $('externalResourceEraseHint').textContent = connected
+      ? eraseSupported ? '删除不可撤销。建议先回读资源并保存到本地；删除分区表或清空外置 Flash 后需重新安装完整资源。'
+        : '读取分区后可查看删除能力；此功能需要固件 0x3F 或更新版本。'
+      : '连接设备并读取分区后，可删除指定分区或清空全部外置 Flash。';
     const offline = $('externalResourceOffline');
     if (offline) offline.disabled = busy || !connected || !offlineSupported;
     root.ExternalResourceEditor?.controls();
@@ -248,7 +258,7 @@
     characteristic = nextCharacteristic;
     running = false;
     installationCompleted = false;
-    offlineSupported = false; completionMessage = '';
+    offlineSupported = eraseSupported = false; completionMessage = '';
     const token = ++binding;
     const session = new api.ResourceClient(bytes => {
       if (token !== binding || characteristic !== nextCharacteristic)
@@ -343,7 +353,7 @@
     ensureCurrent(session);
     const status = api.parseStatus(await session.status());
     ensureCurrent(session);
-    offlineSupported = status.offline;
+    offlineSupported = status.offline; eraseSupported = status.erase;
     let message = `外置 Flash：可读写 · ${status.capacity / 1024} KiB · 分区表：${api.statusName(status.code)}`;
     if (status.code === 0) {
       const partitions = await session.partitions();
@@ -389,10 +399,13 @@
       return { status, partitions };
     }
     if (!silent) {
+      const note = status.code === 4
+        ? '分区表未安装或未提交，显示资源尚未就绪。连接不会自动重装资源；请先“重新生成并载入”或载入备份，再点击“发送资源到设备”。'
+        : `分区表${api.statusName(status.code)}，资源占用与版本未确认。`;
       deviceSnapshot = { source: 'device', partitions: [], modules: new Map(), capacity: status.capacity,
-        message: `分区表${api.statusName(status.code)}，资源占用与版本未确认。` };
+        message: note };
       renderUsage(); renderVersions();
-      report(message);
+      report(`${message}。${note}`);
     }
     return { status, partitions: null };
   }
@@ -413,6 +426,82 @@
       }
     }
     finally { if (client === session) { running = false; controls(); } }
+  }
+
+  function renderErasePartitions() {
+    const select = $('externalResourceErasePartition');
+    if (!select?.replaceChildren || !canRenderDom()) return;
+    const previous = select.value;
+    const partitions = deviceSnapshot?.partitions.length ? deviceSnapshot.partitions : [{ id: 1, size: 4096 }];
+    const placeholder = element('option', '', '选择要删除的分区'); placeholder.value = '';
+    select.replaceChildren(placeholder);
+    for (const p of partitions) {
+      const option = element('option', '', `${names[p.id] || '分区 ' + p.id} · ${formatSize(p.size)}`);
+      option.value = String(p.id); select.appendChild(option);
+    }
+    select.value = partitions.some(p => String(p.id) === previous) ? previous : '';
+  }
+
+  async function erase(all = false) {
+    const id = all ? 0 : Number($('externalResourceErasePartition')?.value);
+    if (!all && (!Number.isInteger(id) || id < 1)) return report('请先选择要删除的分区', true);
+    return task(() => eraseOperation(id));
+  }
+  async function eraseOperation(id) {
+    const session = client, progress = $('externalResourceProgress');
+    let entered = false, started = false, completed = 0, targetSize = 0;
+    running = true; controls();
+    try {
+      const current = await readStatus(true, session);
+      ensureCurrent(session);
+      if (!current.status.erase || !current.status.hotReload) throw new Error('删除功能需要固件 0x3F 或更新版本');
+      if (current.status.active) throw new Error('设备存在未完成资源事务，请先完成更新后重试');
+      const target = id === 0 ? {size:current.status.capacity} : id === 1 ? {size:4096}
+        : current.partitions?.find(p => p.id === id);
+      if (!target) throw new Error('分区表中不存在该分区，请重新读取分区');
+      targetSize = target.size;
+      const title = id === 0 ? '全部外置 Flash 数据（含分区表、配置、标注、待办、字库与保留区）' : names[id] || `分区 ${id}`;
+      if (typeof root.confirm !== 'function') throw new Error('浏览器无法确认删除操作');
+      if (!root.confirm(`确定删除${title}（${formatSize(target.size)}）？
+删除后无法撤销。请先保存所需备份；恢复显示需重新发送对应资源。`)) {
+        report('已取消删除'); return;
+      }
+      ensureCurrent(session);
+      entered = true;
+      await session.request(6, Uint8Array.of(77,73,71,49));
+      ensureCurrent(session);
+      if (recoveryData) { recoveryData.state = 'cancelled'; renderRecovery(); }
+      progress.value = 0;
+      for (let offset = 0; offset < target.size; offset += 4096) {
+        ensureCurrent(session);
+        started = true;
+        completionMessage = '删除过程中连接已断开，部分数据可能已删除；请重新读取分区，或再次执行删除。';
+        markResourcesChanged();
+        await session.eraseSector(id, offset);
+        ensureCurrent(session);
+        completed = offset + 4096; progress.value = completed / target.size;
+        report(`正在删除${title}：${Math.round(progress.value * 100)}%（${formatSize(completed)} / ${formatSize(target.size)}）`);
+      }
+      let incomplete = false;
+      try { await session.leave(); }
+      catch (error) { if (![1,4,6].includes(error.code)) throw error; incomplete = true; }
+      ensureCurrent(session); entered = false;
+      await readStatus(false, session);
+      ensureCurrent(session);
+      completionMessage = '';
+      report(`已删除${title}，${formatSize(completed)} 已擦除并校验。${incomplete || id <= 1 ? '请重新发送资源以恢复设备显示。' : ''}`);
+    } catch (error) {
+      if (client === session) {
+        if (entered) { try { await session.leave(); } catch (_) {} }
+        if (client !== session) return;
+        completionMessage = '';
+        if (started && deviceSnapshot) deviceSnapshot.stale = true;
+        report(completed && completed === targetSize
+          ? `目标范围已擦除并校验，但应用或读取设备状态失败：${error.message}。请重新读取分区。`
+          : `${started ? '删除未完成，部分数据可能已删除；请重新读取分区。' : ''}${error.message}`, true);
+        renderUsage(); renderVersions();
+      }
+    } finally { if (client === session) { running = false; controls(); } }
   }
 
   async function readback() { return task(readbackOperation); }
@@ -541,7 +630,7 @@
     if (!note) return;
     if (!recoveryData) { note.textContent = '发送前会保留待更新资源的恢复备份；关闭或刷新网页前请保存到本地。'; return; }
     const labels = { pending: '未写入', writing: '写入中', committed: '已提交', skipped: '已校验一致', failed: '未完成' };
-    const state = recoveryData.state === 'complete' ? '发送完成' : recoveryData.state === 'failed' ? '发送未完成' : '正在发送';
+    const state = recoveryData.state === 'complete' ? '发送完成' : recoveryData.state === 'failed' ? '发送未完成' : recoveryData.state === 'cancelled' ? '旧发送任务已停止（已执行删除）' : '正在发送';
     note.textContent = `${state}。${recoveryData.tasks.map(item => `${names[item.pack.id]}：${labels[item.state]}`).join('；')}。` +
       `${recoveryData.entries.length} 份更新前备份可保存；备份和重试进度仅保留在当前网页。` +
       (recoveryData.state === 'failed' ? '连接同一设备后可重试未完成资源；已提交部分会重新校验。' : '') +
@@ -609,6 +698,9 @@
     return task(installOperation);
   }
   async function installOperation(previous = null) {
+    if (typeof appVersion === 'number' && appVersion < 0x3e && bundle?.packages.some(item =>
+      item.pack.id === 6 && item.pack.payload[3] === 0x32))
+      throw new Error('新版显示资源需要固件 0x3E，请先升级固件再发送资源');
     if (running) return;
     if (!client) return report('请先连接设备', true);
     if (!bundle) return report('请先选择资源目录', true);
@@ -627,6 +719,15 @@
       }
       const initializing = current.status.code === 4;
       let packages = api.installationPlan(selected, current.status.code, current.partitions);
+      if (!previous && !initializing && current.status.erase) {
+        const missing = new Set();
+        for (const item of selected.packages.filter(item => [2,3,9].includes(item.pack.id))) {
+          if (!current.partitions.some(p => p.id === item.pack.id)) continue;
+          const info = await session.inspect(item.pack.id); ensureCurrent(session);
+          if (info?.code === 4) missing.add(item.pack.id);
+        }
+        packages = selected.packages.filter(item => packages.includes(item) || missing.has(item.pack.id));
+      }
       const backups = new Map(), diagnostics = previous?.diagnostics.slice() || [];
       if (previous) {
         // Keep the original initialization plan even when its partition table
@@ -746,15 +847,22 @@
       ensureCurrent(session);
       entered = false;
       progress.value = 1;
-      await readStatus(true, session);
-      ensureCurrent(session);
+      // The LEAVE ACK already confirms consumer validation/activation. A
+      // redundant STATUS now waits behind the first blocking panel refresh
+      // and must not turn an acknowledged installation into a failed task.
       installationCompleted = true;
       attempt.state = 'complete'; renderRecovery();
       if (current.status.hotReload) {
         completionMessage = '资源已应用，设备已断开连接。';
         report(packages.length ? '资源已校验并应用，设备将刷新屏幕，无需断开连接。' : '设备资源内容一致，无需写入。');
-        if (current.status.offline && $('externalResourceAutoOffline')?.checked)
-          await enterOffline(session, connection);
+        if (current.status.offline && $('externalResourceAutoOffline')?.checked) {
+          try { await enterOffline(session, connection); }
+          catch (error) {
+            // Resource activation already succeeded. A later offline failure
+            // must not offer to rewrite the successfully installed packages.
+            if (client === session) report(`资源已校验并应用，但自动断开未完成：${error.message}。请手动断开或稍后重试断开。`, true);
+          }
+        }
       } else {
         report(initializing ? '外置 Flash 初始化完成，设备正在重启。' : '外置 Flash 资源更新完成，设备正在重启。');
         completionMessage = '资源已写入，设备已重启，请重新连接。';
@@ -786,7 +894,7 @@
     if (typeof root.buildTimeData === 'function')
       await deviceWrite(session, connection, Uint8Array.of(0x23, ...root.buildTimeData()));
     ensureCurrent(session);
-    report('正在应用数据并断开连接…');
+    report('正在等待设备应用数据并断开连接，请等待屏幕刷新…');
     await session.runOffline();
     // The final ACK precedes the intentional disconnect; keep its result visible.
     if (binding !== token && (client || binding !== token + 1)) return;
@@ -915,6 +1023,6 @@
   renderBundle(); renderUsage(); renderVersions(); renderReadback(); renderRecovery();
   controls();
   root.ExternalResourceInstaller = { bind, disconnect, notification, refresh, readback, saveReadback, saveRecovery, retry, install, runOffline,
-    ensureFonts, saveTodo, readTodo, loadBundle, loadLatestOutput, controls, getBundle: () => bundle,
+    erase, ensureFonts, saveTodo, readTodo, loadBundle, loadLatestOutput, controls, getBundle: () => bundle,
     selectionVersion: () => bundleGeneration, busy: () => running };
 })(globalThis);

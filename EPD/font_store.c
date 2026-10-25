@@ -44,6 +44,7 @@ static font_record_t m_records[FONT_STORE_MAX_SLOTS];
 static uint32_t m_todo_key;
 static uint8_t m_todo_size;
 static const u8g2_font_placeholder_t *m_todo_metrics;
+static u8g2_font_placeholder_t m_base_metrics[FONT_STORE_SLOT_COUNT],m_custom_metrics;
 
 static uint32_t m_data_base;
 static fm25q04b_region_t m_regions[FONT_STORE_MAX_SLOTS];
@@ -118,12 +119,10 @@ static bool resource_font_pack_load(void)
     uint8_t raw[FONT_PACK_DIRECTORY_SIZE];
     rs_partition_t partition;
     rs_package_info_t package;
-    uint32_t checked_length;
 
     if (resource_store_find(RS_PART_FONTS, &partition) != RS_OK ||
-        resource_store_info(RS_PART_FONTS, &package) != RS_OK ||
-        resource_store_open(RS_PART_FONTS, &checked_length) != RS_OK ||
-        checked_length != package.length || package.length < FONT_PACK_HEADER_SIZE ||
+        resource_store_open_info(RS_PART_FONTS, &package) != RS_OK ||
+        package.length < FONT_PACK_HEADER_SIZE ||
         resource_store_read(RS_PART_FONTS, 0U, raw, FONT_PACK_HEADER_SIZE) != RS_OK ||
         get_u32(raw) != FONT_PACK_MAGIC || get_u16(&raw[4]) != FONT_PACK_VERSION ||
         (get_u16(&raw[6]) != FONT_STORE_SLOT_COUNT && get_u16(&raw[6]) != FONT_STORE_MAX_SLOTS)) return false;
@@ -192,24 +191,23 @@ static bool font_header_matches_slot(font_store_slot_t slot, uint32_t length,
     for (unsigned i = 2U; i <= 8U; i++) {
         if (header->bytes[i] == 0U || header->bytes[i] > 8U) return false;
     }
-    /* The first eight geometry fields use the same byte order as u8g2. */
-    if (slot == FONT_STORE_SLOT_TODO) {
-        for (unsigned i = 0U; i < TODO_FONT_SIZE_COUNT; ++i) {
-            if (memcmp(header->bytes + 9U, &todo_font_geometry[i], 8U) == 0) {
-                m_todo_size = todo_font_sizes[i]; m_todo_metrics = &todo_font_geometry[i];
-                break;
-            }
+    const uint8_t *p=header->bytes+9U;
+    if(!p[0] || p[0]>64U || !p[1] || p[1]>80U ||
+       (int8_t)p[2]<-32 || (int8_t)p[2]>32 || (int8_t)p[3]<-64 || (int8_t)p[3]>0 ||
+       (int8_t)p[4]<0 || p[4]>64U || (int8_t)p[5]<-64 || (int8_t)p[5]>0 ||
+       (int8_t)p[6]<0 || p[6]>80U || (int8_t)p[7]<-64 || (int8_t)p[7]>0 ||
+       (int8_t)p[4]-(int8_t)p[5]>100 || (int8_t)p[6]-(int8_t)p[7]>127) return false;
+    u8g2_font_placeholder_t *metrics=slot==FONT_STORE_SLOT_TODO?&m_custom_metrics:&m_base_metrics[slot];
+    memcpy(metrics,p,8U);metrics->advance=p[0]+1U;
+    if(slot==FONT_STORE_SLOT_TODO) {
+        m_todo_metrics=metrics;
+        for(unsigned i=0;i<TODO_FONT_SIZE_COUNT;i++) {
+            if(!memcmp(p,&todo_font_geometry[i],8U)) {m_todo_size=todo_font_sizes[i];metrics->advance=metrics->ascent+1;break;}
         }
-        if (m_todo_metrics == NULL) {
-            for (unsigned i = 0U; i < 2U; ++i) {
-                if (memcmp(header->bytes + 9U, &font_slot_geometry[i], 8U) == 0) {
-                    m_todo_size = i == 0U ? 9U : 12U; m_todo_metrics = &font_slot_geometry[i];
-                    break;
-                }
-            }
+        if(!m_todo_size) for(unsigned i=0;i<2;i++) {
+            if(!memcmp(p,&m_base_metrics[i],8U) || !memcmp(p,&font_slot_geometry[i],8U)) {m_todo_size=i==0?9:12;break;}
         }
-        if (m_todo_metrics == NULL) return false;
-    } else if (memcmp(header->bytes + 9U, &font_slot_geometry[slot], 8U) != 0) return false;
+    }
     for (unsigned i = 17U; i <= 21U; i += 2U) {
         if ((uint32_t)header_word(header, i) + 23U >= length) return false;
     }
@@ -270,48 +268,21 @@ static bool font_reader_u16(font_flash_reader_t* reader, uint32_t offset,
     return true;
 }
 
-static bool validate_ascii_records(font_flash_reader_t* reader, uint32_t offset)
+static bool validate_glyph_records(font_flash_reader_t* reader, uint32_t offset, bool unicode)
 {
     uint32_t record_count = 0U;
-
     while (record_count++ < reader->length) {
-        uint8_t glyph;
-        uint8_t size;
-
-        if (!font_reader_byte(reader, offset, &glyph) ||
-            !font_reader_byte(reader, offset + 1U, &size)) {
-            return false;
+        uint8_t first, second, size;
+        if (!font_reader_byte(reader, offset, &first) ||
+            !font_reader_byte(reader, offset + 1U, &second)) return false;
+        if (unicode) {
+            if (!(first | second)) return true;
+            if (!font_reader_byte(reader, offset + 2U, &size)) return false;
+        } else {
+            size = second;
+            if (!size) return true;
         }
-        (void)glyph;
-        if (size == 0U) {
-            return true;
-        }
-        if (size < 2U || size > reader->length - offset) {
-            return false;
-        }
-        offset += size;
-    }
-    return false;
-}
-
-static bool validate_unicode_records(font_flash_reader_t* reader, uint32_t offset)
-{
-    uint32_t record_count = 0U;
-
-    while (record_count++ < reader->length) {
-        uint16_t glyph;
-        uint8_t size;
-
-        if (!font_reader_u16(reader, offset, &glyph)) {
-            return false;
-        }
-        if (glyph == 0U) {
-            return true;
-        }
-        if (!font_reader_byte(reader, offset + 2U, &size) ||
-            size < 3U || size > reader->length - offset) {
-            return false;
-        }
+        if (size < (unicode ? 3U : 2U) || size > reader->length - offset) return false;
         offset += size;
     }
     return false;
@@ -330,12 +301,10 @@ static bool validate_font_records(uint32_t address, uint32_t length,
     reader.address = address;
     reader.length = length;
 
-    if ((uint32_t)23U + start_upper >= length ||
-        (uint32_t)23U + start_lower >= length ||
-        (uint32_t)23U + start_unicode >= length ||
-        !validate_ascii_records(&reader, 23U) ||
-        !validate_ascii_records(&reader, 23U + start_upper) ||
-        !validate_ascii_records(&reader, 23U + start_lower)) {
+    /* Offsets were bounded by font_header_matches_slot before this call. */
+    if (!validate_glyph_records(&reader, 23U, false) ||
+        !validate_glyph_records(&reader, 23U + start_upper, false) ||
+        !validate_glyph_records(&reader, 23U + start_lower, false)) {
         return false;
     }
 
@@ -351,7 +320,7 @@ static bool validate_font_records(uint32_t address, uint32_t length,
      * the first block while the renderer can reach later blocks. */
     if (first_codepoint == 0U) return true;
     return first_codepoint == 0xFFFFU && lookup_offset == 4U &&
-           validate_unicode_records(&reader, unicode_table + lookup_offset);
+           validate_glyph_records(&reader, unicode_table + lookup_offset, true);
 }
 
 ret_code_t font_store_init(void)
@@ -379,6 +348,19 @@ bool font_store_ready(void)
     return m_ready != 0U;
 }
 
+ret_code_t font_store_retry_init(void)
+{
+    /* Keep negative caching for ordinary consumers. Only activation retries
+     * a pack whose required sources were not loaded successfully. */
+    for (unsigned slot = 0U; slot < FONT_STORE_SLOT_COUNT; ++slot) {
+        if (font_store_get_source((font_store_slot_t)slot) == NULL) {
+            font_store_invalidate();
+            break;
+        }
+    }
+    return font_store_init();
+}
+
 const u8g2_font_source_t* font_store_get_source(font_store_slot_t slot)
 {
     if (!m_ready || !slot_valid(slot) || m_records[slot].length == 0U) {
@@ -400,6 +382,11 @@ uint32_t font_store_todo_font_key(void)
 const u8g2_font_placeholder_t *font_store_todo_font_metrics(void)
 {
     return font_store_get_source(FONT_STORE_SLOT_TODO) != NULL ? m_todo_metrics : NULL;
+}
+
+const u8g2_font_placeholder_t *font_store_font_metrics(font_store_slot_t slot)
+{
+    return m_ready && slot<FONT_STORE_SLOT_COUNT ? &m_base_metrics[slot] : NULL;
 }
 
 void font_store_invalidate(void)

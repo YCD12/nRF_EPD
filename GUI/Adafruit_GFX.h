@@ -81,6 +81,8 @@ typedef struct {
     uint8_t* color;           // color pixel buffer (3c only) 彩色像素缓冲区（仅用于3色显示器）
     uint16_t px, py, pw, ph;  // partial window offset and size 局部窗口偏移和大小
     int16_t page_height;      // height to be drawn in one page 单页绘制的高度
+    bool clip_enabled;
+    int16_t clip_left, clip_top, clip_right, clip_bottom;
     int16_t current_page;     // index of the current drawing page 当前绘制页的索引
     int16_t total_pages;      // total number of pages to be drawn 需要绘制的总页数
 } Adafruit_GFX;

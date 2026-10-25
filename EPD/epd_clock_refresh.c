@@ -63,18 +63,6 @@ bool epd_clock_refresh_is_valid(void)
            s_clock_layout_revision == ui_resources_revision();
 }
 
-/* 按行拷贝一页（stride 为字节）。 */
-static void epd_clock_store_page(uint8_t *dst, uint16_t dst_stride,
-                                 const uint8_t *src, uint16_t src_stride,
-                                 uint16_t h)
-{
-    for (uint16_t row = 0; row < h; row++) {
-        memcpy(dst + (uint32_t)row * dst_stride,
-               src + (uint32_t)row * src_stride,
-               dst_stride);
-    }
-}
-
 /* GFX 分页回调：把上一时刻画面存进 OLD 缓冲。 */
 static void epd_clock_capture_cb(void *user_data, uint8_t *black, uint8_t *color,
                                  uint16_t x, uint16_t y, uint16_t w, uint16_t h)
@@ -95,8 +83,9 @@ static void epd_clock_capture_cb(void *user_data, uint8_t *black, uint8_t *color
         return;
     }
 
-    epd_clock_store_page(ctx->dst + (uint32_t)(y - ctx->window_y) * ctx->dst_stride,
-                         ctx->dst_stride, black, page.src_stride, h);
+    /* Equal strides and the checked strip bounds make the page contiguous. */
+    memcpy(ctx->dst + (uint32_t)(y - ctx->window_y) * ctx->dst_stride,
+           black, (size_t)ctx->dst_stride * h);
 }
 
 /* GFX page callback: submit this strip's regenerated OLD and NEW data. */
@@ -176,7 +165,7 @@ static bool epd_clock_refresh_one(const epd_model_t *epd, const gui_data_t *data
 
         old_data.timestamp = s_clock_last_timestamp;
         DrawGUI_ClockOnly(&old_data, epd_clock_capture_cb, &capture);
-        if (capture.failed) return false;
+        if (capture.failed || !GUI_RenderValid()) return false;
         epd_clock_diff_ctx_t ctx = {
             .epd = epd,
             .old_bitmap = s_clock_old_window,
@@ -188,7 +177,7 @@ static bool epd_clock_refresh_one(const epd_model_t *epd, const gui_data_t *data
             .failed = false,
         };
         DrawGUI_ClockOnly(data, epd_clock_diff_cb, &ctx);
-        if (ctx.failed) return false;
+        if (ctx.failed || !GUI_RenderValid()) return false;
         row += rows;
     }
 
@@ -215,7 +204,17 @@ bool epd_clock_refresh_try(const epd_model_t *epd, const gui_data_t *data)
     }
 
     if (!ui_resources_clock_geom(data->mode == MODE_CLOCK,
-                                 data->width, data->height, &geom)) return false;
+                                 data->width, data->height, &geom)) {
+        epd_clock_refresh_invalidate();
+        return false;
+    }
+    /* OLD/NEW rendering uses the loaded UI resource. Accept only its geometry;
+     * a legacy/unknown layout must fall back to a full scene refresh. */
+    if (!geom.resource_geometry || !geom.partial_allowed) return false;
+    /* The setup overlay shares the clock canvas during the initial wall-clock
+     * month. Repainting only digits would erase the resource-defined message. */
+    if (geom.partial_sync_overlay && data->timestamp >= 1735689600U &&
+        data->timestamp < 1738368000U) return false;
     n = clock_refresh_local_windows(&geom, s_clock_last_timestamp, data->timestamp,
                                     wins, CLOCK_REFRESH_WINDOWS_MAX);
     if (n == 0U) {

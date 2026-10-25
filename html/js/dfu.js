@@ -77,6 +77,7 @@
   };
 
   let dfuPackage = null;
+  let packageLoadGeneration = 0;
   let dfuBusy = false;
   let pendingManualSession = null;
   let packageVersionHint = null;
@@ -100,6 +101,8 @@
   }
 
   function notifyDfuPageStateChange() {
+    const fileEl = document.getElementById('dfuPackageFile');
+    if (fileEl) fileEl.disabled = !!(dfuBusy || pendingManualSession);
     if (typeof window.onDfuPageStateChange !== 'function') return;
     try {
       window.onDfuPageStateChange(getDfuPageState());
@@ -533,13 +536,14 @@
       this.listeners = { log: [], progress: [] };
       this.connectedDevice = null;
       this.disconnectHandler = null;
+      this.disconnectDevice = null;
+      this.connectionGeneration = 0;
       this.connectedControlChar = null;
       this.connectedButtonChar = null;
       this.prn = options.prn !== undefined ? options.prn : 12;
       this.delay = delayMs > 0 ? delayMs : (this.prn > 0 ? 10 : 15);
       this.prnPacketCount = 0;
       this.prnResolver = null;
-      this.expectedChecksumOffset = null;
       this.prnQueue = [];
     }
 
@@ -677,28 +681,25 @@
       }
       const operation = view.getUint8(1);
 
-      // Check if this is a PRN notification (represented as standard response to CRC_GET/0x03)
+      // CRC_GET notifications are PRNs. Object verification uses SELECT, whose
+      // distinct opcode cannot be confused with a delayed packet notification.
       if (operation === OP.CALCULATE_CHECKSUM[0]) {
-        const offset = view.getUint32(3, LITTLE_ENDIAN);
-        const isChecksumResponse = this.expectedChecksumOffset !== null && offset === this.expectedChecksumOffset;
-        if (!isChecksumResponse) {
-          if (this.prnResolver) {
-            const resolver = this.prnResolver;
-            this.prnResolver = null;
-            const result = view.getUint8(2);
-            if (result === 0x01) {
-              resolver.resolve(view);
-            } else {
-              const err = (result === 0x0B)
-                ? `PRN Error: ${EXTENDED_ERROR_MSG[view.getUint8(3)] || 'Unknown extended error'}`
-                : `PRN Error: ${RESPONSE_MSG[result] || 'Unknown response error'}`;
-              resolver.reject(new Error(err));
-            }
-          } else if (this.prn > 0) {
-            this.prnQueue.push(view);
+        if (this.prnResolver) {
+          const resolver = this.prnResolver;
+          this.prnResolver = null;
+          const result = view.getUint8(2);
+          if (result === 0x01) {
+            resolver.resolve(view);
+          } else {
+            const err = (result === 0x0B)
+              ? `PRN Error: ${EXTENDED_ERROR_MSG[view.getUint8(3)] || 'Unknown extended error'}`
+              : `PRN Error: ${RESPONSE_MSG[result] || 'Unknown response error'}`;
+            resolver.reject(new Error(err));
           }
-          return;
+        } else if (this.prn > 0) {
+          this.prnQueue.push(view);
         }
+        return;
       }
 
       const target = this.notifyFns[operation];
@@ -711,19 +712,24 @@
           ? `Error: ${EXTENDED_ERROR_MSG[view.getUint8(3)] || 'Unknown extended error'}`
           : `Error: ${RESPONSE_MSG[result] || 'Unknown response error'}`;
         this.log(`notify: ${err}`);
-        target.reject(new Error(err));
+        const error = new Error(err);
+        error.dfuResult = result;
+        target.reject(error);
       }
       delete this.notifyFns[operation];
     };
 
     bindDisconnectHandler(device) {
       if (!device) return;
-      if (this.connectedDevice && this.disconnectHandler) {
+      if (this.disconnectDevice && this.disconnectHandler) {
         try {
-          this.connectedDevice.removeEventListener('gattserverdisconnected', this.disconnectHandler);
+          this.disconnectDevice.removeEventListener('gattserverdisconnected', this.disconnectHandler);
         } catch (_) { }
       }
-      this.disconnectHandler = () => {
+      this.connectionGeneration++;
+      const handler = () => {
+        if (this.disconnectHandler !== handler) return;
+        this.connectionGeneration++;
         const pending = this.notifyFns;
         this.notifyFns = {};
         for (const key of Object.keys(pending)) {
@@ -741,7 +747,9 @@
         this.connectedControlChar = null;
         this.connectedButtonChar = null;
       };
-      device.addEventListener('gattserverdisconnected', this.disconnectHandler);
+      this.disconnectHandler = handler;
+      this.disconnectDevice = device;
+      device.addEventListener('gattserverdisconnected', handler);
       this.connectedDevice = device;
     }
 
@@ -812,27 +820,37 @@
       return new Promise((resolve, reject) => {
         let settled = false;
         let timeoutId = null;
+        let pending;
+        const generation = this.connectionGeneration;
+        const device = this.connectedDevice;
+        const sameConnection = () => this.connectionGeneration === generation &&
+          this.connectedDevice === device && (!device || device.gatt.connected);
         const finish = (fn, value) => {
           if (settled) return;
           settled = true;
           if (timeoutId) clearTimeout(timeoutId);
-          delete this.notifyFns[operation[0]];
+          if (this.notifyFns[operation[0]] === pending) delete this.notifyFns[operation[0]];
           fn(value);
         };
         const payload = new Uint8Array(operation.length + (buffer ? buffer.byteLength : 0));
         payload.set(operation);
         if (buffer) payload.set(new Uint8Array(buffer), operation.length);
-        this.notifyFns[operation[0]] = {
+        pending = {
           resolve: value => finish(resolve, value),
           reject: err => finish(reject, err)
         };
+        this.notifyFns[operation[0]] = pending;
         timeoutId = setTimeout(() => {
           finish(reject, new Error(`DFU response timeout (${DFU_RESPONSE_TIMEOUT_MS}ms)`));
         }, DFU_RESPONSE_TIMEOUT_MS);
         characteristic.writeValue(payload).catch(async (e) => {
+          if (settled) return;
           this.log(String(e));
           try {
+            if (!sameConnection()) throw new Error('DFU connection changed');
             await this.delayPromise(500);
+            if (settled) return;
+            if (!sameConnection()) throw new Error('DFU connection changed');
             await characteristic.writeValue(payload);
           } catch (retryErr) {
             finish(reject, retryErr);
@@ -969,12 +987,19 @@
       }
     }
 
-    async transferObject(buffer, createType, maxSize, offset, objectName) {
+    async transferObject(buffer, createType, maxSize, offset, objectName, selectType) {
       const start = offset - (offset % maxSize);
       const end = Math.min(start + maxSize, buffer.byteLength);
       const view = new DataView(new ArrayBuffer(4));
       view.setUint32(0, end - start, LITTLE_ENDIAN);
       await this.sendControl(createType, view.buffer);
+      // CREATE rolls back received bytes to the last EXECUTE, not necessarily
+      // the page inferred from SELECT's received offset. Verify before writing.
+      const selected = await this.sendControl(selectType);
+      if (selected.getUint32(4, LITTLE_ENDIAN) !== start ||
+          !this.checkCrc(buffer.slice(0, start), selected.getInt32(8, LITTLE_ENDIAN))) {
+        throw new Error('DFU 已提交数据与固件不一致，无法安全续传');
+      }
       this.prnPacketCount = 0; // Reset PRN counter for the new object
       this.prnQueue = []; // Clear PRN queue for the new object
       await this.transferData(buffer.slice(start, end), start, 0, objectName, buffer.byteLength);
@@ -982,24 +1007,20 @@
       // Let the BLE / GATT queue settle for 100ms after heavy traffic before requesting checksum
       await this.delayPromise(100);
 
-      this.expectedChecksumOffset = end;
-      let response;
-      try {
-        response = await this.sendControl(OP.CALCULATE_CHECKSUM);
-      } finally {
-        this.expectedChecksumOffset = null;
-      }
-      const crc = response.getInt32(4, LITTLE_ENDIAN);
-      const transferred = response.getUint32(0, LITTLE_ENDIAN);
+      // SELECT returns the same received offset/CRC as CRC_GET in the SDK,
+      // with an opcode that cannot collide with asynchronous PRN messages.
+      const response = await this.sendControl(selectType);
+      const crc = response.getInt32(8, LITTLE_ENDIAN);
+      const transferred = response.getUint32(4, LITTLE_ENDIAN);
       const data = buffer.slice(0, transferred);
-      if (!this.checkCrc(data, crc)) {
+      if (transferred !== end || !this.checkCrc(data, crc)) {
         throw new Error('DFU object CRC校验失败');
       }
       this.log(`written ${transferred} bytes`);
       await this.sendControl(OP.EXECUTE);
       await this.delayPromise(Math.max(this.delay, DFU_OBJECT_EXECUTE_SETTLE_MS));
       if (end < buffer.byteLength) {
-        await this.transferObject(buffer, createType, maxSize, transferred, objectName);
+        await this.transferObject(buffer, createType, maxSize, transferred, objectName, selectType);
       } else {
         this.log('transfer complete');
       }
@@ -1010,15 +1031,38 @@
       const maxSize = resp.getUint32(0, LITTLE_ENDIAN);
       const offset = resp.getUint32(4, LITTLE_ENDIAN);
       const crc = resp.getInt32(8, LITTLE_ENDIAN);
-      if (offset === buffer.byteLength && this.checkCrc(buffer, crc)) {
-        this.log(`${objectName} already available, executing/skipping transfer`);
-        if (objectName === 'firmware') {
+      const isCommand = selectType === OP.SELECT_COMMAND;
+      if (!maxSize || !buffer.byteLength || (isCommand && buffer.byteLength > maxSize)) {
+        throw new Error('DFU object size 无效');
+      }
+      if (!isCommand && offset > buffer.byteLength) {
+        throw new Error('DFU offset 超出固件长度');
+      }
+      const prefixMatches = offset <= buffer.byteLength &&
+        this.checkCrc(buffer.slice(0, offset), crc);
+      let restartOffset = isCommand ? 0 : offset;
+      if (offset > 0 && prefixMatches &&
+          (offset === buffer.byteLength || (!isCommand && offset % maxSize === 0))) {
+        // SELECT reports received bytes, including a full object that was never
+        // executed. EXECUTE is also safe when that object was already committed.
+        this.log(`${objectName}: committing ${offset} received bytes`);
+        try {
           await this.sendControl(OP.EXECUTE);
+        } catch (err) {
+          // At a non-final boundary the next object may have been CREATEd but
+          // received no bytes. The SDK rejects EXECUTE with 0x08 in that case;
+          // recreating it below is safe after checking the committed prefix.
+          if (isCommand || offset === buffer.byteLength || err.dfuResult !== 0x08) throw err;
         }
-        return;
+        await this.delayPromise(Math.max(this.delay, DFU_OBJECT_EXECUTE_SETTLE_MS));
+        if (offset === buffer.byteLength) return;
+      } else if (!isCommand && offset > 0 && offset % maxSize === 0) {
+        // A corrupt, fully received object still belongs to the preceding page.
+        // CREATE + SELECT below confirms that its committed prefix is intact.
+        restartOffset -= maxSize;
       }
       this.progress(objectName, buffer.byteLength, 0);
-      await this.transferObject(buffer, createType, maxSize, offset, objectName);
+      await this.transferObject(buffer, createType, maxSize, restartOffset, objectName, selectType);
     }
 
     async requestDevice(buttonLess, filters, uuids, pickerOptions) {
@@ -1152,17 +1196,36 @@
   }
 
   async function loadPackageFromFile(file) {
-    if (!file) return;
+    // A resumable session owns its original image buffers until completed or
+    // abandoned. A new selection must never silently replace those images.
+    if (dfuBusy || pendingManualSession) return;
+    const generation = ++packageLoadGeneration;
+    dfuPackage = null;
+    packageVersionHint = null;
     setDfuProgress(null);
+    setDfuPrecheck('');
+    if (!file) {
+      setDfuStatus('未选择 DFU 固件包');
+      return;
+    }
     setDfuStatus('正在解析固件包...');
-    const pkg = new LocalDfuPackage(file);
-    await pkg.load();
-    dfuPackage = pkg;
-    const appImage = pkg.getAppImage();
-    const baseImage = pkg.getBaseImage();
-    updateVersionPrecheck(baseImage, appImage);
-    setDfuStatus(`固件包已就绪：${file.name}`);
-    emitLog(`固件包已加载: ${file.name}`);
+    try {
+      const pkg = new LocalDfuPackage(file);
+      await pkg.load();
+      if (generation !== packageLoadGeneration) return;
+      const appImage = pkg.getAppImage();
+      const baseImage = pkg.getBaseImage();
+      if (!appImage && !baseImage) throw new Error('固件包中未找到可升级镜像');
+      updateVersionPrecheck(baseImage, appImage);
+      dfuPackage = pkg;
+      setDfuStatus(`固件包已就绪：${file.name}`);
+      emitLog(`固件包已加载: ${file.name}`);
+    } catch (err) {
+      if (generation !== packageLoadGeneration) return;
+      const errMsg = getErrorMessage(err);
+      setDfuStatus(`固件包加载失败: ${errMsg}`, true);
+      emitLog(`固件包加载失败: ${errMsg}`);
+    }
   }
 
   async function updateOneImage(dfu, device, image) {
@@ -1771,13 +1834,7 @@
 
     fileEl.addEventListener('change', async event => {
       const file = event.target && event.target.files ? event.target.files[0] : null;
-      try {
-        await loadPackageFromFile(file);
-      } catch (err) {
-        const errMsg = getErrorMessage(err);
-        setDfuStatus(`固件包加载失败: ${errMsg}`, true);
-        emitLog(`固件包加载失败: ${errMsg}`);
-      }
+      await loadPackageFromFile(file);
     });
 
     startBtn.addEventListener('click', startDfuUpgrade);

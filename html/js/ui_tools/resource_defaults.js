@@ -33,28 +33,7 @@
       .map(value => ({ month: value >> 8 & 15, day: value & 255, work: !!(value & 0x1000) })),
     special_festival_names: ['除夕', '母亲节', '父亲节', '感恩节', '清明节']
   };
-  const components = [
-    [1, 1, 1, [2, 1, 0], 10, 38, 780, 38, 16, 12],
-    [1, 2, 1, [1, 255, 255], 10, 44, 780, 32, 0, 0],
-    [1, 3, 3, [2, 1, 0], 10, 84, 780, 386, 0, 0],
-    [2, 4, 2, [255, 255, 255], 15, 45, 770, 2, 0, 0],
-    [2, 5, 2, [255, 255, 255], 15, 435, 770, 2, 0, 0],
-    [2, 6, 2, [255, 255, 255], 390, 70, 1, 350, 0, 0],
-    [2, 7, 1, [0, 255, 255], 400, 86, 388, 16, 77, 788],
-    [2, 8, 1, [1, 255, 255], 397, 96, 398, 32, 0, 0],
-    [2, 9, 3, [2, 1, 0], 397, 136, 398, 284, 0, 0],
-    [2, 10, 1, [2, 1, 255], 15, 92, 362, 36, 115, 377],
-    [2, 11, 2, [255, 255, 255], 15, 128, 362, 1, 0, 0],
-    [2, 12, 4, [255, 255, 255], 0, 169, 384, 150, 6, 2],
-    [2, 13, 2, [255, 255, 255], 15, 360, 362, 1, 0, 0],
-    [2, 14, 1, [1, 255, 255], 15, 380, 362, 44, 404, 420],
-    [3, 15, 1, [2, 1, 0], 100, 36, 600, 32, 58, 138],
-    [3, 16, 2, [255, 255, 255], 90, 68, 620, 1, 0, 0],
-    [3, 17, 4, [255, 255, 255], 160, 136, 480, 208, 10, 2],
-    [3, 18, 2, [255, 255, 255], 90, 412, 620, 1, 0, 0],
-    [3, 19, 1, [1, 255, 255], 100, 442, 600, 38, 462, 700]
-  ].map(([mode, id, kind, fonts, x, y, width, height, value0, value1]) =>
-    ({ mode, id, kind, flags: 0, fonts, x, y, width, height, value0, value1 }));
+  const uiModel = typeof module !== 'undefined' && module.exports ? require('./ui_model.js') : root.EPDUIModel;
   const layout = {
     layout_version: 1, capacity_bytes: 524288, erase_sector_bytes: 4096,
     external_data_copies: 1, external_firmware_slots: false,
@@ -66,9 +45,9 @@
   };
   const clone = value => JSON.parse(JSON.stringify(value));
   const api = {
-    calendar: () => clone(calendar), ui: () => ({ components: clone(components) }), layout: () => clone(layout),
+    calendar: () => clone(calendar), ui: () => uiModel.defaults(), layout: () => clone(layout),
     config: () => Uint8Array.of(0x14, 0x13, 0x06, 0x05, 0x04, 0x03, 0x02, 0x07, 0xff, 0x12, 0x07, 0x02, 0x00, 0x00),
-    versions: () => ({ 1: 2, 2: 1, 3: 1, 5: 1, 6: 1, 7: 1, 9: 1 })
+    versions: () => ({ 1: 2, 2: 1, 3: 1, 5: 1, 6: 2, 7: 1, 9: 1 })
   };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   else root.EPDResourceDefaults = api;

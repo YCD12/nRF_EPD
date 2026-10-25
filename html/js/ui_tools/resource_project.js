@@ -4,7 +4,7 @@
   const packer = node ? require('./resource_pack.js') : root.EPDResourcePack;
   const sources = node ? require('./font_sources.js') : root.EPDFontSources;
   const fields = ['resourceCalendarSource', 'resourceLayoutSource', 'resourceMigrationSource', 'resourceBuildRevision',
-    'resourceFontFamily', 'resourceFontTarget', 'resourceFontMode', 'resourceExtraText'];
+    'resourceFontFamily', 'resourceFontPixelSize', 'resourceFontTarget', 'resourceFontMode', 'resourceExtraText'];
   const MAX_FONT = 32 * 1024 * 1024, MAX_PROJECT = 64 * 1024 * 1024;
   function encode64(bytes) {
     let text = '';
@@ -22,6 +22,7 @@
     return bytes;
   }
   function values(input) {
+    if(input && input.resourceFontPixelSize===undefined) input={...input,resourceFontPixelSize:''};
     if (!input || fields.some(id => typeof input[id] !== 'string' || input[id].length > 2000000))
       throw new Error('工程编辑内容无效');
     const result = Object.fromEntries(fields.map(id => [id, input[id]]));

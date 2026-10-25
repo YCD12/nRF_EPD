@@ -20,7 +20,7 @@
 #define NRF_LOG_WARNING(...) ((void)0)
 #define ble_log(...) ((void)0)
 #define EPD_LED_OFF() ((void)0)
-#define EPD_LED_BLINK() ((void)0)
+#define EPD_LED_BLINK() (led_blinks++)
 
 typedef unsigned epd_model_id_t;
 typedef struct epd_model epd_model_t;
@@ -39,6 +39,7 @@ typedef struct {
     const epd_model_t *epd;
     bool init_pending, init_ack_pending, disconnect_pending, gpio_connection_ref;
     bool is_refreshing, force_full_refresh, low_battery_screen_active;
+    bool battery_poll_pending, battery_blink_pending;
     bool annotations_rx_abort_requested;
     bool mode_ack_pending;
     uint8_t initial_notify;
@@ -49,8 +50,13 @@ typedef struct { uint16_t voltage_mv; bool critical, skip; } battery_guard_resul
 
 static unsigned refs, full_refreshes, partial_refreshes, saves;
 static unsigned critical_depth;
+static unsigned adc_reads, led_blinks;
+static uint16_t adc_voltage = 3300U;
+static uint16_t refresh_voltage = 3300U;
+static bool timer_active;
 static uint32_t now = 1001U;
 static bool entered, resources_ready = true, clock_valid, fail_full_refresh;
+static bool resource_reply_pending;
 static bool todo_loaded = true, todo_reload_succeeds = true;
 static unsigned todo_reloads;
 static gui_data_t displayed;
@@ -89,7 +95,7 @@ static bool EPD_BusyAbortRequested(void) { return false; }
 static void UC8179_ClearBusyTimeout(void) {}
 static bool UC8179_HadBusyTimeout(void) { return false; }
 bool resource_protocol_entered(void) { return entered; }
-bool resource_transfer_reply_pending(void) { return false; }
+bool resource_transfer_reply_pending(void) { return resource_reply_pending; }
 bool epd_resources_ready(void) { return resources_ready; }
 static void epd_clock_refresh_invalidate(void) { clock_valid = false; }
 static bool epd_clock_refresh_is_valid(void) { return clock_valid; }
@@ -99,7 +105,8 @@ static void sleep_mode_enter(void) { assert(!"unexpected system sleep"); }
 static uint32_t timestamp(void) { return now; }
 static void set_timestamp(uint32_t value) { now = value; }
 static uint32_t app_uptime_seconds(void) { return now; }
-static uint16_t EPD_ReadVoltageAndCache(void) { return 3300U; }
+static uint16_t EPD_ReadVoltageAndCache(void)
+{ assert(!timer_active); adc_reads++; return adc_voltage; }
 static bool calendar_annotations_rx_active(void) { return false; }
 static bool todo_items_ready(void) { return todo_loaded; }
 static bool todo_items_init(void) { todo_reloads++; todo_loaded = todo_reload_succeeds; return todo_loaded; }
@@ -114,9 +121,13 @@ static void todo_items_suspend_display(void) { todo_loaded = false; }
 static bool GUI_TodoFontMatches(uint8_t size, uint32_t key)
 { assert(size == 12U && key == 123U); todo_font_checks++; return todo_font_matches; }
 void epd_config_write(epd_config_t *cfg) { (void)cfg; saves++; }
+bool epd_config_read_pending(void) { return false; }
 void transformTime(uint32_t ts, tm_t *tm) { memset(tm, 0, sizeof(*tm)); tm->tm_hour = ts / 3600U % 24U; }
 static battery_guard_result_t epd_battery_guard(ble_epd_t *p)
-{ (void)p; return (battery_guard_result_t){3300, false, false}; }
+{
+    p->low_battery_screen_active = epd_battery_is_low(refresh_voltage);
+    return (battery_guard_result_t){refresh_voltage, false, false};
+}
 static void epd_fill_device_name(gui_data_t *data) { strcpy(data->ssid, "test"); }
 static bool epd_perform_full_refresh(ble_epd_t *p, const epd_model_t *epd, gui_data_t *data)
 {
@@ -302,5 +313,155 @@ int main(void)
     select_mode(&p, MODE_TODO);
     assert(todo_loaded && p.config.display_mode == MODE_TODO && p.mode_ack[2] == RS_OK);
     assert(todo_font_checks == 3U);
+    /* Erased/invalid resources must stay idle across minute/day boundaries,
+     * including when the last explicit fallback failed and old TODO metadata
+     * is still cached. Connecting does not install resources. */
+    for (unsigned connected = 0U; connected < 2U; ++connected) {
+        p.conn_handle = connected ? 1U : BLE_CONN_HANDLE_INVALID;
+        for (unsigned mode = MODE_CALENDAR; mode <= MODE_TODO; ++mode) {
+            p.config.display_mode = mode;
+            resources_ready = false;
+            fail_full_refresh = true;
+            epd_clock_refresh_invalidate();
+            now = (now / 86400U + 1U) * 86400U - 60U;
+            ble_epd_on_timer(&p, now, true); drain();
+            unsigned attempts = full_refreshes + partial_refreshes;
+            for (unsigned i = 0U; i < 180U; ++i) {
+                now++;
+                ble_epd_on_timer(&p, now, false); drain();
+                assert(full_refreshes + partial_refreshes == attempts);
+                assert(!p.display_queue.pending && !scheduled_worker && refs == 0U);
+            }
+            /* A successful resource activation still redraws immediately. */
+            resources_ready = true;
+            fail_full_refresh = false;
+            ble_epd_on_timer(&p, now, true); drain();
+            assert(full_refreshes + partial_refreshes == attempts + 1U);
+        }
+    }
+    /* A midnight failure is outstanding work, even after its rollover tick
+     * has been consumed. Healthy calendar sleep must not cause more redraws. */
+    for (unsigned mode = MODE_CALENDAR; mode <= MODE_CLOCK; ++mode) {
+        p.config.display_mode = mode;
+        p.conn_handle = BLE_CONN_HANDLE_INVALID;
+        p.gpio_connection_ref = false;
+        now = (now / 86400U + 1U) * 86400U - 1U;
+        ble_epd_on_timer(&p, now, true); drain();
+        uint32_t previous_frame = p.last_full_clear;
+        fail_full_refresh = true;
+        now++;
+        ble_epd_on_timer(&p, now, false); drain();
+        unsigned attempts = full_refreshes;
+        assert(p.last_full_clear == previous_frame && s_display_retry_step == 1U);
+        now++;
+        ble_epd_on_timer(&p, now, false); drain();
+        assert(full_refreshes == attempts + 1U && s_display_retry_step == 2U);
+        fail_full_refresh = false;
+        for (unsigned i = 0U; i < 4U; i++) {
+            now++; ble_epd_on_timer(&p, now, false); drain();
+            assert(full_refreshes == attempts + 1U);
+        }
+        now++; ble_epd_on_timer(&p, now, false); drain();
+        assert(full_refreshes == attempts + 2U && !s_display_retry_step);
+        assert(p.last_full_clear == now && refs == 0U);
+        for (unsigned i = 0U; i < 40U; i++) {
+            now++; ble_epd_on_timer(&p, now, false); drain();
+            assert(full_refreshes == attempts + 2U);
+        }
+    }
+    /* Low voltage holds a successfully displayed frame, but must not consume
+     * a failed last-frame request. Retry with backoff, then stop across minute
+     * boundaries once one full frame succeeds at the same low voltage. */
+    refresh_voltage = 2750U;
+    for (unsigned mode = MODE_CALENDAR; mode <= MODE_TODO; ++mode) {
+        p.config.display_mode = mode;
+        p.force_full_refresh = true;
+        now = (now / 86400U + 1U) * 86400U + 60U;
+        fail_full_refresh = true;
+        ble_epd_on_timer(&p, now, true); drain();
+        unsigned attempts = full_refreshes;
+        assert(p.low_battery_screen_active && s_display_retry_step == 1U);
+        now++; ble_epd_on_timer(&p, now, false); drain();
+        assert(full_refreshes == attempts + 1U && s_display_retry_step == 2U);
+        fail_full_refresh = false;
+        for (unsigned i = 0U; i < 4U; ++i) {
+            now++; ble_epd_on_timer(&p, now, false); drain();
+            assert(full_refreshes == attempts + 1U);
+        }
+        now++; ble_epd_on_timer(&p, now, false); drain();
+        assert(full_refreshes == attempts + 2U && s_display_retry_step == 0U);
+        assert(p.last_full_clear == now && p.low_battery_screen_active && refs == 0U);
+        for (unsigned i = 0U; i < 130U; ++i) {
+            now++; ble_epd_on_timer(&p, now, false); drain();
+            assert(full_refreshes == attempts + 2U);
+        }
+    }
+    refresh_voltage = 3300U;
+    p.battery_poll_pending = p.battery_blink_pending = false;
+    /* RTC only posts battery work. Main retries it after exclusive access;
+     * an unavailable ADC does not manufacture a critical-battery update. */
+    p.config.display_mode = MODE_CALENDAR;
+    p.low_battery_screen_active = true;
+    adc_voltage = 2800U;
+    now = (now / 30U + 1U) * 30U;
+    timer_active = true;
+    ble_epd_on_timer(&p, now, false);
+    timer_active = false;
+    assert(!adc_reads && !led_blinks && p.battery_poll_pending && p.battery_blink_pending);
+    entered = true;
+    epd_battery_process(&p);
+    assert(!adc_reads && p.battery_poll_pending);
+    entered = false;
+    epd_battery_process(&p);
+    assert(adc_reads == 1U && led_blinks == 1U && !p.battery_poll_pending);
+    assert(p.low_battery_screen_active && !p.display_queue.pending);
+    adc_voltage = 0U;
+    p.battery_poll_pending = true;
+    epd_battery_process(&p);
+    assert(adc_reads == 2U && p.low_battery_screen_active && !p.display_queue.pending);
+    adc_voltage = 3300U;
+    p.battery_poll_pending = true;
+    epd_battery_process(&p);
+    assert(adc_reads == 3U && !p.low_battery_screen_active && p.display_queue.pending);
+    drain();
+    p.low_battery_screen_active = true;
+    adc_voltage = 2600U;
+    p.battery_poll_pending = true;
+    epd_battery_process(&p);
+    assert(adc_reads == 4U && p.low_battery_screen_active && p.display_queue.pending);
+    drain();
+    /* An accepted same-day calendar request survives transient main-loop
+     * blockers. Draining the scheduler while blocked must neither consume it
+     * nor reschedule itself forever; clearing the blocker applies it once. */
+    p.low_battery_screen_active = false;
+    p.config.display_mode = MODE_CALENDAR;
+    p.force_full_refresh = true;
+    bool *blockers[] = {&entered, &p.init_pending, &p.init_ack_pending,
+                       &p.disconnect_pending, &p.mode_ack_pending,
+                       &resource_reply_pending};
+    for (unsigned blocker = 0U; blocker < sizeof(blockers) / sizeof(blockers[0]); ++blocker) {
+        unsigned attempts = full_refreshes;
+        epd_display_request(&p, now);
+        *blockers[blocker] = true;
+        drain();
+        assert(p.display_queue.pending && !p.display_queue.processing);
+        assert(!scheduled_worker && full_refreshes == attempts);
+        for (unsigned turn = 0U; turn < 3U; ++turn) {
+            epd_display_queue_schedule(&p.display_queue, &p, epd_gui_update);
+            drain();
+            assert(p.display_queue.pending && !scheduled_worker && full_refreshes == attempts);
+        }
+        *blockers[blocker] = false;
+        epd_display_queue_schedule(&p.display_queue, &p, epd_gui_update);
+        drain();
+        assert(full_refreshes == attempts + 1U && !p.display_queue.pending);
+        epd_display_queue_schedule(&p.display_queue, &p, epd_gui_update);
+        drain();
+        assert(full_refreshes == attempts + 1U && !scheduled_worker && refs == 0U);
+    }
+    puts("PASS: deferred calendar requests survive INIT/resource/disconnect blockers and resume once");
+    puts("PASS: all display modes retry failed frames with backoff; ADC/LED polling runs only in main");
+    puts("PASS: low-voltage failed last frames retry with backoff and stop after one successful frame");
+    puts("PASS: missing resources stay idle while connected/disconnected across minutes and midnight; reinstall resumes refresh");
     puts("PASS: connected mode changes reach panel refresh, periodic ticks and exclusive resource/image access");
 }

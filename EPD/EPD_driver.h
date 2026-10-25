@@ -177,6 +177,7 @@ void EPD_LED_BLINK(void);  // BLE 连接/断开、低电量保持时闪一次
  */
 #define LOW_BATTERY_THRESHOLD_MV 2800      // 低电量阈值（mV）
 #define CRITICAL_BATTERY_SHUTDOWN_MV 2700  // 临界关机阈值（mV）
+/* Main context only; 0 means unavailable/timeout, never a critical voltage. */
 uint16_t EPD_ReadVoltage(void);            // 例如 3300 表示 3.3V
 uint16_t EPD_ReadVoltageAndCache(void);    // 读取并缓存
 

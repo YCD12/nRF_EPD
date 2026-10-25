@@ -23,8 +23,8 @@ def function(source, name):
 
 
 source = (ROOT / 'EPD/EPD_service.c').read_text(encoding='utf-8')
-retry_reset = ('static volatile uint8_t s_todo_retry_step;\n' +
-               function(source, 'epd_todo_retry_reset') + '\n')
+retry_reset = ('static volatile uint8_t s_display_retry_step;\n' +
+               function(source, 'epd_display_retry_reset') + '\n')
 handlers = retry_reset + '\n'.join(function(source, name) for name in (
     'epd_append_char', 'epd_append_uint', 'epd_make_prefixed_uint',
     'epd_send_prefixed_uint', 'epd_send_mtu', 'epd_send_time', 'epd_send_voltage',
@@ -38,6 +38,7 @@ finish = 'static void finish_refresh(ble_epd_t *p_epd) {\n' + '''
     const epd_model_t *epd = p_epd->epd;
     display_mode_t mode = p_epd->config.display_mode;
     bool critical_battery = false;
+    bool refresh_succeeded = true;
 ''' + source[start:end] + '\n}\n'
 pin = function((ROOT / 'EPD/EPD_driver.c').read_text(encoding='utf-8'), 'pinMode')
 fixture = (ROOT / 'tests/service_lifecycle_fixture.c').read_text(encoding='utf-8')
@@ -61,7 +62,7 @@ init_handlers += '\n' + function(
     'calendar_annotations_tx_cancel')
 init_handlers += '\n' + '\n'.join(function(source, name) for name in (
     'epd_append_char', 'epd_append_uint', 'epd_make_prefixed_uint',
-    'epd_config_pins_valid', 'epd_config_validate', 'ble_epd_init',
+    'epd_config_pins_valid', 'epd_config_validate', 'epd_config_defaults', 'ble_epd_init',
     'ble_epd_notification_try_send', 'ble_epd_string_send',
     'resource_notification_send', 'epd_control_notifications_process'))
 fixture = (ROOT / 'tests/service_init_notify_fixture.c').read_text(encoding='utf-8')
@@ -74,8 +75,10 @@ subprocess.run(shlex.split(os.environ.get('HOST_CC', 'gcc')) +
                 str(generated), '-o', str(exe)], cwd=ROOT, check=True)
 subprocess.run([str(exe.resolve())], check=True)
 
-config_handlers = retry_reset + '\n'.join(function(source, name) for name in (
-    'epd_config_pins_valid', 'epd_config_validate', 'epd_config_apply',
+config_handlers = re.search(r'^#define EPD_CFG_52811 .+$', source, re.MULTILINE).group(0) + '\n'
+config_handlers += retry_reset + '\n'.join(function(source, name) for name in (
+    'epd_config_pins_valid', 'epd_config_validate', 'epd_config_defaults', 'epd_config_apply',
+    'epd_resource_idle', 'epd_config_restore', 'epd_update_display_mode', 'cmd_set_week_start',
     'cmd_set_pins', 'cmd_set_config', 'epd_todo_font_valid', 'epd_resource_event'))
 fixture = (ROOT / 'tests/service_config_fixture.c').read_text(encoding='utf-8')
 generated = out / 'service_config_generated.c'
@@ -87,11 +90,13 @@ subprocess.run(shlex.split(os.environ.get('HOST_CC', 'gcc')) +
                 str(generated), '-o', str(exe)], cwd=ROOT, check=True)
 subprocess.run([str(exe.resolve())], check=True)
 
-refresh_handlers = ('static volatile uint32_t s_todo_retry_at;\n' + retry_reset +
+refresh_handlers = ('static volatile uint32_t s_display_retry_at;\n' + retry_reset +
                     '\n'.join(function(source, name) for name in (
+    'epd_display_retry_failed',
     'epd_parse_time_payload', 'epd_display_request', 'epd_display_complete',
     'epd_update_display_mode', 'epd_switch_from_clock_mode', 'epd_command_ack',
-    'epd_todo_font_valid', 'cmd_set_mode', 'ble_epd_on_timer', 'epd_gui_update')))
+    'epd_todo_font_valid', 'cmd_set_mode', 'ble_epd_on_timer', 'epd_gui_update',
+    'epd_battery_process')))
 refresh_fixture = (ROOT / 'tests/connected_refresh_fixture.c').read_text(encoding='utf-8')
 generated = out / 'connected_refresh_generated.c'
 generated.write_text(refresh_fixture.replace('/* PRODUCTION_HANDLERS */', refresh_handlers), encoding='utf-8')

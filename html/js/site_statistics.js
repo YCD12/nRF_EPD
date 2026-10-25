@@ -1,6 +1,9 @@
 (function () {
   'use strict';
 
+  // Local device tools also work offline; visitor counts only apply to sites.
+  if (!['http:', 'https:'].includes(window.location?.protocol)) return;
+
   function loadStatistics() {
     if (document.querySelector('script[src*="busuanzi/2.3/busuanzi.pure.mini.js"]')) return;
     const script = document.createElement('script');

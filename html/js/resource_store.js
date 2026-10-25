@@ -2,6 +2,9 @@
   'use strict';
   const u32 = (b, at) => new DataView(b.buffer, b.byteOffset, b.byteLength).getUint32(at, true);
   const CAPACITY = 524288;
+  // LEAVE resumes synchronous panel work in firmware main. Its ACK may arrive
+  // before a full refresh, so later requests can also wait behind that frame.
+  const REFRESH_RETRY_MS = 30000, REFRESH_WINDOW_MS = 90000;
   const INSTALL_ORDER = [1, 5, 6, 7, 2, 3, 9];
   const STATUS_NAMES = ['有效', '格式错误', '正在更新', '校验失败', '未安装或未提交', '读写失败', '版本不兼容', '写入受保护'];
   function statusName(code) { return STATUS_NAMES[code] || `未知状态 ${code}`; }
@@ -43,7 +46,7 @@
     if (!(reply[4] & 1) || reply[5] !== 1 || u32(reply, 12) !== CAPACITY) throw new Error('设备不支持外置 Flash 读写或资源 ABI/容量不兼容');
     return { code: reply[3], abi: reply[5], active: reply[6], entered: !!reply[7],
       hotReload: !!(reply[4] & 2), offline: !!(reply[4] & 4),
-      largePackets: !!(reply[4] & 8), verify: !!(reply[4] & 16), buffered: !!(reply[4] & 32),
+      largePackets: !!(reply[4] & 8), verify: !!(reply[4] & 16), buffered: !!(reply[4] & 32), erase: !!(reply[4] & 64),
       received: u32(reply, 8), capacity: u32(reply, 12) };
   }
   function validateTarget(pack, partitions) {
@@ -108,6 +111,7 @@
       this.write = write; this.timeout = timeout; this.token = 0;
       this.pending = null; this.busy = false; this.closed = false;
       this.dataLength = dataLength; this.capabilities = null;
+      this.refreshUntil = 0;
     }
     packetLimit() {
       const n = Number(typeof this.dataLength === 'function' ? this.dataLength() : this.dataLength);
@@ -128,13 +132,18 @@
       if (this.closed || this.busy || body.length > this.packetLimit() - 3) throw new Error('连接不可用或请求正在执行');
       this.busy = true;
       const packet = Uint8Array.of(0x26, op, this.token++ & 255, ...body);
+      const activation = op === 7 || op === 8;
+      const timeout = activation || Date.now() < this.refreshUntil
+        ? Math.max(this.timeout, REFRESH_RETRY_MS) : this.timeout;
+      const action = op === 7 ? '应用资源' : op === 8 ? '应用资源并断开连接'
+        : op === 0 ? '读取资源状态' : `子命令 ${op}`;
       try {
         for (let attempt = 0; attempt < 3; ++attempt) {
           let timer, acknowledged;
           try {
             const answer = new Promise((resolve, reject) => {
               this.pending = { op, token: packet[2], resolve: reply => { acknowledged = reply; resolve(reply); }, reject };
-              timer = setTimeout(() => reject(new Error('资源请求超时')), this.timeout);
+              timer = setTimeout(() => reject(new Error(`资源请求超时（${action}）`)), timeout);
             });
             const written = Promise.resolve().then(() => this.write(packet)).catch(error => {
               // RUN_OFFLINE may disconnect GATT after its successful application ACK.
@@ -142,6 +151,7 @@
             });
             const result = await Promise.all([answer, written]);
             const reply = result[0];
+            if (activation && reply[3] === 0) this.refreshUntil = Date.now() + REFRESH_WINDOW_MS;
             if (reply[3] !== 0 && !allowStatus) throw Object.assign(new Error(`设备返回：${statusName(reply[3])}`), { device: true, code: reply[3] });
             return reply;
           } catch (error) {
@@ -164,6 +174,14 @@
       }
       if (reply.length !== 16) throw new Error('资源校验响应长度错误');
       return { code: 0, revision: u32(reply, 4), length: u32(reply, 8), crc: u32(reply, 12) };
+    }
+    async eraseSector(id, offset) {
+      if (!this.capabilities?.erase) throw new Error('删除功能需要固件 0x3F 或更新版本');
+      if (!Number.isInteger(id) || id < 0 || id > 65535 || !Number.isInteger(offset) ||
+          offset < 0 || offset >= CAPACITY || offset % 4096) throw new Error('删除范围错误');
+      const body = new Uint8Array(6);
+      new DataView(body.buffer).setUint16(0, id, true); put32(body, 2, offset);
+      return this.request(11, body);
     }
     leave() { return this.request(7); }
     runOffline() { return this.request(8); }

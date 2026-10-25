@@ -109,23 +109,23 @@ uint32_t ble_epd_notification_try_send(ble_epd_t* p_epd, uint8_t* data, uint16_t
 // SET_TIME 频率限制(秒)。同一时间窗口内仅允许一次 SET_TIME 触发屏幕更新(PRD §4.3)。
 #define EPD_SET_TIME_RATE_LIMIT_S 10U
 
-/* TODO invalid-frame retries use uptime, independent of wall-clock changes.
+/* Failed display attempts use uptime, independent of wall-clock changes.
  * Explicit requests/resource activation and successful frames reset the delay. */
-static volatile uint32_t s_todo_retry_at;
-static volatile uint8_t s_todo_retry_step;
+static volatile uint32_t s_display_retry_at;
+static volatile uint8_t s_display_retry_step;
 
-static void epd_todo_retry_reset(void)
+static void epd_display_retry_reset(void)
 {
-    s_todo_retry_step = 0U;
+    s_display_retry_step = 0U;
 }
 
-static void epd_todo_retry_failed(void)
+static void epd_display_retry_failed(void)
 {
     static const uint8_t delays[] = {1U, 5U, 15U, 30U};
-    uint8_t step = s_todo_retry_step;
+    uint8_t step = s_display_retry_step;
     if (step < sizeof(delays)) step++;
-    s_todo_retry_at = app_uptime_seconds() + delays[step - 1U];
-    s_todo_retry_step = step;
+    s_display_retry_at = app_uptime_seconds() + delays[step - 1U];
+    s_display_retry_step = step;
 }
 
 static void epd_display_request(ble_epd_t *p_epd, uint32_t requested_timestamp)
@@ -296,6 +296,10 @@ static battery_guard_result_t epd_battery_guard(ble_epd_t *p_epd) {
     static uint16_t cached_mv = 3300;
     static bool power_off_drawn = false;
     cached_mv = EPD_ReadVoltageAndCache();
+    if (cached_mv == 0U) {
+        /* Unknown voltage must neither power the panel nor trigger SYSTEMOFF. */
+        return (battery_guard_result_t){true, false, false, 0U};
+    }
 
     bool low      = epd_battery_is_low(cached_mv);
     bool critical = epd_battery_is_critical(cached_mv);
@@ -369,9 +373,8 @@ static bool epd_perform_full_refresh(ble_epd_t *p_epd, const epd_model_t *epd,
     phase_start = app_timer_cnt_get();
 #endif
     DrawGUI(data, (buffer_callback)epd->drv->write_image, (void *)epd);
-    if (epd_is_todo_mode(data->mode) && !GUI_TodoRenderValid()) {
+    if (!GUI_RenderValid()) {
         p_epd->force_full_refresh = true;
-        if (todo_items_ready()) epd_todo_retry_failed();
         return false;
     }
 #if NRF_LOG_ENABLED || BLE_LOG_REDIRECT_ALL_NRF_LOG
@@ -403,8 +406,8 @@ static bool epd_perform_full_refresh(ble_epd_t *p_epd, const epd_model_t *epd,
     EPD_LED_OFF();
     p_epd->last_full_clear = data->timestamp;
     p_epd->force_full_refresh = false;
+    epd_display_retry_reset();
     if (epd_is_todo_mode(data->mode)) {
-        epd_todo_retry_reset();
         todo_items_successful_refresh(data->timestamp);
     }
 
@@ -442,6 +445,7 @@ static void epd_gui_update(void* p_event_data, uint16_t event_size) {
     uint16_t refresh_voltage_mv = 3300;  /* 由电量保护更新，结束刷新时可读 */
     bool critical_battery = false;
     bool low_battery = false;
+    bool refresh_succeeded = false;
     gui_data_t data;
     display_mode_t mode;
 
@@ -451,7 +455,8 @@ static void epd_gui_update(void* p_event_data, uint16_t event_size) {
      * remain pending, but this scheduler drain must not requeue itself while
      * HVX is full, otherwise LEAVE/MODE replies can never make progress. */
     if (p_epd->mode_ack_pending || p_epd->initial_notify ||
-        resource_transfer_reply_pending()) {
+        resource_transfer_reply_pending() || resource_protocol_entered() ||
+        p_epd->init_pending || p_epd->init_ack_pending || p_epd->disconnect_pending) {
         CRITICAL_REGION_ENTER();
         p_epd->display_queue.scheduled = false;
         CRITICAL_REGION_EXIT();
@@ -460,23 +465,13 @@ static void epd_gui_update(void* p_event_data, uint16_t event_size) {
     if (!epd_display_queue_begin(&p_epd->display_queue, &requested_timestamp)) return;
     mode = (display_mode_t)p_epd->config.display_mode;
 
-    /* Missing external data is handled by the renderer. Only operations that
-     * can concurrently change the panel or resource contents block a refresh. */
-    if (resource_protocol_entered() || p_epd->init_pending ||
-        p_epd->init_ack_pending || p_epd->disconnect_pending) {
-        epd_display_complete(p_epd);
-        return;
-    }
-
     if (epd_clock_refresh_must_yield(mode, p_epd->transfer_ctx.transfer_active)) {
         epd_display_complete(p_epd);
         return;
     }
 
-    /* ACK backpressure/maintenance can hold a request across a task boundary
-     * or midnight. Render the current TODO phase and calendar, rather than
-     * the wall clock captured when the request was queued. */
-    if (epd_is_todo_mode(mode)) requested_timestamp = timestamp();
+    /* A queued request can cross a minute, task boundary or midnight. */
+    requested_timestamp = timestamp();
 
     // 设置刷新标志，阻止中断中的 WRITE_BLOCK 重入面板操作。
     p_epd->is_refreshing = true;
@@ -569,6 +564,7 @@ static void epd_gui_update(void* p_event_data, uint16_t event_size) {
                    !UC8179_HadBusyTimeout()) {
             NRF_LOG_INFO("[EPD]: Hardware OLD/NEW clock partial refresh complete\n");
             ble_log("[EPD]:part ok");
+            refresh_succeeded = true;
             goto finish_refresh;
         } else {
             NRF_LOG_WARNING(
@@ -597,9 +593,19 @@ static void epd_gui_update(void* p_event_data, uint16_t event_size) {
     }
 
     ble_log("[EPD]:full ok");
+    refresh_succeeded = true;
 
 finish_refresh:
     app_feed_wdt();
+    if (refresh_succeeded) {
+        epd_display_retry_reset();
+    } else if (!epd_clock_refresh_must_yield(
+                   (display_mode_t)p_epd->config.display_mode,
+                   p_epd->transfer_ctx.transfer_active)) {
+        p_epd->force_full_refresh = true;
+        epd_clock_refresh_invalidate();
+        epd_display_retry_failed();
+    }
 
     if (epd_clock_refresh_must_yield((display_mode_t)p_epd->config.display_mode,
                                      p_epd->transfer_ctx.transfer_active) &&
@@ -665,6 +671,7 @@ release_gpio:
  */
 static void on_connect(ble_epd_t* p_epd, ble_evt_t* p_ble_evt) {
     p_epd->conn_handle = p_ble_evt->evt.gap_evt.conn_handle;
+    p_epd->max_data_len = BLE_GATT_ATT_MTU_DEFAULT - 3U;
     p_epd->offline.state = EPD_ONLINE;
     /* Main acquires GPIO before accepting display writes. */
 }
@@ -717,7 +724,7 @@ static void on_disconnect(ble_epd_t* p_epd, ble_evt_t* p_ble_evt) {
  * @param[in] mode   新的显示模式
  */
 static void epd_update_display_mode(ble_epd_t* p_epd, display_mode_t mode) {
-    if (p_epd->config.display_mode != mode) {
+    if (p_epd->config.display_mode != mode || epd_config_read_pending()) {
         p_epd->config.display_mode = mode;
         epd_config_write(&p_epd->config);
 
@@ -858,6 +865,12 @@ static bool epd_config_validate(const epd_config_t *cfg)
         cfg->week_start > 6U ||
         (cfg->model_id != EPD_UC8179_750_BWR && cfg->model_id != 0xFFU)) return false;
     return true;
+}
+
+static void epd_config_defaults(epd_config_t *cfg)
+{
+    *cfg = (epd_config_t)EPD_CFG_52811;
+    cfg->display_mode = MODE_CLOCK_CALENDAR;
 }
 
 /* Main only. Retire the old hardware before loading new pins; the connection,
@@ -1115,7 +1128,8 @@ static void cmd_sync_time_silent(ble_epd_t *p_epd, uint8_t *p_data, uint16_t len
 static void cmd_set_week_start(ble_epd_t *p_epd, uint8_t *p_data, uint16_t length) /* 0=周日，立即写配置 */
 {
     if (length < 2) return;
-    if (p_data[1] < 7 && p_data[1] != p_epd->config.week_start) {
+    if (p_data[1] < 7 &&
+        (p_data[1] != p_epd->config.week_start || epd_config_read_pending())) {
         p_epd->config.week_start = p_data[1];
         epd_config_write(&p_epd->config);
     }
@@ -1605,9 +1619,29 @@ static bool epd_resource_idle(const ble_epd_t *p_epd)
            !p_epd->init_ack_pending && !p_epd->mode_ack_pending && !p_epd->initial_notify &&
            !p_epd->cmd_queue.count &&
            !p_epd->cmd_queue.is_processing && !p_epd->transfer_ctx.transfer_active &&
-           !calendar_annotations_rx_active() && !p_epd->annotations_tx.active &&
-           !calendar_annotations_reload_pending() &&
-           !epd_config_busy() && !calendar_annotations_store_busy();
+           !p_epd->annotations_tx.active &&
+           !epd_config_busy() && calendar_annotations_store_maintenance_ready();
+}
+
+/* A temporary boot read failure uses defaults only in RAM. Recover the saved
+ * configuration when main is idle, unless a newer user setting superseded it. */
+static void epd_config_restore(ble_epd_t *p_epd)
+{
+    if (!epd_config_read_pending() || !epd_resource_idle(p_epd)) return;
+    epd_config_t candidate;
+    p_epd->is_refreshing = true; /* Exclude IRQ image writes during Flash/GPIO work. */
+    if (epd_config_retry_read(&candidate)) {
+        if (!epd_config_validate(&candidate)) {
+            epd_config_defaults(&candidate);
+            epd_config_write(&candidate);
+        }
+        (void)epd_config_apply(p_epd, &candidate);
+        p_epd->force_full_refresh = true;
+        epd_display_retry_reset();
+        if (p_epd->config.display_mode != MODE_PICTURE)
+            epd_display_request(p_epd, timestamp());
+    }
+    p_epd->is_refreshing = false;
 }
 
 static rs_result_t epd_resource_event(void *context, resource_event_t event, uint16_t changed)
@@ -1617,7 +1651,10 @@ static rs_result_t epd_resource_event(void *context, resource_event_t event, uin
     if (event == RESOURCE_INVALIDATE) {
         epd_resources_invalidate_partitions(changed);
         epd_clock_refresh_invalidate();
-        todo_items_invalidate();
+        if (changed & ((1U << RS_PART_PARTITION_TABLE) | (1U << RS_PART_TODO_ITEMS)))
+            todo_items_suspend_display();
+        else
+            todo_items_invalidate();
         return RS_OK;
     }
     if (event == RESOURCE_OFFLINE) {
@@ -1630,6 +1667,7 @@ static rs_result_t epd_resource_event(void *context, resource_event_t event, uin
     if (changed & ((1U << RS_PART_PARTITION_TABLE) | (1U << RS_PART_EPD_CONFIG))) {
         epd_config_t config;
         epd_config_read(&config);
+        if (epd_config_read_pending()) return RS_IO;
         if (!epd_config_apply(p_epd, &config)) return RS_INVALID;
     }
     if (changed & ((1U << RS_PART_PARTITION_TABLE) | (1U << RS_PART_CALENDAR_ANNOTATIONS))) {
@@ -1647,7 +1685,7 @@ static rs_result_t epd_resource_event(void *context, resource_event_t event, uin
     rs_result_t result = !changed && epd_resources_ready() ? RS_OK : epd_resources_apply();
     if (result == RS_OK && !epd_todo_font_valid()) return RS_INVALID;
     if (result == RS_OK) {
-        epd_todo_retry_reset();
+        epd_display_retry_reset();
         p_epd->force_full_refresh = true;
         epd_clock_refresh_invalidate();
         if (p_epd->config.display_mode != MODE_PICTURE) epd_display_request(p_epd, timestamp());
@@ -1663,9 +1701,36 @@ bool ble_epd_take_offline_request(ble_epd_t *p_epd)
     return true;
 }
 
+/* Timer callbacks publish work only. SAADC and LED pin changes are serialized
+ * with panel/resource operations by the main loop. */
+static void epd_battery_process(ble_epd_t *p_epd) {
+    if (resource_protocol_entered() || p_epd->is_refreshing ||
+        p_epd->transfer_ctx.transfer_active) return;
+    bool poll, blink;
+    CRITICAL_REGION_ENTER();
+    poll = p_epd->battery_poll_pending;
+    blink = p_epd->battery_blink_pending;
+    p_epd->battery_poll_pending = false;
+    p_epd->battery_blink_pending = false;
+    CRITICAL_REGION_EXIT();
+    if (!p_epd->low_battery_screen_active) return;
+    if (poll) {
+        uint16_t voltage_mv = EPD_ReadVoltageAndCache();
+        if (voltage_mv != 0U &&
+            (epd_battery_is_critical(voltage_mv) || !epd_battery_is_low(voltage_mv))) {
+            p_epd->low_battery_screen_active = epd_battery_is_low(voltage_mv);
+            p_epd->force_full_refresh = true;
+            epd_display_request(p_epd, timestamp());
+            return;
+        }
+    }
+    if (blink) EPD_LED_BLINK();
+}
+
 void ble_epd_process(ble_epd_t* p_epd) {
     epd_connection_process(p_epd);
     epd_init_process(p_epd);
+    epd_battery_process(p_epd);
     resource_protocol_set_data_limit(p_epd->max_data_len);
     resource_transfer_process(p_epd, p_epd->connection_generation,
         p_epd->conn_handle != BLE_CONN_HANDLE_INVALID && !p_epd->disconnect_pending,
@@ -1678,6 +1743,7 @@ void ble_epd_process(ble_epd_t* p_epd) {
         CRITICAL_REGION_EXIT();
     }
     if (!resource_protocol_entered()) {
+        epd_config_restore(p_epd);
         epd_config_process();
         calendar_annotations_store_process();
     }
@@ -1932,7 +1998,7 @@ uint32_t ble_epd_init(ble_epd_t* p_epd) {
 
     /* Own initialization here so callers need not pre-clear the service. */
     memset(p_epd, 0, sizeof(*p_epd));
-    p_epd->max_data_len = BLE_EPD_MAX_DATA_LEN;
+    p_epd->max_data_len = BLE_GATT_ATT_MTU_DEFAULT - 3U;
     p_epd->conn_handle = BLE_CONN_HANDLE_INVALID;
     epd_display_queue_init(&p_epd->display_queue);
     calendar_annotations_tx_cancel(&p_epd->annotations_tx);
@@ -1950,9 +2016,8 @@ uint32_t ble_epd_init(ble_epd_t* p_epd) {
 
     // Invalid persisted fields recover together, using the same validation as updates.
     if (!epd_config_validate(&p_epd->config)) {
-        p_epd->config = (epd_config_t)EPD_CFG_52811;
-        p_epd->config.display_mode = MODE_CLOCK_CALENDAR;
-        epd_config_write(&p_epd->config);
+        epd_config_defaults(&p_epd->config);
+        if (!epd_config_read_pending()) epd_config_write(&p_epd->config);
     }
 
     // 加载配置
@@ -2026,8 +2091,8 @@ uint32_t ble_epd_string_send(ble_epd_t* p_epd, uint8_t* p_string, uint16_t lengt
  */
 void ble_epd_on_timer(ble_epd_t* p_epd, uint32_t timestamp, bool force_update) {
     if (resource_protocol_entered()) return;
-    if (force_update || !epd_is_todo_mode((display_mode_t)p_epd->config.display_mode))
-        epd_todo_retry_reset();
+    if (force_update || p_epd->config.display_mode == MODE_PICTURE)
+        epd_display_retry_reset();
     if (calendar_annotations_rx_active() &&
         (uint32_t)(app_uptime_seconds() - p_epd->annotations_rx_last_activity) >=
             EPD_ANNOTATIONS_RX_TIMEOUT_S) {
@@ -2036,36 +2101,26 @@ void ble_epd_on_timer(ble_epd_t* p_epd, uint32_t timestamp, bool force_update) {
 
     if (p_epd->low_battery_screen_active && !force_update) {
         if (timestamp % LOW_BATTERY_POLL_INTERVAL_S == 0) {
-            uint16_t voltage_mv = EPD_ReadVoltageAndCache();
-
-            if (epd_battery_is_critical(voltage_mv)) {
-                epd_display_request(p_epd, timestamp);
-                return;
-            }
-
-            // 电压恢复到低电量阈值以上时，退出低电量模式，并强制全刷恢复正常屏幕显示
-            if (!epd_battery_is_low(voltage_mv)) {
-                p_epd->low_battery_screen_active = false;
-                p_epd->force_full_refresh = true;
-                // 立刻调度 GUI 更新，全刷恢复正常界面
-                epd_display_request(p_epd, timestamp);
-                return;
-            }
+            p_epd->battery_poll_pending = true;
         }
 
         if (epd_battery_should_blink_led(true, false, timestamp)) {
-            EPD_LED_BLINK();
+            p_epd->battery_blink_pending = true;
         }
 
         // 低电量模式下不进行周期刷新，避免屏幕刷新占用SPI导致资源写入失败
-        if (p_epd->low_battery_screen_active) {
+        /* A failed last frame is still outstanding work. Its uptime backoff
+         * below limits retries; a successful frame restores the battery hold. */
+        if (s_display_retry_step == 0U) {
             return;
         }
     }
 
-    if (p_epd->transfer_ctx.transfer_active ||
-        (epd_is_todo_mode((display_mode_t)p_epd->config.display_mode) &&
-         p_epd->is_refreshing && !force_update)) return;
+    /* Explicit boot/user refreshes may show the missing-resource fallback.
+     * Periodic work must wait for a successful activation: retrying an erased
+     * font/layout cannot repair it and can starve BLE recovery commands. */
+    if ((!force_update && !epd_resources_ready()) || p_epd->transfer_ctx.transfer_active ||
+        (p_epd->is_refreshing && !force_update)) return;
 
     // ========================================================================
     // 跨天判定链 (Cross-day detection)
@@ -2089,15 +2144,24 @@ void ble_epd_on_timer(ble_epd_t* p_epd, uint32_t timestamp, bool force_update) {
         day_rolled_over = true;
     }
 
-    if (day_rolled_over) epd_todo_retry_reset();
-    if (epd_is_todo_mode((display_mode_t)p_epd->config.display_mode) && !force_update &&
-        s_todo_retry_step != 0U && (int32_t)(app_uptime_seconds() - s_todo_retry_at) < 0)
+    if (day_rolled_over) epd_display_retry_reset();
+    if (!force_update &&
+        s_display_retry_step != 0U && (int32_t)(app_uptime_seconds() - s_display_retry_at) < 0)
         return;
 
     /* A delayed worker may already have drawn today before the next tick.
      * Do not repeat that successful midnight refresh when the tick catches up. */
-    if (epd_is_todo_mode((display_mode_t)p_epd->config.display_mode) &&
+    if (p_epd->last_full_clear != 0U &&
         p_epd->last_full_clear / 86400U == current_day) day_rolled_over = false;
+
+    if (s_display_retry_step != 0U &&
+        (!epd_is_todo_mode((display_mode_t)p_epd->config.display_mode) || todo_items_ready()))
+        force_update = true;
+    if (p_epd->config.display_mode == MODE_CALENDAR &&
+        p_epd->last_full_clear / 86400U != current_day) {
+        force_update = true;
+        p_epd->force_full_refresh = true;
+    }
 
     if (epd_is_todo_mode((display_mode_t)p_epd->config.display_mode) && todo_items_ready() &&
         (p_epd->force_full_refresh ||

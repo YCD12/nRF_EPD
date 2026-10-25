@@ -25,16 +25,10 @@ rs_result_t resource_store_find(uint16_t id, rs_partition_t *p)
     *p = (rs_partition_t){7U, 7U, 1U, 0U, 0x18000U, 0x40000U};
     return RS_OK;
 }
-rs_result_t resource_store_info(uint16_t id, rs_package_info_t *p)
+rs_result_t resource_store_open_info(uint16_t id, rs_package_info_t *p)
 {
     if (!use_resource_layout || id != 7U || p == NULL) return RS_NOT_FOUND;
     *p = (rs_package_info_t){42U, resource_payload_length, 0U};
-    return RS_OK;
-}
-rs_result_t resource_store_open(uint16_t id, uint32_t *length)
-{
-    if (!use_resource_layout || id != 7U || length == NULL) return RS_NOT_FOUND;
-    *length = resource_payload_length;
     return RS_OK;
 }
 rs_result_t resource_store_read(uint16_t id, uint32_t offset, void *data, size_t length)
@@ -182,6 +176,52 @@ static uint8_t* install_todo_pack(const uint8_t* font, size_t length)
     return payload;
 }
 
+static void assert_font_structure(const uint8_t *font, size_t length, bool valid)
+{
+    install_pack(font, length); /* Recompute CRC so structural validation is exercised. */
+    font_store_host_reset();
+    assert(font_store_init() == NRF_SUCCESS);
+    assert((font_store_get_source(FONT_STORE_SLOT_WQY9) != NULL) == valid);
+}
+
+static void test_glyph_record_boundaries(void)
+{
+    uint8_t font[300];
+    for (unsigned field = 17U; field <= 21U; field += 2U) {
+        make_font(font, 64U, FONT_STORE_SLOT_WQY9);
+        write_u16_be(font + field, 41U); /* Offset points exactly past payload. */
+        assert_font_structure(font, 64U, false);
+    }
+
+    make_font(font, 64U, FONT_STORE_SLOT_WQY9);
+    write_u16_be(font + 17U, 40U); /* ASCII glyph without its size byte. */
+    font[63] = 'A';
+    assert_font_structure(font, 64U, false);
+
+    make_font(font, 64U, FONT_STORE_SLOT_WQY9);
+    font[23] = 'A'; font[24] = 1U; /* A record must include its own header. */
+    assert_font_structure(font, 64U, false);
+
+    make_font(font, sizeof(font), FONT_STORE_SLOT_WQY9);
+    write_u16_be(font + 21U, 27U); /* Unicode lookup at byte 50. */
+    write_u16_be(font + 50U, 4U);
+    write_u16_be(font + 52U, 0xFFFFU);
+    write_u16_be(font + 54U, 0x4E00U);
+    font[56] = 3U; /* One minimal record, followed by a two-byte terminator. */
+    assert_font_structure(font, 64U, true);
+    font[56] = 2U;
+    assert_font_structure(font, 64U, false);
+    font[56] = 11U; /* Record extends beyond the payload. */
+    assert_font_structure(font, 64U, false);
+    font[56] = 9U; /* Next terminator has only one byte in the payload. */
+    assert_font_structure(font, 64U, false);
+
+    font[56] = 3U;
+    write_u16_be(font + 17U, 227U);
+    font[250] = 'A'; font[251] = 3U; /* Header crosses the 251-byte read cache. */
+    assert_font_structure(font, sizeof(font), true);
+}
+
 int main(void)
 {
     uint8_t font[300];
@@ -257,14 +297,14 @@ int main(void)
         assert(memcmp(font_store_todo_font_metrics(), &todo_font_geometry[i],
                       sizeof(u8g2_font_placeholder_t)) == 0);
         assert(font_store_todo_font_metrics()->x_offset < 0);
-        payload[72U + 13U] ^= 1U; /* Geometry is validated even with a valid CRC. */
+        payload[72U + 9U] = 65U; /* Geometry is bounded even with a valid CRC. */
         write_u32_le(payload + 64U, font_crc32(payload + 72U, sizeof(font)));
         font_store_host_reset(); assert(font_store_init() == NRF_SUCCESS);
         assert(font_store_get_source(FONT_STORE_SLOT_TODO) == NULL);
         assert(font_store_todo_font_metrics() == NULL);
-        install_pack(font, sizeof(font)); /* Large geometry is never a base font. */
+        install_pack(font, sizeof(font)); /* Base font geometry is now external too. */
         font_store_host_reset(); assert(font_store_init() == NRF_SUCCESS);
-        assert(font_store_get_source(FONT_STORE_SLOT_WQY9) == NULL);
+        assert(font_store_get_source(FONT_STORE_SLOT_WQY9) != NULL);
     }
     payload = install_todo_pack(font, sizeof(font));
     make_font(font, sizeof(font), FONT_STORE_SLOT_HELVB18);
@@ -272,10 +312,12 @@ int main(void)
     write_u32_le(payload + 68U, 1U);
     write_u32_le(payload + 64U, font_crc32(font, sizeof(font)));
     font_store_host_reset(); assert(font_store_init() == NRF_SUCCESS);
-    assert(font_store_get_source(FONT_STORE_SLOT_TODO) == NULL);
+    assert(font_store_get_source(FONT_STORE_SLOT_TODO) != NULL);
+    assert(font_store_todo_font_size()==0); /* Available to UI, not a matching TODO font. */
     install_pack(font, sizeof(font));
     font_store_host_reset(); assert(font_store_init() == NRF_SUCCESS);
     assert(font_store_todo_font_key() == 0U);
-    puts("PASS: ERS three/four-slot font packs, family/geometry guards and recovery");
+    test_glyph_record_boundaries();
+    puts("PASS: ERS font packs, geometry/glyph bounds, cache boundaries and recovery");
     return 0;
 }
