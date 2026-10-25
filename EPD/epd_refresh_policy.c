@@ -15,7 +15,7 @@ uint32_t epd_refresh_full_interval_s(uint8_t full_refresh_minutes)
     return (uint32_t)full_refresh_minutes * 60U;
 }
 
-/* 日历每天 00:00；时钟每分钟。低电量/传图时不安排。 */
+/* 日历每天 00:00；时钟每分钟。迟到的 tick 补刷，低电量/传图时不安排。 */
 epd_refresh_schedule_out_t epd_refresh_schedule(const epd_refresh_schedule_in_t *in)
 {
     epd_refresh_schedule_out_t out = {false, false};
@@ -29,9 +29,13 @@ epd_refresh_schedule_out_t epd_refresh_schedule(const epd_refresh_schedule_in_t 
 
     periodic = false;
     if (in->mode == MODE_CALENDAR) {
-        periodic = (in->timestamp % 86400U) == 0U;
+        periodic = in->last_refresh_start != 0U ?
+                   (in->timestamp / 86400U) != (in->last_refresh_start / 86400U) :
+                   (in->timestamp % 86400U) == 0U;
     } else if (epd_is_clock_mode(in->mode)) {
-        periodic = (in->timestamp % 60U) == 0U;
+        periodic = in->last_refresh_start != 0U ?
+                   (in->timestamp / 60U) != (in->last_refresh_start / 60U) :
+                   (in->timestamp % 60U) == 0U;
     }
 
     out.force_full = in->day_rolled &&
@@ -57,17 +61,19 @@ epd_refresh_schedule_out_t epd_refresh_schedule(const epd_refresh_schedule_in_t 
 epd_refresh_kind_t epd_refresh_kind(const epd_refresh_kind_in_t *in)
 {
     uint32_t interval;
-    bool at_boundary;
+    bool period_changed;
 
     if (in == NULL || !epd_is_clock_mode(in->mode) || !in->hardware_partial_ok) {
         return EPD_REFRESH_KIND_FULL;
     }
 
     interval = epd_refresh_full_interval_s(in->full_refresh_minutes);
-    at_boundary = interval != 0U && (in->timestamp % interval) == 0U;
+    /* Refresh workers can begin after :00. Compare periods so a delayed tick
+     * still performs maintenance, once per period after a successful full clear. */
+    period_changed = (in->timestamp / interval) != (in->last_full_clear / interval);
 
     if (in->force_full_refresh || in->last_full_clear == 0U || !in->clock_state_valid ||
-        (at_boundary && !epd_refresh_in_quiet_hours(in->hour))) {
+        (period_changed && !epd_refresh_in_quiet_hours(in->hour))) {
         return EPD_REFRESH_KIND_FULL;
     }
     return EPD_REFRESH_KIND_PARTIAL;

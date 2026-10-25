@@ -126,6 +126,8 @@ python3 tools/export_web_template.py --check
 python3 tools/ui_resource_codec.py --check
 python3 tests/test_dfu_release.py
 python3 tests/test_service_lifecycle.py
+python3 tests/test_clock_timekeeping.py
+python3 tests/test_rtc_timer_lifecycle.py
 python3 tests/test_adc_voltage.py
 python3 tests/test_resources_reload.py
 python3 tests/test_dynamic_font.py

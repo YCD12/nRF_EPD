@@ -310,18 +310,20 @@ async function write(cmd, data, withResponse = true, logPayload = true, serializ
   if (cmd === EpdCmd.INIT || cmd === EpdCmd.SET_MODE || confirmDisplay) serialize = true;
   const characteristic = epdCharacteristic;
   const generation = connectionGeneration;
-  let payload = [cmd];
-  if (data) {
-    if (typeof data == 'string') data = hex2bytes(data);
-    if (data instanceof Uint8Array) data = Array.from(data);
-    payload.push(...data)
-  }
+  const makePayload = value => {
+    if (typeof value === 'string') value = hex2bytes(value);
+    return value ? [cmd, ...value] : [cmd];
+  };
+  // Time synchronization supplies a factory so GATT queue waits do not age
+  // its timestamp. Other writes keep their payload snapshot from enqueue.
+  let payload = typeof data === 'function' ? null : makePayload(data);
   const operationBody = async () => {
     if (!allowed() || generation !== connectionGeneration || characteristic !== epdCharacteristic ||
         !gattServer || !gattServer.connected) {
       addLog("服务已变更，放弃过期的蓝牙写入");
       return false;
     }
+    if (payload === null) payload = makePayload(data());
     let waiter = null;
     let modeReply = null;
     let displayReply = null;
@@ -453,10 +455,13 @@ async function sendModeOperation(mode, modeName, owner) {
   }
   const weekStart = getWeekStart();
   const weekDays = ['周日', '周一', '周二', '周三', '周四', '周五', '周六'];
-  const payload = new Uint8Array(8);
-  payload[0] = mode;
-  payload[2] = weekStart;
-  payload.set(buildTimeData(), 3);
+  const payload = () => {
+    const bytes = new Uint8Array(8);
+    bytes[0] = mode;
+    bytes[2] = weekStart;
+    bytes.set(buildTimeData(), 3);
+    return bytes;
+  };
   if (await write(EpdCmd.SET_MODE, payload, true, true, true, owner)) {
     lastWeekStartSent = weekStart;
     addLog(`${modeName}已由设备接受，星期第一天为${weekDays[weekStart]}。`);
@@ -494,7 +499,7 @@ async function syncTimeOnConnect(owner = null) {
     return false;
   }
 
-  const ok = await write(EpdCmd.SYNC_TIME_SILENT, buildTimeData(), true, true, true, owner);
+  const ok = await write(EpdCmd.SYNC_TIME_SILENT, () => buildTimeData(), true, true, true, owner);
   addLog(ok ? '已自动同步当前时间到设备' : '自动时间同步失败');
   return ok;
 }

@@ -114,6 +114,78 @@ test('time packets preserve local wall time in whole, half and quarter-hour zone
   }
 });
 
+test('automatic time and mode sync use the send instant after waiting in the GATT queue', async () => {
+  for (const operation of ['silent', 'mode']) {
+    for (const finalOffset of [480, 345, -210]) {
+      const { context, run, elements } = setup();
+      const writes = [];
+      let now = 1767225300123, offsetMinutes = 0, snapshots = 0, release;
+      context.Date = class extends Date {
+        constructor(...args) {
+          super(...(args.length ? args : [now]));
+          if (!args.length) snapshots++;
+        }
+        getTimezoneOffset() { return -offsetMinutes; }
+      };
+      context.blocked = new Promise(resolve => { release = resolve; });
+      context.capture = data => writes.push(Array.from(data));
+      elements.set('weekStart', { value: 1 });
+      run(`appVersion = 0x3B; gattWriteTail = blocked;
+        epdCharacteristic = {writeValueWithResponse: async data => {
+          capture(data);
+          if (data[0] === EpdCmd.SET_MODE)
+            handleNotify(new DataView(Uint8Array.of(0xaa, data[2], 0, data[1]).buffer));
+        }};`);
+      const pending = run(operation === 'silent' ? 'syncTimeOnConnect()' : 'sendTimeCommand(4, "test mode")');
+      await new Promise(setImmediate);
+      assert.equal(writes.length, 0);
+      assert.equal(snapshots, 0, 'clock snapshot must wait until the queued operation runs');
+      now += 42876;
+      offsetMinutes = finalOffset;
+      release();
+      assert.equal(await pending, true);
+      assert.equal(writes.length, 1);
+      const packet = Uint8Array.from(writes[0]);
+      const timeOffset = operation === 'silent' ? 1 : 4;
+      const epoch = new DataView(packet.buffer).getUint32(timeOffset, false);
+      const timezoneByte = packet[timeOffset + 4];
+      const timezone = timezoneByte > 127 ? timezoneByte - 256 : timezoneByte;
+      assert.equal(epoch + timezone * 3600, Math.floor(now / 1000) + finalOffset * 60);
+      assert.equal(timezone, Math.trunc(finalOffset / 60));
+      assert.equal(snapshots, 1, 'epoch and timezone use one send-time snapshot');
+      if (operation === 'mode') {
+        assert.equal(packet[1], 4);
+        assert.notEqual(packet[2], 0, 'mode acknowledgement token is retained');
+        assert.equal(packet[3], 1, 'week-start setting is retained');
+      }
+    }
+  }
+});
+
+test('explicit time writes retain their queued payload and stale factories are not evaluated', async () => {
+  const { context, run } = setup();
+  const writes = [];
+  let release;
+  context.blocked = new Promise(resolve => { release = resolve; });
+  context.capture = data => writes.push(Array.from(data));
+  run(`gattWriteTail = blocked;
+    epdCharacteristic = {writeValueWithResponse: async data => capture(data)};
+    explicitTime = Uint8Array.of(0, 0, 3, 232, 8, 4);`);
+  const pending = run('write(EpdCmd.SET_TIME, explicitTime)');
+  run('explicitTime.fill(0)');
+  release();
+  assert.equal(await pending, true);
+  assert.deepEqual(writes, [[0x20, 0, 0, 3, 232, 8, 4]]);
+
+  context.blocked = new Promise(resolve => { release = resolve; });
+  run('gattWriteTail = blocked;');
+  const stale = run('write(EpdCmd.SYNC_TIME_SILENT, () => { throw new Error("stale clock read"); })');
+  run('disconnect(); gattServer = {connected: true}; epdCharacteristic = {};');
+  release();
+  assert.equal(await stale, false);
+  assert.equal(writes.length, 1);
+});
+
 test('external resource installer stays on the main page', () => {
   const { run } = setup();
   assert.equal(run('typeof openResourcesPage'), 'undefined');

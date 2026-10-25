@@ -39,6 +39,7 @@
 #include "app_error.h"
 #include "app_scheduler.h"
 #include "app_timer.h"
+#include "app_util_platform.h"
 #include "main.h"
 #include "epd_resources.h"
 #include "nrf_drv_gpiote.h"
@@ -69,10 +70,6 @@
                                                                                         /**< 广播间隔（以0.625毫秒为单位。此值对应1秒）。 */
 #define APP_ADV_TIMEOUT_IN_SECONDS       120                                            /**< The advertising timeout (in units of seconds). */
                                                                                         /**< 广播超时时间（以秒为单位）。 */
-#define APP_TIMER_PRESCALER              0                                              /**< Value of the RTC1 PRESCALER register. */
-                                                                                        /**< RTC1预分频器寄存器的值。 */
-#define APP_TIMER_OP_QUEUE_SIZE          4                                              /**< Size of timer operation queues. */
-                                                                                        /**< 定时器操作队列的大小。 */
 
 #define APP_BLE_CONN_CFG_TAG            1                                               /**< A tag identifying the SoftDevice BLE configuration. */
                                                                                         /**< 标识SoftDevice BLE配置的标签。 */
@@ -126,6 +123,15 @@ static nrf_drv_wdt_channel_id            m_wdt_channel_id;                      
 static uint32_t                          m_resetreas;                                   /**< 复位原因寄存器值 */
 // clang-format on
 
+/* RC 时钟补偿（ppm）：7 天慢约 180 秒，对应 -298；负值补快，正值减慢，0 不补偿。 */
+#define APP_CLOCK_CALIBRATION_PPM (-298)
+
+#if APP_CLOCK_CALIBRATION_PPM < -2000 || APP_CLOCK_CALIBRATION_PPM > 2000
+#error "APP_CLOCK_CALIBRATION_PPM must be between -2000 and 2000"
+#endif
+
+#define CLOCK_TICKS_PER_SECOND (APP_TIMER_CLOCK_FREQ / (APP_TIMER_CONFIG_RTC_FREQUENCY + 1U))
+
 uint32_t get_reset_reason(void) { return m_resetreas; }
 
 /**@brief Callback function for asserts in the SoftDevice.
@@ -149,20 +155,73 @@ void assert_nrf_callback(uint16_t line_num, const uint8_t* p_file_name) {
     app_error_handler(DEAD_BEEF, line_num, p_file_name);
 }
 
-// return current timestamp
-// 返回当前时间戳
-uint32_t timestamp(void) { return m_timestamp; }
-
 static volatile uint32_t m_uptime_seconds = 1U;
-uint32_t app_uptime_seconds(void) { return m_uptime_seconds; }
+static bool m_clock_started;
+static uint32_t m_clock_last_ticks;
+static uint32_t m_clock_subsecond_ticks;
+static uint32_t m_uptime_subsecond_ticks;
+static uint32_t m_clock_calibration_remainder;
 
-// set the timestamp
-// 设置时间戳
-// 停止时钟定时器，更新时间戳，然后重新启动定时器
+/* Called with application interrupts masked. RTC1 is 24 bit: the 1 Hz timer
+ * keeps samples less than one wrap apart (1024 s at the default prescaler).
+ * Count elapsed ticks, including fractional seconds, rather than callbacks.
+ * Positive ppm means the oscillator runs fast; negative ppm means slow. */
+static void clock_update_locked(void) {
+    uint32_t ticks;
+    uint32_t elapsed;
+
+    if (!m_clock_started) return; /* Logging can read time before timers_init. */
+    ticks = app_timer_cnt_get();
+    elapsed = app_timer_cnt_diff_compute(ticks, m_clock_last_ticks);
+    m_clock_last_ticks = ticks;
+    /* elapsed * 1e6 / rate = elapsed + elapsed * (-ppm) / rate.
+     * Split the product by rate first: at +/-2000 ppm the signed partial
+     * product plus its carried remainder fits int32_t. No 64-bit divider. */
+    const int32_t rate = 1000000 + APP_CLOCK_CALIBRATION_PPM;
+    int32_t scaled = (int32_t)(elapsed % rate) * (-APP_CLOCK_CALIBRATION_PPM) +
+                     (int32_t)m_clock_calibration_remainder;
+    int32_t correction = (int32_t)(elapsed / rate) * (-APP_CLOCK_CALIBRATION_PPM) + scaled / rate;
+    int32_t remainder = scaled % rate;
+    if (remainder < 0) { /* Floor, rather than truncate, a negative correction. */
+        remainder += rate;
+        correction--;
+    }
+    elapsed = (uint32_t)((int32_t)elapsed + correction);
+    m_clock_calibration_remainder = (uint32_t)remainder;
+    m_clock_subsecond_ticks += elapsed;
+    m_timestamp += m_clock_subsecond_ticks / CLOCK_TICKS_PER_SECOND;
+    m_clock_subsecond_ticks %= CLOCK_TICKS_PER_SECOND;
+    m_uptime_subsecond_ticks += elapsed;
+    m_uptime_seconds += m_uptime_subsecond_ticks / CLOCK_TICKS_PER_SECOND;
+    m_uptime_subsecond_ticks %= CLOCK_TICKS_PER_SECOND;
+}
+
+uint32_t timestamp(void) {
+    uint32_t value;
+    CRITICAL_REGION_ENTER();
+    clock_update_locked();
+    value = m_timestamp;
+    CRITICAL_REGION_EXIT();
+    return value;
+}
+
+uint32_t app_uptime_seconds(void) {
+    uint32_t value;
+    CRITICAL_REGION_ENTER();
+    clock_update_locked();
+    value = m_uptime_seconds;
+    CRITICAL_REGION_EXIT();
+    return value;
+}
+
+/* Reset only wall-clock phase. Keep RTC and monotonic uptime running through
+ * syncs, so repeated syncs cannot postpone timeout/rate-limit accounting. */
 void set_timestamp(uint32_t timestamp) {
-    app_timer_stop(m_clock_timer_id);      // 停止时钟定时器
-    m_timestamp = timestamp;               // 更新时间戳
-    app_timer_start(m_clock_timer_id, CLOCK_TIMER_INTERVAL, NULL);  // 重新启动定时器
+    CRITICAL_REGION_ENTER();
+    clock_update_locked();
+    m_timestamp = timestamp;
+    m_clock_subsecond_ticks = 0U;
+    CRITICAL_REGION_EXIT();
 }
 
 // reload the wdt channel
@@ -271,10 +330,7 @@ static void ble_dfu_evt_handler(ble_dfu_buttonless_evt_type_t event) {
 static void clock_timer_timeout_handler(void* p_context) {
     UNUSED_PARAMETER(p_context);
 
-    m_uptime_seconds++;
-    m_timestamp++;  // 时间戳递增（每秒一次）
-
-    ble_epd_on_timer(&m_epd, m_timestamp, false);  // 通知EPD服务定时器事件
+    ble_epd_on_timer(&m_epd, timestamp(), false);
 }
 
 /**@brief Function for the Event Scheduler initialization.
@@ -306,9 +362,14 @@ static void timers_init(void) {
  * @details 启动时钟定时器，开始定期更新时间戳
  */
 static void application_timers_start(void) {
-    // Start application timers.
-    // 启动应用程序定时器
-    APP_ERROR_CHECK(app_timer_start(m_clock_timer_id, CLOCK_TIMER_INTERVAL, NULL));  // 启动时钟定时器
+    /* Keep this repeated timer active for the entire System ON session.
+     * With the SDK default APP_TIMER_KEEPS_RTC_ACTIVE=0, app_timer2 stops RTC1
+     * only when all timers are idle. Time sync must never stop this timer. */
+    CRITICAL_REGION_ENTER();
+    m_clock_last_ticks = app_timer_cnt_get();
+    APP_ERROR_CHECK(app_timer_start(m_clock_timer_id, CLOCK_TIMER_INTERVAL, NULL));
+    m_clock_started = true;
+    CRITICAL_REGION_EXIT();
 }
 
 /**@brief Function for putting the chip into sleep mode.
@@ -1013,10 +1074,10 @@ int main(void) {
         // 时间戳沿用 m_timestamp 默认值(2025-01-01)而不是 0,避免出现 1970 日期。
         // 若需要同步,Web 端连接后会重新下发时间。
         NRF_LOG_WARNING("[EPD]: Recovered from watchdog reset, redrawing with default time\n");
-        ble_epd_on_timer(&m_epd, m_timestamp, true);
+        ble_epd_on_timer(&m_epd, timestamp(), true);
     } else {
         // 其他复位原因，使用正常时间戳
-        ble_epd_on_timer(&m_epd, m_timestamp, true);  // 触发EPD刷新
+        ble_epd_on_timer(&m_epd, timestamp(), true);  // 触发EPD刷新
     }
 
     // 主循环：永久执行事件调度和空闲处理

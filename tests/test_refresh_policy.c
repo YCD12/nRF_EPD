@@ -114,6 +114,43 @@ static void test_schedule_day_rollover_forces_full(void)
     assert(out.force_full);
 }
 
+static void test_schedule_catches_delayed_periodic_refresh(void)
+{
+    epd_refresh_schedule_in_t in = base_schedule();
+    epd_refresh_schedule_out_t out;
+
+    in.last_refresh_start = 160U;
+    in.timestamp = 181U; /* A tick can skip :00 when counted from RTC ticks. */
+    out = epd_refresh_schedule(&in);
+    assert(out.should_refresh && !out.force_full);
+
+    in.last_refresh_start = 181U;
+    in.timestamp = 239U;
+    assert(!epd_refresh_schedule(&in).should_refresh);
+    in.timestamp = 301U; /* Several missed minutes produce one current frame. */
+    assert(epd_refresh_schedule(&in).should_refresh);
+    in.last_refresh_start = 301U;
+    assert(!epd_refresh_schedule(&in).should_refresh);
+
+    in.mode = MODE_CALENDAR;
+    in.last_refresh_start = 86399U;
+    in.timestamp = 86402U;
+    assert(epd_refresh_schedule(&in).should_refresh);
+    in.last_refresh_start = 86402U;
+    in.timestamp = 86460U;
+    assert(!epd_refresh_schedule(&in).should_refresh);
+
+    in.mode = MODE_CLOCK;
+    in.last_refresh_start = 180U;
+    in.timestamp = 121U; /* A silent backward correction must redraw the minute. */
+    assert(epd_refresh_schedule(&in).should_refresh);
+    in.low_battery_hold = true;
+    assert(!epd_refresh_schedule(&in).should_refresh);
+    in.low_battery_hold = false;
+    in.transfer_active = true;
+    assert(!epd_refresh_schedule(&in).should_refresh);
+}
+
 static void test_schedule_debounce_skips_same_minute_only(void)
 {
     epd_refresh_schedule_in_t in = base_schedule();
@@ -233,6 +270,48 @@ static void test_kind_partial_unless_maintenance(void)
     assert(epd_refresh_kind(&in) == EPD_REFRESH_KIND_PARTIAL);
 }
 
+static void test_kind_catches_delayed_maintenance_once(void)
+{
+    epd_refresh_kind_in_t in = {
+        .mode = MODE_CLOCK,
+        .timestamp = 3601U,
+        .last_full_clear = 3550U,
+        .clock_state_valid = true,
+        .full_refresh_minutes = 0U,
+        .hardware_partial_ok = true,
+        .hour = 10U,
+    };
+
+    assert(epd_refresh_kind(&in) == EPD_REFRESH_KIND_FULL);
+    in.last_full_clear = 3601U;
+    assert(epd_refresh_kind(&in) == EPD_REFRESH_KIND_PARTIAL);
+    in.timestamp = 3660U;
+    assert(epd_refresh_kind(&in) == EPD_REFRESH_KIND_PARTIAL);
+
+    in.full_refresh_minutes = 30U;
+    in.timestamp = 5401U;
+    assert(epd_refresh_kind(&in) == EPD_REFRESH_KIND_FULL);
+    in.last_full_clear = 5401U;
+    assert(epd_refresh_kind(&in) == EPD_REFRESH_KIND_PARTIAL);
+
+    /* Missed quiet-hour periods remain partial; catch up when quiet hours end. */
+    in.timestamp = 5U * 3600U + 61U;
+    in.hour = 5U;
+    assert(epd_refresh_kind(&in) == EPD_REFRESH_KIND_PARTIAL);
+    in.timestamp = 6U * 3600U + 1U;
+    in.hour = 6U;
+    assert(epd_refresh_kind(&in) == EPD_REFRESH_KIND_FULL);
+    in.last_full_clear = in.timestamp;
+    assert(epd_refresh_kind(&in) == EPD_REFRESH_KIND_PARTIAL);
+
+    /* A successful clear exactly at the boundary also consumes that period. */
+    in.timestamp = 7U * 3600U;
+    in.last_full_clear = in.timestamp;
+    assert(epd_refresh_kind(&in) == EPD_REFRESH_KIND_PARTIAL);
+    in.force_full_refresh = true;
+    assert(epd_refresh_kind(&in) == EPD_REFRESH_KIND_FULL);
+}
+
 static void test_todo_refreshes_on_changes_and_day_rollover(display_mode_t mode)
 {
     epd_refresh_schedule_in_t in = base_schedule();
@@ -281,10 +360,12 @@ int main(void)
     test_schedule_skips_low_battery_hold();
     test_schedule_calendar_daily_and_clock_minutely();
     test_schedule_day_rollover_forces_full();
+    test_schedule_catches_delayed_periodic_refresh();
     test_schedule_debounce_skips_same_minute_only();
     test_picture_transfer_preempts_clock_refresh();
     test_kind_full_when_not_clock_or_hw_missing();
     test_kind_partial_unless_maintenance();
+    test_kind_catches_delayed_maintenance_once();
     test_todo_refreshes_on_changes_and_day_rollover(MODE_TODO_CALENDAR);
     test_todo_refreshes_on_changes_and_day_rollover(MODE_TODO);
     puts("PASS: refresh policy");
