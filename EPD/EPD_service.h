@@ -48,7 +48,7 @@ void ble_epd_evt_handler(ble_evt_t const* p_ble_evt, void* p_context);
     static ble_epd_t _name; \
     NRF_SDH_BLE_OBSERVER(_name##_obs, BLE_EPD_BLE_OBSERVER_PRIO, ble_epd_evt_handler, &_name)
 
-#define APP_VERSION 0x40  // Keep missing/erased resources idle until activation
+#define APP_VERSION 0x21  // 完整新版协议，与网页 NEW_WEB_MIN_FIRMWARE_VERSION 同步
 
 // EPD 服务的 128 位基础 UUID（自定义服务）
 #define BLE_UUID_EPD_SVC_BASE \

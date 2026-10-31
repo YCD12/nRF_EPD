@@ -2,8 +2,14 @@ const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const vm = require('node:vm');
+const firmwarePolicy = require('../html/js/main.js');
 const { ResourceClient, crc32, parsePackage, parseHeader, parseTable, parseStatus, validateTarget, prepareBundle, installationPlan } = require('../html/js/resource_store.js');
 const layout = require('../docs/external-flash-layout-v1.draft.json');
+function loadInstaller(context) {
+  if (!Object.hasOwn(context, 'appVersion')) context.appVersion = firmwarePolicy.newWebMinVersion;
+  context.EpdFirmwarePolicy = firmwarePolicy;
+  vm.runInNewContext(fs.readFileSync(require.resolve('../html/js/resource_installer.js'), 'utf8'), context);
+}
 function wrap(id, payload) {
   const b = new Uint8Array(32 + payload.length), v = new DataView(b.buffer);
   b.set(payload, 32);
@@ -134,7 +140,7 @@ test('selecting output with several resource folders explains which folder to op
     return nodes.get(id);
   }
   const context = { document: { getElementById: node }, EPDResourceStore: require('../html/js/resource_store.js') };
-  vm.runInNewContext(fs.readFileSync(require.resolve('../html/js/resource_installer.js'), 'utf8'), context);
+  loadInstaller(context);
   const older = 'external-resources-r1-20260924-182356/partition-table.ers';
   const newer = 'external-resources-r1-20260924-182648/fonts.ers';
   await listeners.get('externalResourceFolder:change')({ target: { files: [
@@ -160,7 +166,7 @@ test('selecting one resource folder shows its package name', async () => {
     document: { getElementById: node },
     EPDResourceStore: { ...require('../html/js/resource_store.js'), prepareBundle: () => prepareBundle(completeBundle()) }
   };
-  vm.runInNewContext(fs.readFileSync(require.resolve('../html/js/resource_installer.js'), 'utf8'), context);
+  loadInstaller(context);
   await listeners.get('externalResourceFolder:change')({ target: { files: [
     { name: 'partition-table.ers', webkitRelativePath: 'external-resources-r1-20260924-183132/partition-table.ers', arrayBuffer: async () => new ArrayBuffer(1) }
   ] } });
@@ -190,7 +196,7 @@ test('installer keeps the completed message when the device restarts', async () 
     document: { getElementById: node },
     EPDResourceStore: { ...require('../html/js/resource_store.js'), ResourceClient: FakeClient, prepareBundle: () => bundle }
   };
-  vm.runInNewContext(fs.readFileSync(require.resolve('../html/js/resource_installer.js'), 'utf8'), context);
+  loadInstaller(context);
   await listeners.get('externalResourceFolder:change')({ target: { files: [{ name: 'bundle.ers', arrayBuffer: async () => new ArrayBuffer(1) }] } });
   context.ExternalResourceInstaller.bind({ writeValueWithResponse: async () => {} });
   await context.ExternalResourceInstaller.install();
@@ -309,7 +315,7 @@ test('new installer applies without reset, syncs time before offline and keeps t
   const context = { document: { getElementById: node }, Uint8Array,
     buildTimeData: () => [1,2,3,4,8],
     EPDResourceStore: { ...require('../html/js/resource_store.js'), ResourceClient: FakeClient } };
-  vm.runInNewContext(fs.readFileSync(require.resolve('../html/js/resource_installer.js'), 'utf8'), context);
+  loadInstaller(context);
   const installer = context.ExternalResourceInstaller;
   await installer.loadBundle(completeBundle(), 'test');
   installer.bind({ writeValueWithResponse: async b => { calls.push(b[0]); } });
@@ -438,10 +444,57 @@ function installerFixture(Client = ResourceClient, fetch) {
   };
   const context = { document: { getElementById: node }, fetch, Uint8Array,
     EPDResourceStore: { ...require('../html/js/resource_store.js'), ResourceClient: Client } };
-  vm.runInNewContext(fs.readFileSync(require.resolve('../html/js/resource_installer.js'), 'utf8'), context);
+  loadInstaller(context);
   return { installer: context.ExternalResourceInstaller, node, context,
     select: files => listeners.get('externalResourceFolder:change')({ target: { files } }) };
 }
+
+for (const version of [firmwarePolicy.newWebMinVersion - 1, firmwarePolicy.newWebMinVersion, undefined]) {
+  test(`UIR2 resource installation uses the shared new-web boundary for firmware ${version}`, async () => {
+    const uploads = [], statuses = [];
+    class Client {
+      status() { statuses.push(true); const bytes = statusBytes(0, 4); bytes[4] |= 2; return bytes; }
+      async upload(bytes) { uploads.push(parsePackage(bytes).id); }
+      async leave() {}
+      disconnect() {}
+    }
+    const { installer, context, node } = installerFixture(Client);
+    context.appVersion = version;
+    const files = require('../html/resources/default-project.json').files.map(file => ({
+      name: file.name, bytes: new Uint8Array(Buffer.from(file.base64, 'base64')),
+    }));
+    const ui = parsePackage(files.find(file => file.name === 'ui.ers').bytes);
+    assert.equal(ui.payload[3], 0x32, 'exercise the actual UIR2 default layout');
+    await installer.loadBundle(files);
+    installer.bind({ writeValueWithResponse: async () => {} });
+    await installer.install();
+    if (firmwarePolicy.isNewFirmware(version)) {
+      assert.ok(uploads.includes(6));
+      assert.ok(statuses.length > 0);
+      assert.doesNotMatch(node('externalResourceStatus').textContent, /0x3E|固件不支持新版网页/);
+    } else {
+      assert.deepEqual(uploads, []);
+      assert.deepEqual(statuses, []);
+      assert.match(node('externalResourceStatus').textContent, /固件不支持新版网页|版本尚未确认/);
+    }
+  });
+}
+
+test('resource GATT writes reject below-boundary and unknown firmware even through a bound client', async () => {
+  let transport;
+  const packets = [];
+  class Client { constructor(write) { transport = write; } disconnect() {} }
+  const { installer, context } = installerFixture(Client);
+  installer.bind({ writeValueWithResponse: async bytes => packets.push(Array.from(bytes)) });
+  for (const version of [firmwarePolicy.newWebMinVersion - 1, undefined, null, NaN]) {
+    context.appVersion = version;
+    await assert.rejects(transport(Uint8Array.of(0x26, 0, 1)), /固件不支持新版网页|版本尚未确认/);
+  }
+  assert.deepEqual(packets, []);
+  context.appVersion = firmwarePolicy.newWebMinVersion;
+  await transport(Uint8Array.of(0x26, 0, 1));
+  assert.deepEqual(packets, [[0x26, 0, 1]]);
+});
 
 test('version-only updates are uploaded even when all payload CRCs match', async () => {
   const old = completeBundle(), uploads = [], builder = require('../html/js/resource_builder.js');

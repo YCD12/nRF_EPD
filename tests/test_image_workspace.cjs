@@ -67,7 +67,7 @@ function fixture() {
     Image: class { constructor() { images.push(this); } },
     localStorage: { getItem: key => storage.get(key) || null, setItem: (key, value) => storage.set(key, value), removeItem: key => storage.delete(key) },
     testCanvas: canvas, testContext: ctx, cropState: () => crop, finishCrop: callback => { cropFinishes++; callback(); } });
-  for (const file of ['dithering', 'paint', 'main'])
+  for (const file of ['main', 'dithering', 'paint'])
     vm.runInContext(fs.readFileSync(`html/js/${file}.js`, 'utf8'), sandbox);
   const run = code => vm.runInContext(code, sandbox);
   run('canvas = testCanvas; ctx = testContext; paintManager = new PaintManager(canvas, ctx); cropManager = {isCropMode: cropState, finishCrop}; addLog = () => {}; showToast = () => {};');

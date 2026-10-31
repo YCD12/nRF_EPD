@@ -2,16 +2,17 @@
   'use strict';
   const builder = typeof module !== 'undefined' && module.exports ? require('./resource_builder.js') : root.EPDResourceBuilder;
   const uiModel = typeof module !== 'undefined' && module.exports ? require('./ui_tools/ui_model.js') : root.EPDUIModel;
+  const firmwarePolicy = typeof module !== 'undefined' && module.exports ? require('./main.js') : root.EpdFirmwarePolicy;
 
   // Times are seconds on the device's local wall clock, as used by SYNC_TIME.
   // They are intentionally independent of the browser's UTC offset.
   const TodoCalendar = {
     MAGIC: 0x4f444f54,
     VERSION: 1,
-    MIN_VERSION: 0x3a,
-    FULL_MIN_VERSION: 0x3b,
-    TYPOGRAPHY_MIN_VERSION: 0x3c,
-    TIMING_MIN_VERSION: 0x3d,
+    get MIN_VERSION() { return firmwarePolicy.newWebMinVersion; },
+    get FULL_MIN_VERSION() { return firmwarePolicy.newWebMinVersion; },
+    get TYPOGRAPHY_MIN_VERSION() { return firmwarePolicy.newWebMinVersion; },
+    get TIMING_MIN_VERSION() { return firmwarePolicy.newWebMinVersion; },
     FONT_SIZES: [9, 12, 16, 20, 24, 32],
     HEADER_SIZE: 16,
     RECORD_SIZE: 80,
@@ -35,6 +36,7 @@
     _temperature: null,
 
     element(id) { return typeof document === 'undefined' ? null : document.getElementById(id); },
+    minimumFirmwareLabel() { return `0x${firmwarePolicy.newWebMinVersion.toString(16).toUpperCase()}`; },
     value(id, fallback = '') { const input = this.element(id); return input ? input.value : fallback; },
     checked(id) { return !!this.element(id)?.checked; },
     report(message, error = false) {
@@ -399,9 +401,9 @@
       }
       const limit = this.element('todoCalendarLimit'); if (limit) limit.max = String(this.maxVisible());
       const hint = this.element('todoCalendarFontSizeHint');
-      if (hint) hint.textContent = `当前字号最多显示 ${this.maxVisible()} 项。大字号、加粗及斜体需要固件 0x3C。`;
+      if (hint) hint.textContent = `当前字号最多显示 ${this.maxVisible()} 项。大字号、加粗及斜体需要固件 ${this.minimumFirmwareLabel()}。`;
       const timingHint = this.element('todoCalendarTimingHint');
-      if (timingHint) timingHint.textContent = `事项会提前 ${this.leadMinutes} 分钟出现，触发后方框变红；截止后保留 ${this.retainMinutes} 分钟并加删除线，再自动隐藏。保存需要固件 0x3D。`;
+      if (timingHint) timingHint.textContent = `事项会提前 ${this.leadMinutes} 分钟出现，触发后方框变红；截止后保留 ${this.retainMinutes} 分钟并加删除线，再自动隐藏。保存需要固件 ${this.minimumFirmwareLabel()}。`;
       const preview = this.element('todoCalendarPreviewItems');
       if (preview?.style) {
         preview.style.fontFamily = this.fontFamily || '';
@@ -454,14 +456,11 @@
       const calendar = this.element('todoCalendarPreviewCalendar'); if (calendar) calendar.hidden = full;
       const caption = this.element('todoCalendarPreviewLayout'); if (caption) caption.textContent = full ? '全屏待办' : '左待办 · 右日历';
       const hint = this.element('todoCalendarLayoutHint');
-      if (hint) hint.textContent = full ? '全屏待办需要固件 0x3B 或更新版本。' : '待办+日历需要固件 0x3A 或更新版本。';
+      if (hint) hint.textContent = `${full ? '全屏待办' : '待办+日历'}需要固件 ${this.minimumFirmwareLabel()} 或更新版本。`;
       const activate = this.element('todoCalendarActivate'); if (activate) activate.textContent = full ? '启用全屏待办' : '启用待办+日历';
     },
     async activate() {
       if (!this.requireDevice()) return false;
-      if (this.previewMode === 5 && appVersion < this.FULL_MIN_VERSION) {
-        this.report('全屏待办需要固件 0x3B 或更新版本，请先升级设备。', true); return false;
-      }
       try {
         this.assertEditorApplied();
         if (typeof syncTime !== 'function') throw new Error('设备模式模块未加载，请刷新页面。');
@@ -539,8 +538,8 @@
       if (typeof epdCharacteristic === 'undefined' || !epdCharacteristic) {
         this.report('请先连接设备，再读取或保存待办事项。', true); return false;
       }
-      if (typeof appVersion === 'undefined' || !Number.isInteger(appVersion) || appVersion < this.MIN_VERSION) {
-        this.report('待办事项需要 0x3A 或更新的固件，请先升级。', true); return false;
+      if (!firmwarePolicy.isNewFirmware(typeof appVersion === 'undefined' ? undefined : appVersion)) {
+        this.report(`待办事项需要固件 ${this.minimumFirmwareLabel()} 或更新版本。`, true); return false;
       }
       if (!root.ExternalResourceInstaller?.saveTodo || !root.ExternalResourceInstaller?.readTodo) {
         this.report('待办资源模块未加载，请刷新页面。', true); return false;
@@ -557,9 +556,6 @@
     },
     async save(parent = null) {
       if (!this.requireDevice()) return false;
-      if (appVersion < this.TIMING_MIN_VERSION) {
-        this.report('新的待办显示规则需要固件 0x3D 或更新版本，请先升级设备；仍可读取设备原有待办。', true); return false;
-      }
       try { this.assertEditorApplied(); }
       catch (error) { this.report(error.message, true); return false; }
       return this.deviceTask(async owner => {
@@ -596,13 +592,10 @@
     },
     controls(forceDisabled = false) {
       const ready = typeof epdCharacteristic !== 'undefined' && !!epdCharacteristic &&
-        typeof appVersion !== 'undefined' && Number.isInteger(appVersion) && appVersion >= this.MIN_VERSION;
+        firmwarePolicy.isNewFirmware(typeof appVersion === 'undefined' ? undefined : appVersion);
       const busy = forceDisabled || !!root.DeviceOperations?.current || !!root.ExternalResourceInstaller?.busy?.();
-      const fullReady = ready && appVersion >= this.FULL_MIN_VERSION;
-      const saveReady = ready && appVersion >= this.TIMING_MIN_VERSION;
-      for (const [id, supported] of [['todoCalendarSave', saveReady], ['todoCalendarRead', ready], ['todocalendarmodebutton', ready],
-        ['todofullmodebutton', fullReady], ['todoCalendarActivate', this.previewMode === 5 ? fullReady : ready]]) {
-        const button = this.element(id); if (button) button.disabled = !supported || busy;
+      for (const id of ['todoCalendarSave', 'todoCalendarRead', 'todocalendarmodebutton', 'todofullmodebutton', 'todoCalendarActivate']) {
+        const button = this.element(id); if (button) button.disabled = !ready || busy;
       }
     },
     previewNow() {

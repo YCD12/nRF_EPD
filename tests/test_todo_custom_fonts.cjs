@@ -7,6 +7,7 @@ const builder = require('../html/js/resource_builder.js');
 const store = require('../html/js/resource_store.js');
 const glyphs = require('../html/js/font_builder.js');
 const fontSync = require('../html/js/font_sync.js');
+const firmwarePolicy = require('../html/js/main.js');
 
 const baseFonts = () => ['wqy9_t_lunar', 'wqy12_t_lunar', 'helvB18_tn']
   .map(name => new Uint8Array(fs.readFileSync(`tools/dist/u8g2_font_${name}.bin`)));
@@ -60,7 +61,8 @@ test('resource editor imports the seven-package template and retains custom font
 
 function todoFixture(read = null) {
   const owner = {}, context = { Uint8Array, DataView, TextEncoder, TextDecoder, Date, Set, Map,
-    EPDUIModel: require('../html/js/ui_tools/ui_model.js'), EPDUIRenderer: require('../html/js/ui_tools/ui_preview.js'), EPDResourceBuilder: builder, appVersion: 0x3b, epdCharacteristic: {},
+    EpdFirmwarePolicy: firmwarePolicy,
+    EPDUIModel: require('../html/js/ui_tools/ui_model.js'), EPDUIRenderer: require('../html/js/ui_tools/ui_preview.js'), EPDResourceBuilder: builder, appVersion: firmwarePolicy.newWebMinVersion, epdCharacteristic: {},
     ExternalResourceInstaller: { busy: () => false, readTodo: async () => read, saveTodo: async () => true },
     DeviceOperations: { current: null, assert(actual) { assert.equal(actual, owner); assert.equal(this.current, owner); } },
   };

@@ -3,6 +3,7 @@ const {test} = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs'), vm = require('node:vm');
 const api = require('../html/js/resource_store.js');
+const firmwarePolicy = require('../html/js/main.js');
 const base = api.prepareBundle(require('../html/resources/default-project.json').files.map(file => ({
   name:file.name, bytes:new Uint8Array(Buffer.from(file.base64,'base64'))
 })));
@@ -49,8 +50,9 @@ function fixture(options={}) {
     async upload(bytes) { const p=api.parsePackage(bytes);uploads.push(p.id);memory.set(bytes,partition(p.id).offset); }
     disconnect() {}
   }
-  const context={Uint8Array,document:{getElementById:node},EPDResourceStore:{...api,ResourceClient:Client},
+  const context={Uint8Array,appVersion:firmwarePolicy.newWebMinVersion,document:{getElementById:node},EPDResourceStore:{...api,ResourceClient:Client},
     confirm(message){prompts.push(message);return options.confirm!==false;}};
+  context.EpdFirmwarePolicy = firmwarePolicy;
   vm.runInNewContext(fs.readFileSync(require.resolve('../html/js/resource_installer.js'),'utf8'),context);
   const installer=context.ExternalResourceInstaller;
   installer.bind({});
@@ -60,7 +62,7 @@ function fixture(options={}) {
 test('erase client negotiates support and sends bounded 16-bit IDs with sector offsets',async()=>{
   const packets=[];
   const client=new api.ResourceClient(async packet=>{packets.push(packet);client.receive(Uint8Array.of(0xa7,packet[1],packet[2],0));});
-  await assert.rejects(client.eraseSector(0,0),/0x3F/);
+  await assert.rejects(client.eraseSector(0,0),/删除能力/);
   client.capabilities={erase:true};
   for(const [id,offset] of [[-1,0],[65536,0],[1,1],[0,-4096],[0,524288],[0,1.5]])
     await assert.rejects(client.eraseSector(id,offset),/范围/);
@@ -71,14 +73,14 @@ test('erase client negotiates support and sends bounded 16-bit IDs with sector o
   assert.equal(new DataView(packets[1].buffer).getUint32(5,true),520192);
 });
 
-test('deletion is disabled on old firmware and cancelled confirmation never sends erase or enter',async()=>{
+test('deletion requires the reported capability and cancelled confirmation never sends erase or enter',async()=>{
   for(const options of [{legacy:true},{confirm:false},{active:true}]){
     const f=fixture(options), before=f.memory.slice();
     await f.installer.refresh();f.node('externalResourceErasePartition').value='6';
     if(options.legacy) assert.equal(f.node('externalResourceEraseAll').disabled,true);
     await f.installer.erase();
     assert.deepEqual(f.memory,before);assert.equal(f.calls.length,0);
-    assert.match(f.node('externalResourceStatus').textContent,options.legacy?/0x3F/:options.active?/未完成资源事务/:/取消/);
+    assert.match(f.node('externalResourceStatus').textContent,options.legacy?/资源删除或即时应用能力/:options.active?/未完成资源事务/:/取消/);
   }
 });
 

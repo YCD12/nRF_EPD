@@ -7,7 +7,7 @@
 	<title>墨水屏控制台</title>
 	<link rel="shortcut icon" type="image/png" href="favicon.png">
 	<meta name="theme-color" content="#2563eb">
-	<link rel="stylesheet" href="css/main.css?v=20261017f">
+	<link rel="stylesheet" href="css/main.css?v=20261025a">
 </head>
 
 <body class="workspace-shell">
@@ -25,7 +25,7 @@
 			<div class="page-actions">
 				<span id="connectionBadge" class="connection-badge" data-state="disconnected" role="status"><span class="status-dot" aria-hidden="true"></span><span id="connectionLabel">未连接</span></span>
 				<button id="themeToggle" type="button" class="secondary" aria-pressed="false">深色外观</button>
-				<button id="openDfuPageButton" type="button" class="secondary" onclick="openDfuPage()">固件升级 <span aria-hidden="true">↗</span></button>
+				<button id="openDfuPageButton" type="button" class="secondary" onclick="openDfuPage()" disabled title="固件升级开发中，暂未开放">固件升级（开发中）</button>
 			</div>
 		</header>
 		<nav id="workspaceNav" class="workspace-nav" aria-label="控制台导航">
@@ -281,15 +281,15 @@
 						<p class="field-hint todo-calendar-text-field">先添加或更新事项，再保存到设备。完成、删除和显示设置也需要保存后才会在屏幕上生效。</p>
 					</form>
 					<div class="todo-calendar-options">
-						<div class="field todo-calendar-layout-field"><label for="todoCalendarLayout">屏幕布局</label><select id="todoCalendarLayout" aria-describedby="todoCalendarLayoutHint"><option value="4" selected>待办+日历</option><option value="5">全屏待办</option></select><span id="todoCalendarLayoutHint" class="field-hint">待办+日历需要固件 0x3A 或更新版本。</span></div>
+						<div class="field todo-calendar-layout-field"><label for="todoCalendarLayout">屏幕布局</label><select id="todoCalendarLayout" aria-describedby="todoCalendarLayoutHint"><option value="4" selected>待办+日历</option><option value="5">全屏待办</option></select><span id="todoCalendarLayoutHint" class="field-hint">连接新版设备后可启用所选布局。</span></div>
 						<div class="field"><label for="todoCalendarLimit">屏幕显示数量</label><input id="todoCalendarLimit" type="number" min="1" max="8" step="1" value="5"></div>
 						<div class="field"><label for="todoCalendarLeadMinutes">显示提前时间（分钟）</label><input id="todoCalendarLeadMinutes" type="number" min="0" max="1440" step="1" value="10" aria-describedby="todoCalendarTimingHint"></div>
 						<div class="field"><label for="todoCalendarRetainMinutes">过期保留时间（分钟）</label><input id="todoCalendarRetainMinutes" type="number" min="0" max="1440" step="1" value="5" aria-describedby="todoCalendarTimingHint"></div>
-						<span id="todoCalendarTimingHint" class="field-hint todo-calendar-size-hint">事项默认提前 10 分钟出现，触发后方框变红；截止后保留 5 分钟并加删除线，再自动隐藏。保存需要固件 0x3D。</span>
+						<span id="todoCalendarTimingHint" class="field-hint todo-calendar-size-hint">事项默认提前 10 分钟出现，触发后方框变红；截止后保留 5 分钟并加删除线，再自动隐藏。</span>
 						<div class="field"><label for="todoCalendarFontSize">待办字号</label><select id="todoCalendarFontSize" aria-describedby="todoCalendarFontSizeHint"><option value="9">9</option><option value="12" selected>12</option><option value="16">16</option><option value="20">20</option><option value="24">24</option><option value="32">32</option></select></div>
 						<fieldset class="todo-calendar-font-style"><legend>待办字形</legend><label><input id="todoCalendarFontBold" type="checkbox"> 加粗</label><label><input id="todoCalendarFontItalic" type="checkbox"> 斜体</label></fieldset>
-						<span id="todoCalendarFontSizeHint" class="field-hint todo-calendar-size-hint">当前字号最多显示 8 项。大字号、加粗及斜体需要固件 0x3C。</span>
-						<div class="field todo-calendar-font-field"><label for="todoCalendarFontFamily">待办字体类型</label><select id="todoCalendarFontFamily" aria-describedby="todoCalendarFontHint"><option value="">设备默认</option></select><span id="todoCalendarFontHint" class="field-hint">字体列表复用图片文字工具。缺失字形由网页生成并保存到设备，离线也能显示。自定义字体需要固件 0x3B；大字号、加粗及斜体需要 0x3C。</span></div>
+						<span id="todoCalendarFontSizeHint" class="field-hint todo-calendar-size-hint">当前字号最多显示 8 项。支持大字号、加粗及斜体。</span>
+						<div class="field todo-calendar-font-field"><label for="todoCalendarFontFamily">待办字体类型</label><select id="todoCalendarFontFamily" aria-describedby="todoCalendarFontHint"><option value="">设备默认</option></select><span id="todoCalendarFontHint" class="field-hint">字体列表复用图片文字工具。缺失字形由网页生成并保存到设备，离线也能显示。支持自定义字体、大字号、加粗及斜体。</span></div>
 					</div>
 					<p class="field-hint">常驻事项优先；定时事项按触发时间排序。超过显示数量的事项等待空位，前面的事项完成或过期后自动递补。已完成和已过期事项会保留在编辑列表，屏幕上隐藏。每项显示截止时间或常驻标记，长标题会换行或省略。</p>
 					<div class="todo-calendar-local-actions"><button id="todoCalendarImportPaint" type="button" class="secondary">导入旧版待办</button><button id="todoCalendarExport" type="button" class="secondary">导出备份</button><label class="todo-calendar-import-label" for="todoCalendarImport">导入备份<input id="todoCalendarImport" type="file" accept=".json,application/json"></label></div>
@@ -300,12 +300,12 @@
 					<canvas id="todoCalendarResourceCanvas" width="800" height="480" class="todo-resource-canvas" aria-label="按当前显示资源绘制的设备预览"></canvas><div id="todoCalendarPreviewScreen" hidden class="todo-calendar-screen" data-layout="split"><div class="todo-calendar-preview-left"><div class="todo-calendar-preview-header"><strong id="todoCalendarPreviewTitle" class="todo-calendar-preview-title">TODO 0/0</strong><span id="todoCalendarPreviewTemperature" class="todo-calendar-preview-temperature" aria-label="设备温度未知"><span class="todo-calendar-temperature-value">—</span><span class="todo-calendar-temperature-unit">℃</span></span></div><div id="todoCalendarPreviewItems" class="todo-calendar-preview-items" data-font="12"></div></div><div id="todoCalendarPreviewCalendar" class="todo-calendar-preview-calendar" aria-label="日历预览"></div></div>
 					<p id="todoCalendarPreviewSummary" class="field-hint" aria-live="polite"></p>
 					<div class="todo-calendar-preview-controls"><label for="todoCalendarPreviewTime">模拟时间</label><input id="todoCalendarPreviewTime" type="datetime-local" step="1" min="2000-01-01T00:00" max="2099-12-31T23:59:59"><button id="todoCalendarPreviewNow" type="button" class="secondary">现在</button></div>
-					<p class="field-hint">留空使用当前时间。时间按网页所在时区设置；切换模式会同步设备时间。预览使用当前 UIR2 布局和设备字模，需固件 0x3E 并发送布局资源后生效。缺失字模随待办保存到设备；温度未知时使用 25℃、电压使用 3.1V 示例。</p>
+					<p class="field-hint">留空使用当前时间。时间按网页所在时区设置；切换模式会同步设备时间。预览使用当前 UIR2 布局和设备字模，连接新版设备并发送布局资源后生效。缺失字模随待办保存到设备；温度未知时使用 25℃、电压使用 3.1V 示例。</p>
 				</aside>
 			</div>
 			<div id="todoCalendarList" class="todo-calendar-list" aria-label="编辑定时待办事项"></div>
 			<div class="todo-calendar-device-actions"><button id="todoCalendarRead" type="button" class="secondary" data-device-operation disabled>读取设备待办</button><button id="todoCalendarSave" type="button" class="primary" data-device-operation disabled>保存到设备</button><button id="todoCalendarActivate" type="button" class="secondary" data-device-operation disabled>启用待办+日历</button></div>
-			<p class="field-hint">先保存清单，再启用所选布局。布局选择只改变预览，启用后才切换设备；全屏待办需要固件 0x3B 或更新版本。</p>
+			<p class="field-hint">先保存清单，再启用所选布局。布局选择只改变预览，启用后才切换设备。</p>
 			<p id="todoCalendarStatus" class="field-hint" role="status" aria-live="polite">草稿自动保存在此浏览器。读取设备或导入备份将替换当前草稿，保存到设备后生效。</p>
 		</section>
 		<section id="calendarWorkspace" class="section" data-workspace-panel="calendarWorkspace" aria-labelledby="calendarHeading" tabindex="-1" hidden>
@@ -344,7 +344,7 @@
 				<table class="anno-table"><caption class="sr-only">已添加的日期标注</caption><thead><tr><th scope="col">日期</th><th scope="col">标注内容</th><th scope="col">显示设置</th><th scope="col">操作</th></tr></thead><tbody id="calendarAnnotationsList"></tbody></table>
 			</div>
 			<details class="help-details annotation-management"><summary>备份与管理</summary><p class="dfu-hint">升级旧设备前，可导出配置和日期标注作为迁移备份。</p><div class="annotation-management-actions"><button data-device-operation type="button" class="secondary" onclick="exportMigrationBundle()">导出迁移备份</button><button data-device-operation type="button" class="danger" onclick="CalendarAnnotations.clearDevice()">清除设备标注</button></div></details>
-			<details class="help-details annotation-rules"><summary>标注显示规则</summary><ul><li>短标签最多 9 个字节，通常可输入 3 个汉字或 9 个英文字母；缺失字模会在保存时由网页生成并写入设备。</li><li>标签显示在日期下方时，会替换该日的节日或农历文字，并显示红点；带有「休／班」标记的日期，红点改到左上角。</li><li>标签显示在右上角时，保留节日和农历；标签留空时仅显示红点。</li><li>当日日期下方为红色背景，请使用白色或黑色标签；红字会与背景重合。</li><li>英文字母使用小号字库；白色标签在白色背景上可能不明显。</li></ul><p class="dfu-hint">连接设备后自动读取标注。较新固件会在外置 Flash 写入确认后提示保存成功；红点避让「休／班」需更新设备固件；旧固件的右上角位置与读取功能取决于支持情况。</p></details>
+			<details class="help-details annotation-rules"><summary>标注显示规则</summary><ul><li>短标签最多 9 个字节，通常可输入 3 个汉字或 9 个英文字母；缺失字模会在保存时由网页生成并写入设备。</li><li>标签显示在日期下方时，会替换该日的节日或农历文字，并显示红点；带有「休／班」标记的日期，红点改到左上角。</li><li>标签显示在右上角时，保留节日和农历；标签留空时仅显示红点。</li><li>当日日期下方为红色背景，请使用白色或黑色标签；红字会与背景重合。</li><li>英文字母使用小号字库；白色标签在白色背景上可能不明显。</li></ul><p class="dfu-hint">连接新版设备后自动读取标注，收到外置 Flash 写入确认后提示保存成功。</p></details>
 		</section>
 		<section id="externalResources" class="section" data-workspace-panel="externalResources" aria-labelledby="resourcesHeading" tabindex="-1" hidden>
 			<div class="section-heading"><div><p class="section-kicker">04 / RESOURCES</p><h2 id="resourcesHeading">设备资源</h2></div><span class="device-badge">日历 · 布局 · 字体</span></div>
@@ -502,14 +502,25 @@
 			</div>
 		</div>
 	</div>
+	<dialog id="legacyFirmwareDialog" class="device-modal-content firmware-dialog" aria-labelledby="legacyFirmwareTitle" aria-describedby="legacyFirmwareMessage legacyFirmwareHint">
+		<h3 id="legacyFirmwareTitle">请使用旧版网页</h3>
+		<p id="legacyFirmwareMessage" class="device-modal-hint"></p>
+		<p id="legacyFirmwareHint" class="device-modal-hint">旧版网页可继续控制当前设备，进入后请重新连接。固件升级功能开发中，暂未开放。</p>
+		<form method="dialog" class="device-modal-actions">
+			<button type="submit" value="cancel" class="secondary">取消</button>
+			<button type="button" value="upgrade" class="secondary" disabled title="固件升级开发中，暂未开放">升级设备（开发中）</button>
+			<button type="submit" value="legacy" class="primary" autofocus>使用旧版网页</button>
+		</form>
+	</dialog>
 	<div id="toast" class="toast-message" role="status" aria-live="polite" style="display:none;"></div>
+	<script defer src="js/main.js?v=20261029a"></script>
 	<script defer src="js/dithering.js?v=20261013a"></script>
 	<script defer src="js/paint.js?v=20261013a"></script>
 	<script defer src="js/paint_schedule.js?v=20261005b"></script>
 	<script defer src="js/crop.js?v=20261005a"></script>
-	<script defer src="js/ble_transfer.js?v=20260922a"></script>
-	<script defer src="js/calendar_annotations.js?v=20261017a"></script>
-	<script defer src="js/resource_store.js?v=20261017g"></script>
+	<script defer src="js/ble_transfer.js?v=20261026a"></script>
+	<script defer src="js/calendar_annotations.js?v=20261026b"></script>
+	<script defer src="js/resource_store.js?v=20261026a"></script>
 	<script defer src="js/resource_archive.js?v=20261004a"></script>
 	<script defer src="js/ui_tools/ui_data.js?v=20261017a"></script>
 	<script defer src="js/ui_tools/ui_model.js?v=20261017a"></script>
@@ -525,11 +536,10 @@
 	<script defer src="js/ui_tools/resource_draft.js?v=20261012a"></script>
 	<script defer src="js/font_sync.js?v=20261012a"></script>
 	<script defer src="js/todo_sync.js?v=20261005h"></script>
-	<script defer src="js/resource_installer.js?v=20261017g"></script>
-	<script defer src="js/todo_calendar.js?v=20261017c"></script>
+	<script defer src="js/resource_installer.js?v=20261026a"></script>
+	<script defer src="js/todo_calendar.js?v=20261026b"></script>
 	<script defer src="js/resource_editor.js?v=20261017a"></script>
 	<script defer src="js/console_ui.js?v=20261017f"></script>
-	<script defer src="js/main.js?v=20261017g"></script>
 	<script defer src="js/site_statistics.js?v=20261017g"></script>
 </body>
 

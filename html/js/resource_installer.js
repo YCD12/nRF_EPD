@@ -195,6 +195,12 @@
     if (!session || session !== client) throw new Error('蓝牙连接已变化，请重新连接');
   }
 
+  function requireNewFirmware() {
+    const version = typeof appVersion !== 'undefined' ? appVersion : undefined;
+    if (!root.EpdFirmwarePolicy?.isNewFirmware?.(version))
+      throw new Error('设备固件不支持新版网页，或版本尚未确认，请重新连接或使用旧版网页。');
+  }
+
   function report(message, error = false) {
     const status = $('externalResourceStatus');
     if (status) status.textContent = message;
@@ -222,7 +228,7 @@
     if ($('externalResourceEraseAll')) $('externalResourceEraseAll').disabled = !deletionReady;
     if ($('externalResourceEraseHint')) $('externalResourceEraseHint').textContent = connected
       ? eraseSupported ? '删除不可撤销。建议先回读资源并保存到本地；删除分区表或清空外置 Flash 后需重新安装完整资源。'
-        : '读取分区后可查看删除能力；此功能需要固件 0x3F 或更新版本。'
+        : '读取分区后可查看设备是否支持资源删除。'
       : '连接设备并读取分区后，可删除指定分区或清空全部外置 Flash。';
     const offline = $('externalResourceOffline');
     if (offline) offline.disabled = busy || !connected || !offlineSupported;
@@ -247,6 +253,7 @@
   }
 
   async function deviceWrite(session, connection, bytes) {
+    requireNewFirmware();
     if (typeof root.write === 'function') {
       if (!await root.write(bytes[0], bytes.subarray(1), true, false, true, session.owner))
         throw new Error('蓝牙写入未完成');
@@ -454,7 +461,7 @@
     try {
       const current = await readStatus(true, session);
       ensureCurrent(session);
-      if (!current.status.erase || !current.status.hotReload) throw new Error('删除功能需要固件 0x3F 或更新版本');
+      if (!current.status.erase || !current.status.hotReload) throw new Error('设备未报告资源删除或即时应用能力');
       if (current.status.active) throw new Error('设备存在未完成资源事务，请先完成更新后重试');
       const target = id === 0 ? {size:current.status.capacity} : id === 1 ? {size:4096}
         : current.partitions?.find(p => p.id === id);
@@ -698,9 +705,7 @@
     return task(installOperation);
   }
   async function installOperation(previous = null) {
-    if (typeof appVersion === 'number' && appVersion < 0x3e && bundle?.packages.some(item =>
-      item.pack.id === 6 && item.pack.payload[3] === 0x32))
-      throw new Error('新版显示资源需要固件 0x3E，请先升级固件再发送资源');
+    requireNewFirmware();
     if (running) return;
     if (!client) return report('请先连接设备', true);
     if (!bundle) return report('请先选择资源目录', true);

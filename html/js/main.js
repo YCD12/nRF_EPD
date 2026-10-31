@@ -1,3 +1,15 @@
+// 新旧网页及新版所有固件能力统一使用此分界，与设备端 APP_VERSION 同步。
+const NEW_WEB_MIN_FIRMWARE_VERSION = 0x21;
+const EpdFirmwarePolicy = Object.freeze({
+  newWebMinVersion: NEW_WEB_MIN_FIRMWARE_VERSION,
+  isNewFirmware(version) {
+    return Number.isInteger(version) && version >= NEW_WEB_MIN_FIRMWARE_VERSION;
+  },
+});
+globalThis.EpdFirmwarePolicy = EpdFirmwarePolicy;
+if (typeof window !== 'undefined') window.EpdFirmwarePolicy = EpdFirmwarePolicy;
+if (typeof module !== 'undefined' && module.exports) module.exports = EpdFirmwarePolicy;
+
 let bleDevice, gattServer;
 let epdService, epdCharacteristic;
 let startTime, appVersion;
@@ -41,7 +53,7 @@ const DeviceOperations = {
     if (window.ExternalResourceInstaller?.controls) window.ExternalResourceInstaller.controls();
   },
 };
-globalThis.DeviceOperations = window.DeviceOperations = DeviceOperations;
+if (typeof window !== 'undefined') globalThis.DeviceOperations = window.DeviceOperations = DeviceOperations;
 
 async function runDeviceOperation(kind, action, parent = null) {
   let operation;
@@ -75,8 +87,9 @@ let lastWeekStartSent = null;
 let internalDisconnectInProgress = false;
 let internalDisconnectSuppressUntil = 0;
 const DFU_PAGE_HANDOFF_KEY = 'epd_dfu_page_handoff';
-const CONFIG_READBACK_MIN_FIRMWARE_VERSION = 0x34;
-const MIN_FIRMWARE_VERSION = 0x38;
+const WEB_DFU_ENABLED = false;
+const FIRMWARE_UPGRADE_NOTICE = '固件升级开发中，暂未开放。';
+const LEGACY_PAGE_URL = 'legacy/index.html';
 
 const EpdCmd = {
   SET_PINS: 0x00,
@@ -141,7 +154,7 @@ function bytes2hex(data) {
 }
 
 async function readMigrationConfig(owner = null) {
-  if (appVersion < CONFIG_READBACK_MIN_FIRMWARE_VERSION) {
+  if (appVersion < NEW_WEB_MIN_FIRMWARE_VERSION) {
     if (legacyConfigDirty) throw new Error('旧固件配置已修改，请等待保存完成后断开重连，再导出备份');
     return Uint8Array.from(lastDeviceConfig);
   }
@@ -289,7 +302,20 @@ function updateBatteryVoltageDisplay(voltageMv = null, fallbackText = '未连接
   }
 }
 
-async function write(cmd, data, withResponse = true, logPayload = true, serialize = true, owner = null) {
+function getWireCommand(cmd) {
+  if (!Number.isInteger(appVersion) || EpdFirmwarePolicy.isNewFirmware(appVersion)) return cmd;
+  // The same page boundary selects the original or current command IDs.
+  switch (cmd) {
+    case EpdCmd.REFRESH: return 0x05;
+    case EpdCmd.SLEEP: return 0x06;
+    case EpdCmd.WRITE_BLOCK: return 0x31;
+    case EpdCmd.QUERY_STATUS: return 0x32;
+    case EpdCmd.RESET_TRANSFER: return 0x33;
+    default: return cmd;
+  }
+}
+
+async function write(cmd, data, withResponse = true, logPayload = true, serialize = true, owner = null, rawPacket = false) {
   const allowed = () => (!DeviceOperations.current || DeviceOperations.current === owner) &&
     (!owner || (DeviceOperations.current === owner && owner.generation === connectionGeneration));
   if (!allowed()) { addLog('设备操作进行中，请等待完成'); return false; }
@@ -306,13 +332,15 @@ async function write(cmd, data, withResponse = true, logPayload = true, serializ
     addLog("服务不可用，请检查蓝牙连接");
     return false;
   }
-  const confirmDisplay = appVersion >= 0x39 && (cmd === EpdCmd.CLEAR || cmd === EpdCmd.REFRESH);
-  if (cmd === EpdCmd.INIT || cmd === EpdCmd.SET_MODE || confirmDisplay) serialize = true;
+  const confirmDisplay = !rawPacket && EpdFirmwarePolicy.isNewFirmware(appVersion) &&
+    (cmd === EpdCmd.CLEAR || cmd === EpdCmd.REFRESH);
+  if (!rawPacket && (cmd === EpdCmd.INIT || cmd === EpdCmd.SET_MODE || confirmDisplay)) serialize = true;
   const characteristic = epdCharacteristic;
   const generation = connectionGeneration;
   const makePayload = value => {
     if (typeof value === 'string') value = hex2bytes(value);
-    return value ? [cmd, ...value] : [cmd];
+    const wireCommand = rawPacket ? cmd : getWireCommand(cmd);
+    return value ? [wireCommand, ...value] : [wireCommand];
   };
   // Time synchronization supplies a factory so GATT queue waits do not age
   // its timestamp. Other writes keep their payload snapshot from enqueue.
@@ -327,13 +355,13 @@ async function write(cmd, data, withResponse = true, logPayload = true, serializ
     let waiter = null;
     let modeReply = null;
     let displayReply = null;
-    if (cmd === EpdCmd.INIT && appVersion >= 0x32) {
+    if (!rawPacket && cmd === EpdCmd.INIT && EpdFirmwarePolicy.isNewFirmware(appVersion)) {
       waiter = { token: (++initToken & 255), generation };
       waiter.promise = new Promise(resolve => { waiter.resolve = resolve; });
       initWaiter = waiter;
       payload = [cmd, payload.length > 1 ? payload[1] : 0xff, waiter.token];
     }
-    if (cmd === EpdCmd.SET_MODE) {
+    if (!rawPacket && cmd === EpdCmd.SET_MODE && EpdFirmwarePolicy.isNewFirmware(appVersion)) {
       if (payload.length !== 9) return false;
       modeReply = { token: (++modeToken & 255), generation, mode: payload[1] };
       modeReply.promise = new Promise(resolve => { modeReply.resolve = resolve; });
@@ -354,8 +382,8 @@ async function write(cmd, data, withResponse = true, logPayload = true, serializ
     const entersPictureMode =
       cmd === EpdCmd.CLEAR || cmd === EpdCmd.REFRESH ||
       cmd === EpdCmd.WRITE_BLOCK;
-    if (appVersion < CONFIG_READBACK_MIN_FIRMWARE_VERSION && lastDeviceConfig && (
-        cmd === EpdCmd.SET_CONFIG || cmd === EpdCmd.SET_PINS || cmd === EpdCmd.CFG_ERASE ||
+    if (appVersion < NEW_WEB_MIN_FIRMWARE_VERSION && lastDeviceConfig && (
+        rawPacket || cmd === EpdCmd.SET_CONFIG || cmd === EpdCmd.SET_PINS || cmd === EpdCmd.CFG_ERASE ||
         (entersPictureMode && cachedMode !== 0) ||
         (cmd === EpdCmd.INIT && payload.length > 1 && payload[1] !== 0xff && payload[1] !== lastDeviceConfig[7]) ||
         (cmd === EpdCmd.SET_WEEK_START && payload[1] !== lastDeviceConfig[12]) ||
@@ -390,6 +418,11 @@ async function write(cmd, data, withResponse = true, logPayload = true, serializ
     gattWriteTail = operation.catch(() => {});
   }
   return operation;
+}
+
+async function writeRawPacket(bytes, owner = null) {
+  if (!bytes || !bytes.length) return false;
+  return write(bytes[0], bytes.subarray(1), true, true, true, owner, true);
 }
 
 // CRC-verified image transfer; a failed sequential stream restarts its layer.
@@ -448,9 +481,8 @@ async function sendTimeCommand(mode, modeName) {
 }
 
 async function sendModeOperation(mode, modeName, owner) {
-  const required = mode === 5 ? 0x3B : mode === 4 ? 0x3A : 0;
-  if (required && (!Number.isInteger(appVersion) || appVersion < required)) {
-    addLog(`${mode === 5 ? '全屏待办' : '待办日历'}需要固件 0x${required.toString(16).toUpperCase()} 或更高，请先升级设备`);
+  if (!EpdFirmwarePolicy.isNewFirmware(appVersion)) {
+    addLog(`${modeName}需要固件 0x${NEW_WEB_MIN_FIRMWARE_VERSION.toString(16).toUpperCase()} 或更高，请使用对应网页`);
     return false;
   }
   const weekStart = getWeekStart();
@@ -494,7 +526,7 @@ async function waitForNegotiatedMtu(timeoutMs = 2000) {
 }
 
 async function syncTimeOnConnect(owner = null) {
-  if (appVersion < 0x21) {
+  if (!EpdFirmwarePolicy.isNewFirmware(appVersion)) {
     addLog('当前固件不支持静默校时，已跳过自动时间同步');
     return false;
   }
@@ -535,7 +567,7 @@ async function clearScreen() {
     return runDeviceOperation('control', async owner => {
       if (!await write(EpdCmd.CLEAR, null, true, true, true, owner)) return false;
       DeviceOperations.assert(owner);
-      addLog(appVersion >= 0x39 ? '设备已确认清屏完成。' : '清屏指令已发送，请等待屏幕刷新完成。');
+      addLog(EpdFirmwarePolicy.isNewFirmware(appVersion) ? '设备已确认清屏完成。' : '清屏指令已发送，请等待屏幕刷新完成。');
     });
   }
 }
@@ -578,7 +610,7 @@ async function sendcmd() {
   if (!confirm('确认发送命令？此操作可能影响设备状态。')) return;
   const bytes = hex2bytes(cmdTXT);
   return runDeviceOperation('control', async owner => {
-    if (await write(bytes[0], bytes.length > 1 ? bytes.slice(1) : null, true, true, true, owner)) addLog("命令已发送");
+    if (await writeRawPacket(bytes, owner)) addLog("命令已发送");
   });
 }
 
@@ -766,7 +798,7 @@ async function sendImageOperation(owner) {
   const transferCompletion = `传图完成！传图耗时: ${transferTime}s，等待屏幕刷新…`;
   addLog(transferCompletion);
   setStatus(transferCompletion);
-  const confirmsRefresh = appVersion >= 0x39;
+  const confirmsRefresh = EpdFirmwarePolicy.isNewFirmware(appVersion);
   const refreshStartedAt = new Date().getTime();
   const refreshOk = await write(EpdCmd.REFRESH, null, true, true, true, owner);
   const refreshFinishedAt = new Date().getTime();
@@ -862,11 +894,11 @@ function updateButtonStatus(forceDisabled = false) {
   const clock = document.getElementById('legacyclockbutton');
   if (clock) clock.disabled = !!status;
   const dfu = document.getElementById('openDfuPageButton');
-  if (dfu) dfu.disabled = !!(forceDisabled || isConnecting || DeviceOperations.current);
+  if (dfu) dfu.disabled = !WEB_DFU_ENABLED || !!(forceDisabled || isConnecting || DeviceOperations.current);
   for (const button of document.querySelectorAll('[data-device-operation]')) button.disabled = !!status;
-  for (const [id, minimum] of [['todocalendarmodebutton', 0x3A], ['todofullmodebutton', 0x3B]]) {
+  for (const id of ['todocalendarmodebutton', 'todofullmodebutton']) {
     const todo = document.getElementById(id);
-    if (todo) todo.disabled = !!status || !Number.isInteger(appVersion) || appVersion < minimum;
+    if (todo) todo.disabled = !!status || !EpdFirmwarePolicy.isNewFirmware(appVersion);
   }
   if (window.TodoCalendar?.controls) window.TodoCalendar.controls(forceDisabled);
   if (window.ConsoleUI && typeof window.ConsoleUI.updateConnection === 'function') {
@@ -899,35 +931,73 @@ function disconnect() {
 }
 
 async function openDfuPage() {
+  if (!WEB_DFU_ENABLED) {
+    showToast(FIRMWARE_UPGRADE_NOTICE, 3600);
+    return false;
+  }
   if (isConnecting || DeviceOperations.current || document.getElementById('openDfuPageButton')?.disabled) {
     showToast('设备操作进行中，请等待完成后再进入固件升级。', 3600);
     return false;
+  }
+  try {
+    return await navigateToDevicePage('dfu.html');
+  } catch (error) {
+    addLog(error.message || String(error));
+    showToast('蓝牙断开失败，请重试后再进入固件升级。', 3600);
+    return false;
+  }
+}
+
+function showLegacyFirmwareDialog(version) {
+  const dialog = document.getElementById('legacyFirmwareDialog');
+  document.getElementById('legacyFirmwareMessage').textContent =
+    `设备固件为 0x${version.toString(16)}，低于新版网页支持的 0x${NEW_WEB_MIN_FIRMWARE_VERSION.toString(16)}，请使用旧版网页连接设备。`;
+  dialog.returnValue = 'cancel';
+  return new Promise(resolve => {
+    dialog.addEventListener('close', () => resolve(dialog.returnValue), { once: true });
+    dialog.showModal();
+  });
+}
+
+async function navigateToDevicePage(page, device = bleDevice) {
+  if (page === 'dfu.html' && !WEB_DFU_ENABLED) {
+    showToast(FIRMWARE_UPGRADE_NOTICE, 3600);
+    return false;
+  }
+  if (page === LEGACY_PAGE_URL) {
+    if (device !== bleDevice) throw new Error('设备已变化，已取消页面跳转');
+    window.location.href = page;
+    return true;
   }
   const handoff = {
     source: 'index',
     fromUrl: window.location.pathname,
     createdAt: Date.now(),
-    hadConnectedDevice: !!(bleDevice && bleDevice.gatt && bleDevice.gatt.connected),
-    deviceName: bleDevice && bleDevice.name ? bleDevice.name : '',
+    hadConnectedDevice: !!device?.gatt?.connected,
+    deviceName: device?.name || '',
     disconnectedBeforeNavigate: false
   };
 
   try {
-    if (bleDevice && bleDevice.gatt && bleDevice.gatt.connected) {
+    if (device?.gatt?.connected) {
       internalDisconnectInProgress = true;
       internalDisconnectSuppressUntil = Date.now() + 4000;
-      try {
-        bleDevice.gatt.disconnect();
-        handoff.disconnectedBeforeNavigate = true;
-      } catch (_) { }
+      device.gatt.disconnect();
+      if (device.gatt.connected) throw new Error('蓝牙尚未断开，已取消页面跳转，请重试');
+      handoff.disconnectedBeforeNavigate = true;
       await new Promise(resolve => setTimeout(resolve, 250));
     }
+    if (device !== bleDevice) throw new Error('设备已变化，已取消页面跳转');
+    if (gattServer || epdCharacteristic) disconnect();
+    if (page === 'dfu.html') {
+      try {
+        sessionStorage.setItem(DFU_PAGE_HANDOFF_KEY, JSON.stringify(handoff));
+      } catch (_) { }
+    }
+    if (page) window.location.href = page;
+    return true;
   } finally {
     internalDisconnectInProgress = false;
-    try {
-      sessionStorage.setItem(DFU_PAGE_HANDOFF_KEY, JSON.stringify(handoff));
-    } catch (_) { }
-    window.location.href = 'dfu.html';
   }
 }
 
@@ -1494,8 +1564,13 @@ async function connect() {
       throw new Error(`无法读取固件版本，请使用与设备固件匹配的网页：${e.message || e}`);
     }
     ensureConnected();
-    if (appVersion < MIN_FIRMWARE_VERSION) {
-      throw new Error(`当前网页需要固件 0x${MIN_FIRMWARE_VERSION.toString(16)} 及以上；设备为 0x${appVersion.toString(16)}，请使用对应旧版网页`);
+    if (appVersion < NEW_WEB_MIN_FIRMWARE_VERSION) {
+      const action = await showLegacyFirmwareDialog(appVersion);
+      if (action === 'upgrade' && !WEB_DFU_ENABLED) showToast(FIRMWARE_UPGRADE_NOTICE, 3600);
+      const page = action === 'legacy' ? LEGACY_PAGE_URL : action === 'upgrade' && WEB_DFU_ENABLED ? 'dfu.html' : null;
+      await navigateToDevicePage(page, targetDevice);
+      if (!page) addLog('已取消连接，请使用旧版网页；固件升级功能开发中。');
+      return;
     }
 
     try {
@@ -1509,7 +1584,8 @@ async function connect() {
       });
       await epdCharacteristic.startNotifications();
       ensureConnected();
-      if (window.ExternalResourceInstaller) window.ExternalResourceInstaller.bind(epdCharacteristic);
+      if (window.ExternalResourceInstaller && EpdFirmwarePolicy.isNewFirmware(appVersion))
+        window.ExternalResourceInstaller.bind(epdCharacteristic);
 
       // INIT 后固件会上报电压，并遵循协议连接初始化顺序。
       if (!await write(EpdCmd.INIT, null, true, true, true, setupOperation)) {
@@ -1523,7 +1599,7 @@ async function connect() {
     ensureConnected();
     const timeSynced = await syncTimeOnConnect(setupOperation);
     ensureConnected();
-    if (appVersion >= 0x21 && !timeSynced) throw new Error('连接后自动时间同步失败');
+    if (EpdFirmwarePolicy.isNewFirmware(appVersion) && !timeSynced) throw new Error('连接后自动时间同步失败');
     if (await waitForNegotiatedMtu()) {
       addLog(`传图MTU已就绪: ${currentMtuValue()}`);
     } else {
@@ -1535,11 +1611,11 @@ async function connect() {
     if (typeof BleTransfer !== 'undefined') {
       BleTransfer.init();
     }
-    if (window.CalendarAnnotations && appVersion >= 0x29) {
+    if (window.CalendarAnnotations && EpdFirmwarePolicy.isNewFirmware(appVersion)) {
       await window.CalendarAnnotations.loadFromDevice(setupOperation);
       ensureConnected();
     }
-    if (window.ExternalResourceInstaller && appVersion >= 0x34) {
+    if (window.ExternalResourceInstaller && EpdFirmwarePolicy.isNewFirmware(appVersion)) {
       await window.ExternalResourceInstaller.refresh(setupOperation);
       ensureConnected();
     }
@@ -1559,7 +1635,10 @@ async function connect() {
   } catch (e) {
     addLog(`连接初始化失败: ${e.message || e}`);
     if (targetDevice === bleDevice) {
-      if (targetDevice.gatt && targetDevice.gatt.connected) targetDevice.gatt.disconnect();
+      if (targetDevice.gatt && targetDevice.gatt.connected) {
+        try { targetDevice.gatt.disconnect(); }
+        catch (error) { addLog(`断开蓝牙失败: ${error.message || error}`); }
+      }
       if (gattServer || epdCharacteristic) disconnect();
     }
   } finally {
@@ -2139,9 +2218,12 @@ function initConsole() {
   }
 }
 
+// main.js 提前提供版本策略；界面等其余 defer 脚本就绪后初始化。
 // Device controls must not wait for optional third-party requests to finish.
-if (document.readyState === 'loading') {
-  document.addEventListener('DOMContentLoaded', initConsole, { once: true });
-} else if (document.readyState === 'interactive' || document.readyState === 'complete') {
-  initConsole();
+if (typeof document !== 'undefined') {
+  if (document.readyState === 'loading' || document.readyState === 'interactive') {
+    document.addEventListener('DOMContentLoaded', initConsole, { once: true });
+  } else if (document.readyState === 'complete') {
+    initConsole();
+  }
 }

@@ -145,7 +145,11 @@ const BleTransfer = {
                 this.log(3, `Block ${blockId} ACK: ${status === 0 ? 'OK' : 'FAIL ' + status}`);
             }
         } else if (data[0] === 0xA1) {
-            if (data.length !== 7) return;
+            // Older firmware appends its received-block bitmap. Keep modern
+            // replies strict, while accepting either legacy status format.
+            const legacyStatus = Number.isInteger(appVersion) &&
+                !globalThis.EpdFirmwarePolicy.isNewFirmware(appVersion);
+            if (data.length < 7 || (!legacyStatus && data.length !== 7)) return;
             // [0xA1, total_L, total_H, received_L, received_H, session, active]
             const status = {
                 total: data[1] | (data[2] << 8),
@@ -155,6 +159,7 @@ const BleTransfer = {
             };
             if (status.sessionId !== this.sessionId || status.total !== this.expectedBlocks ||
                 !status.active || status.received > status.total) return;
+            if (legacyStatus && data.length > 7) status.bitmap = data.slice(7);
             this.pendingStatus = status;
             this.log(3, 'Status:', this.pendingStatus);
 
@@ -307,6 +312,15 @@ const BleTransfer = {
         if (!status || totalBlocks <= 0 || status.sessionId !== this.sessionId ||
             status.total !== totalBlocks || !status.active || received < 0 || received > totalBlocks) {
             for (let i = 0; i < totalBlocks; i++) missing.push(i);
+            return missing;
+        }
+        if (status.bitmap) {
+            for (let i = 0; i < totalBlocks; i++) {
+                if (!(status.bitmap[i >> 3] & (1 << (i & 7)))) missing.push(i);
+            }
+            if (missing.length === 0 && received < totalBlocks) {
+                for (let i = 0; i < totalBlocks; i++) missing.push(i);
+            }
             return missing;
         }
         if (received >= totalBlocks) {

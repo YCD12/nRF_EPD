@@ -3,9 +3,11 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const vm = require('node:vm');
 const test = require('node:test');
+const firmwarePolicy = require('../html/js/main.js');
 
 function load(extra = {}) {
-  const context = {TextEncoder, TextDecoder, Uint8Array, DataView, ArrayBuffer, setTimeout, clearTimeout, ...extra};
+  const context = {TextEncoder, TextDecoder, Uint8Array, DataView, ArrayBuffer, setTimeout, clearTimeout,
+    appVersion: firmwarePolicy.newWebMinVersion, EpdFirmwarePolicy: firmwarePolicy, ...extra};
   context.window = context;
   vm.runInNewContext(fs.readFileSync('html/js/calendar_annotations.js', 'utf8'), context);
   return context.CalendarAnnotations;
@@ -88,9 +90,143 @@ test('font failure prevents annotation writes and reports a retryable failure', 
   assert.match(messages.at(-1), /字体加载失败/);
 });
 
+function saveFixture(version, options = {}) {
+  if (arguments.length === 0) version = firmwarePolicy.newWebMinVersion;
+  const messages = [], packets = [], fontCalls = [];
+  let stored, annotations;
+  const extra = {
+    appVersion: version, epdCharacteristic: {}, EpdCmd: { SET_ANNOTATIONS: 0x24 },
+    document: { getElementById: id => id === 'mtusize' ? { value: 20 } : null },
+    addLog: message => messages.push(message),
+    ExternalResourceInstaller: { ensureFonts: async requests => {
+      fontCalls.push(requests);
+      if (options.fontFailure) throw new Error('设备资源连接不可用或正在执行其他任务');
+      return { changed: false, added: [] };
+    } },
+    write: async (command, payload) => {
+      assert.equal(command, 0x24);
+      packets.push(Array.from(payload));
+      assert.ok(payload.length + 1 <= 20, 'annotation writes must fit the effective MTU');
+      if (payload[0] === 0) {
+        const offset = payload[1] | (payload[2] << 8);
+        const length = payload[3] | (payload[4] << 8);
+        if (!stored) stored = new Uint8Array(length);
+        stored.set(payload.subarray(5), offset);
+        if (options.autoCommit !== false && offset + payload.length - 5 === length)
+          annotations.handleNotification(ack(0, annotations.crc32(stored)));
+      } else if (payload[0] === 1) {
+        stored = new Uint8Array(annotations.HEADER_SIZE);
+        new DataView(stored.buffer).setUint32(0, annotations.MAGIC, true);
+        stored[4] = annotations.VERSION;
+        stored[5] = annotations.RECORD_SIZE;
+        if (options.autoCommit !== false)
+          annotations.handleNotification(ack(0, annotations.crc32(stored)));
+      } else if (payload[0] === 2) {
+        if (!stored) stored = annotations.pack();
+        for (let offset = 0; offset < stored.length; offset += 15) {
+          annotations.handleNotification(Uint8Array.of(0xA2, offset & 255, offset >> 8,
+            stored.length & 255, stored.length >> 8, ...stored.subarray(offset, offset + 15)));
+        }
+      } else assert.fail('unexpected annotation operation');
+      return true;
+    },
+  };
+  if (Object.hasOwn(options, 'policy')) extra.EpdFirmwarePolicy = options.policy;
+  annotations = load(extra);
+  annotations.persist = annotations.render = () => {};
+  annotations.annotations = [{ date: '2026-10-26', label: 'A生', fontSize: 9, position: 1 }];
+  return { annotations, messages, packets, fontCalls, saved: () => stored };
+}
+
+for (const version of [firmwarePolicy.newWebMinVersion, 0x28, 0x33, 0x34]) {
+  test(`firmware 0x${version.toString(16)} supports fonts, corner labels, durable saves and readback under the shared policy`, async () => {
+    const f = saveFixture(version);
+    const expected = f.annotations.pack();
+    await f.annotations.saveOperation(null);
+    assert.equal(f.fontCalls.length, 1);
+    assert.deepEqual(f.saved(), expected);
+    assert.ok(f.packets.some(payload => payload[0] === 0));
+    assert.equal(f.packets.filter(payload => payload[0] === 2).length, 0);
+    assert.equal(f.annotations._commitWaiter, null);
+    assert.ok(f.messages.some(message => /已保存 1 条日期标注到外置 Flash/.test(message)));
+    assert.equal(await f.annotations.loadFromDevice(), true);
+    assert.equal(f.packets.filter(payload => payload[0] === 2).length, 1);
+    assert.equal(f.annotations.annotations[0].label, 'A生');
+    assert.equal(f.annotations.annotations[0].position, 1);
+  });
+}
+
+test('firmware at the new-web boundary waits for durable confirmation and rejects failed commits', async () => {
+  const f = saveFixture(firmwarePolicy.newWebMinVersion, { autoCommit: false });
+  let completed = false;
+  const work = f.annotations.saveOperation(null).then(() => { completed = true; });
+  await new Promise(setImmediate);
+  assert.equal(completed, false);
+  assert.ok(f.annotations._commitWaiter);
+  assert.ok(!f.messages.some(message => /已保存/.test(message)));
+  f.annotations.handleNotification(ack(5, f.annotations.crc32(f.saved())));
+  await work;
+  assert.match(f.messages.at(-1), /设备未确认标注已写入外置 Flash/);
+  assert.equal(f.fontCalls.length, 1);
+});
+
+for (const version of [firmwarePolicy.newWebMinVersion, 0x28, 0x39]) {
+  test(`firmware ${version} never silently skips a failed modern font check`, async () => {
+    const f = saveFixture(version, { fontFailure: true });
+    await f.annotations.saveOperation(null);
+    assert.equal(f.fontCalls.length, 1);
+    assert.deepEqual(f.packets, []);
+    assert.match(f.messages.at(-1), /设备资源连接不可用/);
+    assert.ok(!f.messages.some(message => /设备已有字库/.test(message)));
+    assert.equal(f.annotations._commitWaiter, null);
+  });
+}
+
+test('without the shared firmware policy no annotation device operation proceeds', async () => {
+  const f = saveFixture(firmwarePolicy.newWebMinVersion, { policy: undefined });
+  await f.annotations.saveOperation(null);
+  assert.equal(f.fontCalls.length, 0);
+  assert.deepEqual(f.packets, []);
+  assert.match(f.messages.at(-1), /固件不支持新版网页|版本尚未确认/);
+});
+
+test('dot-only annotations skip fonts but still require durable save confirmation', async () => {
+  const f = saveFixture();
+  f.annotations.annotations[0].label = '';
+  await f.annotations.saveOperation(null);
+  assert.deepEqual(f.fontCalls, []);
+  assert.ok(f.packets.some(payload => payload[0] === 0));
+  assert.ok(!f.messages.some(message => /设备已有字库/.test(message)));
+});
+
+for (const version of [firmwarePolicy.newWebMinVersion - 1, undefined, null, NaN, firmwarePolicy.newWebMinVersion + 0.5]) {
+  test(`unconfirmed or below-boundary firmware ${version} cannot read, save or clear annotations`, async () => {
+    const rejected = saveFixture(version);
+    await rejected.annotations.saveOperation(null);
+    await rejected.annotations.clearOperation(null);
+    assert.equal(await rejected.annotations.loadFromDevice(), false);
+    assert.deepEqual(rejected.fontCalls, []);
+    assert.deepEqual(rejected.packets, []);
+    assert.match(rejected.messages.at(-1), /固件不支持新版网页|版本尚未确认/);
+  });
+}
+
+test('firmware at the shared boundary can clear annotations only after its durable ACK', async () => {
+  const f = saveFixture(firmwarePolicy.newWebMinVersion, { autoCommit: false });
+  let finished = false;
+  const work = f.annotations.clearOperation(null).then(() => { finished = true; });
+  await new Promise(setImmediate);
+  assert.equal(finished, false);
+  assert.equal(f.annotations.annotations.length, 1);
+  f.annotations.handleNotification(ack(0, f.annotations.crc32(f.saved())));
+  await work;
+  assert.equal(f.annotations.annotations.length, 0);
+  assert.match(f.messages.at(-1), /已清除设备标注并写入外置 Flash/);
+});
+
 test('late cancelled annotation request cannot settle or cancel a replacement read', async () => {
   let completeOldWrite, writes = 0;
-  const annotations = load({ addLog() {}, EpdCmd: {SET_ANNOTATIONS: 0x24},
+  const annotations = load({ addLog() {}, epdCharacteristic: {}, EpdCmd: {SET_ANNOTATIONS: 0x24},
     write: () => ++writes === 1 ? new Promise(resolve => { completeOldWrite = resolve; }) : Promise.resolve(true) });
   annotations.persist = annotations.render = () => {};
   const old = annotations._loadFromDeviceOnce(null);

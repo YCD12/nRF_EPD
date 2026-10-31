@@ -2,6 +2,7 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs'), path = require('node:path'), vm = require('node:vm');
+const firmwarePolicy = require('../html/js/main.js');
 const packer = require('../html/js/ui_tools/resource_pack.js');
 const defaults = require('../html/js/ui_tools/resource_defaults.js');
 const fontTool = require('../html/js/ui_tools/font_store_tool.js');
@@ -16,6 +17,7 @@ const json = (files, name) => JSON.parse(new TextDecoder().decode(files.find(fil
 
 function browserResources() {
   const context = { Uint8Array, DataView, TextEncoder, TextDecoder, Date, atob,
+    EpdFirmwarePolicy: firmwarePolicy,
     location: { protocol: 'file:' } };
   for (const name of ['resource_store.js', 'ui_tools/ui_data.js', 'ui_tools/ui_model.js', 'resource_builder.js', 'todo_calendar.js',
     'ui_tools/resource_defaults.js', 'ui_tools/default_fonts.js', 'ui_tools/font_store_tool.js', 'font_builder.js', 'ui_tools/resource_pack.js'])
@@ -130,6 +132,7 @@ test('font validation reports signed metrics and requires every fixed UI glyph',
 
 test('browser globals generate resources by fetching only three raw fonts and reuse clean cached copies', async () => {
   const calls = [], context = { Uint8Array, DataView, TextEncoder, TextDecoder, Date,
+    EpdFirmwarePolicy: firmwarePolicy,
     location: { protocol: 'https:' },
     fetch: async url => {
       calls.push(url); assert.match(url, /^resources\/fonts\/u8g2_font_[\w]+\.bin$/);
@@ -150,6 +153,7 @@ test('browser globals generate resources by fetching only three raw fonts and re
 test('file URL generates the same seven packages without fetching BINs and returns independent fonts', async () => {
   let calls = 0;
   const context = { Uint8Array, DataView, TextEncoder, TextDecoder, Date, atob,
+    EpdFirmwarePolicy: firmwarePolicy,
     location: { protocol: 'file:' },
     fetch: async () => { calls++; throw new TypeError('Failed to fetch'); } };
   for (const name of ['resource_store.js', 'ui_tools/ui_data.js', 'ui_tools/ui_model.js', 'resource_builder.js', 'todo_calendar.js',

@@ -7,7 +7,7 @@
 - MCU 固件
 - Secure DFU Bootloader 工程
 - Web Bluetooth 控制台
-- 独立 Nordic DFU 升级页
+- 独立 Nordic DFU 升级页（保留实现，当前暂未开放）
 - Windows GUI 模拟器
 - Keil 编译体积分析辅助工具
 - Nordic SDK 17.1.0
@@ -66,7 +66,7 @@ nRF_EPD/
 如果你是第一次看到这个仓库，可以把它理解成一套围绕电子价签开发的“发布可用工具箱”：
 
 - 固件侧已经集成 BLE 控制、图像传输、时钟/日历界面、低电量保护与 Buttonless DFU
-- 网页侧已经提供主控台和独立 DFU 升级页，适合直接部署给测试或现场使用
+- 网页主控台可直接部署使用；网页固件升级暂未开放，DFU 页仅显示“开发中”提示
 - 工程侧同时保留了应用固件工程和独立 DFU Bootloader 工程，方便完整交付
 - 调试侧提供 `emulator.exe`，可以在 Windows 本地快速预览 GUI 效果
 - 构建侧提供 `keil5_disp_size_bar.exe`，便于在 Keil 编译后快速观察程序体积占用
@@ -83,7 +83,7 @@ nRF_EPD/
 - `application.hex`
   适合已经完成 SoftDevice / Bootloader 基础环境的设备，仅更新应用固件
 - `ota.zip`
-  适合通过 `html/dfu.html` 或 Nordic Secure DFU 工具进行无线升级
+  适合通过 Nordic Secure DFU 工具进行无线升级；`html/dfu.html` 的网页升级当前暂未开放
 - `full.hex`
   适合产线、首刷或全量恢复场景，通常包含 SoftDevice、Bootloader、Application、settings
 - `bootloader.hex`
@@ -111,7 +111,7 @@ nRF_EPD/
 - 基于 Nordic BLE 外设模式广播，设备名为 `NRF_EPD`
 - 内置 `EPD` 自定义 BLE 服务，支持控制命令、状态通知和图像传输
 - 支持图片、日历、时钟、时钟+日历、待办事项+日历及全屏待办模式
-- 固件 `0x3D` 支持全屏待办和独立待办字体，字号 `9/12/16/20/24/32`，可加粗、斜体及组合：网页设置触发/截止、提前显示与过期保留时间、常驻/完成状态及显示数量，触发后红框、截止后删除线，支持排队补位、缺字生成和备份；模式 `4/5` 共用事项和调度，详见 [待办工作区说明](docs/todo-calendar.md)
+- 当前完整协议固件 `APP_VERSION = 0x21` 支持全屏待办和独立待办字体，字号 `9/12/16/20/24/32`，可加粗、斜体及组合：网页设置触发/截止、提前显示与过期保留时间、常驻/完成状态及显示数量，触发后红框、截止后删除线，支持排队补位、缺字生成和备份；模式 `4/5` 共用事项和调度，详见 [待办工作区说明](docs/todo-calendar.md)
 - 支持运行时设置屏幕驱动和引脚映射
 - 支持多种电子纸控制器与不同尺寸屏幕组合
 - 支持 `Buttonless DFU`，可从应用固件无按键切入 Bootloader
@@ -125,11 +125,11 @@ nRF_EPD/
 - 对应源码入口位于 `Bootloader/main.c`，GCC 构建入口为 `make -f Bootloader/Makefile`
 - 项目验签和布局定制集中在 `Bootloader/`，`SDK/` 保持仓库版本；应用的内部 FDS/fstorage 开关由项目编译参数提供，详见 [SDK 目录恢复说明](docs/sdk-cleanup-20261009.md)
 - 用于构建可与应用固件配套使用的 BLE DFU Bootloader
-- 与 `tools/bootloader/bl_nrf52811_xxaa_s112_8k.hex`、网页 DFU 页面和 OTA 打包脚本相互配合
+- 与 `tools/bootloader/bl_nrf52811_xxaa_s112_8k.hex`、OTA 打包脚本及保留的网页 DFU 实现相互配合
 
 ### 2. 图片传输
 
-- 当前网页仅连接 `0x38` 及以上固件；旧固件使用对应的旧版网页
+- 当前网页支持 `0x21` 及以上固件，统一使用完整新版协议；更旧固件优先使用旧版网页
 - 支持 `WRITE_BLOCK + CRC16` 分块校验传输
 - 支持断点续传、丢块补发、状态查询
 - 支持黑白层和彩色层分层发送
@@ -140,6 +140,16 @@ nRF_EPD/
 主页入口：`html/index.html`
 
 连接后在主页面直接操作设备；外置 Flash 分区资源也在主页面更新。
+
+新网页读取设备固件版本后，低于 `0x21` 时优先推荐“使用旧版网页”，也可取消；“升级设备”显示“开发中”并暂时禁用。选择旧版直接进入 `legacy/index.html`，不主动断开蓝牙，离开页面时由浏览器释放连接；进入旧版页后需重新连接设备。`0x21` 及以上统一按完整新版协议和能力处理。
+
+新旧网页分界及所有新版能力统一由 `html/js/main.js` 顶部的 `NEW_WEB_MIN_FIRMWARE_VERSION = 0x21` 常量配置，并通过 `EpdFirmwarePolicy` 共享；MCU 的 `EPD/EPD_service.h` 同步使用 `APP_VERSION = 0x21`。当前完整协议固件统一编号为 `0x21`，历史功能版本号仅保留为演进记录。`main.js` 作为首个 defer 脚本先建立策略，页面初始化在全部脚本加载后的 `DOMContentLoaded` 执行。配置回读、资源会话、标注、待办、字库检查、命令确认和提示文案均使用这一门槛，不再按历史版本分别限制。开发模式的原始十六进制命令仍按输入字节发送；资源协议中的能力位继续按设备实际报告协商。
+
+旧版网页及全部运行依赖（JS、CSS、图标）完整保存在 `html/legacy/`，不引用新版网页资源或外部统计脚本。`D:\Code\html_back` 仅作为本机同步来源，不需要提交或部署。部署整个 `html` 目录（含 `legacy`）即可；`legacy` 本身也可作为独立静态目录运行。
+
+项目内旧版页另有连接兼容修复：先监听再开启通知，按消息内容读取配置和设备信息，初始化失败时回到未连接状态。后续同步旧网页后，可运行 `node --test tests/test_legacy_connection_flow.cjs` 验证连接与重连流程。
+
+旧版页的固件升级入口也保持禁用，显示“开发中”；直接打开 `html/legacy/dfu.html` 仅显示开发中提示和返回旧版页链接，不加载升级脚本。
 
 - 蓝牙连接、重连、设备过滤、日志查看
 - 屏幕驱动选择与引脚配置下发
@@ -153,9 +163,11 @@ nRF_EPD/
 - 支持多种画布尺寸、双色 / 三色 / 四色 / 六色模式
 - 六色模式目前用于预览和数组导出，当前固件不支持六色传图
 
-### 4. 独立 DFU 升级页
+### 4. 独立 DFU 页（暂未开放）
 
-升级页入口：`html/dfu.html`
+页面入口：`html/dfu.html`。当前只显示“固件升级开发中，暂未开放”和返回主界面的入口，不加载升级脚本，不连接升级设备、切换 Bootloader 或选择/传输固件包。主页升级入口也已禁用。
+
+以下升级工作台与底层实现保留，待开放：
 
 - 独立于主页连接状态，避免日常控制和升级流程互相干扰
 - 按 Nordic `unbonded buttonless DFU` 流程引导升级
@@ -262,7 +274,7 @@ nRF_EPD/
 3. 如需完整 OTA 链路，再打开 `Keil/DFU-nRF52.uvprojx` 了解 Bootloader 工程。
 4. 需要看界面时，用 `Makefile.win32` 编译 `emulator.exe`。
 5. 需要日常控制设备时，打开 `html/index.html` 对应网页。
-6. 需要升级固件时，进入 `html/dfu.html` 使用独立 DFU 页面。
+6. 网页固件升级当前暂未开放；需要更新设备时，参考下文“固件编译与刷机”。
 7. 需要查命令和通知格式时，查看 [docs/ble-protocol.md](docs/ble-protocol.md)。
 
 ## 固件编译与刷机
@@ -433,13 +445,15 @@ flowchart TD
     G --> H[打开 html/index.html 连接测试]
 ```
 
-### 2. 生成 OTA 包并网页升级
+### 2. 生成 OTA 包与保留的网页升级流程（待开放）
+
+OTA 包生成工具可正常使用。下图保留网页升级实现的流程说明，当前网页固件升级暂未开放，直接访问 `html/dfu.html` 只会看到开发中提示。
 
 ```mermaid
 flowchart TD
     A[编译应用固件] --> B[显式指定新旧 DFU 版本]
     B --> C[发布工具生成并审计 ota.zip / settings.hex / full.hex]
-    C --> D[打开 html/dfu.html]
+    C -->|保留流程，待开放| D[打开 html/dfu.html]
     D --> E[选择应用设备]
     E --> F[切换到 Bootloader]
     F --> G[自动查找或手动选择 DfuTarg]
@@ -502,13 +516,13 @@ make -f Makefile.win32
 - `https://`
 - `http://localhost`
 
-项目已经内置环境检查与兼容提示。实际升级流程建议从主页跳转到独立 DFU 页，不再在主页内部直接做 DFU。
+项目已内置设备连接兼容提示。低于 `0x21` 优先使用旧版网页；当前网页固件升级暂未开放，主页升级入口已禁用，独立 DFU 页只显示开发中提示。
 
 ## DFU 升级说明
 
-入口：`html/dfu.html`
+入口：`html/dfu.html`，当前仅显示“固件升级开发中，暂未开放”和返回主界面的入口。升级工作台隐藏且不可交互，升级脚本不加载，不触发蓝牙、Bootloader 切换或固件包传输。固件侧 DFU 能力及 OTA 包生成工具保持不变。
 
-当前流程要点：
+保留实现的流程要点（待开放）：
 
 1. 选择 `nRF Secure DFU` 固件包 `.zip`
 2. 选择应用设备
@@ -516,7 +530,7 @@ make -f Makefile.win32
 4. 自动查找或手动选择 `DfuTarg`
 5. 完成升级
 
-页面还支持：
+保留实现还包括（当前未开放）：
 
 - 环境自检
 - 手动选择 `DfuTarg` 时显示全部蓝牙设备，并在选择后尽量校验，正式连接时再次确认是否为 DFU Bootloader
@@ -535,11 +549,11 @@ BLE 协议详情见 [docs/ble-protocol.md](docs/ble-protocol.md)。
 - `EPD_CMD_SET_TIME (0x20)`：设置时间并立即刷新
 - `EPD_CMD_SET_WEEK_START (0x21)`：设置周起始日
 - `EPD_CMD_SET_MODE (0x22)`：切换图片 / 日历 / 时钟 / 时钟+日历 / 待办事项+日历 / 全屏待办模式（`0–5`）
-- `EPD_CMD_SYNC_TIME_SILENT (0x23)`：静默校时，不立即刷新，仅固件 `>= 0x21` 支持
+- `EPD_CMD_SYNC_TIME_SILENT (0x23)`：静默校时，不立即刷新，随统一新版固件门槛启用
 - `EPD_CMD_REFRESH (0x03)` / `EPD_CMD_SLEEP (0x04)`：刷新与休眠
 - `EPD_CMD_WRITE_BLOCK (0x30)`：带 CRC16 的分块传图
 - `EPD_CMD_QUERY_STATUS (0x31)` / `EPD_CMD_RESET_TRANSFER (0x32)`：断点续传相关命令
-- `EPD_CMD_GET_CONFIG (0x93)`：固件 `>= 0x34` 的迁移配置确认回读
+- `EPD_CMD_GET_CONFIG (0x93)`：迁移配置确认回读，随统一新版固件门槛启用
 
 低电量行为：
 
@@ -561,7 +575,7 @@ BLE 协议详情见 [docs/ble-protocol.md](docs/ble-protocol.md)。
 
 ### 2.1 当前哪些内容是“已经支持”，哪些是“后续预留”？
 
-- 已支持：`nRF52811` 主线工程、应用固件、DFU Bootloader、网页控制台、独立 DFU 页
+- 已支持：`nRF52811` 主线工程、应用固件、DFU Bootloader、网页控制台；独立 DFU 网页升级暂未开放，保留实现
 - 主线验证中：`UC8179 / 7.5寸 / 800x480 / 三色` 这一组当前默认配置
 - 预留适配项：网页工具里仍保留的其他屏幕尺寸、驱动和颜色模式，后续可逐步接入固件主线
 
@@ -578,7 +592,7 @@ BLE 连接、真实墨水屏刷新、电源与低电量行为，仍然需要在�
 ### 5. 网页端为什么建议分成主页和独立 DFU 页？
 
 因为日常控制连接和升级连接属于两条不同流程。  
-当前仓库把 DFU 拆到 `html/dfu.html`，可以避免主页的 BLE 连接状态影响升级稳定性。
+保留的 DFU 实现拆到 `html/dfu.html`，用于避免主页的 BLE 连接状态影响升级稳定性；当前网页升级暂未开放，该页仅显示开发中提示。
 
 ### 6. Web 页面为什么要用 `https://` 或 `localhost` 打开？
 

@@ -23,7 +23,7 @@ function setup() {
       },
     },
   });
-  for (const file of ['ble_transfer.js', 'main.js']) {
+  for (const file of ['main.js', 'ble_transfer.js']) {
     vm.runInContext(fs.readFileSync(path.join(__dirname, '../html/js', file), 'utf8'), context);
   }
   context.record = message => logs.push(message);
@@ -198,7 +198,7 @@ test('INIT waits for matching device completion before the next GATT write', asy
   const { run, context, elements } = setup();
   const writes = [];
   context.capture = data => { writes.push(Array.from(data)); };
-  run('appVersion = 0x32; epdCharacteristic = {writeValueWithResponse: async data => capture(data)};');
+  run('appVersion = NEW_WEB_MIN_FIRMWARE_VERSION; epdCharacteristic = {writeValueWithResponse: async data => capture(data)};');
   let completed = false;
   const init = run('write(EpdCmd.INIT, [9])').then(ok => { completed = true; return ok; });
   const next = run('write(EpdCmd.SET_TIME, [1])');
@@ -220,7 +220,7 @@ test('INIT waits for matching device completion before the next GATT write', asy
 
 test('INIT handles an early completion, device failure, and disconnect', async () => {
   const { run } = setup();
-  run(`appVersion = 0x32;
+  run(`appVersion = NEW_WEB_MIN_FIRMWARE_VERSION;
     epdCharacteristic = {writeValueWithResponse: async data => {
       handleNotify(new DataView(Uint8Array.of(0xa6, data[2], 0, 244, 0).buffer));
     }};`);
@@ -356,10 +356,6 @@ test('display operation waits for matching completion, rejects BUSY, and cancels
   run('resetVariables()');
   assert.equal(await pending, false);
   assert.equal(run('displayWaiter'), null);
-  run(`appVersion = 0x38; gattServer = {connected:true};
-    epdCharacteristic = {writeValueWithResponse: async data => capture(data)};`);
-  assert.equal(await run('write(EpdCmd.REFRESH)'), true);
-  assert.deepEqual(packets.at(-1), [3]);
 });
 
 test('image transfer reports the combined CRC time before refresh completion and excludes preparation', async () => {
@@ -393,14 +389,18 @@ test('image transfer reports the combined CRC time before refresh completion and
   assert.ok(logs.includes(completion));
 });
 
-test('legacy image firmware reports transfer duration without claiming refresh completion', async () => {
-  const { run, elements, logs, writes } = setupTimedImageSend(0x38);
-  await run('sendimg()');
+test('minimum supported firmware confirms refresh completion before reporting image success', async () => {
+  const { run, elements, logs, writes } = setupTimedImageSend(0x21);
+  const work = run('sendimg()');
+  await new Promise(setImmediate);
   assert.equal(writes.length, 1);
-  assert.deepEqual(writes[0], [run('EpdCmd.REFRESH')]);
+  assert.equal(writes[0].length, 3);
+  assert.equal(run('DeviceOperations.current.kind'), 'image');
+  assert.equal(logs.some(message => message.includes('图片刷新完成')), false);
+  run(`handleNotify(new DataView(Uint8Array.of(0xab, ${writes[0][2]}, 0, 3).buffer))`);
+  await work;
   assert.equal(run('DeviceOperations.current'), null);
-  assert.match(elements.get('status').innerHTML, /传图耗时: 3\.750s.*刷新指令已发送，屏幕刷新中/);
-  assert.equal(logs.some(message => message.includes('图片刷新完成') || message.includes('刷新耗时:')), false);
+  assert.match(elements.get('status').innerHTML, /图片刷新完成.*传图耗时: 3\.750s/);
 });
 
 test('failed refresh preserves the completed transfer duration and releases the operation', async () => {
@@ -510,24 +510,22 @@ test('selecting each GUI mode sends its command while keeping the connection', a
   assert.ok(!logs.some(message => message.includes('断开连接后刷新')));
 });
 
-test('todo mode versions gate writes and disable unsupported quick actions', async () => {
+test('both todo modes use the shared new-firmware boundary', async () => {
   const { run, context, logs, elements } = setup(); const writes = [];
   context.capture = data => writes.push(Array.from(data));
-  run(`appVersion = 0x39; epdCharacteristic = {writeValueWithResponse: async data => {
+  run(`appVersion = NEW_WEB_MIN_FIRMWARE_VERSION - 1; epdCharacteristic = {writeValueWithResponse: async data => {
     capture(data);
     if (data[0] === EpdCmd.SET_MODE) handleNotify(new DataView(Uint8Array.of(0xaa, data[2], 0, data[1]).buffer));
   }}; updateButtonStatus();`);
   assert.equal(elements.get('todocalendarmodebutton').disabled, true);
   assert.equal(elements.get('todofullmodebutton').disabled, true);
   assert.equal(await run('sendTimeCommand(4, "待办日历")'), false);
-  run('appVersion = 0x3A; updateButtonStatus()');
-  assert.equal(elements.get('todocalendarmodebutton').disabled, false);
-  assert.equal(elements.get('todofullmodebutton').disabled, true);
   assert.equal(await run('sendTimeCommand(5, "全屏待办")'), false);
-  assert.equal(writes.length, 0); assert.ok(logs.some(message => /全屏待办.*0x3B/.test(message)));
-  assert.equal(await run('sendTimeCommand(4, "待办日历")'), true);
-  run('appVersion = 0x3B; updateButtonStatus()');
+  assert.equal(writes.length, 0);
+  run('appVersion = NEW_WEB_MIN_FIRMWARE_VERSION; updateButtonStatus()');
+  assert.equal(elements.get('todocalendarmodebutton').disabled, false);
   assert.equal(elements.get('todofullmodebutton').disabled, false);
+  assert.equal(await run('sendTimeCommand(4, "待办日历")'), true);
   assert.equal(await run('sendTimeCommand(5, "全屏待办")'), true);
   assert.equal(run('displayModeName(5)'), '全屏待办');
   run('updateButtonStatus(true)'); assert.equal(elements.get('todofullmodebutton').disabled, true);
@@ -572,21 +570,21 @@ test('mode write waits for matching ACK and reports busy or disconnect', async (
   assert.equal(await third, false);
 });
 
-test('current page rejects older firmware before sending INIT', async () => {
+test('current page disconnects firmware below 0x21 before sending INIT', async () => {
   const { run, context, logs } = setup();
   const writes = [];
   context.device = { name: 'NRF_EPD_OLD', gatt: {
     connected: true, disconnect() { this.connected = false; },
     async getPrimaryService() { return { async getCharacteristic(uuid) {
-      return uuid.includes('0003-') ? { async readValue() { return new DataView(Uint8Array.of(0x37).buffer); } } :
+      return uuid.includes('0003-') ? { async readValue() { return new DataView(Uint8Array.of(0x20).buffer); } } :
         { addEventListener() {}, async startNotifications() {}, async writeValueWithResponse(data) { writes.push(data[0]); } };
     } }; },
   } };
-  run('bleDevice = device; epdCharacteristic = null;');
+  run("bleDevice = device; epdCharacteristic = null; showLegacyFirmwareDialog = async () => 'cancel';");
   await run('connect()');
   assert.deepEqual(writes, []);
   assert.equal(context.device.gatt.connected, false);
-  assert.ok(logs.some(message => message.includes('0x38')));
+  assert.ok(logs.some(message => message.includes('0x20')));
 });
 
 test('INIT disconnect stops all subsequent initialization and success UI', async () => {
@@ -638,7 +636,7 @@ test('migration export reads the saved config and rejects stale or changed conne
     async loadFromDevice() { return true; }, pack() { return Uint8Array.of(1, 2); },
     cancelCommitWait() {},
   };
-  run(`appVersion = CONFIG_READBACK_MIN_FIRMWARE_VERSION; lastDeviceConfig = new Uint8Array(14);
+  run(`appVersion = NEW_WEB_MIN_FIRMWARE_VERSION; lastDeviceConfig = new Uint8Array(14);
     epdCharacteristic = {writeValueWithResponse: async data => {
       if (data[0] === EpdCmd.GET_CONFIG) {
         const response = new Uint8Array(17);
@@ -659,7 +657,7 @@ test('migration export reads the saved config and rejects stale or changed conne
 
   exported = null;
   context.window.CalendarAnnotations.loadFromDevice = async () => true;
-  run(`appVersion = CONFIG_READBACK_MIN_FIRMWARE_VERSION - 1;
+  run(`appVersion = NEW_WEB_MIN_FIRMWARE_VERSION - 1;
     lastDeviceConfig = new Uint8Array(14); legacyConfigDirty = true;`);
   assert.equal(await run('exportMigrationBundle()'), false);
   assert.equal(exported, null);
@@ -683,7 +681,7 @@ test('CRC transfer errors do not fall back to the retired image command', async 
 
 test('CRC blocks use the shared export lock and never reach GATT during export', async () => {
   const { run } = setup();
-  run(`appVersion = CONFIG_READBACK_MIN_FIRMWARE_VERSION; bleDevice = {gatt: {connected: true}};
+  run(`appVersion = NEW_WEB_MIN_FIRMWARE_VERSION; bleDevice = {gatt: {connected: true}};
     migrationExport = {}; rawWrites = 0;
     epdCharacteristic = {
       writeValueWithResponse: async () => rawWrites++,

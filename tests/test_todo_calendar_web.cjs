@@ -4,8 +4,11 @@ const fs = require('node:fs');
 const vm = require('node:vm');
 
 const script = fs.readFileSync(require.resolve('../html/js/todo_calendar.js'), 'utf8');
+const firmwarePolicy = require('../html/js/main.js');
+const newWebMinVersion = firmwarePolicy.newWebMinVersion;
+const minimumFirmwarePattern = new RegExp(`0x${newWebMinVersion.toString(16)}`, 'i');
 
-function fixture({ dom = false, storage = new Map(), installer = {}, connected = true, version = 0x3d, fonts = [], timing = { leadMinutes: 0, retainMinutes: 0 } } = {}) {
+function fixture({ dom = false, storage = new Map(), installer = {}, connected = true, version = newWebMinVersion, fonts = [], timing = { leadMinutes: 0, retainMinutes: 0 } } = {}) {
   const nodes = new Map(), calls = [], logs = [], events = new Map();
   class Element {
     constructor(tag = 'div') {
@@ -32,6 +35,7 @@ function fixture({ dom = false, storage = new Map(), installer = {}, connected =
   const owner = { kind: 'todo', generation: 1 };
   const context = {
     Uint8Array, DataView, TextEncoder, TextDecoder, Date, Set, Map,
+    EpdFirmwarePolicy: firmwarePolicy,
     EPDUIModel: require('../html/js/ui_tools/ui_model.js'), EPDUIRenderer: require('../html/js/ui_tools/ui_preview.js'), EPDResourceBuilder: require('../html/js/resource_builder.js'),
     epdCharacteristic: connected ? {} : null,
     appVersion: version,
@@ -82,6 +86,16 @@ function legacyPack(api, config = api) {
   bytes.set(modern.subarray(trailer + 5), trailer + tail);
   return bytes;
 }
+
+test('todo capability aliases and feature hints use one shared firmware minimum', () => {
+  const { api, element } = fixture({ dom: true });
+  for (const name of ['MIN_VERSION', 'FULL_MIN_VERSION', 'TYPOGRAPHY_MIN_VERSION', 'TIMING_MIN_VERSION'])
+    assert.equal(api[name], newWebMinVersion);
+  for (const id of ['todoCalendarFontSizeHint', 'todoCalendarTimingHint', 'todoCalendarLayoutHint'])
+    assert.match(element(id).textContent, minimumFirmwarePattern);
+  for (const id of ['todoCalendarSave', 'todoCalendarRead', 'todocalendarmodebutton', 'todofullmodebutton', 'todoCalendarActivate'])
+    assert.equal(element(id).disabled, false);
+});
 
 test('wall-clock times round-trip without UTC-offset or DST conversion', () => {
   const { api } = fixture();
@@ -385,7 +399,7 @@ test('false, missing confirmation, font and transport failures never report save
 });
 
 test('unsupported firmware, disconnection and invalid local data prevent device writes', async () => {
-  for (const options of [{ connected: false }, { version: 0x39 }, { version: null }, { version: NaN }, { version: Infinity }]) {
+  for (const options of [{ connected: false }, { version: newWebMinVersion - 1 }, { version: null }, { version: NaN }, { version: Infinity }]) {
     const { api, calls } = fixture(options); api.items = [item(1)];
     assert.equal(await api.save(), false); assert.equal(calls.length, 0);
   }
@@ -435,8 +449,8 @@ test('device controls respect version, connection and the global operation lock'
   for (const id of ['todoCalendarSave', 'todoCalendarRead', 'todocalendarmodebutton']) assert.equal(element(id).disabled, false);
   api.controls(true); assert.equal(element('todoCalendarSave').disabled, true);
   api.controls(); assert.equal(element('todoCalendarSave').disabled, false);
-  context.appVersion = 0x39; api.controls(); assert.equal(element('todoCalendarSave').disabled, true);
-  context.appVersion = 0x3a; context.DeviceOperations.current = {}; api.controls();
+  context.appVersion = newWebMinVersion - 1; api.controls(); assert.equal(element('todoCalendarSave').disabled, true);
+  context.appVersion = newWebMinVersion; context.DeviceOperations.current = {}; api.controls();
   assert.equal(element('todoCalendarRead').disabled, true);
   context.DeviceOperations.current = null; context.epdCharacteristic = null; api.controls();
   assert.equal(element('todocalendarmodebutton').disabled, true);
@@ -563,7 +577,7 @@ test('split and full layouts switch the live preview without changing the shared
   assert.equal(element('todoCalendarPreviewCalendar').hidden, true);
   assert.equal(element('todoCalendarPreviewItems').dataset.compact, 'false');
   assert.equal(element('todoCalendarPreviewLayout').textContent, '全屏待办');
-  assert.match(element('todoCalendarLayoutHint').textContent, /0x3B/);
+  assert.match(element('todoCalendarLayoutHint').textContent, minimumFirmwarePattern);
   assert.deepEqual(Array.from(api.pack()), Array.from(bytes));
   assert.match(element('todoCalendarPreviewItems').textContent, /事项 1/);
   field('todoCalendarLayout', '4', 'change');
@@ -581,20 +595,23 @@ test('layout choice persists locally and legacy drafts retain the split default'
   assert.equal(fixture({ dom: true, storage }).api.previewMode, 4);
 });
 
-test('full-screen activation retains its 0x3B gate while new data saving requires 0x3D', async () => {
-  const { api, context, field, element, calls } = fixture({ dom: true, version: 0x3a });
+test('both todo layouts and device saves use the shared new-web firmware boundary', async () => {
+  const { api, context, field, element, calls } = fixture({ dom: true, version: newWebMinVersion - 1 });
   const modes = []; context.syncTime = async mode => { modes.push(mode); return true; };
   field('todoCalendarLayout', '5', 'change');
   assert.equal(element('todoCalendarActivate').disabled, true);
   assert.equal(element('todofullmodebutton').disabled, true);
-  assert.equal(element('todocalendarmodebutton').disabled, false);
+  assert.equal(element('todocalendarmodebutton').disabled, true);
   assert.equal(element('todoCalendarSave').disabled, true);
   assert.equal(await api.activate(), false); assert.deepEqual(modes, []);
-  assert.match(element('todoCalendarStatus').textContent, /全屏待办.*0x3B/);
+  assert.match(element('todoCalendarStatus').textContent, minimumFirmwarePattern);
   assert.equal(await api.save(), false); assert.equal(calls.some(call => call[0] === 'save'), false);
-  context.appVersion = 0x3b; api.controls();
+  context.appVersion = newWebMinVersion; api.controls();
   assert.equal(element('todoCalendarActivate').disabled, false);
   assert.equal(element('todofullmodebutton').disabled, false);
+  assert.equal(element('todocalendarmodebutton').disabled, false);
+  assert.equal(element('todoCalendarSave').disabled, false);
+  assert.equal(await api.save(), true);
   assert.equal(await api.activate(), true); assert.deepEqual(modes, [5]);
   field('todoCalendarLayout', '4', 'change');
   assert.equal(await api.activate(), true); assert.deepEqual(modes, [5, 4]);
@@ -673,15 +690,17 @@ test('font family survives local and JSON backups, with legacy data defaulting t
   assert.equal(restored.fontFamily, '');
 });
 
-test('custom fonts use the new save gate and keep readback available on old firmware', async () => {
-  const { api, field, context, element, calls } = fixture({ dom: true, version: 0x3a });
+test('custom fonts, saves and readback share the new-web firmware boundary', async () => {
+  const { api, field, context, element, calls } = fixture({ dom: true, version: newWebMinVersion - 1 });
   field('todoCalendarFontFamily', 'SimSun', 'change');
   assert.equal(element('todoCalendarSave').disabled, true);
-  assert.equal(element('todoCalendarRead').disabled, false);
+  assert.equal(element('todoCalendarRead').disabled, true);
   assert.equal(await api.save(), false); assert.equal(calls.some(call => call[0] === 'save'), false);
-  assert.match(element('todoCalendarStatus').textContent, /0x3D/);
-  context.appVersion = 0x3d; api.controls();
+  assert.equal(await api.loadFromDevice(), false); assert.equal(calls.some(call => call[0] === 'read'), false);
+  assert.match(element('todoCalendarStatus').textContent, minimumFirmwarePattern);
+  context.appVersion = newWebMinVersion; api.controls();
   assert.equal(element('todoCalendarSave').disabled, false); assert.equal(await api.save(), true);
+  assert.equal(element('todoCalendarRead').disabled, false); assert.equal(await api.loadFromDevice(), true);
 });
 
 test('an empty custom-font list still requests its dedicated font metrics and ellipsis', () => {
@@ -763,7 +782,7 @@ test('large and styled text requests its own slot including default-family glyph
 });
 
 test('font size and style controls cap visible rows and keep the heading and calendar styles unchanged', () => {
-  const { api, element, field } = fixture({ dom: true, version: 0x3c });
+  const { api, element, field } = fixture({ dom: true, version: newWebMinVersion });
   api.items = Array.from({ length: 12 }, (_, index) => item(index + 1, { resident: true, start: 0, end: 0 }));
   field('todoCalendarLimit', '8', 'change'); field('todoCalendarFontSize', '32', 'change');
   assert.equal(api.fontSize, 32); assert.equal(api.limit, 6); assert.equal(element('todoCalendarLimit').value, '6');
@@ -810,17 +829,17 @@ test('styled typography persists in drafts and backups, and old backups reset st
   assert.equal(other.fontBold, false); assert.equal(other.fontItalic, false);
 });
 
-test('every new save requires 0x3D while readback remains available on earlier firmware', async () => {
+test('styled todo saves and readback use the same new-web firmware boundary', async () => {
   for (const typography of [{ fontSize: 16 }, { fontBold: true }, { fontItalic: true }]) {
-    const { api, context, element, calls } = fixture({ dom: true, version: 0x3b });
+    const { api, context, element, calls } = fixture({ dom: true, version: newWebMinVersion - 1 });
     Object.assign(api, typography); api.changed();
-    assert.equal(element('todoCalendarSave').disabled, true); assert.equal(element('todoCalendarRead').disabled, false);
+    assert.equal(element('todoCalendarSave').disabled, true); assert.equal(element('todoCalendarRead').disabled, true);
     assert.equal(await api.save(), false); assert.equal(calls.some(call => call[0] === 'save'), false);
-    assert.match(element('todoCalendarStatus').textContent, /0x3D/);
-    context.appVersion = 0x3d; api.controls(); assert.equal(element('todoCalendarSave').disabled, false);
+    assert.match(element('todoCalendarStatus').textContent, minimumFirmwarePattern);
+    context.appVersion = newWebMinVersion; api.controls(); assert.equal(element('todoCalendarSave').disabled, false);
     assert.equal(await api.save(), true); assert.equal(calls.find(call => call[0] === 'save')[1][4], 4);
     Object.assign(api, { fontSize: 12, fontBold: false, fontItalic: false });
-    context.appVersion = 0x3a; api.controls(); assert.equal(element('todoCalendarSave').disabled, true);
+    context.appVersion = newWebMinVersion - 1; api.controls(); assert.equal(element('todoCalendarSave').disabled, true);
     assert.equal(await api.save(), false);
   }
 });
@@ -843,7 +862,8 @@ test('new drafts default to ten minutes early and five minutes after expiry, inc
   const { api, element } = fixture({ dom: true, timing: null });
   assert.equal(api.leadMinutes, 10); assert.equal(api.retainMinutes, 5);
   assert.equal(element('todoCalendarLeadMinutes').value, '10'); assert.equal(element('todoCalendarRetainMinutes').value, '5');
-  assert.match(element('todoCalendarTimingHint').textContent, /提前 10 分钟.*保留 5 分钟.*0x3D/);
+  assert.match(element('todoCalendarTimingHint').textContent, /提前 10 分钟.*保留 5 分钟/);
+  assert.match(element('todoCalendarTimingHint').textContent, minimumFirmwarePattern);
   const bytes = api.pack(), view = new DataView(bytes.buffer);
   assert.equal(bytes[4], 4); assert.equal(bytes.length, 21);
   assert.equal(view.getUint16(17, true), 10); assert.equal(view.getUint16(19, true), 5);

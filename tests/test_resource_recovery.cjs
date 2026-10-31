@@ -3,6 +3,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const vm = require('node:vm');
+const firmwarePolicy = require('../html/js/main.js');
 const store = require('../html/js/resource_store.js');
 const builder = require('../html/js/resource_builder.js');
 const glyphs = require('../html/js/font_builder.js');
@@ -42,6 +43,8 @@ function fixture({ blank = false, verify = true, offline = false } = {}) {
   }
   const context = { document: { getElementById: node }, Uint8Array, TextEncoder,
     EPDResourceStore: { ...store, ResourceClient: Client }, EPDResourcePack: packer, EPDFontSync: sync };
+  context.appVersion = firmwarePolicy.newWebMinVersion;
+  context.EpdFirmwarePolicy = firmwarePolicy;
   vm.runInNewContext(fs.readFileSync(require.resolve('../html/js/resource_installer.js'), 'utf8'), context);
   const installer = context.ExternalResourceInstaller;
   function bind(id = 'same-device') { installer.bind({ service: { device: { id } } }); }

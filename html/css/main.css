@@ -541,6 +541,9 @@ progress::-webkit-progress-value { border-radius: 10px; background: var(--primar
 .device-modal-item .rssi { color: var(--muted-color); font-size: 12px; }
 .device-modal-empty { padding: 24px 12px; text-align: center; color: var(--muted-color); }
 .device-modal-actions { display: flex; justify-content: flex-end; gap: 8px; }
+.firmware-dialog { width: calc(100% - 40px); margin: auto; }
+.firmware-dialog::backdrop { background: rgba(12, 24, 45, .5); backdrop-filter: blur(4px); }
+.firmware-dialog .device-modal-actions { flex-wrap: wrap; }
 .toast-message { position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%); z-index: 3000; width: max-content; max-width: min(92vw, 560px); padding: 12px 20px; border-radius: 10px; background: #19283f; color: #fff; box-shadow: 0 8px 30px rgba(0, 0, 0, .15); text-align: center; font-size: 13px; }
 .footer { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 18px; padding: 6px 0 26px; font-size: 11px; color: var(--muted-color); }
 .footer .links { display: flex; flex-wrap: wrap; gap: 16px; margin-left: auto; }

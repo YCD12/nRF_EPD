@@ -123,6 +123,12 @@ const CalendarAnnotations = {
       this.report('请先连接设备，再读取或保存日期标注。', true);
       return false;
     }
+    const policy = typeof window !== 'undefined' ? window.EpdFirmwarePolicy : undefined;
+    const version = typeof appVersion !== 'undefined' ? appVersion : undefined;
+    if (!policy?.isNewFirmware?.(version)) {
+      this.report('设备固件不支持新版网页，或版本尚未确认，请重新连接或使用旧版网页。', true);
+      return false;
+    }
     return true;
   },
 
@@ -613,10 +619,6 @@ const CalendarAnnotations = {
 
   async loadFromDevice(parent = null) {
     if (!this.requireDevice()) return false;
-    if (typeof appVersion === 'number' && appVersion < 0x29) {
-      addLog('当前固件不支持回读标注，请升级到 0x29 或更高');
-      return false;
-    }
     if (this._loadPromise) return this._loadPromise;
     const pending = this.deviceTask(owner => this._loadFromDeviceOnce(owner), parent).finally(() => {
       if (this._loadPromise === pending) this._loadPromise = null;
@@ -626,6 +628,7 @@ const CalendarAnnotations = {
   },
 
   async _loadFromDeviceOnce(owner) {
+    if (!this.requireDevice()) return false;
     this._rx = null;
     let resolveLoad, timer;
     const done = new Promise((resolve) => {
@@ -665,15 +668,6 @@ const CalendarAnnotations = {
 
   async saveOperation(owner) {
     if (!this.requireDevice()) return;
-    if (typeof appVersion === 'number' && appVersion < 0x28) {
-      addLog('当前固件不支持日期标注，请升级到 0x28 或更高');
-      return;
-    }
-    if (typeof appVersion === 'number' && appVersion < 0x2A &&
-        this.annotations.some((item) => item.position === this.POS_CORNER)) {
-      addLog('当前固件不支持右上角标注，请升级到 0x2A 或更高，或把位置改回日期下方');
-      return;
-    }
     let bytes;
     try {
       bytes = this.pack();
@@ -690,8 +684,7 @@ const CalendarAnnotations = {
       this.report(e.message, true);
       return;
     }
-    const durable = typeof appVersion === 'number' && appVersion >= 0x33;
-    const committed = durable ? this.waitForCommit(bytes) : null;
+    const committed = this.waitForCommit(bytes);
     const mtu = Number((document.getElementById('mtusize') || {}).value) || 20;
     const chunk = Math.max(1, mtu - 6);
     for (let offset = 0; offset < bytes.length; offset += chunk) {
@@ -711,20 +704,12 @@ const CalendarAnnotations = {
         return;
       }
     }
-    if (durable) {
-      if (!await committed) {
-        addLog('设备未确认标注已写入外置 Flash，请重试');
-        return;
-      }
-      if (owner) DeviceOperations.assert(owner);
-      this.report(`已保存 ${new DataView(bytes.buffer).getUint16(6, true)} 条日期标注到外置 Flash`);
-    } else {
-      addLog(`已下发 ${this.annotations.length} 条日期标注`);
+    if (!await committed) {
+      addLog('设备未确认标注已写入外置 Flash，请重试');
+      return;
     }
-    if (!durable && typeof appVersion === 'number' && appVersion >= 0x29) {
-      const verified = await this.loadFromDevice(owner);
-      if (!verified) addLog('保存后回读失败，请再读一次核对');
-    }
+    if (owner) DeviceOperations.assert(owner);
+    this.report(`已保存 ${new DataView(bytes.buffer).getUint16(6, true)} 条日期标注到外置 Flash`);
   },
 
   async clearDevice() {
@@ -738,12 +723,11 @@ const CalendarAnnotations = {
     view.setUint32(0, this.MAGIC, true);
     empty[4] = this.VERSION;
     empty[5] = this.RECORD_SIZE;
-    const durable = typeof appVersion === 'number' && appVersion >= 0x33;
-    const committed = durable ? this.waitForCommit(empty) : null;
+    const committed = this.waitForCommit(empty);
     const ok = await write(EpdCmd.SET_ANNOTATIONS, new Uint8Array([1]), true, true, true, owner);
     if (owner) DeviceOperations.assert(owner);
     if (ok) {
-      if (durable && !await committed) {
+      if (!await committed) {
         addLog('设备未确认清除结果已写入外置 Flash，请重试');
         return;
       }
@@ -751,7 +735,7 @@ const CalendarAnnotations = {
       this.annotations = [];
       this.persist();
       this.render();
-      addLog(durable ? '已清除设备标注并写入外置 Flash' : '已清除设备标注');
+      addLog('已清除设备标注并写入外置 Flash');
     } else this.cancelCommitWait();
   },
 

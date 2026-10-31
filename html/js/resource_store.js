@@ -176,7 +176,7 @@
       return { code: 0, revision: u32(reply, 4), length: u32(reply, 8), crc: u32(reply, 12) };
     }
     async eraseSector(id, offset) {
-      if (!this.capabilities?.erase) throw new Error('删除功能需要固件 0x3F 或更新版本');
+      if (!this.capabilities?.erase) throw new Error('设备未报告资源删除能力');
       if (!Number.isInteger(id) || id < 0 || id > 65535 || !Number.isInteger(offset) ||
           offset < 0 || offset >= CAPACITY || offset % 4096) throw new Error('删除范围错误');
       const body = new Uint8Array(6);
