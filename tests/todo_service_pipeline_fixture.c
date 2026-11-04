@@ -175,8 +175,9 @@ static bool nrf_gpio_pin_present_check(unsigned pin) { return pin < 32U; }
 static void epd_clock_refresh_invalidate(void) { clock_valid = false; }
 static bool epd_clock_refresh_is_valid(void) { return clock_valid; }
 static void epd_clock_refresh_mark_valid(uint32_t ts) { (void)ts; clock_valid = true; }
-static bool epd_clock_refresh_try(const epd_model_t *epd, gui_data_t *data)
-{ (void)epd;(void)data;assert(!"TODO must never use clock partial refresh");return false; }
+static bool epd_clock_refresh_try(const epd_model_t *epd, gui_data_t *data,
+                                  bool prepare_only)
+{ (void)epd;(void)data;(void)prepare_only;assert(!"TODO must never use clock partial refresh");return false; }
 static void app_feed_wdt(void) {}
 static void nrf_delay_ms(unsigned ms) { (void)ms; tick(); }
 static void sleep_mode_enter(void) { assert(!"unexpected system sleep"); }

@@ -42,7 +42,8 @@
 #include "app_util_platform.h"
 #include "main.h"
 #include "epd_resources.h"
-#include "nrf_drv_gpiote.h"
+#include "nrf_gpio.h"
+#include "nrf_gpiote.h"
 #include "nrf_drv_wdt.h"
 #include "nrf_log.h"
 #include "nrf_log_ctrl.h"
@@ -518,22 +519,38 @@ static void advertising_start(void) {
     APP_ERROR_CHECK(ble_advertising_start(&m_advertising, BLE_ADV_MODE_FAST));
 }
 
-/**@brief GPIO事件处理函数
- *
- * @details 当唤醒引脚检测到低到高电平变化时调用，用于从睡眠模式唤醒设备
- *
- * @param[in] pin    触发事件的引脚号
- * @param[in] action 触发的动作类型（低到高或高到低）
- */
-void gpiote_evt_handler(nrf_drv_gpiote_pin_t pin, nrf_gpiote_polarity_t action) {
-    NRF_LOG_DEBUG("pin: %d, event: %d\n", pin, action);
+/* The wakeup pin is the only GPIOTE user in this firmware. Configure the
+ * low-power PIN_CNF SENSE bit and the GPIOTE PORT event directly instead of
+ * linking the generic nrfx GPIOTE driver, which costs roughly 1 KiB of flash
+ * and 92 B of .bss. The observable behavior is unchanged: a low-to-high edge
+ * on the wakeup pin ends the advertising-timeout wait and restarts
+ * advertising. Keep the priority identical to GPIOTE_CONFIG_IRQ_PRIORITY (6)
+ * so the interrupt stays valid next to the SoftDevice. */
+#define WAKEUP_GPIO_IRQ_PRIORITY 6U
+static uint8_t m_wakeup_pin = 0xFFU;
 
-    // 禁用并清理GPIO中断
-    nrf_drv_gpiote_in_event_disable(pin);  // 禁用引脚事件
-    nrf_drv_gpiote_in_uninit(pin);         // 取消初始化引脚
-    nrf_drv_gpiote_uninit();               // 取消初始化GPIOTE模块
+static void gpiote_disable_wakeup(void) {
+    if (m_wakeup_pin != 0xFFU) {
+        nrf_gpio_cfg_sense_set(m_wakeup_pin, NRF_GPIO_PIN_NOSENSE);
+        m_wakeup_pin = 0xFFU;
+    }
+    nrf_gpiote_int_disable(NRF_GPIOTE_INT_PORT_MASK);  // 禁用 PORT 事件中断
+    nrf_gpiote_event_clear(NRF_GPIOTE_EVENTS_PORT);
+    NVIC_DisableIRQ(GPIOTE_IRQn);
+    NVIC_ClearPendingIRQ(GPIOTE_IRQn);
     m_wakeup_armed = false;
+}
 
+/**@brief GPIO PORT 事件处理函数
+ *
+ * @details 唤醒引脚检测到低到高电平变化时调用，结束广播超时等待并重新广播
+ */
+void GPIOTE_IRQHandler(void) {
+    if (!nrf_gpiote_event_is_set(NRF_GPIOTE_EVENTS_PORT)) {
+        return;
+    }
+    nrf_gpiote_event_clear(NRF_GPIOTE_EVENTS_PORT);
+    gpiote_disable_wakeup();
     advertising_start();  // 开始广播
 }
 
@@ -543,15 +560,19 @@ void gpiote_evt_handler(nrf_drv_gpiote_pin_t pin, nrf_gpiote_polarity_t action) 
  *
  * @param[in] pin 要配置为唤醒引脚的GPIO引脚号
  */
-static void setup_wakeup_pin(nrf_drv_gpiote_pin_t pin) {
+static void setup_wakeup_pin(uint32_t pin) {
     if (m_wakeup_armed) return;
     NRF_LOG_DEBUG("Setting up wakeup pin\n");
 
-    APP_ERROR_CHECK(nrf_drv_gpiote_init());  // 初始化GPIOTE模块
-    nrf_drv_gpiote_in_config_t config = GPIOTE_CONFIG_IN_SENSE_LOTOHI(false);  // 配置为低到高触发
-    APP_ERROR_CHECK(nrf_drv_gpiote_in_init(pin, &config, gpiote_evt_handler));  // 初始化引脚并设置处理函数
+    nrf_gpio_cfg_input(pin, NRF_GPIO_PIN_NOPULL);
+    nrf_gpio_cfg_sense_set(pin, NRF_GPIO_PIN_SENSE_HIGH);  // 低到高触发
+    m_wakeup_pin = (uint8_t)pin;
     m_wakeup_armed = true;
-    nrf_drv_gpiote_in_event_enable(pin, true);  // 启用引脚事件
+    nrf_gpiote_event_clear(NRF_GPIOTE_EVENTS_PORT);
+    nrf_gpiote_int_enable(NRF_GPIOTE_INT_PORT_MASK);
+    NVIC_ClearPendingIRQ(GPIOTE_IRQn);
+    NVIC_SetPriority(GPIOTE_IRQn, WAKEUP_GPIO_IRQ_PRIORITY);
+    NVIC_EnableIRQ(GPIOTE_IRQn);
 }
 
 /* Main only, after the final response leaves the TX queue. Disconnect the

@@ -130,7 +130,7 @@ static void test_clock_strips(void) {
     const uint32_t times[]={12*3600+34*60,12*3600+39*60,12*3600+59*60};
     gui_data_t setup={.mode=MODE_CLOCK,.width=800,.height=480,.timestamp=1735689660U};
     epd_clock_refresh_mark_valid(1735689600U);pushes=refreshes=0;
-    assert(!epd_clock_refresh_try(&model,&setup)&&pushes==0&&refreshes==0);
+    assert(!epd_clock_refresh_try(&model,&setup,false)&&pushes==0&&refreshes==0);
     for (unsigned mode=MODE_CLOCK_CALENDAR;mode<=MODE_CLOCK;mode++) {
         for (unsigned t=0;t<3;t++) {
             gui_data_t data={.mode=mode,.width=800,.height=480,.timestamp=times[t]};
@@ -138,7 +138,7 @@ static void test_clock_strips(void) {
             data.timestamp+=60;clock_reference(&data,new_frame);
             pushes=refreshes=0;memset(pushed,0,sizeof(pushed));
             epd_clock_refresh_mark_valid(times[t]);
-            bool ok=epd_clock_refresh_try(&model,&data);
+            bool ok=epd_clock_refresh_try(&model,&data,false);
             /* Full-screen hour changes may intentionally request a full refresh. */
             if (mode==MODE_CLOCK && t==2) continue;
             assert(ok && refreshes && pushes>refreshes);
@@ -146,7 +146,7 @@ static void test_clock_strips(void) {
                 pushes=refreshes=0;memset(pushed,0,sizeof(pushed));
                 fail_push=fault==0?2:0;fail_refresh=fault==1;busy_timeout=fault==2;
                 epd_clock_refresh_mark_valid(times[t]);
-                assert(!epd_clock_refresh_try(&model,&data));
+                assert(!epd_clock_refresh_try(&model,&data,false));
                 assert(!epd_clock_refresh_is_valid());
                 fail_push=0;fail_refresh=busy_timeout=false;
             }
@@ -169,7 +169,7 @@ static void test_clock_render_io_failure(void)
         ui_resources_stub_fail_read(0U);
         pushes = refreshes = 0U;
         memset(pushed, 0, sizeof(pushed));
-        assert(epd_clock_refresh_try(&model, &data));
+        assert(epd_clock_refresh_try(&model, &data, false));
         assert(refreshes == 1U);
         unsigned total_reads = ui_resources_stub_read_count();
         assert(total_reads > 10U);
@@ -180,16 +180,16 @@ static void test_clock_render_io_failure(void)
             ui_resources_stub_fail_read(nth);
             pushes = refreshes = 0U;
             memset(pushed, 0, sizeof(pushed));
-            assert(!epd_clock_refresh_try(&model, &data));
+            assert(!epd_clock_refresh_try(&model, &data, false));
             assert(ui_resources_stub_fault_count() == 1U);
             assert(refreshes == 0U && !epd_clock_refresh_is_valid());
             ui_resources_stub_fail_read(0U);
             /* Failed partial refreshes need a new full-frame baseline. */
-            assert(!epd_clock_refresh_try(&model, &data));
+            assert(!epd_clock_refresh_try(&model, &data, false));
             epd_clock_refresh_mark_valid(previous);
             pushes = refreshes = 0U;
             memset(pushed, 0, sizeof(pushed));
-            assert(epd_clock_refresh_try(&model, &data) && refreshes == 1U);
+            assert(epd_clock_refresh_try(&model, &data, false) && refreshes == 1U);
         }
     }
     puts("PASS: every clock geometry/OLD/NEW read fault withholds physical refresh and invalidates baseline");

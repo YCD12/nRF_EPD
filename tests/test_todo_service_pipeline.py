@@ -39,7 +39,8 @@ exe = out / ('test_todo_service_pipeline.exe' if os.name == 'nt' else 'test_todo
 subprocess.run(shlex.split(os.environ.get('HOST_CC', 'gcc')) +
                ['-Wall', '-Werror', '-std=c11', '-Itests/font_transfer_stubs',
                 '-Itests/stubs', '-IEPD', '-IGUI', str(generated),
-                'EPD/resource_transfer.c', 'EPD/epd_refresh_policy.c',
+                'EPD/resource_transfer.c', 'EPD/resource_crc.c',
+                'EPD/epd_refresh_policy.c',
                 'tests/stubs/ui_resources_stub.c', 'GUI/todo_items.c', 'GUI/font_geometry.c', '-o', str(exe)], cwd=ROOT, check=True)
 for mode in (4, 5):
     subprocess.run([str(exe.resolve()), str(mode)], check=True)

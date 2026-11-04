@@ -195,6 +195,31 @@
     if (!session || session !== client) throw new Error('蓝牙连接已变化，请重新连接');
   }
 
+  // RESOURCE ENTER (0x26 op 6) returns RS_BUSY while a panel refresh or queued
+  // display command still owns the device. upload() sends ENTER before writing
+  // anything, so retry it with the same cadence as todo_sync's acquire() instead
+  // of failing the whole installation on a transient BUSY. A real partial write
+  // is never retried here: only errors before the first DATA/ACK are.
+  const ENTER_RETRY_MS = 250, ENTER_BUSY_BUDGET_MS = 90000;
+  const isBusy = error => !!error && error.code === 2;
+  async function uploadWithSessionRetry(session, bytes, onProgress, partitions, notify) {
+    const deadline = Date.now() + ENTER_BUSY_BUDGET_MS;
+    for (;;) {
+      ensureCurrent(session);
+      let wrote = false;
+      try {
+        return await session.upload(bytes, (done, total, durable = done) => {
+          wrote = true;
+          onProgress(done, total, durable);
+        }, partitions);
+      } catch (error) {
+        if (wrote || !isBusy(error) || Date.now() >= deadline) throw error;
+        notify?.('设备正在刷新，等待维护会话…');
+        await new Promise(resolve => setTimeout(resolve, ENTER_RETRY_MS));
+      }
+    }
+  }
+
   function requireNewFirmware() {
     const version = typeof appVersion !== 'undefined' ? appVersion : undefined;
     if (!root.EpdFirmwarePolicy?.isNewFirmware?.(version))
@@ -829,7 +854,7 @@
           renderUsage(); renderVersions();
         }
         let lastProgress = 0;
-        await session.upload(item.bytes, (n, size, durable = n) => {
+        await uploadWithSessionRetry(session, item.bytes, (n, size, durable = n) => {
           if (client !== session) return;
           const now = Date.now();
           if (n !== size && now - lastProgress < 100) return;
@@ -838,7 +863,7 @@
           progress.value = done / total;
           $('externalResourceStatus').textContent = n === size ? `${title}已写入，正在校验并提交…` :
             `正在写入 ${i + 1}/${packages.length}：${title} · ${Math.round(done * 100 / total)}%`;
-        }, current.partitions);
+        }, current.partitions, message => report(message));
         ensureCurrent(session);
         item.state = 'committed'; activeItem = null; renderRecovery();
         completedBytes += item.pack.payload.length;

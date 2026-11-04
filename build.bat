@@ -219,10 +219,37 @@ if exist "_build" (
     powershell -NoProfile -NonInteractive -Command "Start-Sleep -Seconds 1" >nul 2>nul
     rmdir /s /q "_build" >nul 2>nul
 )
-if exist "_build" (
-    echo Error: _build could not be removed. Close processes using it or check directory permissions.
+if not exist "_build" exit /b 0
+
+rem The directory itself can be locked by an ACL written by another tool
+rem (for example an offline sandbox), even when its contents are writable and
+rem no process is running. Empty it and reuse it instead of failing the build:
+rem every object is recompiled when the .build-options stamp changes, and with
+rem an empty directory no stale object can be mistaken for an up-to-date one.
+echo Warning: _build cannot be removed as a directory ^(protected by another tool^).
+echo          Clearing its contents and reusing it for this build.
+del /f /s /q "_build\*.*" >nul 2>nul
+for /d %%D in ("_build\*") do rmdir /s /q "%%~fD" >nul 2>nul
+set "BUILD_LEFTOVERS="
+for /f %%F in ('dir /b "_build" 2^>nul') do set "BUILD_LEFTOVERS=1"
+if defined BUILD_LEFTOVERS (
+    echo Error: _build is protected and its old contents cannot be cleared.
+    echo        Remove it from an elevated shell, then retry:
+    echo   takeown /f "_build" /r /d y ^&^& icacls "_build" /grant "%%USERNAME%%":F ^&^& rmdir /s /q "_build"
     exit /b 1
 )
+rem Verify the reused directory is writable; otherwise compilation would fail
+rem later with a confusing linker/tool error.
+> "_build\.write_probe" echo probe
+if not exist "_build\.write_probe" (
+    echo Error: _build is not writable. Remove it from an elevated shell:
+    echo   takeown /f "_build" /r /d y ^&^& icacls "_build" /grant "%%USERNAME%%":F ^&^& rmdir /s /q "_build"
+    exit /b 1
+)
+del /f /q "_build\.write_probe" >nul 2>nul
+echo Note: _build is now empty but the protected directory remains.
+echo       To remove it permanently, run in an elevated terminal:
+echo   takeown /f "_build" /r /d y ^&^& icacls "_build" /grant "%%USERNAME%%":F ^&^& rmdir /s /q "_build"
 exit /b 0
 
 :make_firmware
@@ -335,7 +362,7 @@ if not exist "tools\make-ota-nrf52.bat" (
     echo Error: tools\make-ota-nrf52.bat was not found.
     exit /b 1
 )
-call tools\make-ota-nrf52.bat "%FIRMWARE_PREFIX%"
+call "%CD%\tools\make-ota-nrf52.bat" "%FIRMWARE_PREFIX%"
 exit /b %errorlevel%
 
 :build_external_resources
@@ -346,7 +373,7 @@ if not exist "build-external-resources.bat" (
     echo Error: build-external-resources.bat was not found.
     exit /b 1
 )
-call build-external-resources.bat
+call "%CD%\build-external-resources.bat"
 exit /b %errorlevel%
 
 :merge_full_firmware

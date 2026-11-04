@@ -128,7 +128,8 @@ subprocess.run([str(exe.resolve())], check=True)
 
 radio_source = (ROOT / 'main.c').read_text(encoding='utf-8')
 radio_handlers = '\n'.join(function(radio_source, name) for name in (
-    'advertising_start', 'gpiote_evt_handler', 'setup_wakeup_pin', 'disconnect_for_run', 'on_adv_evt'))
+    'advertising_start', 'gpiote_disable_wakeup', 'GPIOTE_IRQHandler',
+    'setup_wakeup_pin', 'disconnect_for_run', 'on_adv_evt'))
 radio_fixture = (ROOT / 'tests/offline_radio_fixture.c').read_text(encoding='utf-8')
 generated = out / 'offline_radio_generated.c'
 generated.write_text(radio_fixture.replace('/* PRODUCTION_HANDLERS */', radio_handlers), encoding='utf-8')

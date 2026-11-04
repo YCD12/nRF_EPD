@@ -77,9 +77,10 @@ static void test_try_rejects_null_and_invalid_state(void)
     model.height = 480;
 
     epd_clock_refresh_invalidate();
-    assert(!epd_clock_refresh_try(NULL, &data));
-    assert(!epd_clock_refresh_try(&model, NULL));
-    assert(!epd_clock_refresh_try(&model, &data));
+    assert(!epd_clock_refresh_try(NULL, &data, false));
+    assert(!epd_clock_refresh_try(&model, NULL, false));
+    assert(!epd_clock_refresh_try(&model, &data, false));
+    assert(!epd_clock_refresh_try(&model, &data, true));
 }
 
 static bool dummy_diff_push(const epd_model_t *epd, uint16_t x, uint16_t y,
@@ -115,7 +116,8 @@ static void test_try_rejects_non_clock_mode(void)
     drv.refresh_partial = dummy_refresh_partial;
 
     epd_clock_refresh_mark_valid(60);
-    assert(!epd_clock_refresh_try(&model, &data));
+    assert(!epd_clock_refresh_try(&model, &data, false));
+    assert(!epd_clock_refresh_try(&model, &data, true));
 }
 
 static void test_conditional_clock_never_regenerates_old(void)
@@ -136,7 +138,8 @@ static void test_conditional_clock_never_regenerates_old(void)
              * OLD/NEW regeneration for a conditionally hidden clock. */
             epd_clock_refresh_mark_valid(data.timestamp - 60U);
             clock_draws = 0;
-            assert(!epd_clock_refresh_try(&model, &data));
+            assert(!epd_clock_refresh_try(&model, &data, false));
+            assert(!epd_clock_refresh_try(&model, &data, true));
             assert(clock_draws == 0);
         }
         ui_resources_stub_set_component(id, &original);

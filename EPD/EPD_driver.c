@@ -357,7 +357,11 @@ bool EPD_BusyAbortRequested(void)
 }
 
 bool EPD_WaitBusy(uint32_t value, uint16_t timeout) {
-    const uint32_t ticks_per_ms = (APP_TIMER_CLOCK_FREQ / (APP_TIMER_CONFIG_RTC_FREQUENCY + 1)) / 1000UL;
+    /* Multiply before dividing: APP_TIMER_CLOCK_FREQ/(prescaler+1) is 16384
+     * ticks/s, so 16 ticks/ms would truncate 16.384 and shorten every timeout
+     * by 2.34 % (1000 ms -> 976.6 ms, 30 s -> 29.3 s). The 32-bit product is
+     * safe for every uint16_t timeout because 65535 * 16384 < 2^32. */
+    const uint32_t ticks_per_second = APP_TIMER_CLOCK_FREQ / (APP_TIMER_CONFIG_RTC_FREQUENCY + 1);
 
     NRF_LOG_DEBUG("[EPD]: check busy\n");
     if (m_busy_abort) {
@@ -370,7 +374,8 @@ bool EPD_WaitBusy(uint32_t value, uint16_t timeout) {
 
     uint32_t start_ticks    = app_timer_cnt_get();
     uint32_t last_wdt_ticks = start_ticks;
-    uint32_t timeout_ticks  = (uint32_t)timeout * ticks_per_ms;
+    uint32_t timeout_ticks  = ((uint32_t)timeout * ticks_per_second) / 1000UL;
+    const uint32_t wdt_feed_ticks = (500UL * ticks_per_second) / 1000UL;
 
     while (digitalRead(EPD_BUSY_PIN) == value) {
         if (m_busy_abort) {
@@ -387,7 +392,7 @@ bool EPD_WaitBusy(uint32_t value, uint16_t timeout) {
             NRF_LOG_WARNING("[EPD]: busy timeout!\n");
             return false;
         }
-        if (app_timer_cnt_diff_compute(now_ticks, last_wdt_ticks) >= (500UL * ticks_per_ms)) {
+        if (app_timer_cnt_diff_compute(now_ticks, last_wdt_ticks) >= wdt_feed_ticks) {
             app_feed_wdt();
             last_wdt_ticks = now_ticks;
         }

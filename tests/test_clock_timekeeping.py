@@ -73,9 +73,14 @@ for prescaler in (0, 1, 31):
 
 for ppm in (-2001, 2001):
     write_fixture(ppm)
+    # Force the diagnostics to text and tolerate a non-UTF-8 console: localized
+    # compilers on Windows can emit GBK/CP936 bytes and used to crash the test
+    # with UnicodeDecodeError before the assertion ran. LC_ALL=C asks GCC for
+    # its untranslated (stable) message.
     rejected = subprocess.run(compiler + [f"-DEXPECTED_CALIBRATION_PPM={ppm}",
                               "-fsyntax-only", str(generated)],
-                              cwd=ROOT, capture_output=True, text=True)
+                              cwd=ROOT, capture_output=True, text=True,
+                              errors="replace", env={**os.environ, "LC_ALL": "C"})
     assert rejected.returncode != 0, f"out-of-range calibration accepted: {ppm}"
     assert "APP_CLOCK_CALIBRATION_PPM must be between" in rejected.stderr, rejected.stderr
 print("PASS: RC clock calibration rejects values outside +/-2000 ppm")

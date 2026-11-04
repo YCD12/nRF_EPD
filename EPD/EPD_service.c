@@ -143,11 +143,14 @@ static void epd_display_complete(ble_epd_t *p_epd)
 #if NRF_LOG_ENABLED || BLE_LOG_REDIRECT_ALL_NRF_LOG
 static uint32_t epd_elapsed_ms(uint32_t start_ticks)
 {
-    const uint32_t ticks_per_ms =
-        (APP_TIMER_CLOCK_FREQ / (APP_TIMER_CONFIG_RTC_FREQUENCY + 1U)) / 1000U;
+    /* Keep the exact tick ratio: 16 ticks/ms is 16.384 truncated, which makes
+     * every logged duration 2.34 % short. 64-bit math is used only in logging
+     * builds; elapsed_ticks * 1000 would overflow 32 bits for 24-bit ticks. */
+    const uint32_t ticks_per_second =
+        APP_TIMER_CLOCK_FREQ / (APP_TIMER_CONFIG_RTC_FREQUENCY + 1U);
     const uint32_t elapsed_ticks = app_timer_cnt_diff_compute(app_timer_cnt_get(), start_ticks);
 
-    return (ticks_per_ms == 0U) ? 0U : elapsed_ticks / ticks_per_ms;
+    return (uint32_t)(((uint64_t)elapsed_ticks * 1000U) / ticks_per_second);
 }
 #endif
 
@@ -544,38 +547,47 @@ static void epd_gui_update(void* p_event_data, uint16_t event_size) {
     }
 
     if (use_partial) {
-        NRF_LOG_INFO("[EPD]: Hardware OLD/NEW clock partial refresh\n");
         if (epd_clock_refresh_must_yield((display_mode_t)p_epd->config.display_mode,
                                          p_epd->transfer_ctx.transfer_active)) {
             goto finish_refresh;
         }
         UC8179_ClearBusyTimeout();
-        epd->drv->init_partial(epd);
-        app_feed_wdt();
+        /* Same eligibility checks as the real partial refresh, run before paying
+         * for a panel reset/partial configuration. Conditional clock layouts
+         * must fall back to a full refresh without a wasted init_partial(). */
+        if (epd_clock_refresh_try(epd, &data, true)) {
+            NRF_LOG_INFO("[EPD]: Hardware OLD/NEW clock partial refresh\n");
+            epd->drv->init_partial(epd);
+            app_feed_wdt();
 
-        if (epd_clock_refresh_must_yield((display_mode_t)p_epd->config.display_mode,
-                                         p_epd->transfer_ctx.transfer_active) ||
-            EPD_BusyAbortRequested()) {
-            goto finish_refresh;
-        }
-        if (UC8179_HadBusyTimeout()) {
-            NRF_LOG_ERROR("[EPD]: Partial configure failed; using full refresh\n");
-        } else if (epd_clock_refresh_try(epd, &data) &&
-                   !UC8179_HadBusyTimeout()) {
-            NRF_LOG_INFO("[EPD]: Hardware OLD/NEW clock partial refresh complete\n");
-            ble_log("[EPD]:part ok");
-            refresh_succeeded = true;
-            goto finish_refresh;
+            if (epd_clock_refresh_must_yield((display_mode_t)p_epd->config.display_mode,
+                                             p_epd->transfer_ctx.transfer_active) ||
+                EPD_BusyAbortRequested()) {
+                goto finish_refresh;
+            }
+            if (UC8179_HadBusyTimeout()) {
+                NRF_LOG_ERROR("[EPD]: Partial configure failed; using full refresh\n");
+            } else if (epd_clock_refresh_try(epd, &data, false) &&
+                       !UC8179_HadBusyTimeout()) {
+                NRF_LOG_INFO("[EPD]: Hardware OLD/NEW clock partial refresh complete\n");
+                ble_log("[EPD]:part ok");
+                refresh_succeeded = true;
+                goto finish_refresh;
+            } else {
+                NRF_LOG_WARNING(
+                    "[EPD]: Differential refresh unavailable; using full refresh\n");
+            }
+            if (epd_clock_refresh_must_yield((display_mode_t)p_epd->config.display_mode,
+                                             p_epd->transfer_ctx.transfer_active) ||
+                EPD_BusyAbortRequested()) {
+                goto finish_refresh;
+            }
+            epd_clock_refresh_invalidate();
         } else {
-            NRF_LOG_WARNING(
-                "[EPD]: Differential refresh unavailable; using full refresh\n");
+            NRF_LOG_INFO("[EPD]: Partial refresh ineligible for this layout; "
+                         "using full refresh\n");
+            ble_log("[EPD]:part skip");
         }
-        if (epd_clock_refresh_must_yield((display_mode_t)p_epd->config.display_mode,
-                                         p_epd->transfer_ctx.transfer_active) ||
-            EPD_BusyAbortRequested()) {
-            goto finish_refresh;
-        }
-        epd_clock_refresh_invalidate();
     } else if (epd_is_clock_mode(mode) && !low_battery) {
         NRF_LOG_INFO("[EPD]: Performing clock maintenance full refresh\n");
         ble_log("[EPD]:full ts=%u %s", requested_timestamp,

@@ -305,6 +305,13 @@ Keil 工程配套说明：
 - `build.bat` 默认编译应用并生成完整 HEX；正式发布 OTA 前必须显式指定新旧 DFU 版本，避免开发构建重复产生同版本升级包
 - 同时会自动调用 `keil5_disp_size_bar.exe`，辅助查看当前构建结果的 Flash / RAM 占用
 - `Keil/DFU-nRF52.uvprojx` 用于单独编译 BLE Secure DFU Bootloader，适合需要完整升级链路的场景
+- `nRF52811_xxAA` Target 已与 GCC 发布配置对齐：关闭 RTT/日志/SystemView 与
+  `DEVELOP_IN_NRF52840`，并移除 `nrfx_gpiote.c`。`USE_SYSVIEW` 会让空闲循环跳过低功耗
+  休眠，不要用于发布固件；需要 RTT/SystemView 分析时请临时恢复该 Target 的宏与源文件组，
+  或使用 GCC `DEBUG_LAYOUT=1`。
+- GCC 发布构建会在链接后自动运行 `tools/check_irq_handlers.py`，校验强制保留的
+  中断处理函数没有被 LTO 回落到 `Default_Handler`。调整 `-fno-lto` 例外或中断处理
+  函数所在文件后必须通过该检查。
 
 推荐刷机流程：
 
@@ -343,7 +350,12 @@ Windows 下 `build.bat build` 会先清理，再执行完整测试和编译；�
 `build.bat incremental` 保留已有目标文件，只重编译发生变化的文件。两者默认都按
 单任务编译；如需调整并行数，请设置 `BUILD_JOBS`。批处理会在最后指定并行数，
 因此命令行上的 `-jN` 不改变它（例如 `build.bat build -j8` 仍按单任务编译）。
-如果清理 `_build` 失败，`build.bat` 会立即报错，避免继续运行测试后才在编译阶段失败。
+如果清理 `_build` 失败，`build.bat` 会先清空并复用该目录继续构建；目录本身被其他
+工具的 ACL 锁定时会打印管理员清理命令（见 FAQ 第 8 条）。
+
+主机测试需要 Python >= 3.10。Cygwin 自带的 `python3` 可能较旧，`tests/run_host_tests.sh`
+会自动选用更高版本的 Python（包括 Windows 的 `py -3`）；也可用 `HOST_PYTHON`
+显式指定，例如 `set HOST_PYTHON=py -3` 后再执行 `build.bat test`。
 
 说明：
 
@@ -609,10 +621,28 @@ BLE 连接、真实墨水屏刷新、电源与低电量行为，仍然需要在�
 - 设备是否低电量
 - 是否已经切换到了正确的屏幕驱动和画布尺寸
 
+### 8. `build.bat` 报 `_build could not be removed` / `_build` 删不掉怎么办？
+
+这是目录 ACL 问题，不是编译配置问题：`_build` 曾被其他工具（例如离线沙箱）改写过所有者
+和权限，导致当前用户能读写其中内容、却没有删除目录本身的权限。当前 `build.bat` 会自动
+清空并复用这个目录继续构建，并打印警告；构建产物不受影响。
+
+要彻底移除这个受保护的目录，请在**管理员终端**（cmd 或 PowerShell）中于项目根目录执行：
+
+```bat
+takeown /f "_build" /r /d y
+icacls "_build" /grant "%USERNAME%":F
+rmdir /s /q "_build"
+```
+
+如果清空旧内容也失败，`build.bat` 会直接报错并再次打印上述命令；执行后重新运行
+`build.bat` 即可。
+
 ## 文档导航
 
 - 开发说明：[docs/develop.md](docs/develop.md)
 - BLE 协议：[docs/ble-protocol.md](docs/ble-protocol.md)
+- 内置 Flash / RAM 优化、构建配置与缺陷修复（2026-11-04）：[docs/flash-ram-optimization-20261104.md](docs/flash-ram-optimization-20261104.md)
 - 网页按需补充外置字库：[docs/web-font-generation.md](docs/web-font-generation.md)
 - Flash 与网页优化实现及验证：[docs/flash-web-optimization-20261001.md](docs/flash-web-optimization-20261001.md)
 - 当前内置 8 KiB 保留区及配套固件：[docs/internal-flash-8k-20261008.md](docs/internal-flash-8k-20261008.md)

@@ -143,9 +143,11 @@ static bool epd_perform_full_refresh(ble_epd_t *p, const epd_model_t *epd, gui_d
     clock_valid = true;
     return true;
 }
-static bool epd_clock_refresh_try(const epd_model_t *epd, gui_data_t *data)
+static bool epd_clock_refresh_try(const epd_model_t *epd, gui_data_t *data,
+                                  bool prepare_only)
 {
     assert(refs && epd == &panel);
+    if (prepare_only) return true; /* eligibility probe performed by the service */
     displayed = *data;
     partial_refreshes++;
     return true;

@@ -87,7 +87,6 @@ SRC_FILES += \
   $(SDK_ROOT)/components/softdevice/common/nrf_sdh_soc.c \
   $(SDK_ROOT)/modules/nrfx/soc/nrfx_atomic.c \
   $(SDK_ROOT)/modules/nrfx/drivers/src/nrfx_clock.c \
-  $(SDK_ROOT)/modules/nrfx/drivers/src/nrfx_gpiote.c \
   $(SDK_ROOT)/modules/nrfx/drivers/src/prs/nrfx_prs.c \
   $(SDK_ROOT)/modules/nrfx/drivers/src/nrfx_spi.c \
   $(SDK_ROOT)/modules/nrfx/drivers/src/nrfx_spim.c \
@@ -239,7 +238,10 @@ endif
 CFLAGS += -DAPP_TIMER_V2
 CFLAGS += -DAPP_TIMER_V2_RTC1_ENABLED
 CFLAGS += -DCONFIG_GPIO_AS_PINRESET
-CFLAGS += -DDEVELOP_IN_NRF52840
+# Production hardware is a custom nRF52811 board, not the nRF52811-on-nRF52840
+# development kit. DEVELOP_IN_NRF52840 would select the nRF52840 reset pin and
+# nRF52840-only errata; both are wrong here and cost about 272 B of flash.
+# Add -DDEVELOP_IN_NRF52840 back only when running this image on an nRF52840 DK.
 CFLAGS += -DFLOAT_ABI_SOFT
 CFLAGS += -DNRF52811_XXAA
 CFLAGS += -DNRFX_COREDEP_DELAY_US_LOOP_CYCLES=3
@@ -288,7 +290,7 @@ ASMFLAGS += -mfloat-abi=soft
 ASMFLAGS += -DAPP_TIMER_V2
 ASMFLAGS += -DAPP_TIMER_V2_RTC1_ENABLED
 ASMFLAGS += -DCONFIG_GPIO_AS_PINRESET
-ASMFLAGS += -DDEVELOP_IN_NRF52840
+# Custom nRF52811 board, not the nRF52840 development kit (see CFLAGS note).
 ASMFLAGS += -DFLOAT_ABI_SOFT
 ASMFLAGS += -DNRF52811_XXAA
 ASMFLAGS += -DNRFX_COREDEP_DELAY_US_LOOP_CYCLES=3
@@ -316,12 +318,14 @@ CFLAGS += -D__STACK_SIZE=2048
 ASMFLAGS += -D__HEAP_SIZE=0
 ASMFLAGS += -D__STACK_SIZE=2048
 
-$(OUTPUT_DIRECTORY)/nrf52811_xxaa/ble_dfu.c.o: CFLAGS += -fno-lto
-$(OUTPUT_DIRECTORY)/nrf52811_xxaa/ble_dfu_unbonded.c.o: CFLAGS += -fno-lto
-$(OUTPUT_DIRECTORY)/nrf52811_xxaa/nrf_dfu_svci.c.o: CFLAGS += -fno-lto
+# Remaining -fno-lto exceptions are load-bearing. Each of these files defines an
+# IRQ handler that LDFLAGS keeps with -Wl,-u (RTC1, WDT, SPIM0/SPIM1, SWI2).
+# With GCC 9.3.1 LTO, a handler defined inside the LTO unit is internalized and
+# the vector resolves to the startup file's weak Default_Handler instead, so the
+# interrupt would hang the device. Do not "optimize" these away. The DFU files
+# define no forced handler and are safe to compile with LTO (-192 B measured).
 $(OUTPUT_DIRECTORY)/nrf52811_xxaa/drv_rtc.c.o: CFLAGS += -fno-lto
 $(OUTPUT_DIRECTORY)/nrf52811_xxaa/nrf_sdh.c.o: CFLAGS += -fno-lto
-$(OUTPUT_DIRECTORY)/nrf52811_xxaa/nrfx_gpiote.c.o: CFLAGS += -fno-lto
 $(OUTPUT_DIRECTORY)/nrf52811_xxaa/nrfx_wdt.c.o: CFLAGS += -fno-lto
 $(OUTPUT_DIRECTORY)/nrf52811_xxaa/nrfx_spi.c.o: CFLAGS += -fno-lto
 $(OUTPUT_DIRECTORY)/nrf52811_xxaa/nrfx_spim.c.o: CFLAGS += -fno-lto
@@ -369,10 +373,15 @@ else
 BUILD_PYTHON ?= python3
 endif
 ifeq ($(DEBUG_LAYOUT),0)
-.PHONY: flash_budget
-nrf52811_xxaa: flash_budget
+# Production images must keep every forced IRQ handler as a strong definition:
+# GCC 9.3.1 LTO silently replaces LTO-compiled handlers with the startup
+# Default_Handler, which would hang the device on the first interrupt.
+.PHONY: flash_budget irq_handlers
+nrf52811_xxaa: flash_budget irq_handlers
 flash_budget: $(OUTPUT_DIRECTORY)/nrf52811_xxaa.bin
 	$(BUILD_PYTHON) tools/check_flash_budget.py $<
+irq_handlers: $(OUTPUT_DIRECTORY)/nrf52811_xxaa.out
+	$(BUILD_PYTHON) tools/check_irq_handlers.py --nm "$(GNU_INSTALL_ROOT)arm-none-eabi-nm" $<
 endif
 
 # =============================================================================

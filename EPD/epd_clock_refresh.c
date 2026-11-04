@@ -188,8 +188,10 @@ static bool epd_clock_refresh_one(const epd_model_t *epd, const gui_data_t *data
     return true;
 }
 
-/* 按变化填 1～2 个窗，逐个 OLD/NEW 局刷；任一个失败则放弃。 */
-bool epd_clock_refresh_try(const epd_model_t *epd, const gui_data_t *data)
+/* 按变化填 1～2 个窗，逐个 OLD/NEW 局刷；任一个失败则放弃。
+ * prepare_only 只做资格检查：与真正局刷使用同一套条件，但不绘制、不碰面板。 */
+bool epd_clock_refresh_try(const epd_model_t *epd, const gui_data_t *data,
+                           bool prepare_only)
 {
     clock_refresh_geom_t geom;
     clock_refresh_window_t wins[CLOCK_REFRESH_WINDOWS_MAX];
@@ -215,6 +217,7 @@ bool epd_clock_refresh_try(const epd_model_t *epd, const gui_data_t *data)
      * month. Repainting only digits would erase the resource-defined message. */
     if (geom.partial_sync_overlay && data->timestamp >= 1735689600U &&
         data->timestamp < 1738368000U) return false;
+    if (prepare_only) return true;
     n = clock_refresh_local_windows(&geom, s_clock_last_timestamp, data->timestamp,
                                     wins, CLOCK_REFRESH_WINDOWS_MAX);
     if (n == 0U) {

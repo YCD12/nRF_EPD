@@ -1,12 +1,18 @@
 #include "resource_transfer.h"
 #include "resource_protocol.h"
+#include "resource_store.h"
 #include "app_util_platform.h"
 #include "sdk_errors.h"
 #include <string.h>
 
+/* Retransmitted BLE writes are recognized by length + CRC32 instead of a full
+ * copy of the previous request. The packet buffers dominate this module's RAM;
+ * a 244 B duplicate cache was over-provisioned for a dedupe check (a 2^-32
+ * collision would only resend the previous reply instead of re-executing). */
 static struct {
-    uint8_t request[RESOURCE_PACKET_MAX], previous[RESOURCE_PACKET_MAX], reply[RESOURCE_PACKET_MAX];
+    uint8_t request[RESOURCE_PACKET_MAX], reply[RESOURCE_PACKET_MAX];
     uint8_t length, previous_length, reply_length;
+    uint32_t previous_crc;
     uint32_t generation, request_generation, last_activity;
     volatile bool pending, running, reply_pending;
 } m;
@@ -62,9 +68,10 @@ void resource_transfer_process(void *context, uint32_t generation, bool connecte
         m.running = true;
         m.pending = false;
         CRITICAL_REGION_EXIT();
-        if (m.previous_length != m.length || memcmp(m.previous, m.request, m.length)) {
+        const uint32_t request_crc = resource_crc32(0U, m.request, m.length);
+        if (m.previous_length != m.length || m.previous_crc != request_crc) {
             m.reply_length = resource_protocol_execute(m.request, m.length, m.reply);
-            memcpy(m.previous, m.request, m.length);
+            m.previous_crc = request_crc;
             m.previous_length = m.length;
         }
         m.last_activity = now;
@@ -74,6 +81,15 @@ void resource_transfer_process(void *context, uint32_t generation, bool connecte
     if (m.reply_pending) {
         /* Keep the reply on queue-full and transient failures. A disconnect
          * clears it in the next main turn; RX never performs SPI or HVX. */
-        if (send(context, generation, m.reply, m.reply_length) == NRF_SUCCESS) m.reply_pending = false;
+        uint32_t result = send(context, generation, m.reply, m.reply_length);
+        if (result == NRF_SUCCESS) {
+            m.reply_pending = false;
+        } else if (result != NRF_ERROR_RESOURCES && result != NRF_ERROR_BUSY) {
+            /* Terminal delivery failure: notifications are disabled, the
+             * connection changed, or the length is invalid. Dropping the reply
+             * lets the display worker run again; the peer's next request is
+             * re-executed/deduplicated and answered if it can receive. */
+            m.reply_pending = false;
+        }
     }
 }

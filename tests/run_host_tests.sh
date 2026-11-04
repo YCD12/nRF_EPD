@@ -10,6 +10,37 @@ CC="${HOST_CC:-gcc}"
 CFLAGS="${HOST_CFLAGS:--Wall -Werror -std=c11}"
 mkdir -p "$OUT"
 
+# Some checks use tempfile.TemporaryDirectory(ignore_cleanup_errors=...), which
+# needs Python >= 3.10. Under Cygwin, /usr/bin/python3 can be older than the
+# Windows Python on PATH, so probe candidates instead of assuming python3.
+python_ok() {
+    "$@" -c 'import sys; sys.exit(0 if sys.version_info >= (3, 10) else 1)' \
+        >/dev/null 2>&1
+}
+PYTHON="${HOST_PYTHON:-}"
+if [ -n "$PYTHON" ] && ! python_ok $(printf '%s\n' "$PYTHON"); then
+    echo "Error: HOST_PYTHON ($PYTHON) must be Python >= 3.10." >&2
+    exit 1
+fi
+if [ -z "$PYTHON" ]; then
+    for candidate in python3.14 python3.13 python3.12 python3.11 python3.10 python3 python; do
+        if command -v "$candidate" >/dev/null 2>&1 && python_ok "$candidate"; then
+            PYTHON="$candidate"
+            break
+        fi
+    done
+fi
+if [ -z "$PYTHON" ] && command -v py >/dev/null 2>&1 && python_ok py -3; then
+    PYTHON="py -3"
+fi
+if [ -z "$PYTHON" ]; then
+    echo "Error: host tests need Python >= 3.10 (python3 on PATH is older)." >&2
+    echo "       Set HOST_PYTHON to a suitable interpreter, e.g." >&2
+    echo "       HOST_PYTHON='py -3' build.bat test" >&2
+    exit 1
+fi
+echo "Host Python: $($PYTHON --version 2>&1)"
+
 run() {
     local name="$1"
     shift
@@ -89,6 +120,13 @@ run test_gui_render_fixed -DGFX_FIXED_BWR_PANEL=1 -DGFX_FIXED_FONT_DIRECTION_0=1
     GUI/GUI.c GUI/todo_items.c GUI/font_geometry.c tests/stubs/todo_resources_stub.c GUI/Adafruit_GFX.c GUI/u8g2_font.c GUI/Lunar.c GUI/calendar_annotations.c tests/stubs/calendar_resources_stub.c tests/stubs/ui_resources_stub.c \
     EPD/epd_clock_refresh.c tests/test_gui_render.c
 run test_uc8179 -IEPD -Itests/stubs -Itools/test/host/shim EPD/UC8179.c tests/uc8179_command_sequence_test.c
+run test_review_resource_reply_wedge -Itests/font_transfer_stubs -IEPD \
+    -ISDK/17.1.0_ddde560/components/libraries/util \
+    -ISDK/17.1.0_ddde560/components/softdevice/s112/headers \
+    EPD/resource_transfer.c EPD/resource_crc.c tests/test_review_resource_reply_wedge.c
+run test_review_clock_partial_eligibility -DUI_RESOURCES_HOST_TEST -IEPD -IGUI -Itests/stubs \
+    EPD/epd_clock_refresh.c EPD/epd_refresh_policy.c \
+    tests/stubs/ui_resources_stub.c tests/test_review_clock_partial_eligibility.c
 
 if command -v node >/dev/null 2>&1; then
     node --test tests/test_dfu_layout.cjs
@@ -115,25 +153,28 @@ if command -v node >/dev/null 2>&1; then
     node --test tests/test_paint_schedule.cjs
     node --test tests/test_image_workspace.cjs
     node --test tests/test_calendar_annotations_web.cjs
+    node --test tests/test_review_font_sync_busy.cjs
 else
     echo "Node.js unavailable; run node --test tests/test_ble_lifecycle.cjs separately."
 fi
 
-python3 tests/test_font_store_tool.py
-python3 tests/test_protocol_sync.py
-python3 tests/test_resource_pack.py
-python3 tools/export_web_template.py --check
-python3 tools/ui_resource_codec.py --check
-python3 tests/test_dfu_release.py
-python3 tests/test_service_lifecycle.py
-python3 tests/test_clock_timekeeping.py
-python3 tests/test_rtc_timer_lifecycle.py
-python3 tests/test_adc_voltage.py
-python3 tests/test_resources_reload.py
-python3 tests/test_dynamic_font.py
-python3 tests/test_gui_layout.py
-python3 tests/test_ui_render.py
-python3 tests/test_todo_integration.py
-python3 tests/test_todo_service_pipeline.py
+$PYTHON tests/test_font_store_tool.py
+$PYTHON tests/test_protocol_sync.py
+$PYTHON tests/test_build_config_parity.py
+$PYTHON tests/test_irq_handler_check.py
+$PYTHON tests/test_resource_pack.py
+$PYTHON tools/export_web_template.py --check
+$PYTHON tools/ui_resource_codec.py --check
+$PYTHON tests/test_dfu_release.py
+$PYTHON tests/test_service_lifecycle.py
+$PYTHON tests/test_clock_timekeeping.py
+$PYTHON tests/test_rtc_timer_lifecycle.py
+$PYTHON tests/test_adc_voltage.py
+$PYTHON tests/test_resources_reload.py
+$PYTHON tests/test_dynamic_font.py
+$PYTHON tests/test_gui_layout.py
+$PYTHON tests/test_ui_render.py
+$PYTHON tests/test_todo_integration.py
+$PYTHON tests/test_todo_service_pipeline.py
 
 echo "HOST_OK"

@@ -6,6 +6,21 @@
   const fonts = node ? require('./font_builder.js') : root.EPDWebFonts;
   const PARTITION = 7;
   const noop = () => {};
+  // RESOURCE ENTER (0x26 op 6) is rejected with RS_BUSY while the panel is
+  // refreshing or a queued display command still owns the shared SPI/display
+  // path. `upload()` sends ENTER before it writes anything, so a BUSY there is
+  // a retryable wait, not a failed write: retry the upload with the same cadence
+  // as todo_sync's acquire() (250 ms interval, 90 s budget) instead of entering
+  // the rollback path, which would rewrite the untouched font package.
+  const ENTER_RETRY_MS = 250, ENTER_BUSY_BUDGET_MS = 90000;
+  const after = ms => new Promise(resolve => setTimeout(resolve, ms));
+  const isBusy = error => !!error && error.code === 2;
+
+  // Release a maintenance session that was acquired but never written through.
+  async function releaseSession(client) {
+    try { await client.request(5); } catch (_) { /* ABORT is best effort. */ }
+    try { await client.leave(); } catch (_) { /* LEAVE is best effort. */ }
+  }
 
   function recoveryFailure(error, failure) {
     const result = new Error(`${error.message || error}；旧字库恢复未完成：${failure.message || failure}，请重新连接并修复设备资源`);
@@ -50,7 +65,7 @@
     const header = store.parseHeader(await client.readRange(partition.offset, 32), partition); check();
     if (header.revision !== original.revision || header.crc !== original.crc || header.length !== original.payload.length)
       throw new Error('生成期间设备字库已变化，请重新保存');
-    let entered = false;
+    let entered = false, wrote = false;
     // A deferred update belongs to the following TODO transaction. Keep its
     // prior package until that transaction either applies or restores both.
     const rollback = async () => {
@@ -68,9 +83,19 @@
       progress('正在保存新增字模到外置 Flash…');
       if (options.onWrite) options.onWrite();
       entered = true;
-      await client.upload(bytes, (done, total) => {
+      const upload = () => client.upload(bytes, (done, total) => {
+        wrote = true;
         check(); progress(`正在保存字模 ${Math.round(done * 100 / total)}%…`);
-      }, partitions); check();
+      }, partitions).then(() => check());
+      const deadline = Date.now() + ENTER_BUSY_BUDGET_MS;
+      for (;;) {
+        try { await upload(); break; }
+        catch (error) {
+          if (wrote || !isBusy(error) || Date.now() >= deadline) throw error;
+          progress('设备正在刷新，等待维护会话…');
+          await after(ENTER_RETRY_MS);
+        }
+      }
       if (status.verify) {
         const verified = await client.inspect(PARTITION); check();
         if (!verified || verified.code !== 0 || verified.revision !== next.revision ||
@@ -86,6 +111,14 @@
       entered = false;
       return { changed: true, added: extended.added };
     } catch (error) {
+      if (entered && isBusy(error) && !wrote) {
+        // RS_BUSY is only possible before the first data write (ENTER/BEGIN),
+        // so the installed package is still intact. Release the abandoned
+        // session and surface a retryable error instead of restoring it.
+        entered = false;
+        await releaseSession(client);
+        throw error;
+      }
       if (entered) {
         try {
           check();
