@@ -273,8 +273,8 @@ static void test_control_retry(void)
     epd_control_notifications_process(&p);
     assert(p.initial_notify == 2U && sent_length == sizeof(epd_config_t));
     epd_control_notifications_process(&p);
-    assert(p.initial_notify == 3U && sent_length == 6U);
-    assert(memcmp(sent_data, "mtu=20", sent_length) == 0);
+    assert(p.initial_notify == 3U && sent_length == 12U);
+    assert(memcmp(sent_data, "mtu=20 rle=1", sent_length) == 0);
     epd_control_notifications_process(&p);
     assert(p.initial_notify == 0U && sent_length == 6U);
     p.mode_ack_pending = true;

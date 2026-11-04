@@ -111,6 +111,10 @@ typedef struct {
     volatile uint8_t initial_notify; /**< 1=config, 2=MTU, 3=voltage; retry from main */
     volatile bool mode_ack_pending;
     uint8_t mode_ack[4]; /* Shared MODE / CLEAR / REFRESH completion slot. */
+    /* 0xA0/0xA1 单槽重发：HVX 满时由中断存入最新副本，主循环补发（latest wins）。 */
+    uint8_t bulk_reply[7];
+    uint8_t bulk_reply_len;
+    volatile bool bulk_reply_pending;
     epd_offline_t offline;
 
     // EPD 硬件与配置
@@ -136,6 +140,8 @@ typedef struct {
     uint8_t init_ack_token;
     uint8_t init_status;
     volatile uint32_t image_last_activity;
+    /* 首块 WRITE_BLOCK 已在中断登记，面板 init/切图片模式交给主循环完成。 */
+    volatile bool picture_entry_pending;
 
     epd_display_queue_t display_queue;
     calendar_annotations_tx_t annotations_tx;

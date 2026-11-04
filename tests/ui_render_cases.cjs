@@ -60,6 +60,10 @@ const hidden = ui.defaults();
 hidden.components.find(c => c.id === 23).flags = 1;
 add('hidden-temp', 5, hidden, tasks);
 add('voltage-rounding',1,ui.defaults(),undefined,{voltage_mv:3150});
+const battery = ui.defaults();
+battery.components.find(c => c.id === 26).text = ['{battery}%'];
+for (const mv of [3000, 2800, 2500, 2000])
+    add('battery-' + mv, 1, battery, undefined, { voltage_mv: mv });
 const holidayBackground=ui.defaults();holidayBackground.components.find(c=>c.id===3).background=0;
 add('holiday-background',1,holidayBackground,undefined,{timestamp:Math.floor(Date.UTC(2026,8,25,9)/1000),annotations:annos});
 (async () => {

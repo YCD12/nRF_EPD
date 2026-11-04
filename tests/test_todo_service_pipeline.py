@@ -29,6 +29,7 @@ handlers = retry_state + '\n' + '\n'.join(function(source, name) for name in (
     'epd_config_apply', 'epd_update_display_mode', 'epd_switch_from_clock_mode',
     'epd_command_ack', 'epd_todo_font_valid', 'cmd_set_mode',
     'epd_append_char', 'epd_append_uint', 'epd_make_prefixed_uint',
+    'epd_make_mtu_string',  # initial_notify stage2 "mtu=<n> rle=1"
     'epd_control_notifications_process', 'epd_resource_event', 'ble_epd_on_timer'))
 fixture = (ROOT / 'tests/todo_service_pipeline_fixture.c').read_text(encoding='utf-8')
 out = Path(os.environ.get('HOST_TEST_OUT', ROOT / '_build/host_tests'))

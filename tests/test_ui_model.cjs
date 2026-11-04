@@ -43,6 +43,21 @@ test('binary offsets, record sizes, trailing bytes and malformed template opcode
     assert.throws(() => ui.decode(encoded.subarray(0, encoded.length - 1)));
     assert.throws(() => ui.decode(Uint8Array.from([...encoded, 0])));
 });
+test('battery token renders the integer voltage curve and tracks voltage changes', () => {
+    const m = ui.defaults(), f = fonts(), calendar = defaults.calendar(), base = { mode: 1, timestamp: 1789347600 };
+    m.components.find(c => c.id === 26).text = ['{battery}%'];
+    const encoded = ui.decode(ui.encode(m)); // {battery} is token 21 and must round-trip through UIR2.
+    assert.equal(encoded.components.find(c => c.id === 26).text[0], '{battery}%');
+    for (const [voltage_mv, percent] of [[3000, '100'], [2800, '32'], [2500, '10'], [2000, '0']]) {
+        const runtime = { ...base, voltage_mv };
+        const literal = structuredClone(encoded);
+        literal.components.find(c => c.id === 26).text = [percent + '%'];
+        assert.deepEqual(render.render(encoded, calendar, f, runtime), render.render(literal, calendar, f, runtime),
+            `battery ${voltage_mv}mV must render as ${percent}%`);
+    }
+    assert.notDeepEqual(render.render(encoded, calendar, f, { ...base, voltage_mv: 3000 }),
+        render.render(encoded, calendar, f, { ...base, voltage_mv: 2000 }));
+});
 test('TODO capacity is computed from every visible resource pane and its row padding', () => {
     const m = ui.defaults();
     assert.equal(ui.todoCapacity(m, 58), 6);

@@ -425,6 +425,11 @@
               <FilePath>..\EPD\EPD_driver.c</FilePath>
             </File>
             <File>
+              <FileName>epd_rle.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\EPD\epd_rle.c</FilePath>
+            </File>
+            <File>
               <FileName>EPD_service.c</FileName>
               <FileType>1</FileType>
               <FilePath>..\EPD\EPD_service.c</FilePath>
@@ -1198,6 +1203,11 @@
               <FileName>EPD_driver.c</FileName>
               <FileType>1</FileType>
               <FilePath>..\EPD\EPD_driver.c</FilePath>
+            </File>
+            <File>
+              <FileName>epd_rle.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\EPD\epd_rle.c</FilePath>
             </File>
             <File>
               <FileName>EPD_service.c</FileName>

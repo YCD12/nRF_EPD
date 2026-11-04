@@ -280,6 +280,15 @@ test('UI text roles require matching glyphs and default placeholders create no m
   assert.deepEqual(require('../html/js/font_builder.js').gatherMissing(fonts(), packer.dependencies(base).requests), []);
   const calendar = defaults.calendar(); calendar.solar_festivals[0].name = '新 年';
   assert.ok(fontTool.requests(calendar)[1].text.includes('新 年'));
+  // {battery} prints 0-100 decimal digits like the other numeric tokens; a '%'
+  // next to it is ordinary literal template text and must be requested too.
+  const battery = defaults.ui();
+  const batteryText = battery.components.find(c => c.id === 26);
+  batteryText.text = ['{battery}%'];
+  const batteryRequests = fontTool.requests(defaults.calendar(), '', battery);
+  assert.ok(batteryRequests.some(item => item.slot === batteryText.fonts[0] && item.text.includes('0123456789')));
+  assert.ok(batteryRequests.some(item => item.slot === batteryText.fonts[0] && item.text.includes('%')));
+  assert.deepEqual(require('../html/js/font_builder.js').gatherMissing(fonts(), batteryRequests), []);
 });
 
 test('legacy glyph-offset repair preserves every bitmap and only advances the changed font package', async () => {

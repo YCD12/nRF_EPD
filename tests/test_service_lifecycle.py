@@ -13,7 +13,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def function(source, name):
-    match = re.search(r"(?:static )?(?:void|bool|size_t|uint32_t|rs_result_t) " + name + r"\([^;]+?\{", source)
+    match = re.search(r"(?:static )?(?:void|bool|size_t|uint16_t|uint32_t|rs_result_t) " + name + r"\([^;]+?\{", source)
     assert match, name
     end, depth = match.end(), 1
     while depth:
@@ -27,11 +27,17 @@ retry_reset = ('static volatile uint8_t s_display_retry_step;\n' +
                function(source, 'epd_display_retry_reset') + '\n')
 handlers = retry_reset + '\n'.join(function(source, name) for name in (
     'epd_append_char', 'epd_append_uint', 'epd_make_prefixed_uint',
+    'epd_make_mtu_string',
     'epd_send_prefixed_uint', 'epd_send_mtu', 'epd_send_time', 'epd_send_voltage',
     'on_connect', 'on_disconnect', 'cmd_init', 'epd_init_process',
     'epd_connection_process', 'cmd_reset_transfer', 'epd_config_pins_valid',
     'epd_config_validate', 'epd_config_apply', 'cmd_set_pins',
-    'epd_process_next_command', 'resource_notification_send', 'epd_todo_font_valid', 'epd_resource_event'))
+    'epd_process_next_command', 'resource_notification_send', 'epd_todo_font_valid', 'epd_resource_event',
+    # S-1/S-3: 图片模式主循环入口 + 0xA0/0xA1 单槽重发
+    'epd_bulk_reply_send', 'crc16_compute', 'send_block_response',
+    'send_transfer_status', 'epd_bulk_reply_process',
+    'epd_ensure_display', 'epd_update_display_mode', 'epd_switch_from_clock_mode',
+    'epd_enter_picture_mode', 'epd_picture_entry_process', 'cmd_write_block'))
 start = source.index('finish_refresh:') + len('finish_refresh:')
 end = source.index('\n}\n', start)
 finish = 'static void finish_refresh(ble_epd_t *p_epd) {\n' + '''
@@ -48,7 +54,8 @@ generated = out / 'service_lifecycle_generated.c'
 generated.write_text(fixture.replace('/* PRODUCTION_HANDLERS */', handlers + finish + pin), encoding='utf-8')
 exe = out / ('test_service_lifecycle.exe' if os.name == 'nt' else 'test_service_lifecycle')
 subprocess.run(shlex.split(os.environ.get('HOST_CC', 'gcc')) +
-               ['-Wall', '-Werror', '-std=c11', '-Itests/font_transfer_stubs', '-IEPD', '-IGUI', str(generated), '-o', str(exe)],
+               ['-Wall', '-Werror', '-std=c11', '-Itests/font_transfer_stubs', '-IEPD', '-IGUI', str(generated),
+                'EPD/epd_rle.c', '-o', str(exe)],
                cwd=ROOT, check=True)
 subprocess.run([str(exe.resolve())], check=True)
 
@@ -62,6 +69,7 @@ init_handlers += '\n' + function(
     'calendar_annotations_tx_cancel')
 init_handlers += '\n' + '\n'.join(function(source, name) for name in (
     'epd_append_char', 'epd_append_uint', 'epd_make_prefixed_uint',
+    'epd_make_mtu_string',
     'epd_config_pins_valid', 'epd_config_validate', 'epd_config_defaults', 'ble_epd_init',
     'ble_epd_notification_try_send', 'ble_epd_string_send',
     'resource_notification_send', 'epd_control_notifications_process'))

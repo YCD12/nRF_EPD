@@ -126,6 +126,19 @@ invalid:
     s_render_valid = false;
 }
 
+/* Battery percentage for the {battery} text token (0..100, no '%'). The
+ * integer curve mirrors html/js/ui_tools/ui_preview.js case 'battery'; keep
+ * both formulas in sync. 100 mV-scale samples: 1705 -> 100 %, 1584 -> 28 %,
+ * 1360 -> 4 %, 1136 -> 0 %. */
+static inline uint8_t ui_battery_percent(uint16_t voltage_mv) {
+    const uint16_t sample = (uint16_t)(((uint32_t)voltage_mv * 2047U) / 3600U);
+    if (sample > 1705U) return 100U;
+    if (sample > 1584U) return (uint8_t)(28U + (sample - 1584U) * 72U / (1705U - 1584U));
+    if (sample > 1360U) return (uint8_t)(4U + (sample - 1360U) * 24U / (1584U - 1360U));
+    if (sample > 1136U) return (uint8_t)((sample - 1136U) * 4U / (1360U - 1136U));
+    return 0U;
+}
+
 static void ui_binding(uint8_t token, char *out, uint16_t size, const tm_t *tm,
                        const struct Lunar_Date *lunar, const gui_data_t *data,
                        const int16_t *style) {
@@ -173,6 +186,9 @@ static void ui_binding(uint8_t token, char *out, uint16_t size, const tm_t *tm,
         break;
     case UI_TOKEN_TEMPERATURE:
         number = data->temperature;
+        break;
+    case UI_TOKEN_BATTERY:
+        number = (int)ui_battery_percent(data->voltage_mv);
         break;
     case UI_TOKEN_VOLTAGE: {
         uint16_t factor = 1U;

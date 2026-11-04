@@ -77,8 +77,9 @@
     collect(content);
     const result = requiredText.map((fixed, slot) => ({ slot, text: fixed + (slot < 2 ? text : '') }));
     if (ui) {
-      // Voltage, signed temperature, SSIDs and the SYNC TIME URL use the
-      // text slot selected by each component, including printable ASCII.
+      // Voltage, signed temperature, battery percentage, SSIDs and the SYNC
+      // TIME URL use the text slot selected by each component, including
+      // printable ASCII.
       for (const component of ui.components) {
         if (ui.version !== 2) throw new Error('请先迁移旧版布局');
         const add = (role, required) => result.push({slot:component.fonts[role],text:required});
@@ -89,7 +90,7 @@
             else if (/^\{c[0-2]\}$/.test(part)) continue;
             else if (part.startsWith('{')) {
               const token=part.slice(1,-1);
-              add(role,['year','month','day','month2','day2','week','todo_count','todo_daily','jieqi_days'].includes(token)?'0123456789':
+              add(role,['year','month','day','month2','day2','week','todo_count','todo_daily','jieqi_days','battery'].includes(token)?'0123456789':
                 token==='temperature'?'-0123456789':token==='voltage'?'0123456789.':
                 ['ssid','name_tail'].includes(token)?asciiText:text);
             } else add(role,part);

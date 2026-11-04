@@ -4,6 +4,7 @@
 #include <stddef.h>
 #include <string.h>
 #include "epd_refresh_policy.h"
+#include "epd_rle.h"
 #include "epd_protocol.h"
 #include "epd_cmd_policy.h"
 #include "EPD_config.h"
@@ -27,13 +28,24 @@ uint32_t app_sched_event_put(void *data, uint16_t length, app_sched_event_handle
 #define BLE_GATT_ATT_MTU_DEFAULT 23U
 #define NRF_ERROR_RESOURCES 19U
 #define NRF_ERROR_INVALID_STATE 8U
+#define NRF_ERROR_BUSY 17U
+#define NRF_SUCCESS 0U
 #define EPD_IMAGE_RX_TIMEOUT_S 30U
 typedef unsigned epd_model_id_t;
 #define EPD_UC8179_750_BWR 7U
+#define EPD_MAX_BLOCKS 512U
 typedef struct epd_model epd_model_t;
-typedef struct { void (*sleep)(const epd_model_t *); } driver_t;
+typedef struct {
+    void (*sleep)(const epd_model_t *);
+    void (*init)(const epd_model_t *);
+    void (*write_ram)(const epd_model_t *, uint8_t, uint8_t *, uint8_t);
+} driver_t;
 struct epd_model { unsigned id; const driver_t *drv; };
-typedef struct { bool transfer_active; uint8_t session_id; } image_transfer_ctx_t;
+typedef struct {
+    bool transfer_active;
+    uint8_t session_id;
+    uint16_t total_blocks, received_blocks;
+} image_transfer_ctx_t;
 typedef struct {
     unsigned conn_handle, connection_generation, max_data_len;
     epd_offline_t offline;
@@ -42,8 +54,12 @@ typedef struct {
     volatile uint8_t initial_notify;
     volatile bool mode_ack_pending;
     uint8_t mode_ack[4];
+    uint8_t bulk_reply[7];
+    uint8_t bulk_reply_len;
+    bool bulk_reply_pending;
     uint8_t init_model, init_token, init_ack_token, init_status, init_prior_commands;
     unsigned image_last_activity;
+    bool picture_entry_pending;
     const epd_model_t *epd;
     epd_config_t config;
     epd_cmd_queue_t cmd_queue;
@@ -54,9 +70,15 @@ typedef struct {
     uint8_t config_read_token;
 } ble_epd_t;
 typedef struct { struct { struct { unsigned conn_handle; } gap_evt; } evt; } ble_evt_t;
-static unsigned refs, init_calls, sleeps, requests, now, ack_error, ack_calls, gpio_calls;
-static bool busy_timeout, interrupt_init, busy_abort;
-static uint8_t last_ack[5];
+static unsigned refs, init_calls, driver_init_calls, ram_writes, sleeps, requests, now,
+                ack_error, ack_calls, gpio_calls;
+static bool busy_timeout, interrupt_init, busy_abort, picture_entry_init_expected;
+static uint8_t last_ack[16];
+static unsigned ack_len;
+static uint8_t last_ram[16];
+static uint8_t last_ram_cfg, last_ram_len;
+/* 与 EPD_service.c 的文件级 RLE 输出缓冲对应（静态量不随函数抽取）。 */
+static uint8_t s_rle_out[EPD_RLE_MAX_BLOCK];
 static ble_epd_t *current;
 static unsigned commands;
 static void epd_execute_command(ble_epd_t *p, uint8_t *data, uint16_t length) {
@@ -65,11 +87,24 @@ static void epd_execute_command(ble_epd_t *p, uint8_t *data, uint16_t length) {
 static void on_disconnect(ble_epd_t *, ble_evt_t *);
 static void cmd_init(ble_epd_t *, uint8_t *, uint16_t);
 static void panel_sleep(const epd_model_t *p) { (void)p; assert(refs); sleeps++; }
-static const driver_t driver = {panel_sleep};
+static void panel_init(const epd_model_t *p) { (void)p; assert(refs); driver_init_calls++; }
+static void panel_write_ram(const epd_model_t *p, uint8_t cfg, uint8_t *data, uint8_t len) {
+    (void)p;
+    assert(refs && len <= sizeof(last_ram));
+    last_ram_cfg = cfg;
+    last_ram_len = len;
+    memcpy(last_ram, data, len);
+    ram_writes++;
+}
+static const driver_t driver = {
+    .sleep = panel_sleep, .init = panel_init, .write_ram = panel_write_ram,
+};
 static const epd_model_t panel = {7, &driver};
 static const epd_model_t *epd_init(epd_model_id_t model) {
     (void)model;
-    assert(refs && current->init_running && current->is_refreshing);
+    /* epd_init_process 在 INIT 状态机里；S-1 的图片模式入口在主循环直接 init。 */
+    assert(refs && ((current->init_running && current->is_refreshing) ||
+                    picture_entry_init_expected));
     init_calls++;
     if (interrupt_init) {
         interrupt_init = false;
@@ -81,8 +116,12 @@ static const epd_model_t *epd_init(epd_model_id_t model) {
     return &panel;
 }
 static void EPD_GPIO_Init(void) { refs++; }
+static void EPD_GPIO_Ensure(void) { if (!refs) EPD_GPIO_Init(); }
 static void EPD_GPIO_Load(epd_config_t *cfg) { (void)cfg; }
 static void EPD_GPIO_Uninit(void) { assert(refs); refs--; }
+/* S-1 入口在主循环检查资源会话；主机 fixture 无资源传输，恒空闲。 */
+bool resource_protocol_entered(void) { return false; }
+bool resource_transfer_running(void) { return false; }
 #define EPD_LED_BLINK() ((void)0)
 static void EPD_ClearBusyAbort(void) { busy_abort = false; }
 static void EPD_RequestBusyAbort(void) { busy_abort = true; }
@@ -97,8 +136,11 @@ static void epd_display_request(ble_epd_t *p, unsigned ts) { (void)p; (void)ts; 
 static void calendar_annotations_tx_cancel(unsigned *p) { *p = 0; }
 static bool calendar_annotations_rx_active(void) { return true; }
 static unsigned ble_epd_notification_try_send(ble_epd_t *p, uint8_t *data, unsigned len) {
-    assert(p->conn_handle != BLE_CONN_HANDLE_INVALID && len == sizeof(last_ack));
-    memcpy(last_ack, data, len); ack_calls++; return ack_error;
+    assert(p->conn_handle != BLE_CONN_HANDLE_INVALID && len <= sizeof(last_ack));
+    memcpy(last_ack, data, len);
+    ack_len = len;
+    ack_calls++;
+    return ack_error;
 }
 static char last_text[16];
 static uint16_t voltage_mv = 3300U;
@@ -170,9 +212,9 @@ int main(void) {
     voltage_mv = 3300U;
     epd_send_voltage(current); assert(strcmp(last_text, "v=3300") == 0);
     current->max_data_len = UINT16_MAX;
-    epd_send_mtu(current); assert(strcmp(last_text, "mtu=65535") == 0);
+    epd_send_mtu(current); assert(strcmp(last_text, "mtu=65535 rle=1") == 0);
     current->max_data_len = 244U;
-    epd_send_mtu(current); assert(strcmp(last_text, "mtu=244") == 0);
+    epd_send_mtu(current); assert(strcmp(last_text, "mtu=244 rle=1") == 0);
     ble_evt_t event = {.evt = {.gap_evt = {.conn_handle = 1}}};
     on_connect(current, &event);
     assert(current->max_data_len == 20U); /* Never reuse a previous connection's MTU. */
@@ -351,6 +393,194 @@ int main(void) {
     assert(todo_items_ready());
     assert(epd_resource_event(current, RESOURCE_INVALIDATE, 1U << RS_PART_PARTITION_TABLE) == RS_OK);
     assert(!todo_items_ready() && !resources_ready);
+    /* =====================================================================
+     * S-1: 首块 WRITE_BLOCK 只登记主循环入口，中断内不 init、不写 RAM。
+     * ===================================================================== */
+    on_connect(current, &event);
+    epd_connection_process(current);
+    assert(refs == 1 && current->gpio_connection_ref && !current->disconnect_pending);
+    current->is_notification_enabled = true;
+    ack_error = 0;
+    current->config.display_mode = MODE_CLOCK;
+    current->epd = NULL;
+    /* 网页每次传图先发 RESET_TRANSFER（cmd_reset_transfer 会置 transfer_active=1），
+     * 再发块 0；此时 display_mode 仍是时钟模式，属于“真正的首块”。 */
+    current->transfer_ctx = (image_transfer_ctx_t){0};
+    current->transfer_ctx.transfer_active = true;
+    current->transfer_ctx.session_id = 7U;
+    current->picture_entry_pending = false;
+    unsigned init_before = init_calls;
+    unsigned drv_init_before = driver_init_calls;
+    unsigned ram_before = ram_writes;
+    uint8_t block0[9];
+    block0[0] = EPD_CMD_WRITE_BLOCK;
+    block0[1] = 0U;
+    block0[2] = 0U;
+    block0[3] = 1U;   /* total_blocks = 1 */
+    block0[4] = 0U;
+    block0[5] = 0x0FU; /* 块 0 的 DTM1 起始标志 */
+    block0[6] = 0xAAU;
+    uint16_t block_crc = crc16_compute(&block0[6], 1U);
+    block0[7] = block_crc & 0xFFU;
+    block0[8] = block_crc >> 8;
+
+    /* 非 0 块先到：只回 RESTART，不登记入口（避免误 init），也不写 RAM。 */
+    uint8_t block1[9];
+    memcpy(block1, block0, sizeof(block1));
+    block1[1] = 1U;
+    unsigned replies_before = ack_calls;
+    cmd_write_block(current, block1, sizeof(block1));
+    assert(init_calls == init_before && driver_init_calls == drv_init_before);
+    assert(ram_writes == ram_before && !current->picture_entry_pending);
+    assert(ack_calls == replies_before + 1U);
+    assert(last_ack[0] == EPD_RSP_BLOCK_ACK && last_ack[1] == 1U &&
+           last_ack[3] == EPD_BLOCK_STATUS_RESTART);
+
+    replies_before = ack_calls;
+    cmd_write_block(current, block0, sizeof(block0));
+    /* 中断内没有面板 init（驱动的/epd_init 都算）、没有写 RAM，只回 RESTART。 */
+    assert(init_calls == init_before && driver_init_calls == drv_init_before);
+    assert(ram_writes == ram_before);
+    assert(current->picture_entry_pending);
+    assert(ack_calls == replies_before + 1U && ack_len == 4U);
+    assert(last_ack[0] == EPD_RSP_BLOCK_ACK && last_ack[1] == 0U && last_ack[2] == 0U);
+    assert(last_ack[3] == EPD_BLOCK_STATUS_RESTART);
+
+    /* pending 已置时任意 WRITE_BLOCK（含非 0 块）都只回 RESTART，仍不 init。 */
+    cmd_write_block(current, block1, sizeof(block1));
+    assert(init_calls == init_before && driver_init_calls == drv_init_before);
+    assert(ram_writes == ram_before && current->picture_entry_pending);
+    assert(last_ack[0] == EPD_RSP_BLOCK_ACK && last_ack[1] == 1U &&
+           last_ack[3] == EPD_BLOCK_STATUS_RESTART);
+
+    /* 主循环 tick 完成面板 init 并切图片模式。 */
+    picture_entry_init_expected = true;
+    epd_picture_entry_process(current);
+    picture_entry_init_expected = false;
+    assert(!current->picture_entry_pending);
+    assert(init_calls == init_before + 1U);            /* epd_ensure_display -> epd_init */
+    assert(driver_init_calls == drv_init_before + 1U); /* 时钟模式 -> drv->init */
+    assert(current->epd == &panel && current->config.display_mode == MODE_PICTURE);
+
+    /* 网页从块 0 重传：ACK，且面板 write_ram 收到数据。 */
+    unsigned ram_before_ok = ram_writes;
+    replies_before = ack_calls;
+    cmd_write_block(current, block0, sizeof(block0));
+    assert(ram_writes == ram_before_ok + 1U);
+    assert(last_ram_cfg == 0x0FU && last_ram_len == 1U && last_ram[0] == 0xAAU);
+    assert(current->transfer_ctx.transfer_active && current->transfer_ctx.received_blocks == 1U);
+    assert(ack_calls == replies_before + 1U && ack_len == 4U);
+    assert(last_ack[0] == EPD_RSP_BLOCK_ACK && last_ack[1] == 0U &&
+           last_ack[3] == EPD_BLOCK_STATUS_OK);
+
+    /* =====================================================================
+     * RLE 块：total 字段 bit15=1，低 15 位是真实块数；CRC 仍按压缩流校验，
+     * 解压结果交给 write_ram；0xA1 的 total 必须回未置标志的真实块数。
+     * ===================================================================== */
+    current->transfer_ctx = (image_transfer_ctx_t){0};
+    current->transfer_ctx.transfer_active = true;
+    current->transfer_ctx.session_id = 9U;
+    uint8_t rle_block[10];
+    rle_block[0] = EPD_CMD_WRITE_BLOCK;
+    rle_block[1] = 0U;
+    rle_block[2] = 0U;   /* block 0 */
+    rle_block[3] = 0x01U;
+    rle_block[4] = 0x80U; /* total_field = 0x8001：RLE 标志 + 真实块数 1 */
+    rle_block[5] = 0x0FU;
+    rle_block[6] = 0x82U; /* repeat：count = 5 */
+    rle_block[7] = 0xAAU; /* value */
+    uint16_t rle_crc = crc16_compute(&rle_block[6], 2U);
+    rle_block[8] = rle_crc & 0xFFU;
+    rle_block[9] = rle_crc >> 8;
+    ram_before = ram_writes;
+    replies_before = ack_calls;
+    cmd_write_block(current, rle_block, sizeof(rle_block));
+    assert(ram_writes == ram_before + 1U);
+    assert(last_ram_cfg == 0x0FU && last_ram_len == 5U);
+    for (unsigned i = 0U; i < 5U; i++) assert(last_ram[i] == 0xAAU);
+    assert(current->transfer_ctx.total_blocks == 1U); /* 已剥掉 bit15 */
+    assert(current->transfer_ctx.received_blocks == 1U);
+    assert(ack_calls == replies_before + 1U && ack_len == 4U);
+    assert(last_ack[0] == EPD_RSP_BLOCK_ACK && last_ack[3] == EPD_BLOCK_STATUS_OK);
+    send_transfer_status(current); /* 0xA1：真实 total，不是 0x8001 */
+    assert(last_ack[0] == EPD_RSP_STATUS && last_ack[1] == 1U && last_ack[2] == 0U);
+    assert(last_ack[3] == 1U && last_ack[4] == 0U);
+    assert(last_ack[5] == 9U && last_ack[6] == 1U);
+
+    /* 非法 RLE（repeat 缺 value 字节）：回 0xA0 CRC(0x01)，不写 RAM、不计已收块。 */
+    current->transfer_ctx = (image_transfer_ctx_t){0};
+    current->transfer_ctx.transfer_active = true;
+    current->transfer_ctx.session_id = 10U;
+    uint8_t bad_rle[9];
+    bad_rle[0] = EPD_CMD_WRITE_BLOCK;
+    bad_rle[1] = 0U;
+    bad_rle[2] = 0U;
+    bad_rle[3] = 0x01U;
+    bad_rle[4] = 0x80U; /* total_field = 0x8001（RLE 标志） */
+    bad_rle[5] = 0x0FU;
+    bad_rle[6] = 0x82U; /* 截断的 repeat run：缺 value */
+    uint16_t bad_crc = crc16_compute(&bad_rle[6], 1U);
+    bad_rle[7] = bad_crc & 0xFFU;
+    bad_rle[8] = bad_crc >> 8;
+    ram_before = ram_writes;
+    replies_before = ack_calls;
+    cmd_write_block(current, bad_rle, sizeof(bad_rle));
+    assert(ram_writes == ram_before);
+    assert(current->transfer_ctx.received_blocks == 0U);
+    assert(ack_calls == replies_before + 1U && ack_len == 4U);
+    assert(last_ack[0] == EPD_RSP_BLOCK_ACK && last_ack[1] == 0U &&
+           last_ack[3] == EPD_BLOCK_STATUS_CRC);
+
+    /* =====================================================================
+     * S-3: 0xA0/0xA1 在 HVX 满时存入单槽，主循环重发；断开后丢弃。
+     * ===================================================================== */
+    current->initial_notify = 0U;
+    current->mode_ack_pending = false;
+    ack_error = NRF_ERROR_RESOURCES; /* HVX 满 */
+    replies_before = ack_calls;
+    current->transfer_ctx.total_blocks = 3U;
+    current->transfer_ctx.received_blocks = 2U;
+    current->transfer_ctx.transfer_active = true;
+    send_transfer_status(current);
+    assert(ack_calls == replies_before + 1U);
+    assert(current->bulk_reply_pending && ack_len == 7U && last_ack[0] == EPD_RSP_STATUS);
+    ack_error = 0;
+    epd_bulk_reply_process(current); /* 主循环重试（TX_COMPLETE 唤醒后同样走到） */
+    assert(!current->bulk_reply_pending);
+    assert(ack_calls == replies_before + 2U && ack_len == 7U);
+    assert(last_ack[0] == EPD_RSP_STATUS &&
+           last_ack[5] == current->transfer_ctx.session_id);
+
+    ack_error = NRF_ERROR_BUSY; /* HVX 满的另一种错误码 */
+    replies_before = ack_calls;
+    send_block_response(current, 5U, EPD_BLOCK_STATUS_OK);
+    assert(current->bulk_reply_pending && ack_calls == replies_before + 1U);
+    ack_error = 0;
+    epd_bulk_reply_process(current);
+    assert(!current->bulk_reply_pending && ack_calls == replies_before + 2U);
+    assert(ack_len == 4U && last_ack[0] == EPD_RSP_BLOCK_ACK && last_ack[1] == 5U &&
+           last_ack[3] == EPD_BLOCK_STATUS_OK);
+
+    /* 其它错误直接丢弃，不进入待发槽。 */
+    ack_error = NRF_ERROR_INVALID_STATE;
+    replies_before = ack_calls;
+    send_block_response(current, 7U, EPD_BLOCK_STATUS_CRC);
+    assert(!current->bulk_reply_pending && ack_calls == replies_before + 1U);
+    ack_error = 0;
+
+    /* 断开后清 pending，主循环不再发送。 */
+    ack_error = NRF_ERROR_RESOURCES;
+    send_block_response(current, 6U, EPD_BLOCK_STATUS_RESTART);
+    assert(current->bulk_reply_pending);
+    on_disconnect(current, NULL);
+    assert(!current->bulk_reply_pending && !current->picture_entry_pending);
+    unsigned calls_after_disconnect = ack_calls;
+    epd_bulk_reply_process(current);
+    assert(ack_calls == calls_after_disconnect);
+    epd_connection_process(current);
+    assert(refs == 0 && !current->disconnect_pending);
+
     puts("PASS: real INIT/disconnect/timeout/refresh cleanup and optional GPIO handlers");
+    puts("PASS: first WRITE_BLOCK enters picture mode in main; 0xA0/0xA1 retry after HVX full");
     return 0;
 }

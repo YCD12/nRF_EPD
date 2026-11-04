@@ -216,6 +216,14 @@
                     const value=Math.floor(((runtime.voltage_mv??3000)*factor+500)/1000);
                     return String(Math.floor(value/factor))+(s.voltage_decimals?'.'+String(value%factor).padStart(s.voltage_decimals,'0'):'');
                 }
+            case 'battery': {
+                    /* Same integer curve as GUI/ui_render.h ui_battery_percent(). */
+                    const sample=Math.floor(((runtime.voltage_mv??3000)*2047)/3600);
+                    return String(sample>1705?100:
+                        sample>1584?28+Math.floor(((sample-1584)*72)/(1705-1584)):
+                        sample>1360?4+Math.floor(((sample-1360)*24)/(1584-1360)):
+                        sample>1136?Math.floor(((sample-1136)*4)/(1360-1136)):0);
+                }
             case 'ssid': return runtime.ssid ?? 'EPD-1234';
             case 'name_tail': return [...(runtime.ssid ?? 'EPD-1234')].slice(-s.name_tail || Infinity).join('');
             case 'jieqi': return cal.jieqi_names[jq.index];

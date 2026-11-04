@@ -120,6 +120,7 @@ run test_gui_render_fixed -DGFX_FIXED_BWR_PANEL=1 -DGFX_FIXED_FONT_DIRECTION_0=1
     GUI/GUI.c GUI/todo_items.c GUI/font_geometry.c tests/stubs/todo_resources_stub.c GUI/Adafruit_GFX.c GUI/u8g2_font.c GUI/Lunar.c GUI/calendar_annotations.c tests/stubs/calendar_resources_stub.c tests/stubs/ui_resources_stub.c \
     EPD/epd_clock_refresh.c tests/test_gui_render.c
 run test_uc8179 -IEPD -Itests/stubs -Itools/test/host/shim EPD/UC8179.c tests/uc8179_command_sequence_test.c
+run test_rle -I. EPD/epd_rle.c tests/test_rle.c
 run test_review_resource_reply_wedge -Itests/font_transfer_stubs -IEPD \
     -ISDK/17.1.0_ddde560/components/libraries/util \
     -ISDK/17.1.0_ddde560/components/softdevice/s112/headers \
@@ -153,6 +154,8 @@ if command -v node >/dev/null 2>&1; then
     node --test tests/test_paint_schedule.cjs
     node --test tests/test_image_workspace.cjs
     node --test tests/test_review_bwr_dither.cjs
+    node --test tests/test_rle.cjs
+    node --test tests/test_rle_transfer.cjs
     node --test tests/test_calendar_annotations_web.cjs
     node --test tests/test_review_font_sync_busy.cjs
 else

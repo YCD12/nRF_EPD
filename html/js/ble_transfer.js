@@ -14,7 +14,7 @@
 const BleTransfer = {
     // Configuration constants
     MAX_RETRIES: 3,          // Maximum retry rounds
-    BATCH_SIZE: 20,          // GATT response fence every 20 blocks
+    BATCH_SIZE: 20,          // Fallback GATT response fence interval (blocks)
     BATCH_DELAY_MS: 150,     // Settle delay before the whole-layer status query
 
     // Logging level: 0=none, 1=errors, 2=info, 3=debug
@@ -30,6 +30,7 @@ const BleTransfer = {
     statusRequestId: 0,
     block0Sent: false,       // Track if block 0 has been sent for current layer
     restartRequested: false, // MCU 0x03: sequential stream must restart from 0
+    rleSupported: false,     // Firmware advertised "mtu=<n> rle=1" after INIT
 
     // Statistics for speed calculation
     transferStats: {
@@ -247,17 +248,22 @@ const BleTransfer = {
     /**
      * Send single block (fast mode, no ACK wait)
      * @param {number} blockId - Block ID
-     * @param {number} totalBlocks - Total number of blocks
-     * @param {Uint8Array} payload - Data payload
+     * @param {number} totalBlocks - Total number of blocks (without the RLE flag)
+     * @param {Uint8Array} payload - Data payload (raw bytes or one self-contained RLE stream)
      * @param {boolean} withResponse - Whether to wait for BLE write response
+     * @param {Object} owner - Device operation owner
+     * @param {boolean} rle - Set total-field bit15, telling the MCU to decode RLE
+     * @param {number} rawBytes - Uncompressed byte count for speed statistics
      */
-    async sendBlockFast(blockId, totalBlocks, payload, withResponse = false, owner = null) {
+    async sendBlockFast(blockId, totalBlocks, payload, withResponse = false, owner = null, rle = false, rawBytes = payload.length) {
         // Check connection before sending
         if (!this.isConnected()) {
             this.log(1, 'Cannot send block: BLE disconnected');
             throw new Error('BLE disconnected');
         }
 
+        // CRC always covers the payload actually put on the wire (RLE-compressed
+        // bytes for RLE blocks, raw bytes otherwise).
         const crc = this.crc16(payload);
 
         // Calculate cfg byte: low nibble=layer, high nibble=first block flag
@@ -272,13 +278,14 @@ const BleTransfer = {
             cfg = 0xF0 | (this.currentLayer & 0x0F);
         }
 
-        // Packet: [cmd][block_id:2][total:2][cfg:1][payload][crc:2]
+        // Packet: [cmd][block_id:2][total:2 (bit15=RLE)][cfg:1][payload][crc:2]
+        const totalField = totalBlocks | (rle ? 0x8000 : 0);
         const packet = new Uint8Array(8 + payload.length);
         packet[0] = EpdCmd.WRITE_BLOCK;
         packet[1] = blockId & 0xFF;
         packet[2] = blockId >> 8;
-        packet[3] = totalBlocks & 0xFF;
-        packet[4] = totalBlocks >> 8;
+        packet[3] = totalField & 0xFF;
+        packet[4] = totalField >> 8;
         packet[5] = cfg;
         packet.set(payload, 6);
         packet[6 + payload.length] = crc & 0xFF;
@@ -291,8 +298,8 @@ const BleTransfer = {
                                      withResponse, false, true, owner);
             if (!sent) throw new Error('BLE write rejected');
 
-            // Update statistics
-            this.transferStats.bytesSent += payload.length;
+            // Update statistics (原始数据长度语义，RLE 块也按解压前字节数统计)
+            this.transferStats.bytesSent += rawBytes;
             this.transferStats.blocksSent++;
         } catch (e) {
             this.log(1, `Failed to send block ${blockId}:`, e);
@@ -331,6 +338,41 @@ const BleTransfer = {
     },
 
     /**
+     * Read the configured GATT response fence interval (确认间隔, in blocks).
+     * Missing/invalid input falls back to BATCH_SIZE; clamped to 1..100.
+     * Every image layer reads it once when the transfer starts.
+     * @returns {number} Blocks between response-fenced writes
+     */
+    getResponseFenceInterval() {
+        const element = document.getElementById('interleavedcount');
+        const value = parseInt(element && element.value, 10);
+        if (!Number.isFinite(value)) return this.BATCH_SIZE;
+        return Math.max(1, Math.min(100, value));
+    },
+
+    /**
+     * Record the firmware RLE capability advertised by the INIT notification
+     * ("mtu=<n> rle=1"). Old firmware sends only "mtu=<n>", which disables it.
+     * Connection reset (init()/cancel()) clears the flag.
+     * @param {boolean} supported
+     */
+    setRleSupport(supported) {
+        const next = !!supported;
+        this.rleSupported = next;
+        this.log(2, `Firmware RLE support: ${next ? 'enabled' : 'disabled'}`);
+    },
+
+    /**
+     * Resolve the optional RLE codec loaded by js/rle.js (window.RleCodec).
+     * @returns {Object|null} codec or null when the script is not loaded
+     */
+    getRleCodec() {
+        if (typeof RleCodec !== 'undefined' && RleCodec) return RleCodec;
+        if (typeof window !== 'undefined' && window.RleCodec) return window.RleCodec;
+        return null;
+    },
+
+    /**
      * Send an image with CRC verification; retries restart the whole layer.
      * @param {Uint8Array} data - Image data to send
      * @param {string} step - 'bw' for black/white, 'red' for color layer
@@ -349,6 +391,14 @@ const BleTransfer = {
             this.log(2, 'Invalid MTU value, using default 20');
             mtu = 20;
         }
+        // 确认间隔来自 debug 输入（index.html#interleavedcount）：每次传图
+        // 开始时读取一次，非法/缺失回退 BATCH_SIZE；夹在 1..100 防止 0 除。
+        const fenceInterval = this.getResponseFenceInterval();
+        this.log(2, `GATT response fence interval: ${fenceInterval} block(s)`);
+        // RLE 能力由 main.js 从 "mtu=<n> rle=1" 通知设置。每层开始时快照，
+        // 保证本层块格式稳定；能力变化（如重连复位）从下一层生效。
+        const rleCodec = this.rleSupported ? this.getRleCodec() : null;
+        this.log(2, `RLE compression ${rleCodec ? 'enabled' : 'disabled'} for this layer`);
         const characteristic = epdCharacteristic;
         const generation = typeof connectionGeneration === 'number' ? connectionGeneration : 0;
         const check = () => {
@@ -397,16 +447,27 @@ const BleTransfer = {
                 }
 
                 const offset = blockId * chunkSize;
-                const payload = data.slice(offset, Math.min(offset + chunkSize, data.length));
-                if (payload.length === 0) {
+                const raw = data.slice(offset, Math.min(offset + chunkSize, data.length));
+                if (raw.length === 0) {
                     continue;
                 }
+                // 逐块决定是否 RLE：只有压缩后更小才用（压缩可能更大），同一
+                // 层内允许 raw/RLE 块混用。CRC 与块数/进度仍按该块载荷语义。
+                let payload = raw;
+                let rle = false;
+                if (rleCodec) {
+                    const encoded = rleCodec.encodeBlock(raw);
+                    if (encoded.length < raw.length) {
+                        payload = encoded;
+                        rle = true;
+                    }
+                }
 
-                const isLastInBatch = ((blockId + 1) % this.BATCH_SIZE === 0);
+                const isLastInBatch = ((blockId + 1) % fenceInterval === 0);
                 const isLastBlock = (blockId === totalBlocks - 1);
                 const useResponse = isLastInBatch || isLastBlock;
 
-                await this.sendBlockFast(blockId, totalBlocks, payload, useResponse, owner);
+                await this.sendBlockFast(blockId, totalBlocks, payload, useResponse, owner, rle, raw.length);
                 check();
 
                 if (onProgress) {
@@ -462,6 +523,7 @@ const BleTransfer = {
         this.cancel();
         this.block0Sent = false;
         this.restartRequested = false;
+        this.rleSupported = false;
         this.transferStats = {
             startTime: 0,
             bytesSent: 0,
@@ -474,6 +536,9 @@ const BleTransfer = {
         this.statusResolver = null;
         this.pendingStatus = null;
         this.expectedBlocks = 0;
+        // Connection reset: the next session must re-learn RLE support from the
+        // firmware's INIT notification, never reuse a stale advertisement.
+        this.rleSupported = false;
         this.statusRequestId++;
         if (resolve) resolve(null);
     }

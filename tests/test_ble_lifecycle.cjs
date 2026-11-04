@@ -73,6 +73,47 @@ function setupTimedImageSend(version = 0x39) {
   return { ...state, layers, writes, advanceClock: context.advanceClock };
 }
 
+// Run one CRC layer transfer with a given 确认间隔 (#interleavedcount) input and
+// record which block writes used the GATT response fence.
+async function runFenceTransfer({ value, missing = false, bytes = 300 } = {}) {
+  const { context, run } = setup();
+  const writes = [];
+  context.recordWrite = (withResponse, data) => writes.push({ withResponse, bytes: Array.from(data) });
+  context.setTimeout = (callback, delay) => setTimeout(callback, Math.min(delay, 10));
+  if (missing) {
+    const originalGetElementById = context.document.getElementById.bind(context.document);
+    context.document.getElementById = id => (id === 'interleavedcount' ? undefined : originalGetElementById(id));
+  } else {
+    context.document.getElementById('interleavedcount').value = value;
+  }
+  run(`bleDevice = {gatt:{connected:true}}; BleTransfer.logLevel = 0; BleTransfer.BATCH_DELAY_MS = 0;
+    document.getElementById('mtusize').value = 20;
+    epdCharacteristic = {
+      writeValueWithResponse: async data => {
+        recordWrite(true, data);
+        if (data[0] === EpdCmd.QUERY_STATUS) BleTransfer.handleNotification(Uint8Array.of(
+          0xa1, BleTransfer.expectedBlocks, 0, BleTransfer.expectedBlocks, 0, BleTransfer.sessionId, 1));
+      },
+      writeValueWithoutResponse: async data => recordWrite(false, data),
+    };`);
+  const ok = await run(`BleTransfer.sendImageWithResume(new Uint8Array(${bytes}), "bw")`);
+  const blockWrites = writes.filter(write => write.bytes[0] === run('EpdCmd.WRITE_BLOCK'));
+  const responseBlockIds = [];
+  let noResponseBlocks = 0;
+  for (const write of blockWrites) {
+    if (write.withResponse) responseBlockIds.push(write.bytes[1] | (write.bytes[2] << 8));
+    else noResponseBlocks++;
+  }
+  return { ok, totalBlocks: blockWrites.length, responseBlockIds, noResponseBlocks };
+}
+
+function expectedResponseBlockIds(totalBlocks, fenceInterval) {
+  const ids = [];
+  for (let blockId = 0; blockId < totalBlocks; blockId++)
+    if ((blockId + 1) % fenceInterval === 0 || blockId === totalBlocks - 1) ids.push(blockId);
+  return ids;
+}
+
 function setupRestart() {
   const state = setup(), listeners = new Set(), writes = [], toasts = [];
   const device = {name: 'NRF_EPD_test', gatt: {connected: true},
@@ -535,6 +576,21 @@ test('image packets fit MTU 23 and consecutive layers use distinct sessions', as
   assert.deepEqual(packets.filter(p => p[0] === 0x30).map(p => p.length), [20, 20, 9, 20, 20, 9]);
 });
 
+test('interleavedcount controls the GATT response fence interval with clamped fallbacks', async () => {
+  const cases = [['1', 1], ['3', 3], ['7', 7], ['abc', 20], ['0', 1], ['500', 100], [undefined, 20]];
+  for (const [value, fenceInterval] of cases) {
+    const label = value === undefined ? 'missing input' : `确认间隔='${value}'`;
+    const { ok, totalBlocks, responseBlockIds, noResponseBlocks } =
+      await runFenceTransfer(value === undefined ? { missing: true } : { value });
+    assert.equal(ok, true, `${label}: transfer still succeeds`);
+    assert.equal(totalBlocks, 25, `${label}: 300 bytes at MTU 20 = 25 blocks`);
+    assert.deepEqual(responseBlockIds, expectedResponseBlockIds(totalBlocks, fenceInterval),
+      `${label}: fence every ${fenceInterval} blocks (last block always fenced)`);
+    assert.equal(noResponseBlocks, totalBlocks - responseBlockIds.length,
+      `${label}: the remaining blocks use the no-response path`);
+  }
+});
+
 test('disconnect during image reset delay never sends blocks to the replacement connection', async () => {
   const { run, context } = setup();
   const packets = [];
@@ -687,6 +743,46 @@ test('queued GATT writes never run after disconnect/reconnect', async () => {
   run('disconnect(); gattServer = {connected:true}; epdCharacteristic = {};');
   release();
   assert.equal(await pending, false);
+});
+
+test('config readback corrects the debug driver select to the firmware model', () => {
+  const { run, context, logs } = setup();
+  const driver = context.document.getElementById('epddriver');
+  driver.options = [{ value: '01' }, { value: '07' }, { value: '0a' }];
+  driver.value = '01';
+  driver.querySelector = () => null;
+  let ditcherUpdates = 0;
+  context.recordDitcherUpdate = () => { ditcherUpdates++; };
+  run('updateDitcherOptions = recordDitcherUpdate;');
+  const notifyConfig = code => {
+    const config = new Array(14).fill(0);
+    config[7] = code;
+    config[12] = 1;
+    run(`handleNotify(new DataView(Uint8Array.from([${config}]).buffer))`);
+  };
+
+  // 14 字节配置通知（连接初始化时固件主动上报）：存在对应 option → 选中并记录日志。
+  notifyConfig(0x07);
+  assert.equal(driver.value, '07');
+  assert.ok(logs.some(message => message.includes('已按设备型号纠正驱动选择')));
+  assert.equal(ditcherUpdates, 1);
+
+  // 未知型号：保留用户当前选择并警告，不强行改写下拉/画布配置。
+  notifyConfig(0x7f);
+  assert.equal(driver.value, '07');
+  assert.ok(logs.some(message => message.includes('不在驱动列表') && message.includes('保留当前驱动选择')));
+  assert.equal(ditcherUpdates, 1);
+
+  // GET_CONFIG (0xA9) 配置回读同样纠正 select；不改变 dither/画布设置。
+  driver.value = '01';
+  run('configReadWaiter = { generation: connectionGeneration, token: 9, resolve: () => { configReadWaiter = null; } };');
+  const response = [0xa9, 9, 0, ...new Array(14).fill(0)];
+  response[3 + 7] = 0x0a;
+  run(`handleNotify(new DataView(Uint8Array.from([${response}]).buffer))`);
+  assert.equal(driver.value, '0a');
+  assert.equal(run('configReadWaiter'), null);
+  // 0xA9 回读只纠正下拉，不触发 updateDitcherOptions（避免导出时重置画布）。
+  assert.equal(ditcherUpdates, 1);
 });
 
 test('migration export reads the saved config and rejects stale or changed connections', async () => {

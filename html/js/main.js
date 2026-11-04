@@ -1282,6 +1282,7 @@ function handleNotify(value) {
         configReadWaiter.token === data[1]) {
       const config = data[2] === 0 ? Uint8Array.from(data.slice(3)) : null;
       if (config) lastDeviceConfig = Uint8Array.from(config);
+      if (config) applyDriverCodeFromConfig(config);
       configReadWaiter.resolve(config);
     }
     return;
@@ -1346,6 +1347,9 @@ function handleNotify(value) {
       document.getElementById('mtusize').value = mtuSize;
       addLog(`MTU 已更新为: ${mtuSize}`);
     }
+    // 新固件 INIT 后发送 "mtu=<n> rle=1" 表示支持按块 RLE 压缩；旧固件只有
+    // "mtu=<n>"，保持原文传输。能力在每次传图层开始时由 BleTransfer 读取。
+    if (typeof BleTransfer !== 'undefined') BleTransfer.setRleSupport(msg.includes('rle=1'));
     return;
   }
 
@@ -1373,7 +1377,8 @@ function handleNotify(value) {
     const epddriver = document.getElementById("epddriver");
     epdpins.value = bytes2hex(data.slice(0, 7));
     if (data.length > 10) epdpins.value += bytes2hex(data.slice(10, 11));
-    epddriver.value = bytes2hex(data.slice(7, 8));
+    // 配置回读后纠正 debug 驱动下拉；未知型号保留当前选择，不再强行改写。
+    const driverSupported = applyDriverCodeFromConfig(data);
     if (data.length > 12) {
       const weekStartEl = document.getElementById('weekStart');
       const weekStart = data[12];
@@ -1382,7 +1387,7 @@ function handleNotify(value) {
         lastWeekStartSent = weekStart;
       }
     }
-    updateDitcherOptions();
+    if (driverSupported) updateDitcherOptions();
 
     // 解析并显示设备型号和尺寸
     const driverCode = bytes2hex(data.slice(7, 8));
@@ -1583,6 +1588,12 @@ async function connect() {
       return;
     }
 
+    // 在订阅通知前初始化传图模块：固件可能在 CCCD 启用/INIT 后立即推送
+    // "mtu=<n> rle=1"，而 init() 会复位 RLE 能力，不能晚于该通知执行。
+    if (typeof BleTransfer !== 'undefined') {
+      BleTransfer.init();
+    }
+
     try {
       // 必须先挂监听器，再开启通知。固件会在 CCCD 写入完成时立即推送
       // 配置/MTU/电压，否则首批通知可能在 startNotifications() 返回前丢失。
@@ -1617,10 +1628,6 @@ async function connect() {
     }
     ensureConnected();
 
-    // Initialize CRC transfer module if available
-    if (typeof BleTransfer !== 'undefined') {
-      BleTransfer.init();
-    }
     if (window.CalendarAnnotations && EpdFirmwarePolicy.isNewFirmware(appVersion)) {
       await window.CalendarAnnotations.loadFromDevice(setupOperation);
       ensureConnected();
@@ -1940,6 +1947,26 @@ function updateCanvasSize() {
   }
   if (wasCropping) updateImage();
   updateOrientationBadge();
+}
+
+// 配置回读后把 debug 驱动下拉纠正为固件实际型号（config[7] = model_id）。
+// 仅当列表中存在对应 option 时选中并记录日志；未知型号保留当前选择并警告。
+// 只在配置回读（14 字节配置通知 / GET_CONFIG 响应）后调用，不干扰用户手动选择。
+function applyDriverCodeFromConfig(config) {
+  if (!config || config.length < 8) return false;
+  const epddriver = document.getElementById('epddriver');
+  if (!epddriver) return false;
+  const driverCode = bytes2hex(Uint8Array.from([config[7]]));
+  const options = epddriver.options || [];
+  const supported = Array.prototype.some.call(options, option => option && option.value === driverCode);
+  if (!supported) {
+    addLog(`警告：设备型号 ${driverCode} 不在驱动列表中，保留当前驱动选择。`);
+    return false;
+  }
+  if (epddriver.value === driverCode) return true;
+  epddriver.value = driverCode;
+  addLog(`已按设备型号纠正驱动选择: ${driverCode}`);
+  return true;
 }
 
 function updateDitcherOptions() {

@@ -149,6 +149,11 @@
 
 ## 5. 后续建议（未实施）
 
+> **2026-11-04 晚更新（第二轮）**：除 S-2 按用户要求暂缓外，本节原列的
+> S-1（§5.1）、RLE（§5.3）、S-3（§5.4）、`{battery}`/`interleavedcount`/
+> debug 驱动纠正（§5.5）均已在第二轮实施，结果见 §8；本节保留为第一轮评估
+> 记录，未实施项以 §8.4 为准。
+
 ### 5.1 S-1（高）：`WRITE_BLOCK` 首块面板初始化移出 SoftDevice 事件中断
 
 `on_write` 在 BLE 事件中断里同步执行 `epd_ensure_display` / `epd_enter_picture_mode`
@@ -218,3 +223,92 @@
   .\build.bat build
   node --test tests/test_image_workspace.cjs tests/test_ble_lifecycle.cjs tests/test_review_bwr_dither.cjs
   ```
+
+## 8. 第二轮实施（S-1/S-3、界面与 RLE，2026-11-04 晚）
+
+按用户要求"除 S-2 外继续按分析优化"，第二轮实施以下项目；S-2（Bootloader
+独立源码）按用户指示暂缓，未做。
+
+### 8.1 实施内容
+
+1. **S-1 首块 `WRITE_BLOCK` 面板初始化移出 SoftDevice 事件中断**（高优先级）
+   - `ble_epd_t` 增加 `picture_entry_pending`；`cmd_write_block` 在中断内只登记
+     并回 `0xA0 status=0x03 (RESTART)`，不再执行 `epd_ensure_display/epd_init/
+     drv->init`；新增 `epd_picture_entry_process()` 在主循环完成 GPIO 获取、
+     面板 init 与切图片模式（受连接/刷新/INIT/资源会话门控）；断连清除 pending。
+   - 网页已有的 RESTART→从块 0 重传语义直接复用，无新命令。
+   - 主机回归：块 0 后 init/driver-init/RAM 写调用数不变、主循环 tick 后各一次、
+     重发块 0 收到 ACK 且 `write_ram` 收到数据；负向对照可失败。
+2. **S-3 0xA0/0xA1 通知 HVX 满时可靠重发**：中断里把最新应答（≤7 B）存入单槽，
+   主循环（含 `HVN_TX_COMPLETE` 后下一轮）补发；其它错误丢弃、断连/CCCD 关闭
+   清槽。主机测试注入 `NRF_ERROR_RESOURCES`/`BUSY`/`INVALID_STATE` 验证保留/
+   丢弃/重发。
+3. **`{battery}` UI token（电量百分比）**：`resources/ui-schema.json` 追加
+   `battery`（21 号，既有 1–20 不变）并重新生成 `GUI/ui_schema.h` /
+   `html/js/ui_tools/ui_data.js`；固件 `ui_battery_percent()` 与网页预览使用
+   同一整数曲线（3000 mV→100、2800→32、2500→10、2000→0）；`font_store_tool.js`
+   的缺字生成列表同步纳入 `battery` 数字与 `%`。默认布局未改，金图不变。
+4. **`interleavedcount` 死控件接线**：传图时读取并 clamp 1..100（默认 20），
+   作为 GATT response fence 间隔；非法/缺失回退 `BATCH_SIZE`。
+5. **debug 驱动下拉纠正**：收到 14 B 配置通知/0xA9 回读后按固件 `config[7]`
+   选中实际型号（当前仅 `07`），未知型号保留选择并警告。
+6. **RLE 压缩传图（上游唯一可借鉴的功能）**
+   - 新模块 `EPD/epd_rle.c/.h`：每块自包含 RLE 解码（repeat `0x80|(count-3)`
+     count 3–130 +1B；literal `count-1` count 1–128 +原文），输出上限 236 B；
+     host 单测 `tests/test_rle.c`。
+   - `WRITE_BLOCK` 的 total 字段 **bit15=RLE 标志**，低 15 位为真实块数；固件
+     用 236 B 静态缓冲解压后按原 cfg `write_ram`，非法码流回 `0xA0 CRC` 且不写
+     RAM/不计块，`0xA1` 状态回真实 total；CRC 仍按压缩 payload 计算。
+   - 能力通告：`epd_send_mtu()` 与 initial-notify stage2 均发
+     `mtu=<n> rle=1`；网页 `html/js/rle.js` 编码器按块仅在更小时使用，能力由
+     `main.js` 从字符串通知解析（并修正 `BleTransfer.init()` 必须在订阅通知前
+     执行，否则先到的能力会被清掉）。旧网页/旧固件互不影响。
+   - 网页单测：`tests/test_rle.cjs`（14 项）+ `tests/test_rle_transfer.cjs`
+     （5 项：能力开关、全平色整层 RLE、混合 raw/RLE、reset 清能力、CRC/包长）。
+7. **协议文档**：`docs/ble-protocol.md` 增补 `0x30/0x31/0x32` 包格式、
+   `0xA0/0xA1` 通知格式、RLE 能力与格式、首块 RESTART 行为；低电量行为按
+   实现修正（已在第一轮完成）。
+
+### 8.2 体积与 RAM 结果（第二轮最终构建）
+
+| 指标 | 第一轮后 | 第二轮后 | 变化 |
+| --- | ---: | ---: | ---: |
+| 应用 BIN | 54,924 B | **55,772 B** | **+848 B** |
+| 应用区余量 | 2,420 B | **1,572 B** | −848 B |
+| `.text` | 54,704 B | 55,552 B | +848 B |
+| 静态 RAM（.data+.bss） | 9,204 B | **9,444 B** | **+240 B** |
+| RAM + 2 KiB 栈余量 | 4,404 B | **4,164 B** | −240 B |
+
+> RAM 的 +240 B 中 **236 B 是 RLE 静态解压缓冲 `s_rle_out`**（放在静态区而非
+> 中断栈），其余约 4 B 为 S-1/S-3 新增状态字段（含对齐）。BIN SHA-256：
+> `E46C29984FE5275034D11179025681FB2534934FE7F0BA588D64C31E1CB38B06`。
+> 应用区余量 1,572 B 仍高于 0，但低于 `check_flash_budget.py` 的 4 KiB 提示线；
+> 若继续加功能，建议先评估裁剪（例如不启用 `{battery}` 默认模板、RLE 只在
+> 需要时保留，或按 §5.1 的 8 KiB 数据区方案重排）。
+
+### 8.3 验证
+
+- **主机测试**：`build.bat build` 输出 `HOST_OK`（C 测试 + Node 28 个文件 +
+  Python 全部通过）。新增/扩展用例：`test_rle`（C）、`test_rle.cjs` 14 项、
+  `test_rle_transfer.cjs` 5 项、`test_service_lifecycle.py` 13 行 PASS（含
+  S-1/S-3 注入用例）、UI 渲染 29 例（含 4 个电池百分比电压点）、
+  `test_ble_lifecycle.cjs` 39 项（含 7 组 fence/驱动纠正/SLEEP 用例）。
+- **ARM 构建**：`Flash: 55,772 / 57,344`、`RAM static: 9,444`、
+  `RAM reserved: 11,492 / 15,656`（含 2 KiB 栈）、6 个强制 IRQ 强符号、
+  `check_flash_budget.py` 通过、`nrf52811_xxaa-full.hex` 生成成功；
+  `tests/test_application_build.py` 8/8 通过（含 `epd_rle.c` 加入 GNU/Keil
+  源文件列表后的真实构建与预处理检查）。
+- **网页**：`node --test tests/test_ble_lifecycle.cjs tests/test_rle_transfer.cjs
+  tests/test_rle.cjs tests/test_image_workspace.cjs` → 72 pass / 0 fail；
+  `tests/test_review_bwr_dither.cjs` 6 pass；legacy 三文件 106 pass。
+- **未验证**（无硬件/无 Keil）：真机首次传图的 RESTART 重试预算（正常初始化
+  ~40 ms，最坏 ~1 s）、真实 HVX 满时 latest-wins 的观感、RLE 实际省时/耗电、
+  `{battery}` 真机布局、Keil 编译。
+
+### 8.4 仍未实施
+
+- **S-2（高/发布）**：Bootloader 独立源码缺失（用户明确暂缓）。
+- **S-7（可选）**：RC ppm 的在线估计/售后可调；当前固定 -298 ppm 仅单板标定。
+- 低电量页/电池图标组件、v1.5 轻量页、多面板等仍按第一轮结论**不建议**。
+- 后续 Flash 余量若不足：优先评估 8 KiB 数据区重排（需 Bootloader 同步），
+  其次再考虑裁剪 RLE/电池 token 等新增功能。

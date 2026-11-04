@@ -82,6 +82,7 @@
 #include "epd_clock_refresh.h"
 #include "epd_cmd_policy.h"
 #include "epd_refresh_policy.h"
+#include "epd_rle.h"
 #include "calendar_annotations.h"
 #include "calendar_annotations_store.h"
 #include "resource_transfer.h"
@@ -97,6 +98,11 @@ static void epd_gui_update(void* p_event_data, uint16_t event_size);
 static void epd_command_ack(ble_epd_t *p_epd, const uint8_t *data, uint16_t length,
                          uint8_t result);
 uint32_t ble_epd_notification_try_send(ble_epd_t* p_epd, uint8_t* data, uint16_t length);
+
+/* RLE 块解压输出缓冲。cmd_write_block 运行在 SoftDevice 事件中断（ISR）里：
+ * 236 B 放静态区而不是栈（中断栈余量小）；ISR 内写块单线程顺序执行、
+ * 不会重入，主循环也不触碰该缓冲。 */
+static uint8_t s_rle_out[EPD_RLE_MAX_BLOCK];
 
 // ============================================================================
 // CRC16计算和传输响应函数
@@ -175,6 +181,35 @@ uint16_t crc16_compute(const uint8_t* data, uint16_t len) {
     return crc;
 }
 
+/**@brief 发送 0xA0/0xA1 实时应答，HVX 满时留一份最新副本给主循环重发
+ *
+ * @details 块 ACK 与状态查询是请求-应答类通知：SoftDevice 的 HVX 队列满时
+ * 返回 NRF_ERROR_RESOURCES/NRF_ERROR_BUSY，此时不能丢应答，只保留最新一条
+ * （latest wins：重复的 ACK/状态可容忍）交给 epd_control_notifications_process
+ * 在主循环（含 HVN_TX_COMPLETE 唤醒后的下一轮）补发。其它错误直接丢弃：
+ * 断连/参数错误重发也不会成功，而 on_disconnect/CCCD 关闭会清 pending。
+ *
+ * @param[in] p_epd  EPD服务结构指针
+ * @param[in] data   应答数据（含命令字节，最大 7B）
+ * @param[in] length 应答长度
+ */
+static void epd_bulk_reply_send(ble_epd_t* p_epd, uint8_t* data, uint16_t length) {
+    if (length > sizeof(p_epd->bulk_reply)) return;
+    uint32_t err = ble_epd_notification_try_send(p_epd, data, length);
+    if (err == NRF_ERROR_RESOURCES || err == NRF_ERROR_BUSY) {
+        CRITICAL_REGION_ENTER();
+        memcpy(p_epd->bulk_reply, data, length);
+        p_epd->bulk_reply_len = (uint8_t)length;
+        p_epd->bulk_reply_pending = true;
+        CRITICAL_REGION_EXIT();
+    } else if (err == NRF_SUCCESS && p_epd->bulk_reply_pending) {
+        /* 本次已入 HVX 队列，旧的待发副本已被更新，作废。 */
+        CRITICAL_REGION_ENTER();
+        p_epd->bulk_reply_pending = false;
+        CRITICAL_REGION_EXIT();
+    }
+}
+
 /**@brief 发送块响应(ACK/NACK)到APP
  *
  * @details 响应格式: [0xA0, block_id_L, block_id_H, status]
@@ -186,7 +221,7 @@ uint16_t crc16_compute(const uint8_t* data, uint16_t len) {
  */
 static void send_block_response(ble_epd_t* p_epd, uint16_t block_id, uint8_t status) {
     uint8_t rsp[] = {EPD_RSP_BLOCK_ACK, block_id & 0xFF, block_id >> 8, status};
-    ble_epd_string_send(p_epd, rsp, sizeof(rsp));
+    epd_bulk_reply_send(p_epd, rsp, sizeof(rsp));
 }
 
 /**@brief 发送传输状态响应到APP
@@ -206,7 +241,7 @@ static void send_transfer_status(ble_epd_t* p_epd) {
     rsp[5] = p_epd->transfer_ctx.session_id;
     rsp[6] = p_epd->transfer_ctx.transfer_active ? 1 : 0;
 
-    ble_epd_string_send(p_epd, rsp, sizeof(rsp));
+    epd_bulk_reply_send(p_epd, rsp, sizeof(rsp));
     NRF_LOG_INFO("[EPD]: Transfer status sent: total=%d, received=%d, session=%d, active=%d\n",
                  p_epd->transfer_ctx.total_blocks, p_epd->transfer_ctx.received_blocks,
                  p_epd->transfer_ctx.session_id, p_epd->transfer_ctx.transfer_active);
@@ -707,6 +742,8 @@ static void on_disconnect(ble_epd_t* p_epd, ble_evt_t* p_ble_evt) {
     p_epd->config_read_pending = false;
     p_epd->initial_notify = 0U;
     p_epd->mode_ack_pending = false;
+    p_epd->picture_entry_pending = false;
+    p_epd->bulk_reply_pending = false;
     p_epd->disconnect_pending = true;
     p_epd->init_pending = false;
     p_epd->init_ack_pending = false;
@@ -768,6 +805,40 @@ static void epd_enter_picture_mode(ble_epd_t *p_epd)
     epd_update_display_mode(p_epd, MODE_PICTURE);
 }
 
+/* S-1：首块 WRITE_BLOCK 登记后的图片模式入口，只在主循环执行。
+ * 中断里只置 picture_entry_pending 并回 RESTART，避免 UC8179 复位/BUSY
+ * 等待（最长 1000 ms，未初始化时还会二次 init）占用 SoftDevice 事件中断。
+ * 有刷新/INIT/资源会话/断连时保留 pending，下一轮主循环再试；网页此时
+ * 会按 RESTART 语义从块 0 重传。入口执行后成功回 ACK，失败保留可重试。 */
+static void epd_picture_entry_process(ble_epd_t *p_epd)
+{
+    if (!p_epd->picture_entry_pending) return;
+    if (p_epd->conn_handle == BLE_CONN_HANDLE_INVALID || p_epd->disconnect_pending ||
+        !p_epd->gpio_connection_ref || p_epd->is_refreshing ||
+        p_epd->init_pending || p_epd->init_running || p_epd->init_ack_pending ||
+        resource_protocol_entered() || resource_transfer_running()) {
+        return; /* 保留 pending，等主循环下一次 tick；中断已回 RESTART。 */
+    }
+    if (p_epd->epd != NULL &&
+        !epd_is_clock_mode((display_mode_t)p_epd->config.display_mode)) {
+        p_epd->picture_entry_pending = false;
+        return; /* 已由其它主循环路径完成入口（幂等），无需重复 init。 */
+    }
+    EPD_ClearBusyAbort();
+    UC8179_ClearBusyTimeout();
+    if (!epd_ensure_display(p_epd)) {
+        p_epd->force_full_refresh = true;
+        return; /* 保留 pending：下一轮主循环重试，网页重发块 0 也不丢请求。 */
+    }
+    epd_enter_picture_mode(p_epd);
+    /* 入口期间保持 pending：中断里的块 0 继续回 RESTART（不会重复登记），
+     * 完成后再放行正常块写入。 */
+    p_epd->picture_entry_pending = false;
+    if (UC8179_HadBusyTimeout()) {
+        p_epd->force_full_refresh = true; /* 静默重试：块 0 重传会重新走入口。 */
+    }
+}
+
 /* 拼 t=/v=/mtu= 通知串。 */
 static size_t epd_append_char(char* out, size_t out_size, size_t pos, char value) {
     if (out_size > 0 && pos < out_size - 1) {
@@ -807,6 +878,22 @@ static size_t epd_make_prefixed_uint(char* out, size_t out_size, const char* pre
     return (pos < out_size) ? pos : (out_size - 1);
 }
 
+/* 生成 "mtu=<n> rle=1" 能力串：网页按 parseInt(...,10) 取 MTU、按
+ * includes('rle=1') 判定支持压缩块。输出上限 16B（"mtu=65535 rle=1" 为
+ * 15 字符 + NUL），调用方缓冲须 >= 16B；超长时安全截断并保证 NUL。 */
+static size_t epd_make_mtu_string(char* out, size_t out_size, uint16_t mtu) {
+    static const char suffix[] = " rle=1";
+    size_t pos = epd_make_prefixed_uint(out, out_size, "mtu=", mtu);
+
+    for (size_t i = 0; suffix[i] != '\0'; i++) {
+        pos = epd_append_char(out, out_size, pos, suffix[i]);
+    }
+    if (out_size > 0) {
+        out[(pos < out_size) ? pos : (out_size - 1)] = '\0';
+    }
+    return (pos < out_size) ? pos : (out_size - 1);
+}
+
 static void epd_send_prefixed_uint(ble_epd_t *p_epd, const char *prefix, uint32_t value)
 {
     /* Longest prefix (mtu=), uint32 decimal and terminator fit in 15 bytes. */
@@ -829,12 +916,15 @@ static void epd_send_voltage(ble_epd_t* p_epd) {
     epd_send_prefixed_uint(p_epd, "v=", EPD_ReadVoltageAndCache());
 }
 
-/**@brief 发送MTU大小到BLE对端
+/**@brief 发送MTU大小与 RLE 能力到BLE对端
  *
  * @param[in] p_epd  EPD服务结构指针
  */
 static void epd_send_mtu(ble_epd_t* p_epd) {
-    epd_send_prefixed_uint(p_epd, "mtu=", p_epd->max_data_len);
+    /* "mtu=65535 rle=1" 共 15 字符 + NUL，16B 缓冲刚好。 */
+    char buf[16];
+    size_t len = epd_make_mtu_string(buf, sizeof(buf), p_epd->max_data_len);
+    ble_epd_string_send(p_epd, (uint8_t *)buf, len);
 }
 
 /**@brief 解析SET_TIME/SYNC_TIME_SILENT中的时间戳
@@ -1010,6 +1100,8 @@ static void epd_connection_process(ble_epd_t *p_epd)
         CRITICAL_REGION_ENTER();
         refresh = true; /* Apply time/mode/resource changes after maintenance. */
         memset(&p_epd->transfer_ctx, 0, sizeof(p_epd->transfer_ctx));
+        p_epd->picture_entry_pending = false;
+        p_epd->bulk_reply_pending = false;
         p_epd->disconnect_pending = false;
         CRITICAL_REGION_EXIT();
     }
@@ -1270,16 +1362,39 @@ static void cmd_write_block(ble_epd_t *p_epd, uint8_t *p_data, uint16_t length) 
     uint16_t block_id;
 
     if (length < 8) return;
+    block_id = p_data[1] | (p_data[2] << 8);
     if (epd_picture_write_blocked(p_epd->is_refreshing) ||
         p_epd->disconnect_pending || !p_epd->gpio_connection_ref || p_epd->cmd_queue.is_processing ||
         p_epd->init_pending || p_epd->init_running || p_epd->init_ack_pending) {
-        block_id = p_data[1] | (p_data[2] << 8);
+        send_block_response(p_epd, block_id, EPD_BLOCK_STATUS_RESTART);
+        return;
+    }
+    /* S-1：本函数运行在 SoftDevice 事件中断里。面板尚未初始化、或仍处于
+     * 时钟模式时，首次进入图片模式必须由主循环完成（UC8179 复位 30 ms +
+     * 最长 1000 ms BUSY，还会二次 init），这里只登记请求并回 RESTART，
+     * 让网页已有的“从块 0 重传”兜底；中断内绝不调用 epd_init/驱动 init。 */
+    if (p_epd->picture_entry_pending) {
+        /* 入口尚未执行：任何块（含重发的块 0）都让网页继续等/重传。 */
+        send_block_response(p_epd, block_id, EPD_BLOCK_STATUS_RESTART);
+        return;
+    }
+    if (p_epd->epd == NULL ||
+        epd_is_clock_mode((display_mode_t)p_epd->config.display_mode)) {
+        /* 块 0 才登记入口。注意 RESET_TRANSFER 会先把 transfer_active 置 1 而
+         * display_mode 仍为时钟模式（这是网页每次传图的正常起点），所以这里
+         * 不能要求“无进行中传输”，否则 block 0 永远回 RESTART、反复重传。 */
+        if (block_id == 0U) {
+            p_epd->picture_entry_pending = true;
+        }
         send_block_response(p_epd, block_id, EPD_BLOCK_STATUS_RESTART);
         return;
     }
     if (!epd_ensure_display(p_epd)) return;
-    block_id = p_data[1] | (p_data[2] << 8);
-    uint16_t total_blocks = p_data[3] | (p_data[4] << 8);
+    /* total 字段 bit15 = 本块 payload 为 RLE 压缩流（网页只在压缩更小时置位），
+     * 低 15 位是真实块数；0xA1 状态必须回未置标志的真实块数。 */
+    uint16_t total_field  = p_data[3] | (p_data[4] << 8);
+    bool     rle          = (total_field & 0x8000U) != 0U;
+    uint16_t total_blocks = total_field & 0x7FFFU;
     uint8_t  cfg         = p_data[5];
     uint16_t payload_len = length - 8;
     uint8_t *payload     = &p_data[6];
@@ -1337,11 +1452,27 @@ static void cmd_write_block(ble_epd_t *p_epd, uint8_t *p_data, uint16_t length) 
                 return;
             }
 
-            p_epd->epd->drv->write_ram(p_epd->epd, cfg, payload, payload_len);
+            /* RLE 块：CRC 仍按收到的压缩 payload 校验；写面板前解压到静态缓冲。
+             * 码流不完整/越界按坏块处理：回 CRC 状态，不写 RAM、不计已收块，
+             * 网页会用同一块号重传。 */
+            uint16_t write_len = payload_len;
+            const uint8_t *write_data = payload;
+            if (rle) {
+                if (!epd_rle_decompress(payload, payload_len, s_rle_out,
+                                        sizeof(s_rle_out), &write_len)) {
+                    NRF_LOG_WARNING("[EPD]: Block %d RLE decode failed\n", block_id);
+                    send_block_response(p_epd, block_id, EPD_BLOCK_STATUS_CRC);
+                    return;
+                }
+                write_data = s_rle_out;
+            }
+
+            p_epd->epd->drv->write_ram(p_epd->epd, cfg, (uint8_t *)write_data,
+                                       (uint8_t)write_len);
             p_epd->transfer_ctx.received_blocks++;
             if (block_id == 0 || block_id + 1U == total_blocks) {
-                NRF_LOG_INFO("[LEGACY] block=%u/%u cfg=0x%02x CRC OK",
-                             block_id, total_blocks, cfg);
+                NRF_LOG_INFO("[LEGACY] block=%u/%u cfg=0x%02x rle=%u CRC OK",
+                             block_id, total_blocks, cfg, rle ? 1U : 0U);
             }
         }
         send_block_response(p_epd, block_id, EPD_BLOCK_STATUS_OK);
@@ -1599,10 +1730,13 @@ static void epd_control_notifications_process(ble_epd_t *p_epd)
         if (stage == 1U) {
             memcpy(reply, &p_epd->config, sizeof(epd_config_t));
             length = sizeof(epd_config_t);
+        } else if (stage == 2U) {
+            /* "mtu=<n> rle=1"：reply 16B 缓冲刚好容纳最大长度。 */
+            length = epd_make_mtu_string((char *)reply, sizeof(reply),
+                                         p_epd->max_data_len);
         } else {
-            length = epd_make_prefixed_uint((char *)reply, sizeof(reply),
-                stage == 2U ? "mtu=" : "v=",
-                stage == 2U ? p_epd->max_data_len : EPD_ReadVoltageAndCache());
+            length = epd_make_prefixed_uint((char *)reply, sizeof(reply), "v=",
+                                            EPD_ReadVoltageAndCache());
         }
         if (resource_notification_send(p_epd, generation, reply, length) == NRF_SUCCESS) {
             CRITICAL_REGION_ENTER();
@@ -1621,6 +1755,36 @@ static void epd_control_notifications_process(ble_epd_t *p_epd)
         if (generation == p_epd->connection_generation && p_epd->mode_ack_pending &&
             memcmp(ack, p_epd->mode_ack, sizeof(ack)) == 0)
             p_epd->mode_ack_pending = false;
+        CRITICAL_REGION_EXIT();
+    }
+}
+
+/* S-3：0xA0/0xA1 在 HVX 满时由中断存入单槽，主循环每轮（含
+ * HVN_TX_COMPLETE 唤醒后的下一轮）补发一次；成功且槽未被更新才清 pending，
+ * 避免与中断里刚写入的更新副本竞争。由 ble_epd_process 紧跟
+ * epd_control_notifications_process 调用，位于 initial/mode_ack 重试之后，
+ * 不抢占既有关键通知的重试机会。 */
+static void epd_bulk_reply_process(ble_epd_t *p_epd)
+{
+    if (!p_epd->bulk_reply_pending) return;
+    if (!p_epd->is_notification_enabled || p_epd->disconnect_pending ||
+        p_epd->conn_handle == BLE_CONN_HANDLE_INVALID) {
+        p_epd->bulk_reply_pending = false;
+        return;
+    }
+    uint8_t bulk[sizeof(p_epd->bulk_reply)];
+    uint8_t bulk_len;
+    CRITICAL_REGION_ENTER();
+    bulk_len = p_epd->bulk_reply_len;
+    if (bulk_len > (uint8_t)sizeof(bulk)) bulk_len = 0U;
+    else if (bulk_len > 0U) memcpy(bulk, p_epd->bulk_reply, bulk_len);
+    CRITICAL_REGION_EXIT();
+    if (bulk_len > 0U &&
+        ble_epd_notification_try_send(p_epd, bulk, bulk_len) == NRF_SUCCESS) {
+        CRITICAL_REGION_ENTER();
+        if (bulk_len == p_epd->bulk_reply_len &&
+            memcmp(bulk, p_epd->bulk_reply, bulk_len) == 0)
+            p_epd->bulk_reply_pending = false;
         CRITICAL_REGION_EXIT();
     }
 }
@@ -1742,6 +1906,7 @@ static void epd_battery_process(ble_epd_t *p_epd) {
 void ble_epd_process(ble_epd_t* p_epd) {
     epd_connection_process(p_epd);
     epd_init_process(p_epd);
+    epd_picture_entry_process(p_epd);
     epd_battery_process(p_epd);
     resource_protocol_set_data_limit(p_epd->max_data_len);
     resource_transfer_process(p_epd, p_epd->connection_generation,
@@ -1760,6 +1925,7 @@ void ble_epd_process(ble_epd_t* p_epd) {
         calendar_annotations_store_process();
     }
     epd_control_notifications_process(p_epd);
+    epd_bulk_reply_process(p_epd);
     epd_record_ack_process(p_epd);
     epd_config_readback_process(p_epd);
     calendar_annotations_tx_process(&p_epd->annotations_tx, p_epd->max_data_len,
@@ -1852,6 +2018,7 @@ static void on_write(ble_epd_t* p_epd, ble_evt_t* p_ble_evt) {
             p_epd->is_notification_enabled = false;
             p_epd->initial_notify = 0U;
             p_epd->mode_ack_pending = false;
+            p_epd->bulk_reply_pending = false;
         }
     } else if (p_evt_write->handle == p_epd->char_handles.value_handle) {
         // 特性值写入,处理命令
