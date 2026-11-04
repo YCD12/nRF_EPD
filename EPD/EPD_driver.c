@@ -167,6 +167,8 @@ void EPD_GPIO_Uninit(void) {
     pinMode(EPD_DC_PIN, DEFAULT);
     pinMode(EPD_RST_PIN, DEFAULT);
     pinMode(EPD_BUSY_PIN, DEFAULT);
+    /* 可选引脚不单独判断 0xFF：pinMode() 内部有 nrf_gpio_pin_present_check()，
+     * 对无效 pin 直接返回；C-06 实测加判断后反而 +12 B（pin 是运行期变量）。 */
     pinMode(EPD_BS_PIN, DEFAULT);
     pinMode(EPD_EN_PIN, DEFAULT);
     pinMode(EPD_LED_PIN, DEFAULT);
@@ -176,7 +178,7 @@ void EPD_GPIO_Uninit(void) {
 /**
  * SPI写入数据
  *
- * @param value 要写入的数据指针
+ * @param value 要写入的数据指针(必须在 RAM 中，EasyDMA 限制)
  * @param len 数据长度
  *
  * 自动检测并配置MOSI引脚为输出模式
@@ -190,25 +192,13 @@ void EPD_SPI_Write(uint8_t* value, uint8_t len) {
         nrf_spi_pins_set(HAL_SPI_INSTANCE, EPD_SCLK_PIN, EPD_MOSI_PIN, NRF_SPI_PIN_NOT_CONNECTED);
     }
 
-#if (SPI0_USE_EASY_DMA == 1)
-    // 如果启用 EasyDMA，检测地址是否在 Flash 中。如果是，复制到 RAM 中再传输。
-    if ((uint32_t)value < 0x20000000 && len > 0) {
-        uint8_t ram_buf[128];
-        uint8_t remaining = len;
-        uint8_t* ptr = value;
-        while (remaining > 0) {
-            uint8_t chunk = (remaining > 128) ? 128 : remaining;
-            memcpy(ram_buf, ptr, chunk);
-            APP_ERROR_CHECK(nrf_drv_spi_transfer(&spi, ram_buf, chunk, NULL, 0));
-            ptr += chunk;
-            remaining -= chunk;
-        }
-    } else {
-        APP_ERROR_CHECK(nrf_drv_spi_transfer(&spi, value, len, NULL, 0));
-    }
-#else
+    /* EasyDMA 只能直接访问 RAM：所有传进来的 buffer 必须在 RAM 中，
+     * 不得传入 Flash（const 全局/字符串常量等）指针。
+     * 现有调用点均为 RAM：EPD_WriteCmd 的 &cmd、EPD_Write 宏的栈数组、
+     * EPD_FillRAM 的栈缓冲区、UC8179 的 LUT/栈/GFX 页缓冲、BLE payload。
+     * 原先按地址 < 0x20000000 判定 Flash 再 memcpy 到栈缓冲的分支没有
+     * 任何调用者，已删除。 */
     APP_ERROR_CHECK(nrf_drv_spi_transfer(&spi, value, len, NULL, 0));
-#endif
 }
 
 /**

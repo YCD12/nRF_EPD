@@ -74,7 +74,7 @@ function labDistance(lab1, lab2) {
   return Math.sqrt(0.2 * dl * dl + 3 * da * da + 3 * db * db);
 }
 
-const paletteLabs = new Map([rgbPalette, fourColorPalette].map(palette =>
+const paletteLabs = new Map([rgbPalette, fourColorPalette, threeColorPalette].map(palette =>
   [palette, palette.map(color => rgbToLab(color.r, color.g, color.b))]));
 
 function findClosestColor(r, g, b, mode) {
@@ -95,17 +95,8 @@ function findClosestColor(r, g, b, mode) {
     return rgbPalette[2]; // 蓝色
   }
 
-  // 三色模式下优先检测红色
-  if (mode === 'threeColor') {
-    // 与发送阶段使用同一红色判定，避免预览与实际像素分类不一致。
-    if (r > 160 && r > g && r > b) {
-      return threeColorPalette[2]; // 红色
-    }
-    // 否则根据亮度选择黑或白
-    const luminance = 0.299 * r + 0.587 * g + 0.114 * b;
-    return luminance < 140 ? threeColorPalette[0] : threeColorPalette[1]; // 黑色或白色
-  }
-
+  // 三色与四色共用调色板最近色（Lab 距离）分类；预览与发送必须同源，
+  // 避免阈值判定与最近色判定在预览/设备像素上不一致。
   const inputLab = rgbToLab(r, g, b);
   let minDistance = Infinity;
   let closestColor = palette[0];
@@ -383,8 +374,6 @@ function processImageData(imageData, mode) {
     }
   } else if (mode === 'threeColor') {
     const byteWidth = Math.ceil(width / 8);
-    const blackWhiteThreshold = 140;
-    const redThreshold = 160;
 
     const blackWhiteData = new Uint8Array(height * byteWidth).fill(0xff);
     const redWhiteData = new Uint8Array(height * byteWidth).fill(0xff);
@@ -392,16 +381,13 @@ function processImageData(imageData, mode) {
     for (let y = 0; y < height; y++) {
       for (let x = 0; x < width; x++) {
         const index = (y * width + x) * 4;
-        const r = data[index];
-        const g = data[index + 1];
-        const b = data[index + 2];
-        const grayscale = 0.299 * r + 0.587 * g + 0.114 * b;
-        // UC8179 uses active-low black/red planes. Classify red first and
-        // force its black bit to white so the two planes are always mutually
-        // exclusive. This matches the legacy renderer's existing red-first
-        // precedence and prevents dark-red pixels from being black+red.
-        const isRed = r > redThreshold && r > g && r > b;
-        const blackWhiteBit = (isRed || grayscale >= blackWhiteThreshold) ? 1 : 0;
+        // 与预览（ditherImage/findClosestColor）使用同一分类函数：黑/白/红
+        // 调色板最近色，保证预览像素与实际发送平面一致。
+        const closest = findClosestColor(data[index], data[index + 1], data[index + 2], mode);
+        const isRed = closest === threeColorPalette[2];
+        // UC8179 黑/红平面均为低有效。判定为红的像素强制黑/白平面写白
+        // (bit=1)、红平面写 0，绝不允许两平面在同一像素同时激活（黑+红）。
+        const blackWhiteBit = (isRed || closest === threeColorPalette[1]) ? 1 : 0;
         const blackWhiteByteIndex = y * byteWidth + Math.floor(x / 8);
         const blackWhiteBitIndex = 7 - (x % 8);
         if (blackWhiteBit) {

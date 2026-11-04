@@ -152,6 +152,7 @@ if command -v node >/dev/null 2>&1; then
     node --test tests/test_paint_tools.cjs
     node --test tests/test_paint_schedule.cjs
     node --test tests/test_image_workspace.cjs
+    node --test tests/test_review_bwr_dither.cjs
     node --test tests/test_calendar_annotations_web.cjs
     node --test tests/test_review_font_sync_busy.cjs
 else

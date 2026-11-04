@@ -267,6 +267,47 @@ static void test_full_refresh_restores_full_mode(void)
     assert(power_on < refresh && refresh < power_off);
 }
 
+/* Refresh → Sleep：POF 恰好一次（Refresh 内），Sleep 只发 DSLP 0xA5。
+ * 守住 UC8179_Sleep 不再重复 PowerOff 的“高压必已关闭”不变式（C-02）。 */
+static void test_sleep_after_refresh_emits_single_power_off(void)
+{
+    static const uint8_t expected_dslp[] = {0xA5};
+    epd_model_t model = {
+        .id = EPD_UC8179_750_BWR,
+        .color = EPD_COLOR_BWR,
+        .drv = NULL,
+        .width = 800U,
+        .height = 480U,
+    };
+
+    assert(epd_uc8179_750_Partial_bwr.drv->sleep != NULL);
+    busy_ready = true;
+    UC8179_ClearBusyTimeout();
+    clear_events();
+    UC8179_Init_Partial(&model);
+    clear_events();
+    epd_uc8179_750_Partial_bwr.drv->refresh(&model);
+
+    /* 全刷自身在 DRF 之后恰好一次 POF。 */
+    size_t refresh_pof = find_command(UC81xx_POF, 0U);
+    size_t refresh_events = event_count;
+    assert(refresh_pof < refresh_events);
+    assert(count_command(UC81xx_POF) == 1U);
+
+    epd_uc8179_750_Partial_bwr.drv->sleep(&model);
+
+    /* Sleep 只发一条 DSLP：不得再发 POF，命令序列中 POF 仍恰好 1 次。 */
+    assert(event_count == refresh_events + 1U);
+    assert(count_command(UC81xx_POF) == 1U);
+    assert(count_command(UC81xx_DSLP) == 1U);
+    assert(find_command(UC81xx_POF, refresh_events) == event_count);
+
+    size_t dsleep = find_command(UC81xx_DSLP, refresh_events);
+    assert(dsleep == refresh_events);
+    assert(refresh_pof < dsleep);
+    expect_data(dsleep, expected_dslp, sizeof(expected_dslp));
+}
+
 static void test_power_on_failure_is_latched_and_powered_off(void)
 {
     epd_model_t model = {
@@ -370,6 +411,7 @@ int main(void)
 {
     test_partial_command_contract();
     test_full_refresh_restores_full_mode();
+    test_sleep_after_refresh_emits_single_power_off();
     test_power_on_failure_is_latched_and_powered_off();
     test_partial_model_vtable();
     test_edge_window_is_accepted();

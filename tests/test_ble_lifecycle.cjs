@@ -68,7 +68,8 @@ function setupTimedImageSend(version = 0x39) {
       DeviceOperations.assert(owner); await completeLayer(data, step); DeviceOperations.assert(owner);
       return true;
     };
-    epdCharacteristic = {writeValueWithResponse: async data => capture(data)};`);
+    epdCharacteristic = {writeValueWithResponse: async data => capture(data),
+      writeValueWithoutResponse: async data => capture(data)};`);
   return { ...state, layers, writes, advanceClock: context.advanceClock };
 }
 
@@ -414,6 +415,69 @@ test('failed refresh preserves the completed transfer duration and releases the 
   assert.ok(logs.some(message => message.includes('刷新指令发送失败')));
   assert.equal(logs.some(message => message.includes('图片刷新完成')), false);
   assert.equal(run('DeviceOperations.current'), null);
+});
+
+test('confirmed image refresh sends exactly one payload-less SLEEP after the completion result', async () => {
+  const { run, writes, logs, elements } = setupTimedImageSend();
+  const work = run('sendimg()');
+  await new Promise(setImmediate);
+  assert.deepEqual(writes.map(packet => packet[0]), [0x03], 'no SLEEP before refresh confirmation');
+  assert.equal(logs.some(message => message.includes('图片刷新完成')), false);
+  run(`handleNotify(new DataView(Uint8Array.of(0xab, ${writes[0][2]}, 0, 3).buffer))`);
+  await work;
+  assert.deepEqual(writes.map(packet => packet[0]), [0x03, 0x04]);
+  assert.deepEqual(writes[1], [0x04], 'SLEEP is a single command byte and waits for no response');
+  assert.ok(logs.some(message => /图片刷新完成.*总耗时/.test(message)));
+  assert.match(elements.get('status').innerHTML, /图片刷新完成.*总耗时/);
+  assert.equal(run('DeviceOperations.current'), null);
+});
+
+test('a failed refresh result never sends SLEEP', async () => {
+  const { run, writes, logs } = setupTimedImageSend();
+  const work = run('sendimg()');
+  await new Promise(setImmediate);
+  run(`handleNotify(new DataView(Uint8Array.of(0xab, ${writes[0][2]}, 2, 3).buffer))`);
+  await work;
+  assert.deepEqual(writes.map(packet => packet[0]), [0x03], 'failed refresh must not be followed by SLEEP');
+  assert.ok(logs.some(message => message.includes('刷新指令发送失败')));
+  assert.equal(logs.some(message => message.includes('睡眠')), false);
+});
+
+test('a failed SLEEP write is logged but keeps the confirmed image completion result', async () => {
+  const { run, context, writes, logs, elements } = setupTimedImageSend();
+  const sleepAttempts = [];
+  context.recordSleepAttempt = data => sleepAttempts.push(Array.from(data));
+  run(`epdCharacteristic.writeValueWithoutResponse = async data => {
+      recordSleepAttempt(data); throw new Error('sleep rejected');
+    };`);
+  const work = run('sendimg()');
+  await new Promise(setImmediate);
+  run(`handleNotify(new DataView(Uint8Array.of(0xab, ${writes[0][2]}, 0, 3).buffer))`);
+  await work;
+  assert.deepEqual(sleepAttempts, [[0x04]], 'SLEEP is attempted over the no-response path');
+  assert.deepEqual(writes.map(packet => packet[0]), [0x03]);
+  assert.ok(logs.some(message => message.includes('面板睡眠指令发送失败')));
+  assert.match(elements.get('status').innerHTML, /图片刷新完成.*总耗时/);
+  assert.equal(run('DeviceOperations.current'), null);
+});
+
+test('a disconnect during refresh confirmation never sends SLEEP', async () => {
+  const { run, writes } = setupTimedImageSend();
+  const work = run('sendimg()');
+  await new Promise(setImmediate);
+  assert.deepEqual(writes.map(packet => packet[0]), [0x03]);
+  run('resetVariables()');
+  assert.equal(await work, false);
+  assert.deepEqual(writes.map(packet => packet[0]), [0x03], 'disconnect must not be followed by SLEEP');
+});
+
+test('old firmware completes without waiting for a refresh result and never sends SLEEP', async () => {
+  const { run, writes, logs } = setupTimedImageSend(0x20);
+  await run('sendimg()');
+  assert.deepEqual(writes.map(packet => packet[0]), [0x05], 'legacy REFRESH command ID only');
+  assert.ok(logs.some(message => message.includes('图片发送完成')));
+  assert.equal(logs.some(message => message.includes('图片刷新完成')), false);
+  assert.equal(logs.some(message => message.includes('睡眠')), false);
 });
 
 test('device operation owns all writes and stale completion cannot release a new operation', async () => {

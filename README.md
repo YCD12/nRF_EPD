@@ -643,6 +643,7 @@ rmdir /s /q "_build"
 - 开发说明：[docs/develop.md](docs/develop.md)
 - BLE 协议：[docs/ble-protocol.md](docs/ble-protocol.md)
 - 内置 Flash / RAM 优化、构建配置与缺陷修复（2026-11-04）：[docs/flash-ram-optimization-20261104.md](docs/flash-ram-optimization-20261104.md)
+- 参考上游 EPD-nRF5 的对比分析与优化（2026-11-04）：[docs/upstream-reference-optimization-20261104.md](docs/upstream-reference-optimization-20261104.md)
 - 网页按需补充外置字库：[docs/web-font-generation.md](docs/web-font-generation.md)
 - Flash 与网页优化实现及验证：[docs/flash-web-optimization-20261001.md](docs/flash-web-optimization-20261001.md)
 - 当前内置 8 KiB 保留区及配套固件：[docs/internal-flash-8k-20261008.md](docs/internal-flash-8k-20261008.md)

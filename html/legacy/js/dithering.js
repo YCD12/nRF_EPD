@@ -673,8 +673,6 @@ function processImageData(imageData, mode) {
     }
   } else if (mode === 'threeColor') {
     const byteWidth = Math.ceil(width / 8);
-    const blackWhiteThreshold = 140;
-    const redThreshold = 160;
 
     const blackWhiteData = new Uint8Array(height * byteWidth);
     const redWhiteData = new Uint8Array(height * byteWidth);
@@ -682,27 +680,24 @@ function processImageData(imageData, mode) {
     for (let y = 0; y < height; y++) {
       for (let x = 0; x < width; x++) {
         const index = (y * width + x) * 4;
-        const r = data[index];
-        const g = data[index + 1];
-        const b = data[index + 2];
-        const grayscale = Math.round(0.299 * r + 0.587 * g + 0.114 * b);
-
-        const blackWhiteBit = grayscale >= blackWhiteThreshold ? 1 : 0;
+        // 与预览（ditherImage/findClosestColor）使用同一分类函数，避免旧版
+        // 页面预览是红色、发送却落到黑/白（或双平面同时激活）。
+        const closest = findClosestColor(data[index], data[index + 1], data[index + 2], mode);
+        const isRed = closest === threeColorPalette[2];
+        // 低有效平面：红像素强制黑/白平面写白(bit=1)、红平面写 0，
+        // 两平面绝不在同一像素同时激活（红优先互斥）。
+        const blackWhiteBit = (isRed || closest === threeColorPalette[1]) ? 1 : 0;
         const blackWhiteByteIndex = y * byteWidth + Math.floor(x / 8);
         const blackWhiteBitIndex = 7 - (x % 8);
         if (blackWhiteBit) {
           blackWhiteData[blackWhiteByteIndex] |= (0x01 << blackWhiteBitIndex);
-        } else {
-          blackWhiteData[blackWhiteByteIndex] &= ~(0x01 << blackWhiteBitIndex);
         }
 
-        const redWhiteBit = (r > redThreshold && r > g && r > b) ? 0 : 1;
+        const redWhiteBit = isRed ? 0 : 1;
         const redWhiteByteIndex = y * byteWidth + Math.floor(x / 8);
         const redWhiteBitIndex = 7 - (x % 8);
         if (redWhiteBit) {
           redWhiteData[redWhiteByteIndex] |= (0x01 << redWhiteBitIndex);
-        } else {
-          redWhiteData[redWhiteByteIndex] &= ~(0x01 << redWhiteBitIndex);
         }
       }
     }

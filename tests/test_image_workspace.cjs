@@ -200,8 +200,14 @@ test('canvas resize keeps the current source instead of rereading the selected f
   assert.equal(f.paint.textElements[0].x, 76); assert.equal(f.paint.textElements[0].y, 76);
 });
 
-test('six-color sends stop before device negotiation or any transfer', async () => {
-  const f = fixture(); f.load(); f.input('ditherMode', 'sixColor');
-  let negotiation = 0; f.sandbox.waitForNegotiatedMtu = () => { negotiation++; throw new Error('must not negotiate'); };
-  await f.run('sendImageOperation({})'); assert.equal(negotiation, 0);
-});
+for (const [mode, hint] of [['sixColor', '六色'], ['fourColor', '四色']]) {
+  test(`${mode} sends stop before device negotiation or any transfer`, async () => {
+    const f = fixture(); f.load(); f.input('ditherMode', mode);
+    const messages = [];
+    f.sandbox.recordMessage = message => messages.push(message);
+    f.run('addLog = recordMessage; showToast = recordMessage;');
+    let negotiation = 0; f.sandbox.waitForNegotiatedMtu = () => { negotiation++; throw new Error('must not negotiate'); };
+    await f.run('sendImageOperation({})'); assert.equal(negotiation, 0);
+    assert.ok(messages.includes(`当前固件不支持发送${hint}图片；可下载预览或导出数组。`));
+  });
+}

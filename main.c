@@ -1057,7 +1057,11 @@ int main(void) {
 
     // Configure WDT.
     // 配置看门狗定时器
-    // 看门狗用于在系统卡死时自动复位，超时时间约32秒
+    // 看门狗用于在系统卡死时自动复位。实际超时 60 秒：
+    // sdk_config.h 的 legacy WDT_CONFIG_RELOAD_VALUE=60000 会经
+    // integration/nrfx/legacy/apply_old_config.h 覆盖 NRFX_WDT_CONFIG_RELOAD_VALUE=10000，
+    // NRF_DRV_WDT_DEAFULT_CONFIG 最终取 60000 ms。修改超时只改 WDT_CONFIG_RELOAD_VALUE 一处，
+    // 并用 grep app_feed_wdt 审计最长喂狗间隔。
     nrf_drv_wdt_config_t config = NRF_DRV_WDT_DEAFULT_CONFIG;
     APP_ERROR_CHECK(nrf_drv_wdt_init(&config, wdt_event_handler));  // 初始化看门狗
     APP_ERROR_CHECK(nrf_drv_wdt_channel_alloc(&m_wdt_channel_id));  // 分配看门狗通道

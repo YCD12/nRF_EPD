@@ -655,8 +655,12 @@ async function sendImageOperation(owner) {
 
   const canvasSize = document.getElementById('canvasSize').value;
   const ditherMode = document.getElementById('ditherMode').value;
-  if (ditherMode === 'sixColor') {
-    const message = '当前固件不支持发送六色图片；可下载预览或导出数组。';
+  if (ditherMode === 'sixColor' || ditherMode === 'fourColor') {
+    // 当前固件只有 UC8179 BWR（黑白红）驱动，六色/四色数据发下去必然错色；
+    // 预览与数组导出仍保留，方便给未来驱动使用。
+    const message = ditherMode === 'sixColor'
+      ? '当前固件不支持发送六色图片；可下载预览或导出数组。'
+      : '当前固件不支持发送四色图片；可下载预览或导出数组。';
     addLog(message); showToast(message); return;
   }
   const epdDriverSelect = document.getElementById('epddriver');
@@ -825,6 +829,12 @@ async function sendImageOperation(owner) {
   addLog(completion);
   setStatus(completion);
   if (!confirmsRefresh) addLog("屏幕刷新完成前请不要操作。");
+  // 刷新确认后主动让面板进入睡眠以省电：命令无响应等待，失败只记录日志，
+  // 不改变本次图片发送已成功的结果。旧固件（无 0xAB 刷新确认）不发。
+  if (confirmsRefresh && isConnectedNow && DeviceOperations.current === owner) {
+    if (!await write(EpdCmd.SLEEP, null, false, false, true, owner))
+      addLog('面板睡眠指令发送失败，不影响本次图片发送结果。');
+  }
   if (!isConnectedNow) {
     const disconnectedTip = '图片已发送，设备连接已断开，请点击“重连”继续操作。';
     addLog(disconnectedTip);

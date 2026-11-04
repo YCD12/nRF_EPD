@@ -407,16 +407,25 @@ void UC8179_Write_Ram(const epd_model_t * epd, uint8_t cfg, uint8_t* data, uint8
  * 在睡眠模式下,芯片功耗降至最低,但显示内容会保持。
  *
  * 步骤:
- * 1. 关闭电源系统
- * 2. 等待电源完全关闭
- * 3. 发送深度睡眠命令(0xA5为魔术数)
+ * 1. 等待电源关闭后的放电间隔
+ * 2. 发送深度睡眠命令(0xA5为魔术数)
+ *
+ * 不变式(进入本函数前高压电源必已关闭):
+ * - 所有会开高压(PON)的路径在返回前都已 POF:全刷 UC8179_Refresh 与
+ *   局刷 UC8179_Refresh_Partial,包括 PON 失败路径(失败后立即 PowerOff)
+ *   以及 DRF 超时/传图打断路径;
+ * - 其余路径(UC8179_Init / UC8179_Init_Partial / 只写 RAM 的 Clear/Write_Image)
+ *   从未开高压;
+ * - 服务层所有 sleep 调用点(刷新结束、连接断开、改 pin、显式 SLEEP 命令)
+ *   都在主上下文且刷新已返回,不会插在 PON 与 POF 之间。
+ * 因此这里不再重复 PowerOff,避免每次时钟/待办刷新多一次 POF 忙等与放电延迟。
+ * 若将来新增"上电后不 POF 直接 sleep"的路径,必须先恢复本函数的 PowerOff。
  *
  * 注意:从深度睡眠唤醒需要重新初始化芯片
  */
 void UC8179_Sleep(const epd_model_t * epd) {
     (void)epd;
-    UC8179_PowerOff();  // 关闭电源
-    delay(100);  // 等待电源稳定关闭
+    delay(100);  // 与 POF 后的放电间隔一致,等待电源完全关闭
     EPD_Write(UC81xx_DSLP, 0xA5);  // 进入深度睡眠,0xA5是确认码
 }
 
