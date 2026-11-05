@@ -73,6 +73,10 @@ typedef struct { struct { struct { unsigned conn_handle; } gap_evt; } evt; } ble
 static unsigned refs, init_calls, driver_init_calls, ram_writes, sleeps, requests, now,
                 ack_error, ack_calls, gpio_calls;
 static bool busy_timeout, interrupt_init, busy_abort, picture_entry_init_expected;
+static bool init_busy_timeout;
+/* S-1 入口的阻塞 init 在主机测试里用一次性标志制造中断：
+ * abort = RESET_TRANSFER 打断 BUSY 并置 BUSY 错误；disconnect = 断连。 */
+static bool entry_init_abort, entry_init_disconnect;
 static uint8_t last_ack[16];
 static unsigned ack_len;
 static uint8_t last_ram[16];
@@ -86,8 +90,21 @@ static void epd_execute_command(ble_epd_t *p, uint8_t *data, uint16_t length) {
 }
 static void on_disconnect(ble_epd_t *, ble_evt_t *);
 static void cmd_init(ble_epd_t *, uint8_t *, uint16_t);
+static void EPD_RequestBusyAbort(void);
 static void panel_sleep(const epd_model_t *p) { (void)p; assert(refs); sleeps++; }
-static void panel_init(const epd_model_t *p) { (void)p; assert(refs); driver_init_calls++; }
+static void panel_init(const epd_model_t *p) {
+    (void)p;
+    assert(refs);
+    driver_init_calls++;
+    if (entry_init_abort) {
+        entry_init_abort = false;
+        EPD_RequestBusyAbort(); /* 模拟 RESET_TRANSFER 打断 UC8179 BUSY 等待 */
+        busy_timeout = true;    /* WaitBusy 提前返回：驱动置 BUSY 错误 */
+    } else if (entry_init_disconnect) {
+        entry_init_disconnect = false;
+        on_disconnect(current, NULL); /* 断连发生在主循环阻塞 init 期间 */
+    }
+}
 static void panel_write_ram(const epd_model_t *p, uint8_t cfg, uint8_t *data, uint8_t len) {
     (void)p;
     assert(refs && len <= sizeof(last_ram));
@@ -106,6 +123,10 @@ static const epd_model_t *epd_init(epd_model_id_t model) {
     assert(refs && ((current->init_running && current->is_refreshing) ||
                     picture_entry_init_expected));
     init_calls++;
+    if (init_busy_timeout) {
+        init_busy_timeout = false;
+        busy_timeout = true; /* 模拟 epd_init -> UC8179 WaitBusy 超时 */
+    }
     if (interrupt_init) {
         interrupt_init = false;
         on_disconnect(current, NULL);
@@ -125,9 +146,11 @@ bool resource_transfer_running(void) { return false; }
 #define EPD_LED_BLINK() ((void)0)
 static void EPD_ClearBusyAbort(void) { busy_abort = false; }
 static void EPD_RequestBusyAbort(void) { busy_abort = true; }
-/* service 层经此访问器读取面板 BUSY 错误；stub 语义与原 UC8179_* stub 一致
- * （clear 故意 no-op，让测试可预置 busy_timeout 模拟 INIT 失败）。 */
-static void epd_service_busy_error_clear(ble_epd_t *p_epd) { (void)p_epd; }
+/* service 层经此访问器读写面板 BUSY 错误，语义与生产 HAL 一致（可清）。
+ * 旧版本故意 no-op 以便预置 busy_timeout；现在由 epd_init/panel_init 钩子
+ * 在 init 时置位，保持 INIT 失败用例与真实清理路径一致。 */
+static void epd_service_busy_error_clear(ble_epd_t *p_epd)
+{ (void)p_epd; busy_timeout = false; }
 static bool epd_service_busy_error(const ble_epd_t *p_epd)
 { (void)p_epd; return busy_timeout; }
 static bool epd_model_supported(uint8_t id) { return id == EPD_UC8179_750_BWR; }
@@ -302,9 +325,12 @@ int main(void) {
     epd_init_process(current);
     assert(ack_calls == sent && current->init_pending && current->disconnect_pending);
     epd_connection_process(current);
-    busy_timeout = true;
+    /* INIT 失败同样必须让实例失效，否则后续“已有实例”分支会跳过重试。 */
+    current->epd = &panel;
+    init_busy_timeout = true;
     epd_init_process(current);
     assert(last_ack[1] == 43 && last_ack[2] == 1 && refs == 1);
+    assert(current->epd == NULL);
     on_disconnect(current, NULL);
     epd_connection_process(current);
     assert(refs == 0);
@@ -534,6 +560,111 @@ int main(void) {
     assert(ack_calls == replies_before + 1U && ack_len == 4U);
     assert(last_ack[0] == EPD_RSP_BLOCK_ACK && last_ack[1] == 0U &&
            last_ack[3] == EPD_BLOCK_STATUS_CRC);
+
+    /* =====================================================================
+     * S-1 回归 1：入口 init 被 RESET_TRANSFER/BUSY 打断时不得提交图片模式。
+     * 保留 pending（块 0 继续 RESTART、不写 RAM），下一轮重试成功后才 ACK。
+     * ===================================================================== */
+    current->config.display_mode = MODE_CLOCK;
+    current->epd = &panel;
+    current->picture_entry_pending = true;
+    current->transfer_ctx = (image_transfer_ctx_t){0};
+    current->transfer_ctx.transfer_active = true;
+    current->transfer_ctx.session_id = 12U;
+    unsigned entry_drv_before = driver_init_calls;
+    entry_init_abort = true;
+    epd_picture_entry_process(current);
+    assert(current->picture_entry_pending);
+    assert(current->config.display_mode == MODE_CLOCK);
+    assert(driver_init_calls == entry_drv_before + 1U);
+    assert(busy_abort && busy_timeout);
+    /* 入口未完成：块 0 仍只回 RESTART，不写面板 RAM。 */
+    ram_before = ram_writes;
+    replies_before = ack_calls;
+    cmd_write_block(current, block0, sizeof(block0));
+    assert(ram_writes == ram_before);
+    assert(current->picture_entry_pending);
+    assert(ack_calls == replies_before + 1U && ack_len == 4U);
+    assert(last_ack[0] == EPD_RSP_BLOCK_ACK && last_ack[1] == 0U &&
+           last_ack[3] == EPD_BLOCK_STATUS_RESTART);
+    /* 下一轮主循环先清 BUSY 中断/错误再重试，成功后提交 MODE_PICTURE。 */
+    epd_picture_entry_process(current);
+    assert(!current->picture_entry_pending);
+    assert(current->config.display_mode == MODE_PICTURE);
+    assert(!busy_abort && !busy_timeout);
+    ram_before = ram_writes;
+    replies_before = ack_calls;
+    cmd_write_block(current, block0, sizeof(block0));
+    assert(ram_writes == ram_before + 1U);
+    assert(ack_calls == replies_before + 1U && ack_len == 4U);
+    assert(last_ack[0] == EPD_RSP_BLOCK_ACK && last_ack[3] == EPD_BLOCK_STATUS_OK);
+
+    /* =====================================================================
+     * S-1 回归 2：入口阻塞 init 期间断连，旧请求不得再提交图片模式；
+     * 断连清理仍按时钟模式安排刷新（否则离线时钟停更）。
+     * ===================================================================== */
+    current->config.display_mode = MODE_CLOCK;
+    current->epd = &panel;
+    current->picture_entry_pending = true;
+    current->transfer_ctx = (image_transfer_ctx_t){0};
+    current->transfer_ctx.transfer_active = true;
+    current->transfer_ctx.session_id = 13U;
+    unsigned requests_before_disconnect = requests;
+    entry_init_disconnect = true;
+    epd_picture_entry_process(current);
+    assert(!current->picture_entry_pending); /* 断连已取消入口 */
+    assert(current->config.display_mode == MODE_CLOCK);
+    assert(current->disconnect_pending &&
+           current->conn_handle == BLE_CONN_HANDLE_INVALID);
+    epd_connection_process(current);
+    assert(requests == requests_before_disconnect + 1U);
+    assert(current->epd == NULL && !current->gpio_connection_ref && refs == 0);
+    /* 重新连接，恢复 S-3 需要的在线/通知状态。 */
+    on_connect(current, &event);
+    epd_connection_process(current);
+    current->is_notification_enabled = true;
+    assert(refs == 1 && current->gpio_connection_ref);
+    current->epd = &panel;
+    current->config.display_mode = MODE_PICTURE;
+
+    /* =====================================================================
+     * S-1 回归 3：MODE_PICTURE 且 epd == NULL（传图结束休眠后再次传图）。
+     * 首次 BUSY 超时必须使失败实例失效并保留 pending；下一轮重试成功后才
+     * 允许块 0 ACK/写 RAM，不能被“已有实例且非时钟模式”分支绕过。
+     * ===================================================================== */
+    current->config.display_mode = MODE_PICTURE;
+    current->epd = NULL;
+    current->picture_entry_pending = true;
+    current->transfer_ctx = (image_transfer_ctx_t){0};
+    current->transfer_ctx.transfer_active = true;
+    current->transfer_ctx.session_id = 14U;
+    unsigned picture_retry_init_before = init_calls;
+    init_busy_timeout = true;
+    picture_entry_init_expected = true;
+    epd_picture_entry_process(current);
+    assert(current->picture_entry_pending);
+    assert(current->epd == NULL); /* 失败实例必须失效，下一轮保持可重试 */
+    assert(current->config.display_mode == MODE_PICTURE);
+    assert(init_calls == picture_retry_init_before + 1U && busy_timeout);
+    ram_before = ram_writes;
+    replies_before = ack_calls;
+    cmd_write_block(current, block0, sizeof(block0));
+    assert(ram_writes == ram_before);
+    assert(current->picture_entry_pending);
+    assert(ack_calls == replies_before + 1U && ack_len == 4U);
+    assert(last_ack[0] == EPD_RSP_BLOCK_ACK && last_ack[3] == EPD_BLOCK_STATUS_RESTART);
+    /* 下一轮重试：清 BUSY 错误后重新 init，成功才提交模式并放行块 0。 */
+    epd_picture_entry_process(current);
+    picture_entry_init_expected = false;
+    assert(!current->picture_entry_pending);
+    assert(current->epd == &panel);
+    assert(init_calls == picture_retry_init_before + 2U && !busy_timeout);
+    ram_before = ram_writes;
+    replies_before = ack_calls;
+    cmd_write_block(current, block0, sizeof(block0));
+    assert(ram_writes == ram_before + 1U);
+    assert(ack_calls == replies_before + 1U && ack_len == 4U);
+    assert(last_ack[0] == EPD_RSP_BLOCK_ACK && last_ack[3] == EPD_BLOCK_STATUS_OK);
 
     /* =====================================================================
      * S-3: 0xA0/0xA1 在 HVX 满时存入单槽，主循环重发；断开后丢弃。

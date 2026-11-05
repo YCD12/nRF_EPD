@@ -54,14 +54,19 @@ pushd "%REPO%"
     --nrfutil "%NRFUTIL%" ^
     --mergehex "%MERGEHEX%"
 set "RESULT=%ERRORLEVEL%"
+for /f "delims=" %%V in ('%PYTHON% "tools\dfu_release.py" --print-application-version') do set "DFU_VERSION=%%V"
 popd
 
 if not "%RESULT%"=="0" (
     echo Error: keil-postbuild: full HEX / OTA package generation failed.
     exit /b %RESULT%
 )
+if not defined DFU_VERSION (
+    echo Error: keil-postbuild: could not resolve the DFU application version.
+    exit /b 1
+)
 
 echo.
-echo Full firmware: %REPO%\_build\nrf52811_xxaa-full.hex
-echo OTA package:   %REPO%\_build\nrf52811_xxaa-ota.zip
+echo Full firmware: %REPO%\_build\nrf52811_xxaa-v%DFU_VERSION%-full.hex
+echo OTA package:   %REPO%\_build\nrf52811_xxaa-v%DFU_VERSION%-ota.zip
 exit /b 0

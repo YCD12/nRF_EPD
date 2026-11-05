@@ -53,25 +53,51 @@ static void epd_update_display_mode(ble_epd_t* p_epd, display_mode_t mode) {
     }
 }
 
-/**@brief 离开时钟模式前切回全刷 Init，避免局刷状态干扰写图 */
-static void epd_switch_from_clock_mode(ble_epd_t* p_epd) {
-    if (p_epd->epd == NULL) return;  // EPD 尚未初始化
+/**@brief 离开时钟模式前切回全刷 Init，避免局刷状态干扰写图
+ *
+ * @return 面板已处于可写图状态返回 true；时钟模式重新初始化被
+ *         RESET_TRANSFER 的 BUSY 打断或 BUSY 超时时返回 false。
+ */
+static bool epd_switch_from_clock_mode(ble_epd_t* p_epd) {
+    if (p_epd->epd == NULL) return false;  // EPD 尚未初始化
 
-    if (epd_is_clock_mode((display_mode_t)p_epd->config.display_mode)) {
-        // 重新初始化显示屏以确保处于正常全刷模式
-        // 这防止局刷状态干扰直接写入操作
-        if (p_epd->epd->drv->init) {
-            p_epd->epd->drv->init(p_epd->epd);
-            nrf_delay_ms(10);  // 给显示屏重新初始化的时间
-        }
+    if (!epd_is_clock_mode((display_mode_t)p_epd->config.display_mode)) return true;
+
+    // 重新初始化显示屏以确保处于正常全刷模式
+    // 这防止局刷状态干扰直接写入操作
+    if (p_epd->epd->drv->init) {
+        p_epd->epd->drv->init(p_epd->epd);
+        nrf_delay_ms(10);  // 给显示屏重新初始化的时间
     }
+    /* UC8179 init 的 BUSY 等待可被 RESET_TRANSFER 打断；EPD_WaitBusy 返回
+     * false 时驱动会置 BUSY 错误，因此只需检查该标志即可判定 init 失败。 */
+    return !epd_service_busy_error(p_epd);
 }
 
-/* 退出时钟局刷并切到图片模式。 */
-void epd_enter_picture_mode(ble_epd_t *p_epd)
+/**@brief 图片模式入口准备（主循环，可能阻塞最长约 1 s）
+ *
+ * @details 确保面板实例存在，并在时钟模式下重新初始化到全刷状态。
+ * @return 面板可写图返回 true；init 被打断/超时返回 false，调用方必须
+ *         保持原显示模式并重试（尤其不能放行块写入）。
+ */
+bool epd_prepare_picture_mode(ble_epd_t *p_epd)
 {
-    epd_switch_from_clock_mode(p_epd);
+    if (!epd_ensure_display(p_epd)) return false;
+    return epd_switch_from_clock_mode(p_epd);
+}
+
+/* 提交图片模式（不阻塞）。入口须在 prepare 成功且连接/请求仍有效后调用。 */
+void epd_commit_picture_mode(ble_epd_t *p_epd)
+{
     epd_update_display_mode(p_epd, MODE_PICTURE);
+}
+
+/* 退出时钟局刷并切到图片模式；init 失败时不提交模式，返回 false。 */
+bool epd_enter_picture_mode(ble_epd_t *p_epd)
+{
+    if (!epd_prepare_picture_mode(p_epd)) return false;
+    epd_commit_picture_mode(p_epd);
+    return true;
 }
 
 /**@brief 解析SET_TIME/SYNC_TIME_SILENT中的时间戳
@@ -189,14 +215,17 @@ static void cmd_display(ble_epd_t *p_epd, uint8_t *data, uint16_t length)
         (data[0] == EPD_CMD_CLEAR ? p_epd->epd->drv->clear == NULL :
                                   p_epd->epd->drv->refresh == NULL)) result = RS_IO;
     else {
-        epd_enter_picture_mode(p_epd);
-        if (data[0] == EPD_CMD_CLEAR)
-            p_epd->epd->drv->clear(p_epd->epd, length > 1U ? data[1] : true);
-        else {
-            p_epd->epd->drv->refresh(p_epd->epd);
-            p_epd->transfer_ctx.transfer_active = false;
+        if (!epd_enter_picture_mode(p_epd)) {
+            result = RS_IO; /* 时钟模式 init 被传图复位打断：不写面板。 */
+        } else {
+            if (data[0] == EPD_CMD_CLEAR)
+                p_epd->epd->drv->clear(p_epd->epd, length > 1U ? data[1] : true);
+            else {
+                p_epd->epd->drv->refresh(p_epd->epd);
+                p_epd->transfer_ctx.transfer_active = false;
+            }
+            if (EPD_BusyAbortRequested() || epd_service_busy_error(p_epd)) result = RS_IO;
         }
-        if (EPD_BusyAbortRequested() || epd_service_busy_error(p_epd)) result = RS_IO;
     }
     CRITICAL_REGION_ENTER();
     if (generation == p_epd->connection_generation && !p_epd->disconnect_pending)

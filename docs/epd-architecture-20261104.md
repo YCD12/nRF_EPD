@@ -330,8 +330,9 @@ bool epd_model_supported(uint8_t id);                  // 配置校验/网页回
     Build 即可；`tests/test_build_config_parity.py` 增加单 Target 与重复
     FilePath 守护。
   - 应用工程 After Make 新增 `tools/keil-postbuild.bat`：Build/Rebuild 后自动
-    生成 `_build/nrf52811_xxaa-full.hex`、`_build/nrf52811_xxaa-ota.zip`、
-    `-settings.hex`、`-release.json`，与 `build.bat build/ota` 产物一致；
+    生成 `_build/nrf52811_xxaa-v<版本>-full.hex`、`_build/nrf52811_xxaa-v<版本>-ota.zip`、
+    `-v<版本>-settings.hex`、`-v<版本>-release.json`，与 `build.bat build/ota` 产物一致；
+    `<版本>` 取自固件 `APP_VERSION`（当前 `0x21`），可用 `DFU_APPLICATION_VERSION` 覆盖；
     使用仓库自带 `tools/windows_tools/nrfutil.exe`/`mergehex.exe` + Python。
   - 若 uVision 打开的是修复前的旧工程，退出/保存时会把旧组结构写回
     `uvprojx`（本次已发生过一次）：修改后应关闭 Keil 再重新打开，或让

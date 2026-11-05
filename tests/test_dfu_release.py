@@ -1,7 +1,9 @@
 import argparse
 import importlib.util
 import json
+import os
 from pathlib import Path
+import re
 import struct
 import subprocess
 import tempfile
@@ -14,6 +16,12 @@ ROOT = Path(__file__).resolve().parents[1]
 spec = importlib.util.spec_from_file_location('dfu_release', ROOT / 'tools' / 'dfu_release.py')
 release = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(release)
+DEFAULT_APPLICATION_VERSION = release.default_application_version()
+VERSIONED_STEM = f'test-v{DEFAULT_APPLICATION_VERSION:#x}'
+OTA_ZIP = f'{VERSIONED_STEM}-ota.zip'
+SETTINGS_HEX = f'{VERSIONED_STEM}-settings.hex'
+FULL_HEX = f'{VERSIONED_STEM}-full.hex'
+RELEASE_JSON = f'{VERSIONED_STEM}-release.json'
 
 
 def record(address, kind, data=b''):
@@ -38,8 +46,10 @@ def descriptor(reserved=8192, flags=3):
                        0x29000, reserved, 0x2E000, 0x2F000, flags)
 
 
-def build_fixture(root):
+def build_fixture(root, application_version=None):
     """Mock external tools while exercising the real HEX/ZIP/manifest audits."""
+    if application_version is None:
+        application_version = release.default_application_version()
     app, boot, sd, key = (root / name for name in ('app.hex', 'boot.hex', 'sd.hex', 'key.pem'))
     write_hex(app, b'abcd', start=release.APP_START, uicr=False)
     public_key = bytes(range(64))
@@ -53,7 +63,8 @@ def build_fixture(root):
     args = argparse.Namespace(application=app, bootloader=boot, softdevice=sd, key=key,
                               bootloader_config=ROOT / 'SDK/17.1.0_ddde560/dfu/sdk_config.h',
                               output=root / 'release', name='test', resources_dir=None,
-                              nrfutil='mock-nrfutil', mergehex='mock-mergehex')
+                              nrfutil='mock-nrfutil', mergehex='mock-mergehex',
+                              application_version=application_version)
     state = {'failure': None, 'commands': []}
 
     def tool(command):
@@ -62,7 +73,11 @@ def build_fixture(root):
             return ', '.join(f'0x{value:02x}' for value in public_key)
         if command[1:3] == ['pkg', 'display']:
             phase = 'package_display'
-            text = (f'fw_version: 0x1\nhw_version 0x34\napp_size: {len(release.application_binary(app))}\n'
+            version = release.resolve_application_version(args)
+            if state['failure'] == 'version_audit':
+                version += 1
+            text = (f'fw_version: 0x{version:X}\nhw_version 0x34\n'
+                    f'app_size: {len(release.application_binary(app))}\n'
                     'signature_type: ECDSA_P256_SHA256\nsd_req: 0x126\n')
             if state['failure'] == 'metadata_audit':
                 text = text.replace('0x34', '0x33')
@@ -145,7 +160,7 @@ class DfuReleaseTests(unittest.TestCase):
 
     def test_release_audit_failures_keep_all_previous_artifacts(self):
         for failure in ('settings_audit', 'full_audit', 'package_audit', 'metadata_audit',
-                        'package_bytes_audit', 'full_missing_app_audit',
+                        'version_audit', 'package_bytes_audit', 'full_missing_app_audit',
                         'full_extra_audit', 'full_bytes_audit'):
             with self.subTest(failure=failure), tempfile.TemporaryDirectory() as directory:
                 args, tool, state, previous = self.existing_release_fixture(Path(directory))
@@ -184,9 +199,9 @@ class DfuReleaseTests(unittest.TestCase):
 
             def replace(path, destination):
                 published.append(Path(destination).name)
-                self.assertEqual((args.output / 'test-release.json').read_bytes(),
-                                 previous['test-release.json'])
-                if path.name == 'test-release.json':
+                self.assertEqual((args.output / RELEASE_JSON).read_bytes(),
+                                 previous[RELEASE_JSON])
+                if path.name == RELEASE_JSON:
                     manifest = json.loads(path.read_text(encoding='utf-8'))
                     for section in ('package', 'settings', 'full_hex'):
                         artifact = manifest[section]
@@ -196,14 +211,14 @@ class DfuReleaseTests(unittest.TestCase):
             with mock.patch.object(release, 'run', side_effect=tool), \
                     mock.patch.object(Path, 'replace', autospec=True, side_effect=replace):
                 result = release.build_release(args)
-            self.assertEqual(published, ['test-ota.zip', 'test-settings.hex', 'test-full.hex', 'test-release.json'])
-            self.assertEqual(json.loads((args.output / 'test-release.json').read_text(encoding='utf-8')), result)
+            self.assertEqual(published, [OTA_ZIP, SETTINGS_HEX, FULL_HEX, RELEASE_JSON])
+            self.assertEqual(json.loads((args.output / RELEASE_JSON).read_text(encoding='utf-8')), result)
             self.assertEqual({path.name for path in args.output.iterdir()}, set(previous))
             for name, contents in previous.items():
                 self.assertNotEqual((args.output / name).read_bytes(), contents)
 
     def test_publication_io_failure_restores_previous_release(self):
-        for failed_name in ('test-ota.zip', 'test-settings.hex', 'test-full.hex', 'test-release.json'):
+        for failed_name in (OTA_ZIP, SETTINGS_HEX, FULL_HEX, RELEASE_JSON):
             with self.subTest(failed_name=failed_name), tempfile.TemporaryDirectory() as directory:
                 args, tool, state, previous = self.existing_release_fixture(Path(directory))
                 original_replace = Path.replace
@@ -225,7 +240,7 @@ class DfuReleaseTests(unittest.TestCase):
             original_replace = Path.replace
 
             def replace(path, destination):
-                if path.name == 'test-full.hex':
+                if path.name == FULL_HEX:
                     raise OSError('injected publication failure')
                 return original_replace(path, destination)
 
@@ -241,7 +256,7 @@ class DfuReleaseTests(unittest.TestCase):
             original_replace = Path.replace
 
             def replace(path, destination):
-                if path.name == 'test-release.json' or path.name == '1':
+                if path.name == RELEASE_JSON or path.name == '1':
                     raise OSError('injected publication and settings restore failure')
                 return original_replace(path, destination)
 
@@ -251,8 +266,8 @@ class DfuReleaseTests(unittest.TestCase):
                     release.build_release(args)
             backups = list(args.output.glob('.dfu-release-backup-*'))
             self.assertEqual(len(backups), 1)
-            self.assertEqual((backups[0] / '1').read_bytes(), previous['test-settings.hex'])
-            self.assertEqual((args.output / 'test-release.json').read_bytes(), previous['test-release.json'])
+            self.assertEqual((backups[0] / '1').read_bytes(), previous[SETTINGS_HEX])
+            self.assertEqual((args.output / RELEASE_JSON).read_bytes(), previous[RELEASE_JSON])
 
     def test_release_name_cannot_escape_staging(self):
         for name in ('', '.', '..', '../test', '..\\test', '/outside', 'C:test'):
@@ -459,21 +474,66 @@ class DfuReleaseTests(unittest.TestCase):
             write_hex(generated, descriptor())
             self.assertEqual(release.default_bootloader(root), generated)
 
-    def test_release_wrappers_do_not_gate_on_dfu_versions(self):
+    def test_release_version_defaults_to_app_version_and_allows_override(self):
+        header = (ROOT / 'EPD/service/EPD_service.h').read_text(encoding='utf-8')
+        app_version = int(re.search(r'^#define\s+APP_VERSION\s+(0x[0-9A-Fa-f]+)',
+                                    header, re.MULTILINE).group(1), 0)
+        self.assertEqual(release.default_application_version(), app_version)
+        self.assertGreater(app_version, 0x1C)  # above historical vendor DFU releases
+        with mock.patch.dict(os.environ, {'DFU_APPLICATION_VERSION': '0x2B'}):
+            self.assertEqual(release.resolve_application_version(None), 0x2B)
+        explicit = argparse.Namespace(application_version=0x2C)
+        with mock.patch.dict(os.environ, {'DFU_APPLICATION_VERSION': '0x2B'}):
+            self.assertEqual(release.resolve_application_version(explicit), 0x2C)
+        with mock.patch.dict(os.environ, {'DFU_APPLICATION_VERSION': 'not-a-number'}):
+            with self.assertRaises(release.ReleaseError):
+                release.resolve_application_version(None)
+
+    def test_release_artifact_names_include_application_version(self):
+        with tempfile.TemporaryDirectory() as directory:
+            args, tool, state = build_fixture(Path(directory), application_version=0x2A)
+            with mock.patch.object(release, 'run', side_effect=tool):
+                result = release.build_release(args)
+            tag = f'v{0x2A:#x}'
+            self.assertEqual({path.name for path in args.output.iterdir()},
+                             {f'test-{tag}-ota.zip', f'test-{tag}-settings.hex',
+                              f'test-{tag}-full.hex', f'test-{tag}-release.json'})
+            self.assertTrue(result['package']['path'].endswith(f'-{tag}-ota.zip'))
+            self.assertTrue(result['full_hex']['path'].endswith(f'-{tag}-full.hex'))
+            keil = (ROOT / 'tools/keil-postbuild.bat').read_text(encoding='utf-8')
+            build = (ROOT / 'build.bat').read_text(encoding='utf-8')
+            self.assertIn('-v%DFU_VERSION%-full.hex', keil)
+            self.assertIn('-v%DFU_VERSION%-ota.zip', keil)
+            self.assertIn('--print-application-version', build)
+    def test_release_package_and_settings_use_resolved_application_version(self):
+        with tempfile.TemporaryDirectory() as directory:
+            args, tool, state = build_fixture(Path(directory), application_version=0x2A)
+            with mock.patch.object(release, 'run', side_effect=tool):
+                result = release.build_release(args)
+            self.assertEqual(result['application_version'], 0x2A)
+            package = next(command for command in state['commands']
+                           if command[1:3] == ['pkg', 'generate'])
+            self.assertEqual(package[package.index('--application-version') + 1], str(0x2A))
+            settings = next(command for command in state['commands']
+                            if command[1:3] == ['settings', 'generate'])
+            self.assertEqual(settings[settings.index('--application-version') + 1], str(0x2A))
+
+    def test_release_wrappers_keep_default_version_and_optional_override(self):
         shell = (ROOT / 'tools/make-ota-nrf52.sh').read_text(encoding='utf-8')
         batch = (ROOT / 'tools/make-ota-nrf52.bat').read_text(encoding='utf-8')
+        build = (ROOT / 'build.bat').read_text(encoding='utf-8')
         release_source = (ROOT / 'tools/dfu_release.py').read_text(encoding='utf-8')
-        for text in (shell, batch, release_source):
-            self.assertNotIn('DFU_APPLICATION_VERSION', text)
-            self.assertNotIn('DFU_PREVIOUS_APPLICATION_VERSION', text)
-            self.assertNotIn('previous-version', text)
-            self.assertNotIn('previous_version', text)
+        for text in (shell, batch):
+            self.assertNotIn('DFU_APPLICATION_VERSION=', text)  # wrappers need no setup
+            self.assertIn('dfu_release.py', text)
+        self.assertIn('DFU_APPLICATION_VERSION', release_source)
+        self.assertIn('--application-version', release_source)
+        self.assertIn('--print-application-version', release_source)
+        self.assertIn('--print-application-version', build)
+        self.assertIn('DFU_APPLICATION_VERSION', build)
         self.assertIn('DFU_RESOURCES_DIR', shell)
         self.assertIn('NRFUTIL', shell)
-        self.assertNotIn('FW_VER=', shell)
         self.assertIn('DFU_RESOURCES_DIR', batch)
-        self.assertNotIn('set "fw_ver=', batch.lower())
-
     def test_reserved_range_overlap_is_rejected(self):
         for start, end in ((0x26FFF, 0x27001), (0x27000, 0x28000), (0x28000, 0x29000)):
             with self.subTest(start=start), self.assertRaises(release.ReleaseError):

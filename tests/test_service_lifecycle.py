@@ -78,7 +78,7 @@ handlers = retry_reset + '\n'.join(function(source, name) for name in (
     'epd_append_char', 'epd_append_uint', 'epd_make_prefixed_uint',
     'epd_make_mtu_string',
     'epd_send_prefixed_uint', 'epd_send_mtu', 'epd_send_time', 'epd_send_voltage',
-    'on_connect', 'on_disconnect', 'cmd_init', 'epd_init_process',
+    'on_connect', 'on_disconnect', 'cmd_init', 'epd_init_checked', 'epd_init_process',
     'epd_connection_process', 'cmd_reset_transfer', 'epd_config_pins_valid',
     'epd_config_validate', 'epd_config_apply', 'cmd_set_pins',
     'epd_process_next_command', 'resource_notification_send', 'epd_todo_font_valid', 'epd_resource_event',
@@ -86,6 +86,7 @@ handlers = retry_reset + '\n'.join(function(source, name) for name in (
     'epd_bulk_reply_send', 'crc16_compute', 'send_block_response',
     'send_transfer_status', 'epd_bulk_reply_process',
     'epd_ensure_display', 'epd_update_display_mode', 'epd_switch_from_clock_mode',
+    'epd_prepare_picture_mode', 'epd_commit_picture_mode',
     'epd_enter_picture_mode', 'epd_picture_entry_process', 'cmd_write_block'))
 start = source.index('finish_refresh:') + len('finish_refresh:')
 end = source.index('\n}\n', start)

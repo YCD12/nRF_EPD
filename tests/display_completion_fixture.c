@@ -34,7 +34,7 @@ static bool EPD_BusyAbortRequested(void) { return aborted; }
 static void epd_service_busy_error_clear(ble_epd_t *p) { (void)p; timeout = false; }
 static bool epd_service_busy_error(const ble_epd_t *p) { (void)p; return timeout; }
 static bool epd_ensure_display(ble_epd_t *p) { p->epd = &panel; return !init_failed; }
-static void epd_enter_picture_mode(ble_epd_t *p) { (void)p; }
+static bool epd_enter_picture_mode(ble_epd_t *p) { (void)p; return true; }
 /* PRODUCTION_HANDLERS */
 int main(void) {
     ble_epd_t service = {.connection_generation = 1}; current = &service;

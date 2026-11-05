@@ -202,7 +202,19 @@ if not defined BUILD_JOBS set "BUILD_JOBS=1"
 set "FIRMWARE_PREFIX=_build\nrf52811_xxaa"
 set "FIRMWARE_OUT=%FIRMWARE_PREFIX%.out"
 set "FIRMWARE_HEX=%FIRMWARE_PREFIX%.hex"
-set "FULL_HEX=%FIRMWARE_PREFIX%-full.hex"
+rem FULL_HEX/SETTINGS_HEX carry the resolved DFU application version and are
+rem built by :resolve_dfu_version (default APP_VERSION; override with
+rem DFU_APPLICATION_VERSION for a hotfix release).
+exit /b 0
+
+:resolve_dfu_version
+for /f "delims=" %%V in ('python "tools\dfu_release.py" --print-application-version') do set "DFU_VERSION=%%V"
+if not defined DFU_VERSION (
+    echo Error: could not resolve the DFU application version.
+    exit /b 1
+)
+set "FULL_HEX=%FIRMWARE_PREFIX%-v%DFU_VERSION%-full.hex"
+set "SETTINGS_HEX=%FIRMWARE_PREFIX%-v%DFU_VERSION%-settings.hex"
 exit /b 0
 
 :clean
@@ -363,7 +375,14 @@ if not exist "tools\make-ota-nrf52.bat" (
     exit /b 1
 )
 call "%CD%\tools\make-ota-nrf52.bat" "%FIRMWARE_PREFIX%"
-exit /b %errorlevel%
+if errorlevel 1 exit /b %errorlevel%
+call :resolve_dfu_version
+if errorlevel 1 exit /b %errorlevel%
+echo Full firmware: %FULL_HEX%
+echo OTA package:   %FIRMWARE_PREFIX%-v%DFU_VERSION%-ota.zip
+echo Settings HEX:  %SETTINGS_HEX%
+echo Release JSON:  %FIRMWARE_PREFIX%-v%DFU_VERSION%-release.json
+exit /b 0
 
 :build_external_resources
 echo =========================================
@@ -410,18 +429,20 @@ if not exist "!BOOTLOADER_HEX!" (
     echo Error: Bootloader HEX was not found.
     exit /b 1
 )
-set "SETTINGS_HEX=%FIRMWARE_PREFIX%-settings.hex"
+call :resolve_dfu_version
+if errorlevel 1 exit /b %errorlevel%
 python "tools\dfu_release.py" --audit-only --application "%FIRMWARE_HEX%" --bootloader "!BOOTLOADER_HEX!" --softdevice "%SOFTDEVICE_HEX%"
 if errorlevel 1 exit /b %errorlevel%
 echo =========================================
 echo Generating directly flashable full firmware...
 echo Bootloader: !BOOTLOADER_HEX!
+echo DFU application version: %DFU_VERSION%
 echo Key compatibility audit: skipped for build target
 echo =========================================
 "!MERGE_NRFUTIL_EXE!" settings generate --family NRF52810 ^
     --application "%FIRMWARE_HEX%" ^
     --softdevice "%SOFTDEVICE_HEX%" ^
-    --application-version 1 ^
+    --application-version %DFU_VERSION% ^
     --bootloader-version 1 ^
     --bl-settings-version 2 ^
     --app-boot-validation VALIDATE_GENERATED_CRC ^
@@ -450,17 +471,21 @@ exit /b 0
 rem Refresh application validation in both bootloader settings pages as well.
 call :ota %*
 if errorlevel 1 exit /b %errorlevel%
+call :resolve_dfu_version
+if errorlevel 1 exit /b %errorlevel%
 call :require_nrfjprog
 if errorlevel 1 exit /b 1
 "%NRFJPROG_EXE%" -f nrf52 --program "%FIRMWARE_HEX%" --sectorerase --verify
 if errorlevel 1 exit /b %errorlevel%
-"%NRFJPROG_EXE%" -f nrf52 --program "%FIRMWARE_PREFIX%-settings.hex" --sectorerase --verify
+"%NRFJPROG_EXE%" -f nrf52 --program "%SETTINGS_HEX%" --sectorerase --verify
 if errorlevel 1 exit /b %errorlevel%
 "%NRFJPROG_EXE%" -f nrf52 --reset
 exit /b %errorlevel%
 
 :flash_full
 call :ota %*
+if errorlevel 1 exit /b %errorlevel%
+call :resolve_dfu_version
 if errorlevel 1 exit /b %errorlevel%
 call :require_nrfjprog
 if errorlevel 1 exit /b 1
@@ -488,6 +513,8 @@ if errorlevel 1 exit /b 1
 exit /b %errorlevel%
 
 :show_info
+call :resolve_dfu_version
+if errorlevel 1 exit /b %errorlevel%
 echo Project:   EPD-nRF52
 echo Target:    nrf52811_xxaa
 echo GCC:       %GCC_BIN%

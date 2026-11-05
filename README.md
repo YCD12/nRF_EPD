@@ -329,9 +329,11 @@ Keil 工程配套说明：
 - 应用工程 **Build/Rebuild 成功后会自动运行** `tools/keil-postbuild.bat`
   （After Make），直接生成完整刷机与 OTA 文件，不需要再手动运行
   `build.bat ota`：
-  - `_build/nrf52811_xxaa-full.hex`（SoftDevice + Bootloader + App + Settings）
-  - `_build/nrf52811_xxaa-ota.zip`（Nordic Secure DFU 包）
-  - `_build/nrf52811_xxaa-settings.hex`、`_build/nrf52811_xxaa-release.json`
+  - `_build/nrf52811_xxaa-v0x21-full.hex`（SoftDevice + Bootloader + App + Settings）
+  - `_build/nrf52811_xxaa-v0x21-ota.zip`（Nordic Secure DFU 包）
+  - `_build/nrf52811_xxaa-v0x21-settings.hex`、`_build/nrf52811_xxaa-v0x21-release.json`
+  - 文件名中的 `v0x21` 来自固件 `APP_VERSION`；发布热修复时可用
+    `DFU_APPLICATION_VERSION` 覆盖，文件名会同步变化
   - 该步骤使用仓库自带的 `tools/windows_tools/nrfutil.exe` 与
     `mergehex.exe`，并需要系统 `PATH` 中有 Python（仓库其他构建/OTA 脚本同样需要）。
 - `Keil/flash_softdevice.uvprojx` 是独立单 Target 工程（ARM Compiler 5）：
@@ -414,13 +416,18 @@ Windows 下 `build.bat build` 会先清理，再执行完整测试和编译；�
 
 工具脚本：`tools/dfu_release.py`，或其封装 `tools/make-ota-nrf52.bat`
 
-发布时必须指定单调递增的 Nordic DFU 版本。例如当前 P4 发布包从 `0x19` 升到 `0x1A`：
+Nordic DFU 的应用版本默认取 `EPD/service/EPD_service.h` 的 `APP_VERSION`
+（当前 `0x21`），必须大于/等于设备 bootloader 中保存的版本；否则 bootloader 会以
+`NRF_DFU_EXT_ERROR_FW_VERSION_FAILURE` 拒绝升级（官方 App 显示 "FW version failure"）。
+同一 `APP_VERSION` 需要多次发布/热修复时，显式覆盖为更大的单调递增版本：
 
 ```bat
-set DFU_APPLICATION_VERSION=0x1A
-set DFU_PREVIOUS_APPLICATION_VERSION=0x19
+set DFU_APPLICATION_VERSION=0x22
 build.bat ota
 ```
+
+`DFU_APPLICATION_VERSION` 同时作用于 OTA 包的 `fw_version`、settings hex 和完整 HEX；
+Keil After Make 也读取该环境变量。
 
 脚本能力：
 
@@ -436,16 +443,15 @@ build.bat ota
 
 `build.bat` 的默认动作会生成完整 HEX；需要 OTA 包时显式运行 `build.bat ota`。
 Keil 应用工程 `EPD-nRF52.uvprojx` 的 Build/Rebuild 也会通过 After Make 自动生成
-`_build/nrf52811_xxaa-full.hex` 与 `_build/nrf52811_xxaa-ota.zip`，无需再运行上述脚本。
+`_build/nrf52811_xxaa-v<版本>-full.hex` 与 `_build/nrf52811_xxaa-v<版本>-ota.zip`，无需再运行上述脚本。
 
 Windows 下直接执行 `build.bat`（或 `build.bat build`）会在应用编译和测试通过后，生成
-`_build/nrf52811_xxaa-settings.hex` 与 `_build/nrf52811_xxaa-full.hex`。完整 HEX
+`_build/nrf52811_xxaa-v<版本>-settings.hex` 与 `_build/nrf52811_xxaa-v<版本>-full.hex`。完整 HEX
 包含 SoftDevice、配套 8 KiB 保留区 Bootloader、Application 和两页 settings，可用于 SWD 全量烧录，
 并直接支持外置 Flash 分区读取和资源更新。
 该开发构建只使用 CRC 启动校验；需要签名 OTA 时使用 `build.bat ota`，或直接用
-Keil 应用工程 Build（After Make 会自动生成 `_build/nrf52811_xxaa-ota.zip`）。
-两个构建流程均检查编译后 Bootloader 的布局描述符和 UICR 地址，拒绝缺少正确标识或布局不匹配的镜像；正式发布还核对签名公钥，开发构建不检查签名密钥。settings 的应用版本默认
-为 `0x1C`，可在构建前通过 `set BUILD_APPLICATION_VERSION=0x1D` 覆盖。
+Keil 应用工程 Build（After Make 会自动生成 `_build/nrf52811_xxaa-v<版本>-ota.zip`）。
+两个构建流程均检查编译后 Bootloader 的布局描述符和 UICR 地址，拒绝缺少正确标识或布局不匹配的镜像；正式发布还核对签名公钥，开发构建不检查签名密钥。完整 HEX 的 settings 与 OTA 使用同一个 DFU 应用版本（默认 `APP_VERSION`，可用 `DFU_APPLICATION_VERSION` 覆盖），保证 OTA 与 SWD 全量烧录的版本基准一致。
 
 ### 方式四：生成全部外置 Flash 资源包
 

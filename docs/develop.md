@@ -41,9 +41,11 @@ Keil 工程拆分为两个独立的单 Target 工程（请勿再合并回同一�
 应用工程 Build/Rebuild 成功后会通过 After Make 自动运行
 `tools/keil-postbuild.bat`，生成与 `build.bat` 相同的发布产物：
 
-- `_build/nrf52811_xxaa-full.hex`（SoftDevice + Bootloader + App + Settings）
-- `_build/nrf52811_xxaa-ota.zip`（Nordic Secure DFU 包）
-- `_build/nrf52811_xxaa-settings.hex`、`_build/nrf52811_xxaa-release.json`
+- `_build/nrf52811_xxaa-v<版本>-full.hex`（SoftDevice + Bootloader + App + Settings）
+- `_build/nrf52811_xxaa-v<版本>-ota.zip`（Nordic Secure DFU 包）
+- `_build/nrf52811_xxaa-v<版本>-settings.hex`、`_build/nrf52811_xxaa-v<版本>-release.json`
+
+`<版本>` 来自固件 `APP_VERSION`（当前 `0x21`），也可用 `DFU_APPLICATION_VERSION` 覆盖。
 
 脚本使用仓库自带的 `tools/windows_tools/nrfutil.exe`、`mergehex.exe`，并要求
 系统 `PATH` 中有 Python；不需要再单独执行 `build.bat ota`。

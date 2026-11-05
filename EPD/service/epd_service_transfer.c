@@ -196,7 +196,7 @@ void cmd_write_block(ble_epd_t *p_epd, uint8_t *p_data, uint16_t length) /* CRC 
                     NRF_LOG_INFO("Switch mode: block\n");
                 }
                 EPD_ClearBusyAbort();
-                epd_enter_picture_mode(p_epd);
+                (void)epd_enter_picture_mode(p_epd);
             } else if (p_epd->transfer_ctx.total_blocks != total_blocks) {
                 NRF_LOG_WARNING("[EPD]: total_blocks changed mid-transfer: %d -> %d, resetting\n",
                                 p_epd->transfer_ctx.total_blocks, total_blocks);

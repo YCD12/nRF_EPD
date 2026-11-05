@@ -410,6 +410,12 @@ FIRMWARE_PREFIX := $(OUTPUT_DIRECTORY)/nrf52811_xxaa
 NRFUTIL ?= nrfutil
 MERGEHEX ?= mergehex
 
+# DFU application version comes from the firmware APP_VERSION (overridable with
+# the DFU_APPLICATION_VERSION environment variable). Release names carry it.
+DFU_APPLICATION_VERSION := $(shell $(BUILD_PYTHON) tools/dfu_release.py --print-application-version 2>/dev/null)
+FULL_HEX_FILE := $(FIRMWARE_PREFIX)-v$(DFU_APPLICATION_VERSION)-full.hex
+SETTINGS_HEX_FILE := $(FIRMWARE_PREFIX)-v$(DFU_APPLICATION_VERSION)-settings.hex
+
 host_test:
 	@chmod +x $(PROJ_DIR)/tests/run_host_tests.sh
 	HOST_TEST_OUT=$(OUTPUT_DIRECTORY)/host_tests $(PROJ_DIR)/tests/run_host_tests.sh
@@ -427,6 +433,7 @@ build: firmware
 	@$(MAKE) -f Makefile.nRF52_linux --no-print-directory merge_full
 
 merge_full: $(FIRMWARE_PREFIX).hex
+	@test -n "$(DFU_APPLICATION_VERSION)" || { echo "Error: could not resolve the DFU application version (check python and EPD/service/EPD_service.h)."; exit 1; }
 	@test -f "$(SOFTDEVICE_HEX)" || { echo "Error: SoftDevice HEX was not found: $(SOFTDEVICE_HEX)"; exit 1; }
 	@bootloader="$(KEIL_BOOTLOADER_HEX)"; \
 	if [ ! -f "$$bootloader" ]; then bootloader="$(GCC_BOOTLOADER_HEX)"; fi; \
@@ -443,15 +450,15 @@ merge_full: $(FIRMWARE_PREFIX).hex
 	"$(NRFUTIL)" settings generate --family NRF52810 \
 		--application "$(FIRMWARE_PREFIX).hex" \
 		--softdevice "$(SOFTDEVICE_HEX)" \
-		--application-version 1 \
+		--application-version $(DFU_APPLICATION_VERSION) \
 		--bootloader-version 1 \
 		--bl-settings-version 2 \
 		--app-boot-validation VALIDATE_GENERATED_CRC \
 		--start-address 0x2F000 \
-		"$(FIRMWARE_PREFIX)-settings.hex" && \
-	"$(MERGEHEX)" -m "$(SOFTDEVICE_HEX)" "$$bootloader" "$(FIRMWARE_PREFIX).hex" "$(FIRMWARE_PREFIX)-settings.hex" -o "$(FIRMWARE_PREFIX)-full.hex" && \
-	test -f "$(FIRMWARE_PREFIX)-full.hex" || { echo "Error: merged firmware was not generated: $(FIRMWARE_PREFIX)-full.hex"; exit 1; }; \
-	echo "Full firmware: $(FIRMWARE_PREFIX)-full.hex"
+		"$(SETTINGS_HEX_FILE)" && \
+	"$(MERGEHEX)" -m "$(SOFTDEVICE_HEX)" "$$bootloader" "$(FIRMWARE_PREFIX).hex" "$(SETTINGS_HEX_FILE)" -o "$(FULL_HEX_FILE)" && \
+	test -f "$(FULL_HEX_FILE)" || { echo "Error: merged firmware was not generated: $(FULL_HEX_FILE)"; exit 1; }; \
+	echo "Full firmware: $(FULL_HEX_FILE)"
 
 ota: firmware
 	@echo "=== Generating OTA package ==="
@@ -497,12 +504,12 @@ memory: $(OUTPUT_DIRECTORY)/nrf52811_xxaa.out
 # 烧录应用和对应 settings（需要已烧录 SoftDevice 与 Bootloader）
 flash: build
 	nrfjprog -f nrf52 --program $(FIRMWARE_PREFIX).hex --sectorerase --verify
-	nrfjprog -f nrf52 --program $(FIRMWARE_PREFIX)-settings.hex --sectorerase --verify
+	nrfjprog -f nrf52 --program $(SETTINGS_HEX_FILE) --sectorerase --verify
 	nrfjprog -f nrf52 --reset
 
 # 烧录完整固件（SD + BL + App + Settings），使用开发构建的 full HEX
 flash_full: build
-	nrfjprog -f nrf52 --program $(FIRMWARE_PREFIX)-full.hex --chiperase
+	nrfjprog -f nrf52 --program $(FULL_HEX_FILE) --chiperase
 	nrfjprog -f nrf52 --reset
 
 flash_softdevice:
@@ -519,4 +526,4 @@ info:
 	@echo "nRF tools: $(NRF_TOOLS_BIN)"
 	@echo "SDK:       $(SDK_ROOT)"
 	@echo "Output:    $(OUTPUT_DIRECTORY)"
-	@echo "Build full: $(FIRMWARE_PREFIX)-full.hex"
+	@echo "Build full: $(FULL_HEX_FILE)"

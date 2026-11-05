@@ -123,6 +123,31 @@ bool resource_blocks_display_command(uint8_t cmd)
 }
 
 
+/* 初始化检查与两个生命周期 worker 保留共享函数体，避免 LTO 把错误门控
+ * 展开/克隆到多个入口。GCC 9.3.1 生产构建实测节省 128 B；armclang
+ * 不支持 noclone，仅限制内联。所有成功门控、失败重试与连接归属检查不变。 */
+#if defined(__GNUC__) && !defined(__clang__) && !defined(__CC_ARM)
+#define EPD_SERVICE_NOINLINE __attribute__((noinline, noclone))
+#elif defined(__GNUC__) && !defined(__CC_ARM)
+#define EPD_SERVICE_NOINLINE __attribute__((noinline))
+#else
+#define EPD_SERVICE_NOINLINE
+#endif
+
+/* epd_init() 即使在 BUSY 超时或被 RESET_TRANSFER 打断时也会返回模型别名，
+ * 但面板并未配置完成。实例若保留，后续“已有实例”分支会跳过重试并允许写图
+ * （MODE_PICTURE 休眠后再次传图尤其明显）。统一在这里判失败并使实例失效。
+ * 打断路径由 EPD_WaitBusy 返回 false、驱动置 BUSY 错误标志覆盖。 */
+EPD_SERVICE_NOINLINE
+static bool epd_init_checked(ble_epd_t *p_epd, epd_model_id_t model)
+{
+    p_epd->epd = epd_init(model);
+    if (p_epd->epd != NULL && epd_service_busy_error(p_epd)) {
+        p_epd->epd = NULL;
+    }
+    return p_epd->epd != NULL;
+}
+
 /* 时钟刷新会睡眠面板并可能清空 p_epd->epd。
  * 仅当连接时的引用已失效时才重新打开 GPIO，再 drv->init。 */
 bool epd_ensure_display(ble_epd_t *p_epd)
@@ -131,8 +156,7 @@ bool epd_ensure_display(ble_epd_t *p_epd)
         return true;
     }
     EPD_GPIO_Ensure();
-    p_epd->epd = epd_init((epd_model_id_t)p_epd->config.model_id);
-    return p_epd->epd != NULL;
+    return epd_init_checked(p_epd, (epd_model_id_t)p_epd->config.model_id);
 }
 
 /* 面板 BUSY 错误标志：实例存在时走驱动虚表（新面板可自定义状态）；睡眠后
@@ -241,9 +265,16 @@ static void on_disconnect(ble_epd_t* p_epd, ble_evt_t* p_ble_evt) {
  * 中断里只置 picture_entry_pending 并回 RESTART，避免 UC8179 复位/BUSY
  * 等待（最长 1000 ms，未初始化时还会二次 init）占用 SoftDevice 事件中断。
  * 有刷新/INIT/资源会话/断连时保留 pending，下一轮主循环再试；网页此时
- * 会按 RESTART 语义从块 0 重传。入口执行后成功回 ACK，失败保留可重试。 */
+ * 会按 RESTART 语义从块 0 重传。入口执行后成功回 ACK，失败保留可重试。
+ * 规则：只有面板 init 成功、且连接 generation/入口归属仍有效时才提交
+ * MODE_PICTURE 并结束入口；任何一步失败都保持时钟模式，避免半初始化面板
+ * 被后续块写入，也避免断连后的旧请求把时钟停掉。 */
+EPD_SERVICE_NOINLINE
 static void epd_picture_entry_process(ble_epd_t *p_epd)
 {
+    uint32_t generation;
+    bool committed = false;
+
     if (!p_epd->picture_entry_pending) return;
     if (p_epd->conn_handle == BLE_CONN_HANDLE_INVALID || p_epd->disconnect_pending ||
         !p_epd->gpio_connection_ref || p_epd->is_refreshing ||
@@ -256,22 +287,31 @@ static void epd_picture_entry_process(ble_epd_t *p_epd)
         p_epd->picture_entry_pending = false;
         return; /* 已由其它主循环路径完成入口（幂等），无需重复 init。 */
     }
+    generation = p_epd->connection_generation;
     EPD_ClearBusyAbort();
     epd_service_busy_error_clear(p_epd);
-    if (!epd_ensure_display(p_epd)) {
+    if (!epd_prepare_picture_mode(p_epd)) {
+        /* init 被 RESET_TRANSFER 的 BUSY 打断或超时：保留 pending 与时钟
+         * 模式，下一轮主循环重试；期间块 0 继续回 RESTART，不会误写面板。 */
         p_epd->force_full_refresh = true;
-        return; /* 保留 pending：下一轮主循环重试，网页重发块 0 也不丢请求。 */
+        return;
     }
-    epd_enter_picture_mode(p_epd);
-    /* 入口期间保持 pending：中断里的块 0 继续回 RESTART（不会重复登记），
-     * 完成后再放行正常块写入。 */
-    p_epd->picture_entry_pending = false;
-    if (epd_service_busy_error(p_epd)) {
-        p_epd->force_full_refresh = true; /* 静默重试：块 0 重传会重新走入口。 */
+    /* 上面的 init 是阻塞操作（最长约 1 s），期间可能已断连/重连，断连清理
+     * 也会清除本入口。提交与归属校验放在同一临界区：旧连接 generation 的
+     * 请求绝不能把新连接/离线状态切到图片模式。 */
+    CRITICAL_REGION_ENTER();
+    if (generation == p_epd->connection_generation && p_epd->picture_entry_pending &&
+        !p_epd->disconnect_pending) {
+        epd_commit_picture_mode(p_epd);
+        p_epd->picture_entry_pending = false;
+        committed = true;
     }
+    CRITICAL_REGION_EXIT();
+    if (!committed) return; /* 断连清理已接管：保持时钟模式并等待刷新调度。 */
 }
 
 /* The sole INIT worker runs in main, after a refresh returns. */
+EPD_SERVICE_NOINLINE
 static void epd_init_process(ble_epd_t *p_epd)
 {
     if (p_epd->disconnect_pending || !p_epd->gpio_connection_ref ||
@@ -297,11 +337,11 @@ static void epd_init_process(ble_epd_t *p_epd)
         }
         EPD_ClearBusyAbort();
         epd_service_busy_error_clear(p_epd);
-        p_epd->epd = epd_init((epd_model_id_t)model);
-        p_epd->init_status = epd_service_busy_error(p_epd) ? 1U : 0U;
+        bool init_ok = epd_init_checked(p_epd, (epd_model_id_t)model);
+        p_epd->init_status = init_ok ? 0U : 1U;
         p_epd->force_full_refresh = true;
         epd_clock_refresh_invalidate();
-        if (p_epd->epd->id != p_epd->config.model_id) {
+        if (init_ok && p_epd->epd->id != p_epd->config.model_id) {
             p_epd->config.model_id = p_epd->epd->id;
             epd_config_write(&p_epd->config);
         }

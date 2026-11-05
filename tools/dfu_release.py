@@ -38,6 +38,8 @@ BOOTLOADER_LAYOUT_MAGIC = 0x31444C42  # BLD1
 BOOTLOADER_LAYOUT_VERSION = 1
 LEGACY_APP_END = 0x27000
 ROOT = Path(__file__).resolve().parents[1]
+APP_HEADER = ROOT / 'EPD/service/EPD_service.h'
+DFU_APPLICATION_VERSION_ENV = 'DFU_APPLICATION_VERSION'
 RESOURCE_ABI = 1
 RESOURCE_MAGIC = 0x31535245
 RESOURCE_COMMIT = 0xA55AC33C
@@ -57,6 +59,55 @@ PERSONAL_RECORD_PACKAGES = {
 
 class ReleaseError(ValueError):
     pass
+
+
+def parse_u32(text: str) -> int:
+    try:
+        value = int(str(text), 0)
+    except ValueError as error:
+        raise argparse.ArgumentTypeError(f'invalid unsigned 32-bit integer: {text!r}') from error
+    if not 0 <= value <= 0xFFFFFFFF:
+        raise argparse.ArgumentTypeError(f'unsigned 32-bit integer out of range: {text!r}')
+    return value
+
+
+def default_application_version() -> int:
+    """Nordic DFU app version defaults to the firmware protocol APP_VERSION.
+
+    The Secure DFU bootloader with downgrade prevention rejects an application
+    whose init-packet fw_version is below the device's stored app version
+    (`NRF_DFU_EXT_ERROR_FW_VERSION_FAILURE`). The app protocol version is
+    already bumped for every new firmware capability, and it is above the
+    historical vendor DFU releases (0x19/0x1A/0x1C), so it is a safe default;
+    use `DFU_APPLICATION_VERSION` or `--application-version` when publishing a
+    hotfix without bumping APP_VERSION.
+    """
+    try:
+        header = APP_HEADER.read_text(encoding='utf-8')
+    except OSError as error:
+        raise ReleaseError(f'missing application header: {APP_HEADER}') from error
+    match = re.search(r'^#define\s+APP_VERSION\s+(0x[0-9A-Fa-f]+|\d+)\b',
+                      header, re.MULTILINE)
+    if match is None:
+        raise ReleaseError(f'APP_VERSION is missing from {APP_HEADER}')
+    version = parse_u32(match.group(1))
+    if version == 0:
+        raise ReleaseError('APP_VERSION must be non-zero for DFU versioning')
+    return version
+
+
+def resolve_application_version(args: argparse.Namespace | None = None) -> int:
+    """Resolve the DFU app version: CLI, then environment, then APP_VERSION."""
+    selected = getattr(args, 'application_version', None) if args is not None else None
+    if selected is not None:
+        return int(selected)
+    environment = os.environ.get(DFU_APPLICATION_VERSION_ENV)
+    if environment:
+        try:
+            return parse_u32(environment)
+        except argparse.ArgumentTypeError as error:
+            raise ReleaseError(f'invalid {DFU_APPLICATION_VERSION_ENV}: {error}') from error
+    return default_application_version()
 
 
 def default_bootloader(workspace: Path | None = None) -> Path:
@@ -448,6 +499,7 @@ def publish_release_artifacts(staging: Path, output: Path, names: tuple[str, ...
 
 
 def build_release(args: argparse.Namespace) -> dict[str, object]:
+    application_version = resolve_application_version(args)
     app = args.application.resolve()
     bootloader = args.bootloader.resolve()
     softdevice = args.softdevice.resolve()
@@ -468,20 +520,24 @@ def build_release(args: argparse.Namespace) -> dict[str, object]:
     stem = args.name
     if not stem or stem in ('.', '..') or '/' in stem or '\\' in stem or ':' in stem:
         raise ReleaseError('release name must be a filename without directory components')
+    # The generated names carry the same DFU app version that the init packet and
+    # settings page store, so releases with different versions cannot overwrite
+    # or get mixed up in _build.
+    versioned_stem = f'{stem}-v{application_version:#x}'
     with tempfile.TemporaryDirectory(prefix='.dfu-release-', dir=output,
                                      ignore_cleanup_errors=True) as directory:
         staging = Path(directory)
-        package = staging / f'{stem}-ota.zip'
-        settings = staging / f'{stem}-settings.hex'
-        full = staging / f'{stem}-full.hex'
-        manifest = staging / f'{stem}-release.json'
+        package = staging / f'{versioned_stem}-ota.zip'
+        settings = staging / f'{versioned_stem}-settings.hex'
+        full = staging / f'{versioned_stem}-full.hex'
+        manifest = staging / f'{versioned_stem}-release.json'
 
         run([args.nrfutil, 'pkg', 'generate', '--application', str(app), '--key-file', str(private_key),
              '--hw-version', str(HARDWARE_VERSION), '--sd-req', hex(SOFTDEVICE_ID), '--sd-id',
-             hex(SOFTDEVICE_ID), '--application-version', '1',
+             hex(SOFTDEVICE_ID), '--application-version', str(application_version),
              '--app-boot-validation', 'VALIDATE_GENERATED_CRC', str(package)])
         run([args.nrfutil, 'settings', 'generate', '--family', 'NRF52810', '--application', str(app),
-             '--softdevice', str(softdevice), '--application-version', '1',
+             '--softdevice', str(softdevice), '--application-version', str(application_version),
              '--bootloader-version', '1', '--bl-settings-version', '2', '--key-file', str(private_key),
              '--app-boot-validation', 'VALIDATE_GENERATED_CRC', '--start-address', hex(SETTINGS),
              str(settings)])
@@ -499,12 +555,12 @@ def build_release(args: argparse.Namespace) -> dict[str, object]:
         validate_merged_image(full, (softdevice, bootloader, app, settings))
         validate_package_layout(package, binary)
         info = package_info(args.nrfutil, package)
-        if (info['hardware'], info['softdevice'], info['size']) != (
-                HARDWARE_VERSION, SOFTDEVICE_ID, len(binary)):
+        if (info['version'], info['hardware'], info['softdevice'], info['size']) != (
+                application_version, HARDWARE_VERSION, SOFTDEVICE_ID, len(binary)):
             raise ReleaseError('DFU package metadata does not match application image')
         result = {
             'release_abi': 2,
-            'application_version': info['version'],
+            'application_version': application_version,
             **audit,
             'internal_fds_reserved': {'start': FDS_START, 'end_exclusive': FDS_END,
                                       'bytes': FDS_END - FDS_START, 'changed': False,
@@ -528,8 +584,13 @@ def build_release(args: argparse.Namespace) -> dict[str, object]:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--application', type=Path, required=True)
+    parser.add_argument('--application', type=Path)
     parser.add_argument('--output', type=Path)
+    parser.add_argument('--application-version', type=parse_u32,
+                        help='monotonic Nordic DFU application version; '
+                             'default: DFU_APPLICATION_VERSION env or APP_VERSION')
+    parser.add_argument('--print-application-version', action='store_true',
+                        help='print the effective DFU application version and exit')
     parser.add_argument('--audit-only', action='store_true',
                         help='validate application and compiled bootloader layout without generating files')
     parser.add_argument('--name', default='nrf52811_xxaa')
@@ -544,6 +605,15 @@ def main() -> None:
     parser.add_argument('--nrfutil', default=os.environ.get('NRFUTIL') or shutil.which('nrfutil') or 'nrfutil')
     parser.add_argument('--mergehex', default=os.environ.get('MERGEHEX') or shutil.which('mergehex') or 'mergehex')
     args = parser.parse_args()
+    if args.print_application_version:
+        try:
+            print(hex(resolve_application_version(args)))
+        except (ReleaseError, argparse.ArgumentTypeError) as error:
+            print(f'DFU release rejected: {error}', file=sys.stderr)
+            raise SystemExit(1)
+        return
+    if args.application is None:
+        parser.error('--application is required')
     if not args.audit_only and args.output is None:
         parser.error('--output is required unless --audit-only is used')
     try:

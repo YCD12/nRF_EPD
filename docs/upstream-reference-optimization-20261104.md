@@ -217,7 +217,7 @@
 - 逐层分析：`output/work-20261104/ref-compare/{driver,system,web}.md`
 - 本轮构建/测试完整日志：`output/work-20261104/ref-compare/build-and-host-tests.log`
 - 构建产物：`_build/nrf52811_xxaa.{out,bin,hex,map}` 与
-  `_build/nrf52811_xxaa-full.hex`
+  `_build/nrf52811_xxaa-v<APP_VERSION>-full.hex`（构建脚本现自动追加版本后缀）
 - 复现：
   ```powershell
   .\build.bat build
@@ -360,6 +360,56 @@ HEX）；应用工程 `Keil/EPD-nRF52.uvprojx` 只保留 `nRF52811_xxAA`。两�
   符号文件、单 Target 拆分、After Make 后处理脚本，并确认 `flash_softdevice`
   仍为 ARMCC5）。
 - 应用工程 After Make 新增 `tools/keil-postbuild.bat`：Build/Rebuild 后自动生成
-  `_build/nrf52811_xxaa-full.hex`、`_build/nrf52811_xxaa-ota.zip`、
-  `-settings.hex`、`-release.json`（与 `build.bat build/ota` 产物一致），
+  `_build/nrf52811_xxaa-v<版本>-full.hex`、`_build/nrf52811_xxaa-v<版本>-ota.zip`、
+  `-v<版本>-settings.hex`、`-v<版本>-release.json`（与 `build.bat build/ota` 产物一致），
   使用仓库自带 `nrfutil.exe`/`mergehex.exe` + Python。
+
+## 11. 代码审查 P2 修复：图片模式入口的成功门控与连接代次校验（2026-11-05）
+
+审查确认 `0542416` 引入的异步图片模式入口有三处问题（均已补主机回归用例，
+见 `tests/service_lifecycle_fixture.c` 的 “S-1 回归 1/2/3”）：
+
+1. **初始化被 RESET_TRANSFER 打断后仍提交图片模式**：入口在 `epd_enter_picture_mode()`
+   里先做时钟模式 `drv->init`（BUSY 可被 `RESET_TRANSFER` 打断），随后无条件写
+   `MODE_PICTURE` 并清 `picture_entry_pending`；下一次块 0 被 ACK 并直接写
+   RAM，不再重新初始化。
+   修复：`epd_service_cmd.c` 拆出 `epd_prepare_picture_mode()` /
+   `epd_commit_picture_mode()`；`epd_switch_from_clock_mode()` 返回 init 是否
+   成功（检查 `epd_service_busy_error()`；`RESET_TRANSFER` 打断同样置该错误
+   标志）。入口只在 prepare 成功后提交模式；失败保留 `picture_entry_pending`
+   与时钟模式，块 0 继续回 RESTART，下一轮主循环重试。`cmd_display()` 同样在
+   prepare 失败时回 `RS_IO` 且不写面板。
+2. **初始化等待期间断连，worker 返回后仍切图片模式**：阻塞 init 期间
+   `on_disconnect()` 已清 `picture_entry_pending`，但入口返回后继续提交模式，
+   且断连清理看到 `MODE_PICTURE` 不再安排时钟刷新。
+   修复：入口在阻塞 init 前记录 `connection_generation`；init 返回后在同一临界区
+   内校验 generation、`picture_entry_pending` 与 `disconnect_pending`，任一不匹配
+   即放弃提交。断连清理继续看到时钟模式，从而恢复离线时钟刷新。
+3. **初始化失败后实例仍非空，非时钟模式绕过重试**：`epd_init()` 在 BUSY
+   超时/被 `RESET_TRANSFER` 打断时仍返回模型别名，`MODE_PICTURE` 休眠后再次
+   传图（`epd == NULL`）时 `epd_prepare_picture_mode()` 返回 false 但实例被留下；
+   下一轮入口的“已有实例且非时钟模式”分支直接清 pending，块 0 被 ACK 并写入
+   未初始化的面板。
+   修复：新增 `epd_init_checked()`，`epd_init()` 失败（`epd == NULL`、BUSY 错误
+   或 BUSY 中断）时统一把 `p_epd->epd` 置 NULL；`epd_ensure_display()` 与
+   INIT worker 共用该路径（INIT worker 失败仍回 status=1）。失败的实例不会再
+   被后续路径当成已初始化。
+
+验证：`build.bat build`（HOST_OK + GCC 生产构建）：
+Flash **55,932 / 57,344 B**（free 1,412 B，较修复前 55,916 B 仅增加 16 B）；
+静态 RAM 9,444 B 不变。`python tests/test_service_lifecycle.py`、
+`python tests/test_build_config_parity.py` 通过。新增主机回归：
+`tests/service_lifecycle_fixture.c` 的 “S-1 回归 1/2/3” 分别覆盖
+“init 被 BUSY 打断→保留 pending/时钟模式→重试成功”、
+“init 期间断连→不提交图片模式→断连清理恢复时钟刷新”与
+“MODE_PICTURE+epd==NULL 首次 init 失败→实例失效/块 0 仍 RESTART→重试成功”。
+未做真机验证与 Keil 重新编译（新代码只用 C99 bool/临界区，无新增依赖）。
+
+三处修复的原始体积增量约 272 B，通过两项**无行为变更**的优化收回 256 B：
+
+- `EPD_SERVICE_NOINLINE`（GCC：`noinline+noclone`；armclang：`noinline`）保留
+  `epd_init_checked` / `epd_picture_entry_process` / `epd_init_process` 的共享
+  函数体，避免 LTO 把同一套错误门控按调用点展开/克隆（−128 B）。
+- `EPD_WaitBusy` 在 `RESET_TRANSFER` 打断时同样返回 false，UC8179 驱动会置
+  BUSY 错误；因此 init 失败判定只需检查 `epd_service_busy_error()`，去掉冗余的
+  `EPD_BusyAbortRequested()` 检查（−128 B，语义不变）。

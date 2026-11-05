@@ -46,7 +46,11 @@ bool epd_config_validate(const epd_config_t *cfg);
 void epd_config_defaults(epd_config_t *cfg);
 bool epd_config_apply(ble_epd_t *p_epd, epd_config_t *candidate);
 bool epd_todo_font_valid(void);
-void epd_enter_picture_mode(ble_epd_t *p_epd);
+/* 图片模式入口：prepare 在主循环完成可能阻塞的面板 init；只有它返回 true 且
+ * 连接 generation/入口归属仍有效时，才允许 commit 提交 MODE_PICTURE。 */
+bool epd_prepare_picture_mode(ble_epd_t *p_epd);
+void epd_commit_picture_mode(ble_epd_t *p_epd);
+bool epd_enter_picture_mode(ble_epd_t *p_epd);
 void epd_execute_command(ble_epd_t* p_epd, uint8_t* p_data, uint16_t length);
 void epd_process_next_command(void* p_event_data, uint16_t event_size);
 void annotations_store_applied(void);
