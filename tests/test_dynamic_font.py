@@ -83,10 +83,10 @@ def main():
     packs = json.loads(generated.stdout)
     assert len(packs) == 27, generated.stdout
     executable = out / 'test_dynamic_font'
-    sources = ['EPD/font_store.c', 'EPD/resource_crc.c', 'EPD/resource_crc_flash.c',
+    sources = ['EPD/storage/font_store.c', 'EPD/storage/resource_crc.c', 'EPD/storage/resource_crc_flash.c',
                'GUI/u8g2_font.c', 'GUI/font_geometry.c', 'tests/test_dynamic_font.c']
     subprocess.run(shlex.split(os.environ.get('HOST_CC', 'gcc')) + [
-        '-Wall', '-Werror', '-std=c11', '-I.', '-IEPD', '-IGUI',
+        '-Wall', '-Werror', '-std=c11', '-I.', '-I.', '-IEPD/hal', '-IEPD/driver', '-IEPD/board', '-IEPD/storage', '-IEPD/app', '-IEPD/service', '-IGUI',
         '-ISDK/17.1.0_ddde560/components/libraries/util',
         '-ISDK/17.1.0_ddde560/components/softdevice/s112/headers',
         '-DFONT_STORE_HOST_TEST', *sources, '-o', str(executable)], cwd=ROOT, check=True)

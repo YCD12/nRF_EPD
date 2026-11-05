@@ -125,8 +125,12 @@ bool resource_transfer_running(void) { return false; }
 #define EPD_LED_BLINK() ((void)0)
 static void EPD_ClearBusyAbort(void) { busy_abort = false; }
 static void EPD_RequestBusyAbort(void) { busy_abort = true; }
-static void UC8179_ClearBusyTimeout(void) {}
-static bool UC8179_HadBusyTimeout(void) { return busy_timeout; }
+/* service 层经此访问器读取面板 BUSY 错误；stub 语义与原 UC8179_* stub 一致
+ * （clear 故意 no-op，让测试可预置 busy_timeout 模拟 INIT 失败）。 */
+static void epd_service_busy_error_clear(ble_epd_t *p_epd) { (void)p_epd; }
+static bool epd_service_busy_error(const ble_epd_t *p_epd)
+{ (void)p_epd; return busy_timeout; }
+static bool epd_model_supported(uint8_t id) { return id == EPD_UC8179_750_BWR; }
 static void epd_clock_refresh_invalidate(void) {}
 static void epd_display_retry_failed(void) { assert(!"unexpected refresh failure"); }
 #define epd_config_write(p) ((void)(p))

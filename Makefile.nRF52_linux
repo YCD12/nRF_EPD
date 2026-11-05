@@ -97,25 +97,30 @@ SRC_FILES += \
   $(SDK_ROOT)/modules/nrfx/mdk/system_nrf52.c \
   $(PROJ_DIR)/main.c \
   $(PROJ_DIR)/gcc_sbrk.c \
-  $(PROJ_DIR)/EPD/EPD_config.c \
-  $(PROJ_DIR)/EPD/epd_advertising.c \
-  $(PROJ_DIR)/EPD/fm25q04b.c \
-  $(PROJ_DIR)/EPD/resource_store.c \
-  $(PROJ_DIR)/EPD/resource_crc.c \
-  $(PROJ_DIR)/EPD/resource_crc_flash.c \
-  $(PROJ_DIR)/EPD/epd_resources.c \
-  $(PROJ_DIR)/EPD/persistent_record.c \
-  $(PROJ_DIR)/EPD/resource_protocol.c \
-  $(PROJ_DIR)/EPD/resource_transfer.c \
-  $(PROJ_DIR)/EPD/EPD_driver.c \
-  $(PROJ_DIR)/EPD/epd_rle.c \
-  $(PROJ_DIR)/EPD/EPD_service.c \
-  $(PROJ_DIR)/EPD/epd_refresh_policy.c \
-  $(PROJ_DIR)/EPD/epd_clock_refresh.c \
-  $(PROJ_DIR)/EPD/calendar_annotations_tx.c \
-  $(PROJ_DIR)/EPD/calendar_annotations_store.c \
-  $(PROJ_DIR)/EPD/font_store.c \
-  $(PROJ_DIR)/EPD/UC8179.c \
+  $(PROJ_DIR)/EPD/board/EPD_config.c \
+  $(PROJ_DIR)/EPD/service/epd_advertising.c \
+  $(PROJ_DIR)/EPD/hal/fm25q04b.c \
+  $(PROJ_DIR)/EPD/storage/resource_store.c \
+  $(PROJ_DIR)/EPD/storage/resource_crc.c \
+  $(PROJ_DIR)/EPD/storage/resource_crc_flash.c \
+  $(PROJ_DIR)/EPD/app/epd_resources.c \
+  $(PROJ_DIR)/EPD/storage/persistent_record.c \
+  $(PROJ_DIR)/EPD/service/resource_protocol.c \
+  $(PROJ_DIR)/EPD/service/resource_transfer.c \
+  $(PROJ_DIR)/EPD/hal/EPD_driver.c \
+  $(PROJ_DIR)/EPD/service/epd_rle.c \
+  $(PROJ_DIR)/EPD/service/EPD_service.c \
+  $(PROJ_DIR)/EPD/service/epd_service_display.c \
+  $(PROJ_DIR)/EPD/service/epd_service_cmd.c \
+  $(PROJ_DIR)/EPD/service/epd_service_control.c \
+  $(PROJ_DIR)/EPD/service/epd_service_transfer.c \
+  $(PROJ_DIR)/EPD/app/epd_refresh_policy.c \
+  $(PROJ_DIR)/EPD/app/epd_clock_refresh.c \
+  $(PROJ_DIR)/EPD/app/calendar_annotations_tx.c \
+  $(PROJ_DIR)/EPD/app/calendar_annotations_store.c \
+  $(PROJ_DIR)/EPD/storage/font_store.c \
+  $(PROJ_DIR)/EPD/driver/UC8179.c \
+  $(PROJ_DIR)/EPD/driver/epd_models.c \
   $(PROJ_DIR)/GUI/GUI.c \
   $(PROJ_DIR)/GUI/calendar_resources.c \
   $(PROJ_DIR)/GUI/ui_resources.c \
@@ -200,7 +205,12 @@ INC_FOLDERS += \
   $(SDK_ROOT)/modules/nrfx/drivers/include \
   $(SDK_ROOT)/modules/nrfx/hal \
   $(SDK_ROOT) \
-  $(PROJ_DIR)/EPD \
+  $(PROJ_DIR)/EPD/hal \
+  $(PROJ_DIR)/EPD/driver \
+  $(PROJ_DIR)/EPD/board \
+  $(PROJ_DIR)/EPD/storage \
+  $(PROJ_DIR)/EPD/app \
+  $(PROJ_DIR)/EPD/service \
   $(PROJ_DIR)/GUI \
   $(PROJ_DIR)/SystemView \
   $(PROJ_DIR)

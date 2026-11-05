@@ -51,6 +51,7 @@ void test_critical_enter(void) { critical_depth++; }
 void test_critical_exit(void) { assert(critical_depth); critical_depth--; }
 static bool nrf_gpio_pin_present_check(uint8_t pin) { return pin < 32U; }
 static uint16_t EPD_ReadVoltageAndCache(void) { return 3300U; }
+static bool epd_model_supported(uint8_t id) { return id == EPD_UC8179_750_BWR; }
 
 uint32_t epd_config_init(epd_config_t *cfg)
 {

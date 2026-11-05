@@ -47,7 +47,7 @@
 
 ```text
 nRF_EPD/
-├─ EPD/        墨水屏驱动、配置、BLE 服务实现
+├─ EPD/        墨水屏分层代码（hal/driver/board/storage/app/service，见架构文档）
 ├─ GUI/        日历、时钟、字体和界面绘制逻辑
 ├─ html/       Web Bluetooth 控制台与独立 DFU 页面
 ├─ Keil/       应用固件工程、DFU Bootloader 工程、分析输出
@@ -210,10 +210,10 @@ nRF_EPD/
 
 根据当前固件主线代码：
 
-- 默认配置来自 `EPD_CFG_52811`
+- 默认配置来自 `EPD_BOARD_DEFAULT_CONFIG`（`EPD/board/epd_board.h`）
 - 默认 `model_id = 0x07`
-- 当前底层驱动 IC 枚举仅包含 `UC8179`
-- 当前模型表仅包含 `7.5 寸黑白红三色屏（UC8179）`
+- 当前底层驱动 IC 枚举仅包含 `UC8179`（`EPD/driver/`）
+- 当前模型表仅包含 `7.5 寸黑白红三色屏（UC8179）`（`EPD/driver/epd_models.c`）
 
 因此，当前主线工程应以这组配置为准：
 
@@ -502,8 +502,10 @@ make -f Makefile.win32
 
 - 修改 `GUI/` 下代码后重新执行上述命令即可
 - `GUI/` 目录尽量不要直接依赖 MCU 平台 API，否则模拟器无法编译
-- 模拟器当前主要用于预览 `400x300` 电子纸界面
-- 默认可查看日历模式与时钟模式
+- 模拟器按 `800x480` 黑白红（BWR）面板预览，日历/时钟布局与真机同源
+- 为脱离 MCU 与外置 Flash，模拟器使用内置字库和 `tests/stubs/` 下的 host 资源桩：
+  默认 UI 布局、日历数据来自仓库内默认资源；真机替换外置资源后以真机显示为准
+- 默认可查看日历模式与时钟+日历分屏模式
 - 键盘交互包括：`空格` 切换模式、`R` 切换颜色模式、`W` 切换周起始日、方向键调整日期/月视图
 - 它更适合验证 GUI 逻辑与显示效果，不等价于完整 MCU/BLE 行为模拟
 
@@ -644,6 +646,7 @@ rmdir /s /q "_build"
 - BLE 协议：[docs/ble-protocol.md](docs/ble-protocol.md)
 - 内置 Flash / RAM 优化、构建配置与缺陷修复（2026-11-04）：[docs/flash-ram-optimization-20261104.md](docs/flash-ram-optimization-20261104.md)
 - 参考上游 EPD-nRF5 的对比分析与优化（2026-11-04）：[docs/upstream-reference-optimization-20261104.md](docs/upstream-reference-optimization-20261104.md)
+- EPD 分层架构、模块划分与屏幕扩展指南（2026-11-04）：[docs/epd-architecture-20261104.md](docs/epd-architecture-20261104.md)
 - 网页按需补充外置字库：[docs/web-font-generation.md](docs/web-font-generation.md)
 - Flash 与网页优化实现及验证：[docs/flash-web-optimization-20261001.md](docs/flash-web-optimization-20261001.md)
 - 当前内置 8 KiB 保留区及配套固件：[docs/internal-flash-8k-20261008.md](docs/internal-flash-8k-20261008.md)

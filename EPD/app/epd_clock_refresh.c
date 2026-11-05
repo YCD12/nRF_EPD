@@ -2,7 +2,7 @@
 
 #include <string.h>
 
-#include "UC8179.h"
+#include "epd_panel.h"
 #include "clock_layout.h"
 #include "epd_clock_window.h"
 #include "epd_refresh_policy.h"
@@ -181,7 +181,7 @@ static bool epd_clock_refresh_one(const epd_model_t *epd, const gui_data_t *data
         row += rows;
     }
 
-    if (!epd->drv->refresh_partial(epd, x, y, w, h) || UC8179_HadBusyTimeout()) {
+    if (!epd->drv->refresh_partial(epd, x, y, w, h) || epd_panel_busy_error(epd)) {
         return false;
     }
 
@@ -199,8 +199,7 @@ bool epd_clock_refresh_try(const epd_model_t *epd, const gui_data_t *data,
     uint8_t i;
 
     if (epd == NULL || epd->drv == NULL || data == NULL ||
-        !epd_clock_refresh_is_valid() || epd->drv->diff_push == NULL ||
-        epd->drv->refresh_partial == NULL ||
+        !epd_clock_refresh_is_valid() || !epd_panel_can_partial(epd) ||
         !epd_is_clock_mode(data->mode)) {
         return false;
     }

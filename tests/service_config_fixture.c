@@ -38,6 +38,7 @@ static void trace(char op) { assert(hardware_length < sizeof(hardware)); hardwar
 void test_critical_enter(void) {}
 void test_critical_exit(void) {}
 static bool nrf_gpio_pin_present_check(unsigned pin) { return pin < 32U; }
+static bool epd_model_supported(uint8_t id) { return id == EPD_UC8179_750_BWR; }
 static void EPD_ClearBusyAbort(void) {}
 static void EPD_GPIO_Uninit(void) { assert(refs == 1U); refs--; trace('U'); }
 static void EPD_GPIO_Load(epd_config_t *cfg) { assert(refs == 0U); loaded = *cfg; trace('L'); }

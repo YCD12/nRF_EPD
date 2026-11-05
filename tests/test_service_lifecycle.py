@@ -11,18 +11,67 @@ import subprocess
 
 ROOT = Path(__file__).resolve().parents[1]
 
+# Functions declared in EPD_service.h keep external linkage in generated fixtures.
+PUBLIC_SERVICE_API = {'ble_epd_on_timer'}
 
-def function(source, name):
+
+# The split routes queue scheduling through two size-tuned helpers (see
+# epd_service_internal.h). The generated fixtures provide the queue primitives
+# directly, so expand the helpers back to the original calls for extraction.
+SCHEDULE_HELPERS = (
+    ('epd_service_schedule_cmd(p_epd)',
+     'epd_cmd_queue_schedule(&p_epd->cmd_queue, p_epd, epd_process_next_command)'),
+    ('epd_service_schedule_display(p_epd)',
+     'epd_display_queue_schedule(&p_epd->display_queue, p_epd, epd_gui_update)'),
+)
+
+
+def function(source, name, force_static=True):
+    """Extract a production function and normalise it to `static` linkage.
+
+    After the service split the definition may be non-static (cross-module);
+    the generated fixtures declare these helpers as `static`, so prefix it.
+    """
     match = re.search(r"(?:static )?(?:void|bool|size_t|uint16_t|uint32_t|rs_result_t) " + name + r"\([^;]+?\{", source)
     assert match, name
     end, depth = match.end(), 1
     while depth:
         depth += (source[end] == "{") - (source[end] == "}")
         end += 1
-    return source[match.start():end]
+    text = source[match.start():end]
+    for helper, expanded in SCHEDULE_HELPERS:
+        text = text.replace(helper, expanded)
+    if force_static and name not in PUBLIC_SERVICE_API and not text.startswith('static '):
+        text = 'static ' + text
+    return text
 
 
-source = (ROOT / 'EPD/EPD_service.c').read_text(encoding='utf-8')
+# Five service modules, concatenated in dependency (definition) order. Each
+# extracted function is looked up by name.
+SERVICE_SOURCES = (
+    'EPD/service/epd_service_control.c',
+    'EPD/service/epd_service_transfer.c',
+    'EPD/service/epd_service_display.c',
+    'EPD/service/epd_service_cmd.c',
+    'EPD/service/EPD_service.c',
+)
+source = '\n'.join((ROOT / path).read_text(encoding='utf-8') for path in SERVICE_SOURCES)
+internal_header = (ROOT / 'EPD/service/epd_service_internal.h').read_text(encoding='utf-8')
+
+board_header = (ROOT / 'EPD/board/epd_board.h').read_text(encoding='utf-8')
+
+
+def board_default_config():
+    """EPD_BOARD_DEFAULT_CONFIG 宏（board 层）压成单行供生成 fixture 使用。"""
+    match = re.search(r'^#define EPD_BOARD_DEFAULT_CONFIG(.*?)(?<!\\)\n',
+                      board_header, re.MULTILINE | re.DOTALL)
+    assert match, 'EPD_BOARD_DEFAULT_CONFIG'
+    define = '#define EPD_BOARD_DEFAULT_CONFIG' + match.group(1)
+    define = define.replace('\\\n', ' ').replace('\\', '')
+    # fixture 里用裸数值，避免依赖它的型号宏定义形式。
+    define = define.replace('EPD_UC8179_750_BWR', '0x07')
+    assert '\\' not in define, define
+    return define + '\n'
 retry_reset = ('static volatile uint8_t s_display_retry_step;\n' +
                function(source, 'epd_display_retry_reset') + '\n')
 handlers = retry_reset + '\n'.join(function(source, name) for name in (
@@ -46,7 +95,7 @@ finish = 'static void finish_refresh(ble_epd_t *p_epd) {\n' + '''
     bool critical_battery = false;
     bool refresh_succeeded = true;
 ''' + source[start:end] + '\n}\n'
-pin = function((ROOT / 'EPD/EPD_driver.c').read_text(encoding='utf-8'), 'pinMode')
+pin = function((ROOT / 'EPD/hal/EPD_driver.c').read_text(encoding='utf-8'), 'pinMode')
 fixture = (ROOT / 'tests/service_lifecycle_fixture.c').read_text(encoding='utf-8')
 out = Path(os.environ.get('HOST_TEST_OUT', ROOT / '_build/host_tests'))
 out.mkdir(parents=True, exist_ok=True)
@@ -54,19 +103,22 @@ generated = out / 'service_lifecycle_generated.c'
 generated.write_text(fixture.replace('/* PRODUCTION_HANDLERS */', handlers + finish + pin), encoding='utf-8')
 exe = out / ('test_service_lifecycle.exe' if os.name == 'nt' else 'test_service_lifecycle')
 subprocess.run(shlex.split(os.environ.get('HOST_CC', 'gcc')) +
-               ['-Wall', '-Werror', '-std=c11', '-Itests/font_transfer_stubs', '-IEPD', '-IGUI', str(generated),
-                'EPD/epd_rle.c', '-o', str(exe)],
+               ['-Wall', '-Werror', '-std=c11', '-Itests/font_transfer_stubs', '-I.', '-IEPD/hal', '-IEPD/driver', '-IEPD/board', '-IEPD/storage', '-IEPD/app', '-IEPD/service', '-IGUI', str(generated),
+                'EPD/service/epd_rle.c', '-o', str(exe)],
                cwd=ROOT, check=True)
 subprocess.run([str(exe.resolve())], check=True)
 
-service_header = (ROOT / 'EPD/EPD_service.h').read_text(encoding='utf-8')
+service_header = (ROOT / 'EPD/service/EPD_service.h').read_text(encoding='utf-8')
 service_types = '\n'.join(re.search(
     r'typedef struct \{[^{}]+\} ' + name + r';', service_header).group(0)
     for name in ('image_transfer_ctx_t', 'ble_epd_t'))
-init_handlers = re.search(r'^#define EPD_CFG_52811 .+$', source, re.MULTILINE).group(0)
+init_handlers = board_default_config()
 init_handlers += '\n' + function(
-    (ROOT / 'EPD/calendar_annotations_tx.c').read_text(encoding='utf-8'),
-    'calendar_annotations_tx_cancel')
+    (ROOT / 'EPD/app/calendar_annotations_tx.c').read_text(encoding='utf-8'),
+    'calendar_annotations_tx_cancel', force_static=False)
+# s_anno_epd 是 cmd 模块的文件级静态量；生成 fixture 需要它来编译注入的 setter。
+init_handlers += '\n' + 'static ble_epd_t *s_anno_epd;\n' + '\n'.join(
+    function(source, name) for name in ('epd_annotations_set_service',))
 init_handlers += '\n' + '\n'.join(function(source, name) for name in (
     'epd_append_char', 'epd_append_uint', 'epd_make_prefixed_uint',
     'epd_make_mtu_string',
@@ -79,11 +131,11 @@ generated.write_text(fixture.replace('/* PRODUCTION_SERVICE_TYPES */', service_t
                      .replace('/* PRODUCTION_HANDLERS */', init_handlers), encoding='utf-8')
 exe = out / ('test_service_init_notify.exe' if os.name == 'nt' else 'test_service_init_notify')
 subprocess.run(shlex.split(os.environ.get('HOST_CC', 'gcc')) +
-               ['-Wall', '-Werror', '-std=c11', '-Itests/font_transfer_stubs', '-IEPD',
+               ['-Wall', '-Werror', '-std=c11', '-Itests/font_transfer_stubs', '-I.', '-IEPD/hal', '-IEPD/driver', '-IEPD/board', '-IEPD/storage', '-IEPD/app', '-IEPD/service',
                 str(generated), '-o', str(exe)], cwd=ROOT, check=True)
 subprocess.run([str(exe.resolve())], check=True)
 
-config_handlers = re.search(r'^#define EPD_CFG_52811 .+$', source, re.MULTILINE).group(0) + '\n'
+config_handlers = board_default_config()
 config_handlers += retry_reset + '\n'.join(function(source, name) for name in (
     'epd_config_pins_valid', 'epd_config_validate', 'epd_config_defaults', 'epd_config_apply',
     'epd_resource_idle', 'epd_config_restore', 'epd_update_display_mode', 'cmd_set_week_start',
@@ -94,13 +146,14 @@ generated.write_text(fixture.replace('/* PRODUCTION_SERVICE_TYPES */', service_t
                      .replace('/* PRODUCTION_HANDLERS */', config_handlers), encoding='utf-8')
 exe = out / ('test_service_config.exe' if os.name == 'nt' else 'test_service_config')
 subprocess.run(shlex.split(os.environ.get('HOST_CC', 'gcc')) +
-               ['-Wall', '-Werror', '-std=c11', '-Itests/font_transfer_stubs', '-IEPD', '-IGUI',
+               ['-Wall', '-Werror', '-std=c11', '-Itests/font_transfer_stubs', '-I.', '-IEPD/hal', '-IEPD/driver', '-IEPD/board', '-IEPD/storage', '-IEPD/app', '-IEPD/service', '-IGUI',
                 str(generated), '-o', str(exe)], cwd=ROOT, check=True)
 subprocess.run([str(exe.resolve())], check=True)
 
 refresh_handlers = ('static volatile uint32_t s_display_retry_at;\n' + retry_reset +
                     '\n'.join(function(source, name) for name in (
     'epd_display_retry_failed',
+    'epd_display_retry_scheduled', 'epd_display_retry_waiting',
     'epd_parse_time_payload', 'epd_display_request', 'epd_display_complete',
     'epd_update_display_mode', 'epd_switch_from_clock_mode', 'epd_command_ack',
     'epd_todo_font_valid', 'cmd_set_mode', 'ble_epd_on_timer', 'epd_gui_update',
@@ -110,8 +163,8 @@ generated = out / 'connected_refresh_generated.c'
 generated.write_text(refresh_fixture.replace('/* PRODUCTION_HANDLERS */', refresh_handlers), encoding='utf-8')
 exe = out / ('test_connected_refresh.exe' if os.name == 'nt' else 'test_connected_refresh')
 subprocess.run(shlex.split(os.environ.get('HOST_CC', 'gcc')) +
-               ['-Wall', '-Werror', '-std=c11', '-Itests/font_transfer_stubs', '-IEPD', '-IGUI',
-                str(generated), 'EPD/epd_refresh_policy.c', '-o', str(exe)], cwd=ROOT, check=True)
+               ['-Wall', '-Werror', '-std=c11', '-Itests/font_transfer_stubs', '-I.', '-IEPD/hal', '-IEPD/driver', '-IEPD/board', '-IEPD/storage', '-IEPD/app', '-IEPD/service', '-IGUI',
+                str(generated), 'EPD/app/epd_refresh_policy.c', '-o', str(exe)], cwd=ROOT, check=True)
 subprocess.run([str(exe.resolve())], check=True)
 
 display = function(source, 'epd_command_ack') + '\n' + function(source, 'cmd_display')
@@ -120,7 +173,7 @@ generated = out / 'display_completion_generated.c'
 generated.write_text(fixture.replace('/* PRODUCTION_HANDLERS */', display), encoding='utf-8')
 exe = out / ('test_display_completion.exe' if os.name == 'nt' else 'test_display_completion')
 subprocess.run(shlex.split(os.environ.get('HOST_CC', 'gcc')) +
-               ['-Wall', '-Werror', '-std=c11', '-IEPD', str(generated), '-o', str(exe)],
+               ['-Wall', '-Werror', '-std=c11', '-I.', '-IEPD/hal', '-IEPD/driver', '-IEPD/board', '-IEPD/storage', '-IEPD/app', '-IEPD/service', str(generated), '-o', str(exe)],
                cwd=ROOT, check=True)
 subprocess.run([str(exe.resolve())], check=True)
 
@@ -130,7 +183,7 @@ generated = out / 'command_ingress_generated.c'
 generated.write_text(fixture.replace('/* PRODUCTION_HANDLERS */', ingress), encoding='utf-8')
 exe = out / ('test_command_ingress.exe' if os.name == 'nt' else 'test_command_ingress')
 subprocess.run(shlex.split(os.environ.get('HOST_CC', 'gcc')) +
-               ['-Wall', '-Werror', '-std=c11', '-Itests/font_transfer_stubs', '-IEPD',
+               ['-Wall', '-Werror', '-std=c11', '-Itests/font_transfer_stubs', '-I.', '-IEPD/hal', '-IEPD/driver', '-IEPD/board', '-IEPD/storage', '-IEPD/app', '-IEPD/service',
                 str(generated), '-o', str(exe)], cwd=ROOT, check=True)
 subprocess.run([str(exe.resolve())], check=True)
 
@@ -143,6 +196,6 @@ generated = out / 'offline_radio_generated.c'
 generated.write_text(radio_fixture.replace('/* PRODUCTION_HANDLERS */', radio_handlers), encoding='utf-8')
 exe = out / ('test_offline_radio.exe' if os.name == 'nt' else 'test_offline_radio')
 subprocess.run(shlex.split(os.environ.get('HOST_CC', 'gcc')) +
-               ['-Wall', '-Werror', '-std=c11', '-IEPD', '-IGUI', str(generated), '-o', str(exe)],
+               ['-Wall', '-Werror', '-std=c11', '-I.', '-IEPD/hal', '-IEPD/driver', '-IEPD/board', '-IEPD/storage', '-IEPD/app', '-IEPD/service', '-IGUI', str(generated), '-o', str(exe)],
                cwd=ROOT, check=True)
 subprocess.run([str(exe.resolve())], check=True)

@@ -1,8 +1,8 @@
 /* Firmware review 2026-11-04: resource-reply delivery-failure recovery.
  *
  * Production code under test:
- *   EPD/resource_transfer.c  (resource_transfer_process, reply_pending branch)
- *   EPD/EPD_service.c:457-463 (display worker early-return while a resource
+ *   EPD/service/resource_transfer.c  (resource_transfer_process, reply_pending branch)
+ *   EPD/service/EPD_service.c:457-463 (display worker early-return while a resource
  *                              reply is pending)
  *
  * Original defect: every reply-send error was ignored. A connected peer whose
@@ -13,7 +13,7 @@
  * session, not a plain STATUS/READ/VERIFY request). A reconnect was the only
  * recovery.
  *
- * Fixed contract (EPD/resource_transfer.c:74-87):
+ * Fixed contract (EPD/service/resource_transfer.c:74-87):
  *   NRF_SUCCESS                                  -> reply_pending = false
  *   NRF_ERROR_RESOURCES / NRF_ERROR_BUSY         -> retry on a later turn
  *   any other error (INVALID_STATE, INVALID_PARAM, ...) -> terminal, drop
@@ -24,10 +24,10 @@
  * links the transport directly and simulates a failed notification path).
  * Run explicitly after any transport change:
  *   x86_64-w64-mingw32-gcc -Wall -Werror -std=c11 \
- *     -Itests/font_transfer_stubs -IEPD \
+ *     -Itests/font_transfer_stubs  -IEPD/hal -IEPD/driver -IEPD/board -IEPD/storage -IEPD/app -IEPD/service \
  *     -ISDK/17.1.0_ddde560/components/libraries/util \
  *     -ISDK/17.1.0_ddde560/components/softdevice/s112/headers \
- *     EPD/resource_transfer.c tests/test_review_resource_reply_wedge.c \
+ *     EPD/service/resource_transfer.c tests/test_review_resource_reply_wedge.c \
  *     -o output/work-20261104/bugs/build/test_review_resource_reply_wedge.exe
  *   output/work-20261104/bugs/build/test_review_resource_reply_wedge.exe
  */
@@ -93,7 +93,7 @@ int main(void) {
 
     /* 1) Terminal delivery failures are dropped after one turn, so
      *    resource_transfer_reply_pending() no longer blocks the display
-     *    worker in EPD/EPD_service.c:457-463. */
+     *    worker in EPD/service/EPD_service.c:457-463. */
     {
         const uint32_t terminal[] = {NRF_ERROR_INVALID_STATE, NRF_ERROR_INVALID_PARAM};
         for (unsigned i = 0; i < sizeof(terminal) / sizeof(terminal[0]); i++) {

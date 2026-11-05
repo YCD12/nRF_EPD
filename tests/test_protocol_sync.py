@@ -4,9 +4,9 @@ from pathlib import Path
 import re
 
 ROOT = Path(__file__).resolve().parents[1]
-firmware = (ROOT / "EPD/epd_protocol.h").read_text(encoding="utf-8")
+firmware = (ROOT / "EPD/service/epd_protocol.h").read_text(encoding="utf-8")
 web = (ROOT / "html/js/main.js").read_text(encoding="utf-8")
-service = (ROOT / "EPD/EPD_service.h").read_text(encoding="utf-8")
+service = (ROOT / "EPD/service/EPD_service.h").read_text(encoding="utf-8")
 
 fw_ids = {name: int(value, 16) for name, value in re.findall(
     r"EPD_CMD_(\w+)\s*=\s*(0x[0-9a-fA-F]+)", firmware)}

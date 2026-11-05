@@ -61,6 +61,14 @@ void app_feed_wdt(void)
 {
 }
 
+/* 面板 BUSY 错误标志已下沉到 HAL（EPD_PanelBusyError*）；本测试只链接
+ * UC8179.c，提供最小实现以复用驱动的公开/虚表包装。 */
+static bool hal_panel_busy_error;
+
+void EPD_PanelBusyErrorSet(void) { hal_panel_busy_error = true; }
+void EPD_PanelBusyErrorClear(void) { hal_panel_busy_error = false; }
+bool EPD_PanelBusyError(void) { return hal_panel_busy_error; }
+
 void EPD_WriteCmd(uint8_t command)
 {
     assert(event_count < ARRAY_SIZE(events));

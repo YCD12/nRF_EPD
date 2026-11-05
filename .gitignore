@@ -1,6 +1,16 @@
 # Build output
 _build/
 
+# Windows GUI 模拟器本地构建产物（host gcc 生成，勿入库）
+/emulator.exe
+/*.o
+/GUI/*.o
+/EPD/*/*.o
+/tests/stubs/*.o
+/tools/test/*.o
+# 本地输入法/工具在仓库根目录留下的调试日志（非项目产物）
+/debug.log
+
 # Local review, build and browser-automation artifacts
 /output/
 /.playwright-cli/

@@ -1,4 +1,5 @@
 #include "UC8179.h"
+#include "EPD_driver.h"
 #include "nrf_log.h"
 
 extern void app_feed_wdt(void);
@@ -21,10 +22,11 @@ extern void app_feed_wdt(void);
 #define UC8179_CDI_INTERVAL   0x07U
 #define UC8179_PARTIAL_VCOM   0x22U
 
-static bool m_uc8179_busy_timeout;
-
-bool UC8179_HadBusyTimeout(void) { return m_uc8179_busy_timeout; }
-void UC8179_ClearBusyTimeout(void) { m_uc8179_busy_timeout = false; }
+/* BUSY 超时标志统一存放在 HAL（EPD_PanelBusyError*）：服务层在面板睡眠
+ * （epd == NULL）时也能清理/查询，且不再需要包含具体驱动头文件。本驱动的
+ * 公开函数与虚表项都是同一标志的薄包装，行为与旧实现等价。 */
+bool UC8179_HadBusyTimeout(void) { return EPD_PanelBusyError(); }
+void UC8179_ClearBusyTimeout(void) { EPD_PanelBusyErrorClear(); }
 
 
 
@@ -32,7 +34,7 @@ void UC8179_ClearBusyTimeout(void) { m_uc8179_busy_timeout = false; }
 static bool UC8179_WaitBusy(uint16_t timeout) {
     bool ready = EPD_WaitBusy(LOW, timeout);
     if (!ready) {
-        m_uc8179_busy_timeout = true;
+        EPD_PanelBusyErrorSet();
     }
     return ready;
 }
@@ -435,6 +437,11 @@ void UC8179_Sleep(const epd_model_t * epd) {
  * =============================================================================
  */
 
+/* 虚表签名是 const epd_model_t*；UC8179 的 BUSY 错误是驱动级全局状态，
+ * 实例参数无需使用。公开的 UC8179_* 函数保留给主机测试与虚表复用。 */
+static void UC8179_ClearBusyError(const epd_model_t *epd) { (void)epd; UC8179_ClearBusyTimeout(); }
+static bool UC8179_BusyError(const epd_model_t *epd) { (void)epd; return UC8179_HadBusyTimeout(); }
+
 /**
  * UC8179局刷驱动接口
  *
@@ -458,6 +465,9 @@ static const epd_driver_t epd_drv_uc8179_partial = {
     .init_partial = UC8179_Init_Partial,  // 局刷初始化
     .refresh_partial = UC8179_Refresh_Partial,  // 局刷刷新
     .diff_push = UC8179_Partial_Diff_Push,  // 同一窗口写入 OLD+NEW
+    // 驱动级 BUSY 错误状态（服务层通过 epd_panel_* 包装访问）
+    .clear_busy_error = UC8179_ClearBusyError,
+    .busy_error = UC8179_BusyError,
 };
 
 /*

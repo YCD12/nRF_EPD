@@ -109,7 +109,12 @@ INCLUDES=(
     "-I$SDK_ROOT/modules/nrfx/drivers/include"
     "-I$SDK_ROOT/modules/nrfx/hal"
     "-I$SDK_ROOT"
-    "-I$SCRIPT_DIR/EPD"
+    "-I$SCRIPT_DIR/EPD/hal"
+    "-I$SCRIPT_DIR/EPD/driver"
+    "-I$SCRIPT_DIR/EPD/board"
+    "-I$SCRIPT_DIR/EPD/storage"
+    "-I$SCRIPT_DIR/EPD/app"
+    "-I$SCRIPT_DIR/EPD/service"
     "-I$SCRIPT_DIR/GUI"
     "-I$SCRIPT_DIR"
 )
@@ -133,7 +138,6 @@ DEFINES=(
     -DAPP_TIMER_V2
     -DAPP_TIMER_V2_RTC1_ENABLED
     -DCONFIG_GPIO_AS_PINRESET
-    -DDEVELOP_IN_NRF52840
     -DFLOAT_ABI_SOFT
     -DNRF52811_XXAA
     -DNRFX_COREDEP_DELAY_US_LOOP_CYCLES=3
@@ -155,14 +159,30 @@ DEFINES=(
 SOURCES=(
     "$SCRIPT_DIR/main.c"
     "$SCRIPT_DIR/gcc_sbrk.c"
-    "$SCRIPT_DIR/EPD/EPD_config.c"
-    "$SCRIPT_DIR/EPD/EPD_driver.c"
-    "$SCRIPT_DIR/EPD/EPD_service.c"
-    "$SCRIPT_DIR/EPD/epd_refresh_policy.c"
-    "$SCRIPT_DIR/EPD/epd_clock_refresh.c"
-    "$SCRIPT_DIR/EPD/calendar_annotations_store.c"
-    "$SCRIPT_DIR/EPD/fm25q04b.c"
-    "$SCRIPT_DIR/EPD/UC8179.c"
+    "$SCRIPT_DIR/EPD/board/EPD_config.c"
+    "$SCRIPT_DIR/EPD/hal/EPD_driver.c"
+    "$SCRIPT_DIR/EPD/hal/fm25q04b.c"
+    "$SCRIPT_DIR/EPD/driver/UC8179.c"
+    "$SCRIPT_DIR/EPD/driver/epd_models.c"
+    "$SCRIPT_DIR/EPD/storage/resource_store.c"
+    "$SCRIPT_DIR/EPD/storage/resource_crc.c"
+    "$SCRIPT_DIR/EPD/storage/resource_crc_flash.c"
+    "$SCRIPT_DIR/EPD/storage/persistent_record.c"
+    "$SCRIPT_DIR/EPD/storage/font_store.c"
+    "$SCRIPT_DIR/EPD/app/epd_refresh_policy.c"
+    "$SCRIPT_DIR/EPD/app/epd_clock_refresh.c"
+    "$SCRIPT_DIR/EPD/app/epd_resources.c"
+    "$SCRIPT_DIR/EPD/app/calendar_annotations_store.c"
+    "$SCRIPT_DIR/EPD/app/calendar_annotations_tx.c"
+    "$SCRIPT_DIR/EPD/service/EPD_service.c"
+    "$SCRIPT_DIR/EPD/service/epd_service_display.c"
+    "$SCRIPT_DIR/EPD/service/epd_service_cmd.c"
+    "$SCRIPT_DIR/EPD/service/epd_service_control.c"
+    "$SCRIPT_DIR/EPD/service/epd_service_transfer.c"
+    "$SCRIPT_DIR/EPD/service/epd_advertising.c"
+    "$SCRIPT_DIR/EPD/service/resource_protocol.c"
+    "$SCRIPT_DIR/EPD/service/resource_transfer.c"
+    "$SCRIPT_DIR/EPD/service/epd_rle.c"
     "$SCRIPT_DIR/GUI/GUI.c"
     "$SCRIPT_DIR/GUI/calendar_annotations.c"
     "$SCRIPT_DIR/GUI/Lunar.c"
@@ -176,7 +196,7 @@ mkdir -p -- "$(dirname -- "$REPORT_FILE")"
 echo "[2/2] Starting Cppcheck scan"
 echo "[2/2] Check level: $CHECK_LEVEL"
 echo "[2/2] Report file: $REPORT_FILE"
-echo "[2/2] Sources: ${#SOURCES[@]} file(s), including EPD/fm25q04b.c"
+echo "[2/2] Sources: ${#SOURCES[@]} file(s), including EPD/service/EPD_service.c"
 
 set +e
 "$CPPCHECK_BIN" \

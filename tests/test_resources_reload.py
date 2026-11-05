@@ -26,11 +26,11 @@ for part in layout['partitions']:
 image = out / 'reload-flash.bin'
 image.write_bytes(flash)
 exe = out / 'test_resources_reload'
-sources = ['EPD/resource_store.c', 'EPD/resource_crc.c', 'EPD/resource_crc_flash.c', 'EPD/font_store.c',
-           'EPD/epd_resources.c', 'GUI/fonts.c', 'GUI/font_geometry.c', 'GUI/calendar_resources.c',
+sources = ['EPD/storage/resource_store.c', 'EPD/storage/resource_crc.c', 'EPD/storage/resource_crc_flash.c', 'EPD/storage/font_store.c',
+           'EPD/app/epd_resources.c', 'GUI/fonts.c', 'GUI/font_geometry.c', 'GUI/calendar_resources.c',
            'GUI/ui_resources.c', 'tests/test_resources_reload.c']
 subprocess.run(shlex.split(os.environ.get('HOST_CC', 'gcc')) + [
-    '-Wall', '-Werror', '-std=c11', '-I.', '-IEPD', '-IGUI',
+    '-Wall', '-Werror', '-std=c11', '-I.', '-I.', '-IEPD/hal', '-IEPD/driver', '-IEPD/board', '-IEPD/storage', '-IEPD/app', '-IEPD/service', '-IGUI',
     '-ISDK/17.1.0_ddde560/components/libraries/util',
     '-ISDK/17.1.0_ddde560/components/softdevice/s112/headers',
     '-DGUI_USE_EXTERNAL_FONTS=1', '-DGUI_INCLUDE_INTERNAL_FONTS=0',

@@ -92,8 +92,9 @@ static void EPD_GPIO_Init(void) { refs++; }
 static void EPD_GPIO_Uninit(void) { assert(refs); refs--; }
 static void EPD_ClearBusyAbort(void) {}
 static bool EPD_BusyAbortRequested(void) { return false; }
-static void UC8179_ClearBusyTimeout(void) {}
-static bool UC8179_HadBusyTimeout(void) { return false; }
+static void epd_service_busy_error_clear(ble_epd_t *p_epd) { (void)p_epd; }
+static bool epd_service_busy_error(const ble_epd_t *p_epd) { (void)p_epd; return false; }
+static bool epd_panel_can_partial(const epd_model_t *epd) { (void)epd; return true; }
 bool resource_protocol_entered(void) { return entered; }
 bool resource_transfer_reply_pending(void) { return resource_reply_pending; }
 bool epd_resources_ready(void) { return resources_ready; }

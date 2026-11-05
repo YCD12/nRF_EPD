@@ -48,11 +48,13 @@ static bool gui_page_hits(const Adafruit_GFX *gfx, int32_t top, int32_t bottom)
     return gfx->rotation != GFX_ROTATE_0 || (top < y + gfx->page_height && bottom > y);
 }
 
+#if GUI_USE_EXTERNAL_FONTS || !GUI_INCLUDE_INTERNAL_FONTS
 static u8g2_font_placeholder_t gui_font_placeholder(gui_font_id_t font_id)
 {
     const gui_font_metrics_t* metrics = GUI_GetFontMetrics(font_id);
     return metrics != NULL ? *metrics : (u8g2_font_placeholder_t){0};
 }
+#endif
 
 /* Select a fixed font slot or the optional TODO font. External fonts keep a fixed
  * placeholder geometry so a deleted or incomplete glyph never collapses the
@@ -63,17 +65,16 @@ static void gui_set_font(Adafruit_GFX* gfx, gui_font_id_t font_id)
     if (font_id == GUI_FONT_TODO)
         font_id = todo_items_font_size() == 9U ? GUI_FONT_WQY9 : GUI_FONT_WQY12;
 #endif
-    u8g2_font_placeholder_t placeholder = gui_font_placeholder(font_id);
 #if GUI_USE_EXTERNAL_FONTS
+    u8g2_font_placeholder_t placeholder = gui_font_placeholder(font_id);
     const u8g2_font_source_t* source = GUI_GetExternalFont(font_id);
     if (source != NULL) {
         GFX_setExternalFont(gfx, source);
         GFX_setFontPlaceholder(gfx, &placeholder);
         return;
     }
-#endif
-
-#if !GUI_USE_EXTERNAL_FONTS && GUI_INCLUDE_INTERNAL_FONTS
+    GFX_setMissingFont(gfx, &placeholder);
+#elif GUI_INCLUDE_INTERNAL_FONTS
     switch (font_id) {
         case GUI_FONT_WQY9:
             GFX_setFont(gfx, u8g2_font_wqy9_t_lunar);
@@ -88,6 +89,7 @@ static void gui_set_font(Adafruit_GFX* gfx, gui_font_id_t font_id)
             break;
     }
 #else
+    u8g2_font_placeholder_t placeholder = gui_font_placeholder(font_id);
     GFX_setMissingFont(gfx, &placeholder);
 #endif
 }

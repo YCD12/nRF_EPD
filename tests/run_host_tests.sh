@@ -50,35 +50,35 @@ run() {
     "${OUT}/${name}"
 }
 
-run test_cmd_policy -I. -IEPD -IGUI tests/test_cmd_policy.c
-run test_calendar_resources -DCALENDAR_RESOURCES_HOST_TEST -IEPD -IGUI \
+run test_cmd_policy -I.  -IEPD/hal -IEPD/driver -IEPD/board -IEPD/storage -IEPD/app -IEPD/service -IGUI tests/test_cmd_policy.c
+run test_calendar_resources -DCALENDAR_RESOURCES_HOST_TEST  -IEPD/hal -IEPD/driver -IEPD/board -IEPD/storage -IEPD/app -IEPD/service -IGUI \
     GUI/calendar_resources.c GUI/Lunar.c tests/test_calendar_resources.c
-run test_ui_resources -DUI_RESOURCES_HOST_TEST -IEPD -IGUI \
+run test_ui_resources -DUI_RESOURCES_HOST_TEST  -IEPD/hal -IEPD/driver -IEPD/board -IEPD/storage -IEPD/app -IEPD/service -IGUI \
     GUI/ui_resources.c tests/test_ui_resources.c
-run test_resource_store -Itests/font_transfer_stubs -I. -IEPD \
+run test_resource_store -Itests/font_transfer_stubs -I.  -IEPD/hal -IEPD/driver -IEPD/board -IEPD/storage -IEPD/app -IEPD/service \
     -ISDK/17.1.0_ddde560/components/libraries/util \
     -ISDK/17.1.0_ddde560/components/softdevice/s112/headers \
-    EPD/resource_store.c EPD/resource_crc.c EPD/resource_crc_flash.c EPD/persistent_record.c EPD/resource_protocol.c EPD/resource_transfer.c tests/test_resource_store.c
-run test_resource_erase -Itests/font_transfer_stubs -I. -IEPD \
+    EPD/storage/resource_store.c EPD/storage/resource_crc.c EPD/storage/resource_crc_flash.c EPD/storage/persistent_record.c EPD/service/resource_protocol.c EPD/service/resource_transfer.c tests/test_resource_store.c
+run test_resource_erase -Itests/font_transfer_stubs -I.  -IEPD/hal -IEPD/driver -IEPD/board -IEPD/storage -IEPD/app -IEPD/service \
     -ISDK/17.1.0_ddde560/components/libraries/util \
     -ISDK/17.1.0_ddde560/components/softdevice/s112/headers \
-    EPD/resource_store.c EPD/resource_crc.c EPD/resource_crc_flash.c EPD/persistent_record.c EPD/resource_protocol.c EPD/resource_transfer.c tests/test_resource_erase.c
+    EPD/storage/resource_store.c EPD/storage/resource_crc.c EPD/storage/resource_crc_flash.c EPD/storage/persistent_record.c EPD/service/resource_protocol.c EPD/service/resource_transfer.c tests/test_resource_erase.c
 run test_advertising -DSVCALL_AS_NORMAL_FUNCTION -DS112 \
-    -Itests/advertising_stubs -Itests/storage_stubs -IEPD \
+    -Itests/advertising_stubs -Itests/storage_stubs  -IEPD/hal -IEPD/driver -IEPD/board -IEPD/storage -IEPD/app -IEPD/service \
     -ISDK/17.1.0_ddde560/components/softdevice/s112/headers \
     -ISDK/17.1.0_ddde560/components/libraries/util \
     -ISDK/17.1.0_ddde560/components/ble/common \
     -ISDK/17.1.0_ddde560/components/ble/ble_advertising \
     SDK/17.1.0_ddde560/components/ble/common/ble_advdata.c \
     SDK/17.1.0_ddde560/components/ble/ble_advertising/ble_advertising.c \
-    EPD/epd_advertising.c tests/test_advertising.c
-run test_command_queue -Itests/font_transfer_stubs -IEPD tests/test_command_queue.c
-run test_offline -IEPD tests/test_offline.c
-run test_async_queues -Itests/font_transfer_stubs -IEPD -IGUI \
+    EPD/service/epd_advertising.c tests/test_advertising.c
+run test_command_queue -Itests/font_transfer_stubs  -IEPD/hal -IEPD/driver -IEPD/board -IEPD/storage -IEPD/app -IEPD/service tests/test_command_queue.c
+run test_offline  -IEPD/hal -IEPD/driver -IEPD/board -IEPD/storage -IEPD/app -IEPD/service tests/test_offline.c
+run test_async_queues -Itests/font_transfer_stubs  -IEPD/hal -IEPD/driver -IEPD/board -IEPD/storage -IEPD/app -IEPD/service -IGUI \
     -DCALENDAR_ANNOTATIONS_USE_NRF_CRITICAL=1 \
-    EPD/calendar_annotations_tx.c GUI/calendar_annotations.c tests/test_async_queues.c
-run test_storage -Itests/storage_stubs -Itests/font_transfer_stubs -Itests/stubs -I. -IEPD -IGUI \
-    EPD/EPD_config.c EPD/calendar_annotations_store.c \
+    EPD/app/calendar_annotations_tx.c GUI/calendar_annotations.c tests/test_async_queues.c
+run test_storage -Itests/storage_stubs -Itests/font_transfer_stubs -Itests/stubs -I.  -IEPD/hal -IEPD/driver -IEPD/board -IEPD/storage -IEPD/app -IEPD/service -IGUI \
+    EPD/board/EPD_config.c EPD/app/calendar_annotations_store.c \
     GUI/calendar_annotations.c tests/test_storage.c
 run test_calendar_annotations -IGUI GUI/calendar_annotations.c tests/test_calendar_annotations.c
 run test_wqy_ascii -IGUI -DGUI_USE_EXTERNAL_FONTS=0 -DGUI_INCLUDE_INTERNAL_FONTS=1 GUI/fonts.c GUI/font_geometry.c GUI/u8g2_font.c tests/test_wqy_ascii.c
@@ -90,43 +90,43 @@ run test_gfx_primitives_fixed -DGFX_FIXED_BWR_PANEL=1 -DGFX_FIXED_FONT_DIRECTION
 run test_u8g2_external_cache -IGUI GUI/u8g2_font.c tests/test_u8g2_external_cache.c
 run test_u8g2_placeholder -IGUI GUI/u8g2_font.c tests/test_u8g2_placeholder.c
 run test_u8g2_bounds -IGUI GUI/u8g2_font.c tests/test_u8g2_bounds.c
-run test_font_store -I. -IEPD -IGUI \
+run test_font_store -I.  -IEPD/hal -IEPD/driver -IEPD/board -IEPD/storage -IEPD/app -IEPD/service -IGUI \
     -ISDK/17.1.0_ddde560/components/libraries/util \
     -ISDK/17.1.0_ddde560/components/softdevice/s112/headers \
-    -DFONT_STORE_HOST_TEST EPD/font_store.c GUI/font_geometry.c EPD/resource_crc.c EPD/resource_crc_flash.c tests/test_font_store.c
-run test_fm25q04b_read -Itests/spi_stubs -I. -IEPD \
+    -DFONT_STORE_HOST_TEST EPD/storage/font_store.c GUI/font_geometry.c EPD/storage/resource_crc.c EPD/storage/resource_crc_flash.c tests/test_font_store.c
+run test_fm25q04b_read -Itests/spi_stubs -I.  -IEPD/hal -IEPD/driver -IEPD/board -IEPD/storage -IEPD/app -IEPD/service \
     -ISDK/17.1.0_ddde560/components/libraries/util \
     -ISDK/17.1.0_ddde560/components/softdevice/s112/headers \
-    EPD/fm25q04b.c tests/test_fm25q04b_read.c
-run test_external_font_sources -I. -IEPD -IGUI -ISDK/17.1.0_ddde560/components/libraries/util \
+    EPD/hal/fm25q04b.c tests/test_fm25q04b_read.c
+run test_external_font_sources -I.  -IEPD/hal -IEPD/driver -IEPD/board -IEPD/storage -IEPD/app -IEPD/service -IGUI -ISDK/17.1.0_ddde560/components/libraries/util \
     -ISDK/17.1.0_ddde560/components/softdevice/s112/headers \
     -DGUI_USE_EXTERNAL_FONTS=1 -DGUI_INCLUDE_INTERNAL_FONTS=0 GUI/fonts.c GUI/font_geometry.c tests/test_external_font_sources.c
 run test_clock_layout -IGUI tests/test_clock_layout.c
-run test_todo_items -IEPD -IGUI GUI/todo_items.c GUI/font_geometry.c tests/stubs/ui_resources_stub.c tests/test_todo_items.c
+run test_todo_items  -IEPD/hal -IEPD/driver -IEPD/board -IEPD/storage -IEPD/app -IEPD/service -IGUI GUI/todo_items.c GUI/font_geometry.c tests/stubs/ui_resources_stub.c tests/test_todo_items.c
 run test_calendar_grid -IGUI tests/test_calendar_grid.c
 run test_clock_refresh_window -IGUI tests/test_clock_refresh_window.c
 run test_clock_text -IGUI tests/test_clock_text.c
 run test_lunar -IGUI GUI/Lunar.c tests/stubs/calendar_resources_stub.c tests/test_lunar.c
-run test_clock_window_page -IEPD tests/test_clock_window_page.c
-run test_refresh_policy -IEPD -IGUI EPD/epd_refresh_policy.c tests/test_refresh_policy.c
-run test_clock_refresh -IEPD -IGUI -Itests/stubs EPD/epd_clock_refresh.c \
+run test_clock_window_page  -IEPD/hal -IEPD/driver -IEPD/board -IEPD/storage -IEPD/app -IEPD/service tests/test_clock_window_page.c
+run test_refresh_policy  -IEPD/hal -IEPD/driver -IEPD/board -IEPD/storage -IEPD/app -IEPD/service -IGUI EPD/app/epd_refresh_policy.c tests/test_refresh_policy.c
+run test_clock_refresh  -IEPD/hal -IEPD/driver -IEPD/board -IEPD/storage -IEPD/app -IEPD/service -IGUI -Itests/stubs EPD/app/epd_clock_refresh.c \
     tests/stubs/ui_resources_stub.c tests/test_clock_refresh.c
-run test_gui_render -IGUI -IEPD -Itests/stubs -Itools/test/host/shim \
+run test_gui_render -IGUI  -IEPD/hal -IEPD/driver -IEPD/board -IEPD/storage -IEPD/app -IEPD/service -Itests/stubs -Itools/test/host/shim \
     GUI/GUI.c GUI/todo_items.c GUI/font_geometry.c tests/stubs/todo_resources_stub.c GUI/Adafruit_GFX.c GUI/u8g2_font.c GUI/Lunar.c GUI/calendar_annotations.c tests/stubs/calendar_resources_stub.c tests/stubs/ui_resources_stub.c \
-    EPD/epd_clock_refresh.c tests/test_gui_render.c
+    EPD/app/epd_clock_refresh.c tests/test_gui_render.c
 run test_gui_render_fixed -DGFX_FIXED_BWR_PANEL=1 -DGFX_FIXED_FONT_DIRECTION_0=1 \
     -DGUI_FIXED_PANEL_WIDTH=800 -DGUI_FIXED_PANEL_HEIGHT=480 \
-    -IGUI -IEPD -Itests/stubs -Itools/test/host/shim \
+    -IGUI  -IEPD/hal -IEPD/driver -IEPD/board -IEPD/storage -IEPD/app -IEPD/service -Itests/stubs -Itools/test/host/shim \
     GUI/GUI.c GUI/todo_items.c GUI/font_geometry.c tests/stubs/todo_resources_stub.c GUI/Adafruit_GFX.c GUI/u8g2_font.c GUI/Lunar.c GUI/calendar_annotations.c tests/stubs/calendar_resources_stub.c tests/stubs/ui_resources_stub.c \
-    EPD/epd_clock_refresh.c tests/test_gui_render.c
-run test_uc8179 -IEPD -Itests/stubs -Itools/test/host/shim EPD/UC8179.c tests/uc8179_command_sequence_test.c
-run test_rle -I. EPD/epd_rle.c tests/test_rle.c
-run test_review_resource_reply_wedge -Itests/font_transfer_stubs -IEPD \
+    EPD/app/epd_clock_refresh.c tests/test_gui_render.c
+run test_uc8179  -IEPD/hal -IEPD/driver -IEPD/board -IEPD/storage -IEPD/app -IEPD/service -Itests/stubs -Itools/test/host/shim EPD/driver/UC8179.c tests/uc8179_command_sequence_test.c
+run test_rle -I. EPD/service/epd_rle.c tests/test_rle.c
+run test_review_resource_reply_wedge -Itests/font_transfer_stubs  -IEPD/hal -IEPD/driver -IEPD/board -IEPD/storage -IEPD/app -IEPD/service \
     -ISDK/17.1.0_ddde560/components/libraries/util \
     -ISDK/17.1.0_ddde560/components/softdevice/s112/headers \
-    EPD/resource_transfer.c EPD/resource_crc.c tests/test_review_resource_reply_wedge.c
-run test_review_clock_partial_eligibility -DUI_RESOURCES_HOST_TEST -IEPD -IGUI -Itests/stubs \
-    EPD/epd_clock_refresh.c EPD/epd_refresh_policy.c \
+    EPD/service/resource_transfer.c EPD/storage/resource_crc.c tests/test_review_resource_reply_wedge.c
+run test_review_clock_partial_eligibility -DUI_RESOURCES_HOST_TEST  -IEPD/hal -IEPD/driver -IEPD/board -IEPD/storage -IEPD/app -IEPD/service -IGUI -Itests/stubs \
+    EPD/app/epd_clock_refresh.c EPD/app/epd_refresh_policy.c \
     tests/stubs/ui_resources_stub.c tests/test_review_clock_partial_eligibility.c
 
 if command -v node >/dev/null 2>&1; then

@@ -31,8 +31,8 @@ static const driver_t driver = {panel_clear, panel_refresh};
 static const model_t panel = {&driver};
 static void EPD_ClearBusyAbort(void) { aborted = false; }
 static bool EPD_BusyAbortRequested(void) { return aborted; }
-static void UC8179_ClearBusyTimeout(void) { timeout = false; }
-static bool UC8179_HadBusyTimeout(void) { return timeout; }
+static void epd_service_busy_error_clear(ble_epd_t *p) { (void)p; timeout = false; }
+static bool epd_service_busy_error(const ble_epd_t *p) { (void)p; return timeout; }
 static bool epd_ensure_display(ble_epd_t *p) { p->epd = &panel; return !init_failed; }
 static void epd_enter_picture_mode(ble_epd_t *p) { (void)p; }
 /* PRODUCTION_HANDLERS */

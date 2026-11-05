@@ -10,9 +10,9 @@
  *                                partial_allowed=true for flags==0, default
  *                                colors and no conflicting overlapping component;
  *                                a SYNC_ONLY overlap only sets partial_sync_overlay.
- *   EPD/epd_clock_refresh.c:206-217  try() requires resource geometry +
+ *   EPD/app/epd_clock_refresh.c:206-217  try() requires resource geometry +
  *                                partial_allowed + !(overlay in Jan-2025 month).
- *   EPD/epd_clock_refresh.c:224-228  any failure invalidates OLD.
+ *   EPD/app/epd_clock_refresh.c:224-228  any failure invalidates OLD.
  * This test proves that with the production UIR2 default payload and the real
  * ui_resources.c / epd_clock_refresh.c code.
  *
@@ -34,8 +34,8 @@
  * Wired into the default host suite (tests/run_host_tests.sh); it can also be
  * run alone:
  *   x86_64-w64-mingw32-gcc -Wall -Werror -std=c11 -DUI_RESOURCES_HOST_TEST \
- *     -IEPD -IGUI -Itests/stubs \
- *     EPD/epd_clock_refresh.c EPD/epd_refresh_policy.c \
+ *      -IEPD/hal -IEPD/driver -IEPD/board -IEPD/storage -IEPD/app -IEPD/service -IGUI -Itests/stubs \
+ *     EPD/app/epd_clock_refresh.c EPD/app/epd_refresh_policy.c \
  *     tests/stubs/ui_resources_stub.c tests/test_review_clock_partial_eligibility.c \
  *     -o output/work-20261104/bugs/build/test_review_clock_partial_eligibility.exe
  *   output/work-20261104/bugs/build/test_review_clock_partial_eligibility.exe
@@ -55,7 +55,7 @@
 /* tests/stubs/ui_resources_stub.c (includes the real GUI/ui_resources.c) */
 void ui_resources_stub_set_component(ui_component_id_t id, const ui_component_t *value);
 
-/* ---- clock-render hooks required by EPD/epd_clock_refresh.c ---- */
+/* ---- clock-render hooks required by EPD/app/epd_clock_refresh.c ---- */
 static unsigned s_draw_calls;
 static unsigned s_push_calls;
 static unsigned s_refresh_calls;
@@ -63,7 +63,7 @@ static bool s_push_result = true;
 static uint16_t s_last_lx, s_last_ly, s_last_lw, s_last_lh;
 
 bool GUI_RenderValid(void) { return true; }
-bool UC8179_HadBusyTimeout(void) { return false; }
+static void init_partial(const epd_model_t *epd) { (void)epd; }
 
 /* Mirrors GUI/GUI.c:782-799 for the loaded resource geometry. */
 void GetTimeRefreshAreaFromLocal(const gui_data_t *data,
@@ -114,7 +114,8 @@ static bool refresh_partial(const epd_model_t *epd, uint16_t x, uint16_t y,
 }
 
 int main(void) {
-    epd_driver_t drv = {.diff_push = diff_push, .refresh_partial = refresh_partial};
+    epd_driver_t drv = {.diff_push = diff_push, .refresh_partial = refresh_partial,
+                        .init_partial = init_partial};
     epd_model_t model = {.drv = &drv, .width = 800, .height = 480};
     ui_component_t clock;
     clock_refresh_geom_t split_geom, full_geom;

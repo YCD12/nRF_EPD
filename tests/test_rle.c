@@ -8,7 +8,7 @@
 #include <stdio.h>
 #include <string.h>
 
-#include "EPD/epd_rle.h"
+#include "EPD/service/epd_rle.h"
 
 /* ---- 测试用镜像编码器（仅测试，格式必须与 html/js/rle.js 一致） ---- */
 static uint16_t encode(const uint8_t *in, uint16_t len, uint8_t *out, uint16_t cap)

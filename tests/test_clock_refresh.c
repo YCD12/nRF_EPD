@@ -42,11 +42,6 @@ void GetTimeRefreshAreaFromLocal(const gui_data_t *data,
     *h = lh;
 }
 
-bool UC8179_HadBusyTimeout(void)
-{
-    return false;
-}
-
 static void test_invalidate_then_mark_valid(void)
 {
     epd_clock_refresh_invalidate();
@@ -60,6 +55,14 @@ static void test_invalidate_then_mark_valid(void)
     epd_clock_refresh_invalidate();
     assert(!epd_clock_refresh_is_valid());
 }
+
+/* 局刷资格由三项虚表可选能力共同决定；原型供下方资格测试提前引用。 */
+static bool dummy_diff_push(const epd_model_t *epd, uint16_t x, uint16_t y,
+                            uint16_t w, uint16_t h,
+                            const uint8_t *old_bm, const uint8_t *new_bm);
+static bool dummy_refresh_partial(const epd_model_t *epd, uint16_t x, uint16_t y,
+                                  uint16_t w, uint16_t h);
+static void dummy_init_partial(const epd_model_t *epd);
 
 static void test_try_rejects_null_and_invalid_state(void)
 {
@@ -75,6 +78,9 @@ static void test_try_rejects_null_and_invalid_state(void)
     model.drv = &drv;
     model.width = 800;
     model.height = 480;
+    drv.diff_push = dummy_diff_push;
+    drv.refresh_partial = dummy_refresh_partial;
+    drv.init_partial = dummy_init_partial;
 
     epd_clock_refresh_invalidate();
     assert(!epd_clock_refresh_try(NULL, &data, false));
@@ -98,6 +104,10 @@ static bool dummy_refresh_partial(const epd_model_t *epd, uint16_t x, uint16_t y
     return false;
 }
 
+/* 局刷资格现在由 epd_panel_can_partial() 判定（init_partial/refresh_partial/
+ * diff_push 三项可选能力齐全）；本测试关注状态机，不真正初始化面板。 */
+static void dummy_init_partial(const epd_model_t *epd) { (void)epd; }
+
 static void test_try_rejects_non_clock_mode(void)
 {
     gui_data_t data;
@@ -114,6 +124,7 @@ static void test_try_rejects_non_clock_mode(void)
     model.height = 480;
     drv.diff_push = dummy_diff_push;
     drv.refresh_partial = dummy_refresh_partial;
+    drv.init_partial = dummy_init_partial;
 
     epd_clock_refresh_mark_valid(60);
     assert(!epd_clock_refresh_try(&model, &data, false));
@@ -123,7 +134,9 @@ static void test_try_rejects_non_clock_mode(void)
 static void test_conditional_clock_never_regenerates_old(void)
 {
     const uint8_t flags[] = {UI_FLAG_SYNC_ONLY, UI_FLAG_JIEQI_AHEAD, UI_FLAG_JIEQI_TODAY};
-    epd_driver_t drv = {.diff_push = dummy_diff_push, .refresh_partial = dummy_refresh_partial};
+    epd_driver_t drv = {.diff_push = dummy_diff_push,
+                        .refresh_partial = dummy_refresh_partial,
+                        .init_partial = dummy_init_partial};
     epd_model_t model = {.drv = &drv, .width = 800, .height = 480};
     gui_data_t data = {.width = 800, .height = 480, .timestamp = 1789347660U};
     for (unsigned full = 0; full < 2; full++) {

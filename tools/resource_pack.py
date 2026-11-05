@@ -258,7 +258,7 @@ def generate(layout, check=False):
                   f'#define RS_SIZE_{name} {p["size_bytes"]}UL']
     lines += ['#endif', '']
     header = '\n'.join(lines)
-    path = ROOT / 'EPD/resource_layout.h'
+    path = ROOT / 'EPD/storage/resource_layout.h'
     if check:
         if not path.exists() or path.read_text(encoding='utf-8') != header:
             raise ValueError(f'stale generated file: {path}')

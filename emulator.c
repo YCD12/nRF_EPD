@@ -71,30 +71,33 @@ void DrawBitmap(void* user_data, uint8_t* black, uint8_t* color, uint16_t x, uin
     drawX = (clientRect.right - EPD_WIDTH * scale) / 2;
     drawY = (clientRect.bottom - EPD_HEIGHT * scale) / 2;
 
-    BITMAPINFO bmi;
-    ZeroMemory(&bmi, sizeof(BITMAPINFO));
-    bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
-    bmi.bmiHeader.biWidth = w;
-    bmi.bmiHeader.biHeight = -h;
-    bmi.bmiHeader.biPlanes = 1;
-    bmi.bmiHeader.biBitCount = 4;
-    bmi.bmiHeader.biCompression = BI_RGB;
-    bmi.bmiHeader.biClrUsed = 16;
+    struct {
+        BITMAPINFOHEADER header;
+        RGBQUAD colors[16];
+    } bmi;
+    ZeroMemory(&bmi, sizeof(bmi));
+    bmi.header.biSize = sizeof(BITMAPINFOHEADER);
+    bmi.header.biWidth = w;
+    bmi.header.biHeight = -h;
+    bmi.header.biPlanes = 1;
+    bmi.header.biBitCount = 4;
+    bmi.header.biCompression = BI_RGB;
+    bmi.header.biClrUsed = 16;
 
     for (int i = 0; i < 16; i++) {
-        bmi.bmiColors[i].rgbBlue = 255;
-        bmi.bmiColors[i].rgbGreen = 255;
-        bmi.bmiColors[i].rgbRed = 255;
-        bmi.bmiColors[i].rgbReserved = 0;
+        bmi.colors[i].rgbBlue = 255;
+        bmi.colors[i].rgbGreen = 255;
+        bmi.colors[i].rgbRed = 255;
+        bmi.colors[i].rgbReserved = 0;
     }
 
-    bmi.bmiColors[1].rgbBlue = 0;
-    bmi.bmiColors[1].rgbGreen = 0;
-    bmi.bmiColors[1].rgbRed = 0;
+    bmi.colors[1].rgbBlue = 0;
+    bmi.colors[1].rgbGreen = 0;
+    bmi.colors[1].rgbRed = 0;
 
-    bmi.bmiColors[2].rgbBlue = 0;
-    bmi.bmiColors[2].rgbGreen = 0;
-    bmi.bmiColors[2].rgbRed = 255;
+    bmi.colors[2].rgbBlue = 0;
+    bmi.colors[2].rgbGreen = 0;
+    bmi.colors[2].rgbRed = 255;
 
     int pixelsPerByte = 2;
     int bytesPerRow = ((w + pixelsPerByte - 1) / pixelsPerByte);
@@ -130,8 +133,8 @@ void DrawBitmap(void* user_data, uint8_t* black, uint8_t* color, uint16_t x, uin
         }
     }
 
-    StretchDIBits(hdc, drawX + x * scale, drawY + y * scale, w * scale, h * scale, 0, 0, w, h, bitmap4bit, &bmi,
-                  DIB_RGB_COLORS, SRCCOPY);
+    StretchDIBits(hdc, drawX + x * scale, drawY + y * scale, w * scale, h * scale, 0, 0, w, h, bitmap4bit,
+                  (const BITMAPINFO*)&bmi, DIB_RGB_COLORS, SRCCOPY);
 
     free(bitmap4bit);
 }

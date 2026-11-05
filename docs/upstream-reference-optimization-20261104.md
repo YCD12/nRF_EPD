@@ -312,3 +312,22 @@
 - 低电量页/电池图标组件、v1.5 轻量页、多面板等仍按第一轮结论**不建议**。
 - 后续 Flash 余量若不足：优先评估 8 KiB 数据区重排（需 Bootloader 同步），
   其次再考虑裁剪 RLE/电池 token 等新增功能。
+
+## 9. 后续（分层重构、清理与模拟器修复，2026-11-04）
+
+第二轮之后完成了 EPD 分层重构（hal/driver/board/storage/app/service）及两项
+清理/修复，协议、刷新时序与 BLE 行为不变；详见
+[docs/epd-architecture-20261104.md](epd-architecture-20261104.md)：
+
+- **模拟器 host 构建修复**：`Makefile`/`Makefile.win32` 统一 host 源集合
+  （生产 GUI + `tests/stubs/` 资源桩 + 内置字库），`emulator.c` 修正
+  `BITMAPINFO` 调色板越界写；`make`/`make -f Makefile.win32` 可零告警生成
+  `emulator.exe`，窗口与离屏回放均为 800×480 BWR。
+- **service include 收窄**：26/26/27/26/26 → 22/15/20/9/11 条（逐条真实 ARM
+  `-fsyntax-only -Werror` 验证）；BIN 仍 55,932 B（与重构后逐字节一致）。
+- **`epd_panel_*` out-of-line 试验否决**：实测 +16 B（55,948 vs 55,932），
+  保留 `static inline`；该负结果再次说明体积优化必须以真实 ARM 构建为准。
+- 最终 `build.bat build` exit 0（HOST_OK），BIN SHA-256 仍为
+  `4504DA0F…E75394DA`，`tests/test_application_build.py` 与
+  `test_build_config_parity.py` 通过。
+

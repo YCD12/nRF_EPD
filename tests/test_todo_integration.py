@@ -7,15 +7,26 @@ import subprocess
 
 ROOT = Path(__file__).resolve().parents[1]
 
+# Functions declared in EPD_service.h keep external linkage in generated fixtures.
+PUBLIC_SERVICE_API = {'ble_epd_on_timer'}
+
 
 def extract_function(source, name):
+    """Extract a production function and normalise it to `static` linkage.
+
+    Public EPD_service.h API stays non-static because the fixtures declare it
+    that way; everything else is made file-local for the generated fixture.
+    """
     match = re.search(r"(?:static )?(?:void|bool) " + name + r"\([^;]+?\{", source)
     assert match, name
     end, depth = match.end(), 1
     while depth:
         depth += (source[end] == "{") - (source[end] == "}")
         end += 1
-    return source[match.start():end]
+    text = source[match.start():end]
+    if name in PUBLIC_SERVICE_API:
+        return text
+    return text if text.startswith('static ') else 'static ' + text
 
 
 fixture = r'''
@@ -105,8 +116,8 @@ static uint32_t app_timer_cnt_get(void) { return 0U; }
 static uint32_t epd_elapsed_ms(uint32_t ticks) { return ticks; }
 static void epd_clock_refresh_invalidate(void) {}
 static void epd_clock_refresh_mark_valid(uint32_t ts) { (void)ts; assert(0); }
-static void UC8179_ClearBusyTimeout(void) { panel_timeout=false; }
-static bool UC8179_HadBusyTimeout(void) { return panel_timeout; }
+static void epd_service_busy_error_clear(ble_epd_t *p) { (void)p; panel_timeout=false; }
+static bool epd_service_busy_error(const ble_epd_t *p) { (void)p; return panel_timeout; }
 static bool EPD_BusyAbortRequested(void) { return false; }
 static void tick(ble_epd_t *p, uint32_t ts, bool force);
 static void panel_init(const epd_model_t *p) { (void)p; }
@@ -338,11 +349,19 @@ int main(int argc, char **argv)
 }
 '''
 
-source = (ROOT / 'EPD/EPD_service.c').read_text(encoding='utf-8')
+SERVICE_SOURCES = (
+    'EPD/service/epd_service_control.c',
+    'EPD/service/epd_service_transfer.c',
+    'EPD/service/epd_service_display.c',
+    'EPD/service/epd_service_cmd.c',
+    'EPD/service/EPD_service.c',
+)
+source = '\n'.join((ROOT / path).read_text(encoding='utf-8') for path in SERVICE_SOURCES)
 retry_state = re.search(r'static volatile uint32_t s_display_retry_at;\s*'
                         r'static volatile uint8_t s_display_retry_step;', source).group(0)
 handlers = retry_state + '\n' + '\n'.join(extract_function(source, name) for name in
                      ('epd_display_retry_reset',
+                      'epd_display_retry_scheduled', 'epd_display_retry_waiting',
                       'ble_epd_on_timer', 'epd_perform_full_refresh'))
 out = Path(os.environ.get('HOST_TEST_OUT', ROOT / '_build/host_tests'))
 out.mkdir(parents=True, exist_ok=True)
@@ -350,8 +369,8 @@ generated = out / 'todo_integration_generated.c'
 generated.write_text(fixture.replace('/* PRODUCTION_HANDLERS */', handlers), encoding='utf-8')
 exe = out / ('test_todo_integration.exe' if os.name == 'nt' else 'test_todo_integration')
 subprocess.run(shlex.split(os.environ.get('HOST_CC', 'gcc')) +
-               ['-Wall', '-Werror', '-std=c11', '-IEPD', '-IGUI', str(generated),
-                'tests/stubs/ui_resources_stub.c', 'GUI/todo_items.c', 'GUI/font_geometry.c', 'EPD/epd_refresh_policy.c', '-o', str(exe)],
+               ['-Wall', '-Werror', '-std=c11', '-I.', '-IEPD/hal', '-IEPD/driver', '-IEPD/board', '-IEPD/storage', '-IEPD/app', '-IEPD/service', '-IGUI', str(generated),
+                'tests/stubs/ui_resources_stub.c', 'GUI/todo_items.c', 'GUI/font_geometry.c', 'EPD/app/epd_refresh_policy.c', '-o', str(exe)],
                cwd=ROOT, check=True)
 for mode in (4, 5):
     subprocess.run([str(exe.resolve()), str(mode)], check=True)

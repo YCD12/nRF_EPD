@@ -96,7 +96,9 @@ static unsigned hash(void) {
 static uint8_t old_frame[48000], new_frame[48000], pushed[48000];
 static unsigned pushes, refreshes, fail_push;
 static bool fail_refresh, busy_timeout;
-bool UC8179_HadBusyTimeout(void) { return busy_timeout; }
+/* epd_clock_refresh 经 vtable 可选能力判断局刷/忙状态。 */
+static void init_partial(const epd_model_t *epd) { (void)epd; }
+static bool busy_error(const epd_model_t *epd) { (void)epd; return busy_timeout; }
 static bool diff_push(const epd_model_t *epd, uint16_t x, uint16_t y, uint16_t w, uint16_t h,
                        const uint8_t *old, const uint8_t *new) {
     (void)epd;
@@ -125,7 +127,8 @@ static void clock_reference(gui_data_t *data, uint8_t *dst) {
     origin_x=origin_y=0;
 }
 static void test_clock_strips(void) {
-    epd_driver_t drv={.diff_push=diff_push,.refresh_partial=refresh};
+    epd_driver_t drv={.diff_push=diff_push,.refresh_partial=refresh,
+                      .init_partial=init_partial,.busy_error=busy_error};
     epd_model_t model={.drv=&drv,.width=800,.height=480};
     const uint32_t times[]={12*3600+34*60,12*3600+39*60,12*3600+59*60};
     gui_data_t setup={.mode=MODE_CLOCK,.width=800,.height=480,.timestamp=1735689660U};
@@ -156,7 +159,8 @@ static void test_clock_strips(void) {
 
 static void test_clock_render_io_failure(void)
 {
-    epd_driver_t drv = {.diff_push=diff_push, .refresh_partial=refresh};
+    epd_driver_t drv = {.diff_push=diff_push, .refresh_partial=refresh,
+                        .init_partial=init_partial, .busy_error=busy_error};
     epd_model_t model = {.drv=&drv, .width=800U, .height=480U};
     for (unsigned mode = MODE_CLOCK_CALENDAR; mode <= MODE_CLOCK; ++mode) {
         gui_data_t data = {.mode=mode, .width=800U, .height=480U,

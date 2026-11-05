@@ -25,12 +25,12 @@ cc=shlex.split(os.environ.get('HOST_CC','gcc'))
 sources=['GUI/GUI.c','GUI/todo_items.c','GUI/font_geometry.c','tests/stubs/todo_resources_stub.c',
     'GUI/Adafruit_GFX.c','GUI/u8g2_font.c','GUI/Lunar.c','GUI/calendar_annotations.c',
     'tests/stubs/calendar_resources_stub.c','tests/stubs/ui_resources_stub.c',
-    'EPD/epd_clock_refresh.c','tests/test_ui_render_driver.c']
+    'EPD/app/epd_clock_refresh.c','tests/test_ui_render_driver.c']
 for fixed in (False,True):
     extra=['-DGFX_FIXED_BWR_PANEL=1','-DGFX_FIXED_FONT_DIRECTION_0=1',
            '-DGUI_FIXED_PANEL_WIDTH=800','-DGUI_FIXED_PANEL_HEIGHT=480'] if fixed else []
     exe=OUT/('fixed.exe' if fixed else 'generic.exe')
-    subprocess.run(cc+['-Wall','-Werror','-std=c11','-IGUI','-IEPD','-Itests/stubs',
+    subprocess.run(cc+['-Wall','-Werror','-std=c11','-IGUI','-I.', '-IEPD/hal', '-IEPD/driver', '-IEPD/board', '-IEPD/storage', '-IEPD/app', '-IEPD/service','-Itests/stubs',
         '-Itools/test/host/shim',*extra,*sources,'-o',str(exe)],cwd=ROOT,check=True)
     cases=json.loads((OUT/'cases.json').read_text(encoding='utf-8'))
     for case in cases:

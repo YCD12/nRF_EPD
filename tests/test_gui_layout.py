@@ -27,11 +27,11 @@ exports = ("DrawGUI", "DrawGUI_ClockOnly", "GetTimeRefreshArea", "GetTimeRefresh
 reference = OUT / "GUI_unculled.c"
 reference.write_text("".join(f"#define {name} {name}_Unclipped\n" for name in exports) + source,
                      encoding="utf-8")
-common = ["-DGUI_LAYOUT_REFERENCE", "-IGUI", "-IEPD", "-Itests/stubs", "-Itools/test/host/shim",
+common = ["-DGUI_LAYOUT_REFERENCE", "-IGUI", '-I.', '-IEPD/hal', '-IEPD/driver', '-IEPD/board', '-IEPD/storage', '-IEPD/app', '-IEPD/service', "-Itests/stubs", "-Itools/test/host/shim",
           "GUI/GUI.c", str(reference), "GUI/Adafruit_GFX.c", "GUI/u8g2_font.c", "GUI/Lunar.c",
           "GUI/calendar_annotations.c", "GUI/todo_items.c", "GUI/font_geometry.c", "tests/stubs/todo_resources_stub.c",
           "tests/stubs/calendar_resources_stub.c",
-          "tests/stubs/ui_resources_stub.c", "EPD/epd_clock_refresh.c", "tests/test_gui_render.c"]
+          "tests/stubs/ui_resources_stub.c", "EPD/app/epd_clock_refresh.c", "tests/test_gui_render.c"]
 cc = shlex.split(os.environ.get("HOST_CC", "gcc"))
 flags = shlex.split(os.environ.get("HOST_CFLAGS", "-Wall -Werror -std=c11"))
 for fixed in (False, True):

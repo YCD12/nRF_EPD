@@ -340,7 +340,7 @@
               <MiscControls>--locale=english --reduce_paths</MiscControls>
               <Define>APP_TIMER_V2 APP_TIMER_V2_RTC1_ENABLED CONFIG_GPIO_AS_PINRESET FLOAT_ABI_SOFT NRF52811_XXAA NRFX_COREDEP_DELAY_US_LOOP_CYCLES=3 NRF_DFU_SVCI_ENABLED NRF_DFU_TRANSPORT_BLE=1 NRF_SD_BLE_API_VERSION=7 S112 SOFTDEVICE_PRESENT FDS_ENABLED=0 NRF_FSTORAGE_ENABLED=0 __HEAP_SIZE=0 __STACK_SIZE=2048 NRF_STRERROR_ENABLED=0 NRF_LOG_ENABLED=0 BLE_LOG_REDIRECT_ALL_NRF_LOG=0 GFX_FIXED_BWR_PANEL=1 GFX_FIXED_FONT_DIRECTION_0=1 GUI_FIXED_PANEL_WIDTH=800 GUI_FIXED_PANEL_HEIGHT=480 CALENDAR_ANNOTATIONS_USE_NRF_CRITICAL=1</Define>
               <Undefine></Undefine>
-              <IncludePath>..\;..\EPD;..\GUI;..\SDK\17.1.0_ddde560;..\SDK\17.1.0_ddde560\components\ble\common;..\SDK\17.1.0_ddde560\components\ble\ble_advertising;..\SDK\17.1.0_ddde560\components\ble\nrf_ble_gatt;..\SDK\17.1.0_ddde560\components\ble\ble_services\ble_dfu;..\SDK\17.1.0_ddde560\components\libraries\atomic;..\SDK\17.1.0_ddde560\components\libraries\atomic_fifo;..\SDK\17.1.0_ddde560\components\libraries\atomic_flags;..\SDK\17.1.0_ddde560\components\libraries\balloc;..\SDK\17.1.0_ddde560\components\libraries\bootloader;..\SDK\17.1.0_ddde560\components\libraries\bootloader\ble_dfu;..\SDK\17.1.0_ddde560\components\libraries\bootloader\dfu;..\SDK\17.1.0_ddde560\components\libraries\delay;..\SDK\17.1.0_ddde560\components\libraries\fstorage;..\SDK\17.1.0_ddde560\components\libraries\fds;..\SDK\17.1.0_ddde560\components\libraries\experimental_section_vars;..\SDK\17.1.0_ddde560\components\libraries\log;..\SDK\17.1.0_ddde560\components\libraries\log\src;..\SDK\17.1.0_ddde560\components\libraries\memobj;..\SDK\17.1.0_ddde560\components\libraries\mutex;..\SDK\17.1.0_ddde560\components\libraries\pwr_mgmt;..\SDK\17.1.0_ddde560\components\libraries\ringbuf;..\SDK\17.1.0_ddde560\components\libraries\sortlist;..\SDK\17.1.0_ddde560\components\libraries\scheduler;..\SDK\17.1.0_ddde560\components\libraries\strerror;..\SDK\17.1.0_ddde560\components\libraries\svc;..\SDK\17.1.0_ddde560\components\libraries\timer;..\SDK\17.1.0_ddde560\components\libraries\util;..\SDK\17.1.0_ddde560\components\softdevice\common;..\SDK\17.1.0_ddde560\components\softdevice\s112\headers;..\SDK\17.1.0_ddde560\components\softdevice\s112\headers\nrf52;..\SDK\17.1.0_ddde560\components\toolchain\cmsis\include;..\SDK\17.1.0_ddde560\external\fprintf;..\SDK\17.1.0_ddde560\external\segger_rtt;..\SDK\17.1.0_ddde560\integration\nrfx;..\SDK\17.1.0_ddde560\integration\nrfx\legacy;..\SDK\17.1.0_ddde560\modules\nrfx;..\SDK\17.1.0_ddde560\modules\nrfx\mdk;..\SDK\17.1.0_ddde560\modules\nrfx\drivers\include;..\SDK\17.1.0_ddde560\modules\nrfx\hal;..\SystemView</IncludePath>
+              <IncludePath>..\;..\EPD\hal;..\EPD\driver;..\EPD\board;..\EPD\storage;..\EPD\app;..\EPD\service;..\GUI;..\SDK\17.1.0_ddde560;..\SDK\17.1.0_ddde560\components\ble\common;..\SDK\17.1.0_ddde560\components\ble\ble_advertising;..\SDK\17.1.0_ddde560\components\ble\nrf_ble_gatt;..\SDK\17.1.0_ddde560\components\ble\ble_services\ble_dfu;..\SDK\17.1.0_ddde560\components\libraries\atomic;..\SDK\17.1.0_ddde560\components\libraries\atomic_fifo;..\SDK\17.1.0_ddde560\components\libraries\atomic_flags;..\SDK\17.1.0_ddde560\components\libraries\balloc;..\SDK\17.1.0_ddde560\components\libraries\bootloader;..\SDK\17.1.0_ddde560\components\libraries\bootloader\ble_dfu;..\SDK\17.1.0_ddde560\components\libraries\bootloader\dfu;..\SDK\17.1.0_ddde560\components\libraries\delay;..\SDK\17.1.0_ddde560\components\libraries\fstorage;..\SDK\17.1.0_ddde560\components\libraries\fds;..\SDK\17.1.0_ddde560\components\libraries\experimental_section_vars;..\SDK\17.1.0_ddde560\components\libraries\log;..\SDK\17.1.0_ddde560\components\libraries\log\src;..\SDK\17.1.0_ddde560\components\libraries\memobj;..\SDK\17.1.0_ddde560\components\libraries\mutex;..\SDK\17.1.0_ddde560\components\libraries\pwr_mgmt;..\SDK\17.1.0_ddde560\components\libraries\ringbuf;..\SDK\17.1.0_ddde560\components\libraries\sortlist;..\SDK\17.1.0_ddde560\components\libraries\scheduler;..\SDK\17.1.0_ddde560\components\libraries\strerror;..\SDK\17.1.0_ddde560\components\libraries\svc;..\SDK\17.1.0_ddde560\components\libraries\timer;..\SDK\17.1.0_ddde560\components\libraries\util;..\SDK\17.1.0_ddde560\components\softdevice\common;..\SDK\17.1.0_ddde560\components\softdevice\s112\headers;..\SDK\17.1.0_ddde560\components\softdevice\s112\headers\nrf52;..\SDK\17.1.0_ddde560\components\toolchain\cmsis\include;..\SDK\17.1.0_ddde560\external\fprintf;..\SDK\17.1.0_ddde560\external\segger_rtt;..\SDK\17.1.0_ddde560\integration\nrfx;..\SDK\17.1.0_ddde560\integration\nrfx\legacy;..\SDK\17.1.0_ddde560\modules\nrfx;..\SDK\17.1.0_ddde560\modules\nrfx\mdk;..\SDK\17.1.0_ddde560\modules\nrfx\drivers\include;..\SDK\17.1.0_ddde560\modules\nrfx\hal;..\SystemView</IncludePath>
             </VariousControls>
           </Cads>
           <Aads>
@@ -358,7 +358,7 @@
               <MiscControls>--cpreproc_opts=-DAPP_TIMER_V2,-DAPP_TIMER_V2_RTC1_ENABLED,-DCONFIG_GPIO_AS_PINRESET,-DFLOAT_ABI_SOFT,-DNRF52811_XXAA,-DNRFX_COREDEP_DELAY_US_LOOP_CYCLES=3,-DNRF_SD_BLE_API_VERSION=7,-DS112,-DSOFTDEVICE_PRESENT,-DFDS_ENABLED=0,-DNRF_FSTORAGE_ENABLED=0,-D__HEAP_SIZE=0,-D__STACK_SIZE=2048,-DNRF_STRERROR_ENABLED=0,-DNRF_LOG_ENABLED=0,-DBLE_LOG_REDIRECT_ALL_NRF_LOG=0</MiscControls>
               <Define>APP_TIMER_V2 APP_TIMER_V2_RTC1_ENABLED CONFIG_GPIO_AS_PINRESET FLOAT_ABI_SOFT NRF52811_XXAA NRFX_COREDEP_DELAY_US_LOOP_CYCLES=3 NRF_DFU_SVCI_ENABLED NRF_DFU_TRANSPORT_BLE=1 NRF_SD_BLE_API_VERSION=7 S112 SOFTDEVICE_PRESENT FDS_ENABLED=0 NRF_FSTORAGE_ENABLED=0 __HEAP_SIZE=0 __STACK_SIZE=2048 NRF_STRERROR_ENABLED=0 NRF_LOG_ENABLED=0 BLE_LOG_REDIRECT_ALL_NRF_LOG=0 GFX_FIXED_BWR_PANEL=1 GFX_FIXED_FONT_DIRECTION_0=1 GUI_FIXED_PANEL_WIDTH=800 GUI_FIXED_PANEL_HEIGHT=480 CALENDAR_ANNOTATIONS_USE_NRF_CRITICAL=1</Define>
               <Undefine></Undefine>
-              <IncludePath>..\config;..\EPD;..\GUI;..\SDK\17.1.0_ddde560;..\SDK\17.1.0_ddde560\components\ble\common;..\SDK\17.1.0_ddde560\components\ble\ble_advertising;..\SDK\17.1.0_ddde560\components\ble\nrf_ble_gatt;..\SDK\17.1.0_ddde560\components\libraries\atomic;..\SDK\17.1.0_ddde560\components\libraries\atomic_fifo;..\SDK\17.1.0_ddde560\components\libraries\atomic_flags;..\SDK\17.1.0_ddde560\components\libraries\balloc;..\SDK\17.1.0_ddde560\components\libraries\delay;..\SDK\17.1.0_ddde560\components\libraries\fstorage;..\SDK\17.1.0_ddde560\components\libraries\fds;..\SDK\17.1.0_ddde560\components\libraries\experimental_section_vars;..\SDK\17.1.0_ddde560\components\libraries\log;..\SDK\17.1.0_ddde560\components\libraries\log\src;..\SDK\17.1.0_ddde560\components\libraries\memobj;..\SDK\17.1.0_ddde560\components\libraries\mutex;..\SDK\17.1.0_ddde560\components\libraries\pwr_mgmt;..\SDK\17.1.0_ddde560\components\libraries\ringbuf;..\SDK\17.1.0_ddde560\components\libraries\sortlist;..\SDK\17.1.0_ddde560\components\libraries\scheduler;..\SDK\17.1.0_ddde560\components\libraries\strerror;..\SDK\17.1.0_ddde560\components\libraries\timer;..\SDK\17.1.0_ddde560\components\libraries\util;..\SDK\17.1.0_ddde560\components\softdevice\common;..\SDK\17.1.0_ddde560\components\softdevice\s112\headers;..\SDK\17.1.0_ddde560\components\softdevice\s112\headers\nrf52;..\SDK\17.1.0_ddde560\components\toolchain\cmsis\include;..\SDK\17.1.0_ddde560\external\fprintf;..\SDK\17.1.0_ddde560\external\segger_rtt;..\SDK\17.1.0_ddde560\integration\nrfx;..\SDK\17.1.0_ddde560\integration\nrfx\legacy;..\SDK\17.1.0_ddde560\modules\nrfx;..\SDK\17.1.0_ddde560\modules\nrfx\mdk;..\SDK\17.1.0_ddde560\modules\nrfx\drivers\include;..\SDK\17.1.0_ddde560\modules\nrfx\hal;..\SystemView</IncludePath>
+              <IncludePath>..\config;..\EPD\hal;..\EPD\driver;..\EPD\board;..\EPD\storage;..\EPD\app;..\EPD\service;..\GUI;..\SDK\17.1.0_ddde560;..\SDK\17.1.0_ddde560\components\ble\common;..\SDK\17.1.0_ddde560\components\ble\ble_advertising;..\SDK\17.1.0_ddde560\components\ble\nrf_ble_gatt;..\SDK\17.1.0_ddde560\components\libraries\atomic;..\SDK\17.1.0_ddde560\components\libraries\atomic_fifo;..\SDK\17.1.0_ddde560\components\libraries\atomic_flags;..\SDK\17.1.0_ddde560\components\libraries\balloc;..\SDK\17.1.0_ddde560\components\libraries\delay;..\SDK\17.1.0_ddde560\components\libraries\fstorage;..\SDK\17.1.0_ddde560\components\libraries\fds;..\SDK\17.1.0_ddde560\components\libraries\experimental_section_vars;..\SDK\17.1.0_ddde560\components\libraries\log;..\SDK\17.1.0_ddde560\components\libraries\log\src;..\SDK\17.1.0_ddde560\components\libraries\memobj;..\SDK\17.1.0_ddde560\components\libraries\mutex;..\SDK\17.1.0_ddde560\components\libraries\pwr_mgmt;..\SDK\17.1.0_ddde560\components\libraries\ringbuf;..\SDK\17.1.0_ddde560\components\libraries\sortlist;..\SDK\17.1.0_ddde560\components\libraries\scheduler;..\SDK\17.1.0_ddde560\components\libraries\strerror;..\SDK\17.1.0_ddde560\components\libraries\timer;..\SDK\17.1.0_ddde560\components\libraries\util;..\SDK\17.1.0_ddde560\components\softdevice\common;..\SDK\17.1.0_ddde560\components\softdevice\s112\headers;..\SDK\17.1.0_ddde560\components\softdevice\s112\headers\nrf52;..\SDK\17.1.0_ddde560\components\toolchain\cmsis\include;..\SDK\17.1.0_ddde560\external\fprintf;..\SDK\17.1.0_ddde560\external\segger_rtt;..\SDK\17.1.0_ddde560\integration\nrfx;..\SDK\17.1.0_ddde560\integration\nrfx\legacy;..\SDK\17.1.0_ddde560\modules\nrfx;..\SDK\17.1.0_ddde560\modules\nrfx\mdk;..\SDK\17.1.0_ddde560\modules\nrfx\drivers\include;..\SDK\17.1.0_ddde560\modules\nrfx\hal;..\SystemView</IncludePath>
             </VariousControls>
           </Aads>
           <LDads>
@@ -402,97 +402,122 @@
             <File>
               <FileName>EPD_config.c</FileName>
               <FileType>1</FileType>
-              <FilePath>..\EPD\EPD_config.c</FilePath>
+              <FilePath>..\EPD\board\EPD_config.c</FilePath>
             </File>
             <File>
               <FileName>epd_advertising.c</FileName>
               <FileType>1</FileType>
-              <FilePath>..\EPD\epd_advertising.c</FilePath>
+              <FilePath>..\EPD\service\epd_advertising.c</FilePath>
             </File>
             <File>
               <FileName>calendar_annotations_tx.c</FileName>
               <FileType>1</FileType>
-              <FilePath>..\EPD\calendar_annotations_tx.c</FilePath>
+              <FilePath>..\EPD\app\calendar_annotations_tx.c</FilePath>
             </File>
             <File>
               <FileName>fm25q04b.c</FileName>
               <FileType>1</FileType>
-              <FilePath>..\EPD\fm25q04b.c</FilePath>
+              <FilePath>..\EPD\hal\fm25q04b.c</FilePath>
             </File>
             <File>
               <FileName>EPD_driver.c</FileName>
               <FileType>1</FileType>
-              <FilePath>..\EPD\EPD_driver.c</FilePath>
+              <FilePath>..\EPD\hal\EPD_driver.c</FilePath>
             </File>
             <File>
               <FileName>epd_rle.c</FileName>
               <FileType>1</FileType>
-              <FilePath>..\EPD\epd_rle.c</FilePath>
+              <FilePath>..\EPD\service\epd_rle.c</FilePath>
             </File>
             <File>
               <FileName>EPD_service.c</FileName>
               <FileType>1</FileType>
-              <FilePath>..\EPD\EPD_service.c</FilePath>
+              <FilePath>..\EPD\service\EPD_service.c</FilePath>
+            </File>
+            <File>
+              <FileName>epd_service_display.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\EPD\service\epd_service_display.c</FilePath>
+            </File>
+            <File>
+              <FileName>epd_service_cmd.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\EPD\service\epd_service_cmd.c</FilePath>
+            </File>
+            <File>
+              <FileName>epd_service_control.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\EPD\service\epd_service_control.c</FilePath>
+            </File>
+            <File>
+              <FileName>epd_service_transfer.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\EPD\service\epd_service_transfer.c</FilePath>
             </File>
             <File>
               <FileName>UC8179.c</FileName>
               <FileType>1</FileType>
-              <FilePath>..\EPD\UC8179.c</FilePath>
+              <FilePath>..\EPD\driver\UC8179.c</FilePath>
+            </File>
+            <File>
+              <FileName>epd_models.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\EPD\driver\epd_models.c</FilePath>
             </File>
             <File>
               <FileName>epd_refresh_policy.c</FileName>
               <FileType>1</FileType>
-              <FilePath>..\EPD\epd_refresh_policy.c</FilePath>
+              <FilePath>..\EPD\app\epd_refresh_policy.c</FilePath>
             </File>
             <File>
               <FileName>epd_clock_refresh.c</FileName>
               <FileType>1</FileType>
-              <FilePath>..\EPD\epd_clock_refresh.c</FilePath>
+              <FilePath>..\EPD\app\epd_clock_refresh.c</FilePath>
             </File>
             <File>
               <FileName>calendar_annotations_store.c</FileName>
               <FileType>1</FileType>
-              <FilePath>..\EPD\calendar_annotations_store.c</FilePath>
+              <FilePath>..\EPD\app\calendar_annotations_store.c</FilePath>
             </File>
             <File>
               <FileName>resource_store.c</FileName>
               <FileType>1</FileType>
-              <FilePath>..\EPD\resource_store.c</FilePath>
+              <FilePath>..\EPD\storage\resource_store.c</FilePath>
             </File>
             <File>
               <FileName>resource_crc.c</FileName>
               <FileType>1</FileType>
-              <FilePath>..\EPD\resource_crc.c</FilePath>
+              <FilePath>..\EPD\storage\resource_crc.c</FilePath>
             </File>
             <File>
               <FileName>resource_crc_flash.c</FileName>
               <FileType>1</FileType>
-              <FilePath>..\EPD\resource_crc_flash.c</FilePath>
+              <FilePath>..\EPD\storage\resource_crc_flash.c</FilePath>
             </File>
             <File>
               <FileName>epd_resources.c</FileName>
               <FileType>1</FileType>
-              <FilePath>..\EPD\epd_resources.c</FilePath>
+              <FilePath>..\EPD\app\epd_resources.c</FilePath>
             </File>
             <File>
               <FileName>persistent_record.c</FileName>
               <FileType>1</FileType>
-              <FilePath>..\EPD\persistent_record.c</FilePath>
+              <FilePath>..\EPD\storage\persistent_record.c</FilePath>
             </File>
             <File>
               <FileName>resource_protocol.c</FileName>
               <FileType>1</FileType>
-              <FilePath>..\EPD\resource_protocol.c</FilePath>
+              <FilePath>..\EPD\service\resource_protocol.c</FilePath>
             </File>
             <File>
               <FileName>resource_transfer.c</FileName>
               <FileType>1</FileType>
-              <FilePath>..\EPD\resource_transfer.c</FilePath>
+              <FilePath>..\EPD\service\resource_transfer.c</FilePath>
             </File>
             <File>
               <FileName>font_store.c</FileName>
               <FileType>1</FileType>
-              <FilePath>..\EPD\font_store.c</FilePath>
+              <FilePath>..\EPD\storage\font_store.c</FilePath>
             </File>
 
 
@@ -1130,7 +1155,7 @@
               <MiscControls>--locale=english --reduce_paths</MiscControls>
               <Define>APP_TIMER_V2 APP_TIMER_V2_RTC1_ENABLED CONFIG_GPIO_AS_PINRESET FLOAT_ABI_SOFT NRF52811_XXAA NRFX_COREDEP_DELAY_US_LOOP_CYCLES=3 NRF_DFU_SVCI_ENABLED NRF_DFU_TRANSPORT_BLE=1 NRF_SD_BLE_API_VERSION=7 S112 SOFTDEVICE_PRESENT FDS_ENABLED=0 NRF_FSTORAGE_ENABLED=0 __HEAP_SIZE=0 __STACK_SIZE=2048 NRF_STRERROR_ENABLED=0 GFX_FIXED_BWR_PANEL=1 GFX_FIXED_FONT_DIRECTION_0=1 GUI_FIXED_PANEL_WIDTH=800 GUI_FIXED_PANEL_HEIGHT=480 CALENDAR_ANNOTATIONS_USE_NRF_CRITICAL=1</Define>
               <Undefine></Undefine>
-              <IncludePath>..\;..\EPD;..\GUI;..\SDK\17.1.0_ddde560;..\SDK\17.1.0_ddde560\components\ble\common;..\SDK\17.1.0_ddde560\components\ble\ble_advertising;..\SDK\17.1.0_ddde560\components\ble\nrf_ble_gatt;..\SDK\17.1.0_ddde560\components\ble\ble_services\ble_dfu;..\SDK\17.1.0_ddde560\components\libraries\atomic;..\SDK\17.1.0_ddde560\components\libraries\atomic_fifo;..\SDK\17.1.0_ddde560\components\libraries\atomic_flags;..\SDK\17.1.0_ddde560\components\libraries\balloc;..\SDK\17.1.0_ddde560\components\libraries\bootloader;..\SDK\17.1.0_ddde560\components\libraries\bootloader\ble_dfu;..\SDK\17.1.0_ddde560\components\libraries\bootloader\dfu;..\SDK\17.1.0_ddde560\components\libraries\delay;..\SDK\17.1.0_ddde560\components\libraries\fstorage;..\SDK\17.1.0_ddde560\components\libraries\fds;..\SDK\17.1.0_ddde560\components\libraries\experimental_section_vars;..\SDK\17.1.0_ddde560\components\libraries\log;..\SDK\17.1.0_ddde560\components\libraries\log\src;..\SDK\17.1.0_ddde560\components\libraries\memobj;..\SDK\17.1.0_ddde560\components\libraries\mutex;..\SDK\17.1.0_ddde560\components\libraries\pwr_mgmt;..\SDK\17.1.0_ddde560\components\libraries\ringbuf;..\SDK\17.1.0_ddde560\components\libraries\sortlist;..\SDK\17.1.0_ddde560\components\libraries\scheduler;..\SDK\17.1.0_ddde560\components\libraries\strerror;..\SDK\17.1.0_ddde560\components\libraries\svc;..\SDK\17.1.0_ddde560\components\libraries\timer;..\SDK\17.1.0_ddde560\components\libraries\util;..\SDK\17.1.0_ddde560\components\softdevice\common;..\SDK\17.1.0_ddde560\components\softdevice\s112\headers;..\SDK\17.1.0_ddde560\components\softdevice\s112\headers\nrf52;..\SDK\17.1.0_ddde560\components\toolchain\cmsis\include;..\SDK\17.1.0_ddde560\external\fprintf;..\SDK\17.1.0_ddde560\external\segger_rtt;..\SDK\17.1.0_ddde560\integration\nrfx;..\SDK\17.1.0_ddde560\integration\nrfx\legacy;..\SDK\17.1.0_ddde560\modules\nrfx;..\SDK\17.1.0_ddde560\modules\nrfx\mdk;..\SDK\17.1.0_ddde560\modules\nrfx\drivers\include;..\SDK\17.1.0_ddde560\modules\nrfx\hal</IncludePath>
+              <IncludePath>..\;..\EPD\hal;..\EPD\driver;..\EPD\board;..\EPD\storage;..\EPD\app;..\EPD\service;..\GUI;..\SDK\17.1.0_ddde560;..\SDK\17.1.0_ddde560\components\ble\common;..\SDK\17.1.0_ddde560\components\ble\ble_advertising;..\SDK\17.1.0_ddde560\components\ble\nrf_ble_gatt;..\SDK\17.1.0_ddde560\components\ble\ble_services\ble_dfu;..\SDK\17.1.0_ddde560\components\libraries\atomic;..\SDK\17.1.0_ddde560\components\libraries\atomic_fifo;..\SDK\17.1.0_ddde560\components\libraries\atomic_flags;..\SDK\17.1.0_ddde560\components\libraries\balloc;..\SDK\17.1.0_ddde560\components\libraries\bootloader;..\SDK\17.1.0_ddde560\components\libraries\bootloader\ble_dfu;..\SDK\17.1.0_ddde560\components\libraries\bootloader\dfu;..\SDK\17.1.0_ddde560\components\libraries\delay;..\SDK\17.1.0_ddde560\components\libraries\fstorage;..\SDK\17.1.0_ddde560\components\libraries\fds;..\SDK\17.1.0_ddde560\components\libraries\experimental_section_vars;..\SDK\17.1.0_ddde560\components\libraries\log;..\SDK\17.1.0_ddde560\components\libraries\log\src;..\SDK\17.1.0_ddde560\components\libraries\memobj;..\SDK\17.1.0_ddde560\components\libraries\mutex;..\SDK\17.1.0_ddde560\components\libraries\pwr_mgmt;..\SDK\17.1.0_ddde560\components\libraries\ringbuf;..\SDK\17.1.0_ddde560\components\libraries\sortlist;..\SDK\17.1.0_ddde560\components\libraries\scheduler;..\SDK\17.1.0_ddde560\components\libraries\strerror;..\SDK\17.1.0_ddde560\components\libraries\svc;..\SDK\17.1.0_ddde560\components\libraries\timer;..\SDK\17.1.0_ddde560\components\libraries\util;..\SDK\17.1.0_ddde560\components\softdevice\common;..\SDK\17.1.0_ddde560\components\softdevice\s112\headers;..\SDK\17.1.0_ddde560\components\softdevice\s112\headers\nrf52;..\SDK\17.1.0_ddde560\components\toolchain\cmsis\include;..\SDK\17.1.0_ddde560\external\fprintf;..\SDK\17.1.0_ddde560\external\segger_rtt;..\SDK\17.1.0_ddde560\integration\nrfx;..\SDK\17.1.0_ddde560\integration\nrfx\legacy;..\SDK\17.1.0_ddde560\modules\nrfx;..\SDK\17.1.0_ddde560\modules\nrfx\mdk;..\SDK\17.1.0_ddde560\modules\nrfx\drivers\include;..\SDK\17.1.0_ddde560\modules\nrfx\hal</IncludePath>
             </VariousControls>
           </Cads>
           <Aads>
@@ -1148,7 +1173,7 @@
               <MiscControls>--cpreproc_opts=-DAPP_TIMER_V2,-DAPP_TIMER_V2_RTC1_ENABLED,-DCONFIG_GPIO_AS_PINRESET,-DFLOAT_ABI_SOFT,-DNRF52811_XXAA,-DNRFX_COREDEP_DELAY_US_LOOP_CYCLES=3,-DNRF_SD_BLE_API_VERSION=7,-DS112,-DSOFTDEVICE_PRESENT,-DFDS_ENABLED=0,-DNRF_FSTORAGE_ENABLED=0,-D__HEAP_SIZE=0,-D__STACK_SIZE=2048</MiscControls>
               <Define>APP_TIMER_V2 APP_TIMER_V2_RTC1_ENABLED CONFIG_GPIO_AS_PINRESET FLOAT_ABI_SOFT NRF52811_XXAA NRFX_COREDEP_DELAY_US_LOOP_CYCLES=3 NRF_DFU_SVCI_ENABLED NRF_DFU_TRANSPORT_BLE=1 NRF_SD_BLE_API_VERSION=7 S112 SOFTDEVICE_PRESENT FDS_ENABLED=0 NRF_FSTORAGE_ENABLED=0 __HEAP_SIZE=0 __STACK_SIZE=2048 NRF_STRERROR_ENABLED=0 GFX_FIXED_BWR_PANEL=1 GFX_FIXED_FONT_DIRECTION_0=1 GUI_FIXED_PANEL_WIDTH=800 GUI_FIXED_PANEL_HEIGHT=480 CALENDAR_ANNOTATIONS_USE_NRF_CRITICAL=1</Define>
               <Undefine></Undefine>
-              <IncludePath>..\config;..\EPD;..\GUI;..\SDK\17.1.0_ddde560;..\SDK\17.1.0_ddde560\components\ble\common;..\SDK\17.1.0_ddde560\components\ble\ble_advertising;..\SDK\17.1.0_ddde560\components\ble\nrf_ble_gatt;..\SDK\17.1.0_ddde560\components\libraries\atomic;..\SDK\17.1.0_ddde560\components\libraries\atomic_fifo;..\SDK\17.1.0_ddde560\components\libraries\atomic_flags;..\SDK\17.1.0_ddde560\components\libraries\balloc;..\SDK\17.1.0_ddde560\components\libraries\delay;..\SDK\17.1.0_ddde560\components\libraries\fstorage;..\SDK\17.1.0_ddde560\components\libraries\fds;..\SDK\17.1.0_ddde560\components\libraries\experimental_section_vars;..\SDK\17.1.0_ddde560\components\libraries\log;..\SDK\17.1.0_ddde560\components\libraries\log\src;..\SDK\17.1.0_ddde560\components\libraries\memobj;..\SDK\17.1.0_ddde560\components\libraries\mutex;..\SDK\17.1.0_ddde560\components\libraries\pwr_mgmt;..\SDK\17.1.0_ddde560\components\libraries\ringbuf;..\SDK\17.1.0_ddde560\components\libraries\sortlist;..\SDK\17.1.0_ddde560\components\libraries\scheduler;..\SDK\17.1.0_ddde560\components\libraries\strerror;..\SDK\17.1.0_ddde560\components\libraries\timer;..\SDK\17.1.0_ddde560\components\libraries\util;..\SDK\17.1.0_ddde560\components\softdevice\common;..\SDK\17.1.0_ddde560\components\softdevice\s112\headers;..\SDK\17.1.0_ddde560\components\softdevice\s112\headers\nrf52;..\SDK\17.1.0_ddde560\components\toolchain\cmsis\include;..\SDK\17.1.0_ddde560\external\fprintf;..\SDK\17.1.0_ddde560\external\segger_rtt;..\SDK\17.1.0_ddde560\integration\nrfx;..\SDK\17.1.0_ddde560\integration\nrfx\legacy;..\SDK\17.1.0_ddde560\modules\nrfx;..\SDK\17.1.0_ddde560\modules\nrfx\mdk;..\SDK\17.1.0_ddde560\modules\nrfx\drivers\include;..\SDK\17.1.0_ddde560\modules\nrfx\hal</IncludePath>
+              <IncludePath>..\config;..\EPD\hal;..\EPD\driver;..\EPD\board;..\EPD\storage;..\EPD\app;..\EPD\service;..\GUI;..\SDK\17.1.0_ddde560;..\SDK\17.1.0_ddde560\components\ble\common;..\SDK\17.1.0_ddde560\components\ble\ble_advertising;..\SDK\17.1.0_ddde560\components\ble\nrf_ble_gatt;..\SDK\17.1.0_ddde560\components\libraries\atomic;..\SDK\17.1.0_ddde560\components\libraries\atomic_fifo;..\SDK\17.1.0_ddde560\components\libraries\atomic_flags;..\SDK\17.1.0_ddde560\components\libraries\balloc;..\SDK\17.1.0_ddde560\components\libraries\delay;..\SDK\17.1.0_ddde560\components\libraries\fstorage;..\SDK\17.1.0_ddde560\components\libraries\fds;..\SDK\17.1.0_ddde560\components\libraries\experimental_section_vars;..\SDK\17.1.0_ddde560\components\libraries\log;..\SDK\17.1.0_ddde560\components\libraries\log\src;..\SDK\17.1.0_ddde560\components\libraries\memobj;..\SDK\17.1.0_ddde560\components\libraries\mutex;..\SDK\17.1.0_ddde560\components\libraries\pwr_mgmt;..\SDK\17.1.0_ddde560\components\libraries\ringbuf;..\SDK\17.1.0_ddde560\components\libraries\sortlist;..\SDK\17.1.0_ddde560\components\libraries\scheduler;..\SDK\17.1.0_ddde560\components\libraries\strerror;..\SDK\17.1.0_ddde560\components\libraries\timer;..\SDK\17.1.0_ddde560\components\libraries\util;..\SDK\17.1.0_ddde560\components\softdevice\common;..\SDK\17.1.0_ddde560\components\softdevice\s112\headers;..\SDK\17.1.0_ddde560\components\softdevice\s112\headers\nrf52;..\SDK\17.1.0_ddde560\components\toolchain\cmsis\include;..\SDK\17.1.0_ddde560\external\fprintf;..\SDK\17.1.0_ddde560\external\segger_rtt;..\SDK\17.1.0_ddde560\integration\nrfx;..\SDK\17.1.0_ddde560\integration\nrfx\legacy;..\SDK\17.1.0_ddde560\modules\nrfx;..\SDK\17.1.0_ddde560\modules\nrfx\mdk;..\SDK\17.1.0_ddde560\modules\nrfx\drivers\include;..\SDK\17.1.0_ddde560\modules\nrfx\hal</IncludePath>
             </VariousControls>
           </Aads>
           <LDads>
@@ -1192,98 +1217,123 @@
             <File>
               <FileName>EPD_config.c</FileName>
               <FileType>1</FileType>
-              <FilePath>..\EPD\EPD_config.c</FilePath>
+              <FilePath>..\EPD\board\EPD_config.c</FilePath>
             </File>
             <File>
               <FileName>fm25q04b.c</FileName>
               <FileType>1</FileType>
-              <FilePath>..\EPD\fm25q04b.c</FilePath>
+              <FilePath>..\EPD\hal\fm25q04b.c</FilePath>
             </File>
             <File>
               <FileName>EPD_driver.c</FileName>
               <FileType>1</FileType>
-              <FilePath>..\EPD\EPD_driver.c</FilePath>
+              <FilePath>..\EPD\hal\EPD_driver.c</FilePath>
             </File>
             <File>
               <FileName>epd_rle.c</FileName>
               <FileType>1</FileType>
-              <FilePath>..\EPD\epd_rle.c</FilePath>
+              <FilePath>..\EPD\service\epd_rle.c</FilePath>
             </File>
             <File>
               <FileName>EPD_service.c</FileName>
               <FileType>1</FileType>
-              <FilePath>..\EPD\EPD_service.c</FilePath>
+              <FilePath>..\EPD\service\EPD_service.c</FilePath>
+            </File>
+            <File>
+              <FileName>epd_service_display.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\EPD\service\epd_service_display.c</FilePath>
+            </File>
+            <File>
+              <FileName>epd_service_cmd.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\EPD\service\epd_service_cmd.c</FilePath>
+            </File>
+            <File>
+              <FileName>epd_service_control.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\EPD\service\epd_service_control.c</FilePath>
+            </File>
+            <File>
+              <FileName>epd_service_transfer.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\EPD\service\epd_service_transfer.c</FilePath>
             </File>
             <File>
               <FileName>UC8179.c</FileName>
               <FileType>1</FileType>
-              <FilePath>..\EPD\UC8179.c</FilePath>
+              <FilePath>..\EPD\driver\UC8179.c</FilePath>
+            </File>
+            <File>
+              <FileName>epd_models.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\EPD\driver\epd_models.c</FilePath>
             </File>
             <File>
               <FileName>epd_refresh_policy.c</FileName>
               <FileType>1</FileType>
-              <FilePath>..\EPD\epd_refresh_policy.c</FilePath>
+              <FilePath>..\EPD\app\epd_refresh_policy.c</FilePath>
             </File>
             <File>
               <FileName>epd_clock_refresh.c</FileName>
               <FileType>1</FileType>
-              <FilePath>..\EPD\epd_clock_refresh.c</FilePath>
+              <FilePath>..\EPD\app\epd_clock_refresh.c</FilePath>
             </File>
             <File>
               <FileName>calendar_annotations_store.c</FileName>
               <FileType>1</FileType>
-              <FilePath>..\EPD\calendar_annotations_store.c</FilePath>
+              <FilePath>..\EPD\app\calendar_annotations_store.c</FilePath>
             </File>
             <File>
               <FileName>resource_store.c</FileName>
               <FileType>1</FileType>
-              <FilePath>..\EPD\resource_store.c</FilePath>
+              <FilePath>..\EPD\storage\resource_store.c</FilePath>
             </File>
             <File>
               <FileName>resource_crc.c</FileName>
               <FileType>1</FileType>
-              <FilePath>..\EPD\resource_crc.c</FilePath>
+              <FilePath>..\EPD\storage\resource_crc.c</FilePath>
             </File>
             <File>
               <FileName>resource_crc_flash.c</FileName>
               <FileType>1</FileType>
-              <FilePath>..\EPD\resource_crc_flash.c</FilePath>
+              <FilePath>..\EPD\storage\resource_crc_flash.c</FilePath>
             </File>
             <File>
               <FileName>epd_resources.c</FileName>
               <FileType>1</FileType>
-              <FilePath>..\EPD\epd_resources.c</FilePath>
+              <FilePath>..\EPD\app\epd_resources.c</FilePath>
             </File>
             <File>
               <FileName>persistent_record.c</FileName>
               <FileType>1</FileType>
-              <FilePath>..\EPD\persistent_record.c</FilePath>
+              <FilePath>..\EPD\storage\persistent_record.c</FilePath>
             </File>
             <File>
               <FileName>resource_protocol.c</FileName>
               <FileType>1</FileType>
-              <FilePath>..\EPD\resource_protocol.c</FilePath>
+              <FilePath>..\EPD\service\resource_protocol.c</FilePath>
             </File>
             <File>
               <FileName>resource_transfer.c</FileName>
               <FileType>1</FileType>
-              <FilePath>..\EPD\resource_transfer.c</FilePath>
+              <FilePath>..\EPD\service\resource_transfer.c</FilePath>
             </File>
             <File>
               <FileName>font_store.c</FileName>
               <FileType>1</FileType>
-              <FilePath>..\EPD\font_store.c</FilePath>
+              <FilePath>..\EPD\storage\font_store.c</FilePath>
             </File>
 
             <File>
               <FileName>epd_advertising.c</FileName>
               <FileType>1</FileType>
-              <FilePath>..\EPD\epd_advertising.c</FilePath>
+              <FilePath>..\EPD\service\epd_advertising.c</FilePath>
             </File>
             <File>
               <FileName>calendar_annotations_tx.c</FileName>
               <FileType>1</FileType>
-              <FilePath>..\EPD\calendar_annotations_tx.c</FilePath>
+              <FilePath>..\EPD\app\calendar_annotations_tx.c</FilePath>
             </File>
 
 

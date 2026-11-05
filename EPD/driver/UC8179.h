@@ -4,7 +4,8 @@
 #include <stdbool.h>
 #include <stdint.h>
 
-#include "EPD_driver.h"
+#include "epd_panel.h"
+#include "uc81xx.h"
 
 bool UC8179_HadBusyTimeout(void);   /* 上次 WaitBusy 是否超时 */
 void UC8179_ClearBusyTimeout(void); /* 开始新一轮刷新前清除 */

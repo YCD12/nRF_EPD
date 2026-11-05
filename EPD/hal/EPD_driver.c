@@ -11,9 +11,8 @@
 #include "nrf_gpio.h"
 #include "nrf_log.h"
 #include "nrf_soc.h"
-#include "../main.h"
+#include "main.h"
 
-#define ARRAY_SIZE(arr) (sizeof(arr) / sizeof((arr)[0]))  // 计算数组元素个数
 #define BUFFER_SIZE 128  // 缓冲区大小(用于填充显存)
 
 // GPIO引脚定义(这些值会从配置文件中加载)
@@ -346,6 +345,27 @@ bool EPD_BusyAbortRequested(void)
     return m_busy_abort;
 }
 
+/* 面板驱动 BUSY 超时标志（全局，历史语义）。
+ * 具体驱动（如 UC8179）在 WaitBusy 超时时置位；服务层在初始化/刷新前后
+ * 清理并查询。面板实例尚未创建（睡眠后）时同样可读写，避免服务层依赖
+ * 具体驱动头文件；驱动的 busy_error 虚表项也读取同一标志，语义等价。 */
+static volatile bool m_panel_busy_error;
+
+void EPD_PanelBusyErrorSet(void)
+{
+    m_panel_busy_error = true;
+}
+
+void EPD_PanelBusyErrorClear(void)
+{
+    m_panel_busy_error = false;
+}
+
+bool EPD_PanelBusyError(void)
+{
+    return m_panel_busy_error;
+}
+
 bool EPD_WaitBusy(uint32_t value, uint16_t timeout) {
     /* Multiply before dividing: APP_TIMER_CLOCK_FREQ/(prescaler+1) is 16384
      * ticks/s, so 16 ticks/ms would truncate 16.384 and shorten every timeout
@@ -526,53 +546,4 @@ uint16_t EPD_ReadVoltageAndCache(void) {
     uint16_t voltage = EPD_ReadVoltage();
     if (voltage != 0U) m_cached_voltage = voltage;
     return voltage;
-}
-
-/* One UC8179 model exposes both the full-refresh and true OLD/NEW paths. */
-extern const epd_model_t epd_uc8179_750_Partial_bwr;
-
-static const epd_model_t * epd_models[] = {
-    &epd_uc8179_750_Partial_bwr,
-};
-
-/**
- * 初始化EPD型号
- *
- * @param id EPD型号ID
- * @return EPD型号结构体指针
- *
- * 功能说明
- * ========================================
- * 1. 根据给定的型号ID在epd_models数组中查找对应的型号
- *
- * 2. 如果找到匹配的型号,使用该型号并初始化
- *
- * 3. 如果未找到匹配的型号,默认使用epd_models[0](部分刷新版本)
- *
- * 4. 调用该型号的init函数完成硬件初始化
- *
- * 默认型号选择的重要性
- * ========================================
- * - 默认型号是epd_models[0],即部分刷新版本
- *
- * - 这确保了即使型号ID不匹配,系统仍能以时钟模式运行
- *
- * - 时钟模式是最常用的模式,需要部分刷新功能
- */
-const epd_model_t * epd_get_model(epd_model_id_t id) {
-    const epd_model_t * epd = NULL;
-    for (uint8_t i = 0; i < ARRAY_SIZE(epd_models); i++) {
-        if (epd_models[i]->id == id) {
-            epd = epd_models[i];
-            break;
-        }
-    }
-    if (epd == NULL) epd = epd_models[0];
-    return epd;
-}
-
-const epd_model_t * epd_init(epd_model_id_t id) {
-    const epd_model_t * epd = epd_get_model(id);
-    epd->drv->init(epd);
-    return epd;
 }

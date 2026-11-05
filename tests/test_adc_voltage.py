@@ -9,7 +9,7 @@ import shlex
 import subprocess
 
 ROOT = Path(__file__).resolve().parents[1]
-source = (ROOT / "EPD/EPD_driver.c").read_text(encoding="utf-8")
+source = (ROOT / "EPD/hal/EPD_driver.c").read_text(encoding="utf-8")
 start = source.index("static bool epd_adc_wait(")
 end = source.index("\n}\n", source.index("uint16_t EPD_ReadVoltage(void)")) + 3
 routine = source[start:end].replace("(uint32_t)&value", "(uintptr_t)&value")
