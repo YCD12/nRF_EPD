@@ -588,12 +588,13 @@ static void DrawTodoText(Adafruit_GFX *gfx, const char **cursor, int16_t width,
     size_t length = 0U;
     const char *text = *cursor;
     const char *draw = text;
+    const char *dots;  /* 提前声明，避免 goto draw_line 跳过初始化（ARMCC #546） */
     if (width <= 0) return;
     if (todo_text_width(gfx, text) <= width) {
         *cursor = text + strlen(text);
         goto draw_line;
     }
-    const char *dots = last_line ? m_todo_ellipsis : "";
+    dots = last_line ? m_todo_ellipsis : "";
     while (*dots != '\0' && todo_text_width(gfx, dots) > width)
         dots+=(uint8_t)*dots<0x80U?1U:(uint8_t)*dots<0xe0U?2U:3U;
     while (*text != '\0') {

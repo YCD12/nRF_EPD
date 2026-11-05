@@ -534,7 +534,7 @@ static void gpiote_disable_wakeup(void) {
         nrf_gpio_cfg_sense_set(m_wakeup_pin, NRF_GPIO_PIN_NOSENSE);
         m_wakeup_pin = 0xFFU;
     }
-    nrf_gpiote_int_disable(NRF_GPIOTE_INT_PORT_MASK);  // 禁用 PORT 事件中断
+    nrf_gpiote_int_disable((uint32_t)NRF_GPIOTE_INT_PORT_MASK);  // 禁用 PORT 事件中断
     nrf_gpiote_event_clear(NRF_GPIOTE_EVENTS_PORT);
     NVIC_DisableIRQ(GPIOTE_IRQn);
     NVIC_ClearPendingIRQ(GPIOTE_IRQn);
@@ -569,7 +569,7 @@ static void setup_wakeup_pin(uint32_t pin) {
     m_wakeup_pin = (uint8_t)pin;
     m_wakeup_armed = true;
     nrf_gpiote_event_clear(NRF_GPIOTE_EVENTS_PORT);
-    nrf_gpiote_int_enable(NRF_GPIOTE_INT_PORT_MASK);
+    nrf_gpiote_int_enable((uint32_t)NRF_GPIOTE_INT_PORT_MASK);
     NVIC_ClearPendingIRQ(GPIOTE_IRQn);
     NVIC_SetPriority(GPIOTE_IRQn, WAKEUP_GPIO_IRQ_PRIORITY);
     NVIC_EnableIRQ(GPIOTE_IRQn);

@@ -123,7 +123,8 @@ nRF_EPD/
 - 独立工程文件：`Keil/DFU-nRF52.uvprojx`
 - 基于 Nordic Secure DFU Bootloader
 - 对应源码入口位于 `Bootloader/main.c`，GCC 构建入口为 `make -f Bootloader/Makefile`
-- 项目验签和布局定制集中在 `Bootloader/`，`SDK/` 保持仓库版本；应用的内部 FDS/fstorage 开关由项目编译参数提供，详见 [SDK 目录恢复说明](docs/sdk-cleanup-20261009.md)
+- 项目验签和布局定制集中在 `Bootloader/`，`SDK/` 保持仓库版本（仅有 2 处
+  ARM Compiler 6 内联汇编兼容补丁，见下方 Keil 应用 Target 说明）；应用的内部 FDS/fstorage 开关由项目编译参数提供，详见 [SDK 目录恢复说明](docs/sdk-cleanup-20261009.md)
 - 用于构建可与应用固件配套使用的 BLE DFU Bootloader
 - 与 `tools/bootloader/bl_nrf52811_xxaa_s112_8k.hex`、OTA 打包脚本及保留的网页 DFU 实现相互配合
 
@@ -287,18 +288,26 @@ nRF_EPD/
 
 推荐环境：
 
-- `Keil 5.36` 或更低版本
+- `Keil 5.36` 及以上，并安装 **ARM Compiler 6.11**（MDK 5.38 默认包含；
+  本仓库的 Keil 工程文件固定使用 `V6.11 + LTO`）
 - J-Link 或 DAPLink
 
 工程文件：
 
-- `Keil/EPD-nRF52.uvprojx`：应用固件
+- `Keil/EPD-nRF52.uvprojx`：应用固件（**单 Target** `nRF52811_xxAA`）
+- `Keil/flash_softdevice.uvprojx`：SoftDevice 中转/烧录（**单 Target** `flash_softdevice`，
+  可选；没有该工程时用 `build.bat flash_softdevice` 刷写）
 - `Keil/DFU-nRF52.uvprojx`：Secure DFU Bootloader
 
-当前 nRF52 工程常用 Target：
+当前常用 Target：
 
-- `nRF52811_xxAA`：应用固件
-- `flash_softdevice`：安全中转并烧录 SoftDevice
+- `Keil/EPD-nRF52.uvprojx` → `nRF52811_xxAA`：应用固件
+- `Keil/flash_softdevice.uvprojx` → `flash_softdevice`：安全中转并烧录 SoftDevice
+
+> **为什么拆成两个工程文件？** 之前两个 Target 放在同一个 `.uvprojx` 里，旧 Keil
+> 会话保存工程时会把两个 Target 的文件列表合并回写，导致应用 Target 重复编译
+> `nrf_sdh*/startup`（L6235E、`_1.o`）并误用 `app_error_handler_keil.c`。
+> 现在应用工程只有一个 Target，双击打开后直接 Build/Rebuild 即可。
 
 Keil 工程配套说明：
 
@@ -309,22 +318,58 @@ Keil 工程配套说明：
   `DEVELOP_IN_NRF52840`，并移除 `nrfx_gpiote.c`。`USE_SYSVIEW` 会让空闲循环跳过低功耗
   休眠，不要用于发布固件；需要 RTT/SystemView 分析时请临时恢复该 Target 的宏与源文件组，
   或使用 GCC `DEBUG_LAYOUT=1`。
+- `nRF52811_xxAA` 使用 **ARM Compiler 6.11 + LTO** 编译：Code 52,704 B、
+  RO-data 1,400 B、RW-data 112 B（合计 54,216 B，56 KiB 应用区剩余约 3.1 KiB），
+  0 errors / 0 warnings。配套文件：
+  - `Keil/EPD-nRF52-ac6.sct`：显式放置 BLE/SDH observer section 的 scatter 文件；
+  - `Keil/ac6_gnu_symbols.c`：把 SDK 需要的 `__start_*`/`__stop_*` 等 GNU 符号
+    别名到链接器 `Image$$<region>$$Base/Limit`，保证 section 迭代边界精确。
+  - 因此请勿删除或重命名这两个文件；如果增加/删除 `NRF_SDH_*_OBSERVER`、
+    `NRF_PWR_MGMT_HANDLER_REGISTER` 注册，需要重新验证 section 区域。
+- 应用工程 **Build/Rebuild 成功后会自动运行** `tools/keil-postbuild.bat`
+  （After Make），直接生成完整刷机与 OTA 文件，不需要再手动运行
+  `build.bat ota`：
+  - `_build/nrf52811_xxaa-full.hex`（SoftDevice + Bootloader + App + Settings）
+  - `_build/nrf52811_xxaa-ota.zip`（Nordic Secure DFU 包）
+  - `_build/nrf52811_xxaa-settings.hex`、`_build/nrf52811_xxaa-release.json`
+  - 该步骤使用仓库自带的 `tools/windows_tools/nrfutil.exe` 与
+    `mergehex.exe`，并需要系统 `PATH` 中有 Python（仓库其他构建/OTA 脚本同样需要）。
+- `Keil/flash_softdevice.uvprojx` 是独立单 Target 工程（ARM Compiler 5）：
+  只链接一个占位镜像，然后在 After Make 中由
+  `tools/stage-softdevice-nrf52.bat` 把官方 SoftDevice HEX 复制到
+  `Keil/_build_softdevice_nRF52/`，用于后续 Download；不参与应用镜像链接。
+- **请不要把 `flash_softdevice` Target 再合并回 `EPD-nRF52.uvprojx`**；两个
+  工程分开可以避免 uVision 合并 Target 文件列表导致的应用编译失败。
+- `SDK/17.1.0_ddde560/components/libraries/svc/nrf_svci.h` 与
+  `.../util/app_error_handler_gcc.c` 各有一处内联汇编改用 `%c` 修饰符，
+  以兼容 ARM Compiler 6 的内联汇编语法；GCC 构建产物大小不变（55,916 B）。
 - GCC 发布构建会在链接后自动运行 `tools/check_irq_handlers.py`，校验强制保留的
   中断处理函数没有被 LTO 回落到 `Default_Handler`。调整 `-fno-lto` 例外或中断处理
   函数所在文件后必须通过该检查。
 
-推荐刷机流程：
+推荐刷机流程（保留 `Keil/flash_softdevice.uvprojx` 时）：
 
 1. 全片擦除目标板。
-2. 在 Keil 中切换到 `flash_softdevice`。
-3. 先执行一次 `Build`。
-4. 再执行 `Download`，刷入 `s112_nrf52_7.3.0` SoftDevice。
-5. 切回 `nRF52811_xxAA`，编译并下载应用固件。
+2. 用 Keil 打开 `Keil/flash_softdevice.uvprojx`。
+3. 执行一次 `Build`（会生成占位镜像并把官方 SoftDevice HEX 复制到
+   `Keil/_build_softdevice_nRF52/s112_nrf52_7.3.hex`）。
+4. 执行 `Download`，刷入 `s112_nrf52_7.3.0` SoftDevice。
+5. 关闭该工程，打开 `Keil/EPD-nRF52.uvprojx`，直接 `Build` 并 `Download`
+   应用固件。
+
+> 如果已删除 `Keil/flash_softdevice.uvprojx`，SoftDevice 改用
+> `build.bat flash_softdevice` 刷写，应用工程仍可正常双击 Build。
 
 注意事项：
 
 - 当前仓库的安全流程会把 SoftDevice 中转到 `Keil/_build_softdevice_nRF52/`，避免误删 SDK 原始文件。
-- 如果 `flash_softdevice` 构建时报缺少 `s112_nrf52_7.3.0_softdevice.hex`，请检查 `SDK/17.1.0_ddde560/components/softdevice/s112/hex/`。
+- 如果 SoftDevice 中转失败，请检查
+  `SDK/17.1.0_ddde560/components/softdevice/s112/hex/s112_nrf52_7.3.0_softdevice.hex`
+  是否存在。
+- 如果 Keil Build 输出出现 `object file renamed ... _1.o` 或
+  `app_error_handler_keil.c` 被 ARM Compiler 6 编译，说明打开了旧的两 Target
+  工程或旧 Keil 会话把合并结构写回了 `EPD-nRF52.uvprojx`。请关闭 Keil（不保存
+  工程），用 `make_final_single_target_projects.py` 重新生成工程文件后重开。
 - 这部分背景可参考 [docs/flash_softdevice_safe_refactor_summary.md](docs/flash_softdevice_safe_refactor_summary.md)。
 
 ### 方式二：命令行 GCC 编译
@@ -363,7 +408,7 @@ Windows 下 `build.bat build` 会先清理，再执行完整测试和编译；�
 - `flash` 会烧录应用固件
 - `flash_softdevice` 会烧录 `s112_nrf52_7.3.0` SoftDevice
 - `erase` 会执行全片擦除
-- 如果你主要使用 Keil，仍然建议优先走 `flash_softdevice` 的安全中转流程
+- 如果你主要使用 Keil，仍然建议优先走 `Keil/flash_softdevice.uvprojx` 的安全中转流程
 
 ### 方式三：生成 DFU/OTA 包
 
@@ -389,13 +434,16 @@ build.bat ota
 - 当前 8 KiB 保留区 Bootloader：`tools/bootloader/bl_nrf52811_xxaa_s112_8k.hex`
 - `nrfutil`、`mergehex`：`tools/bin/`
 
-`build.bat` 的默认动作会生成完整 HEX；需要 OTA 包时显式运行 `build.bat ota`。直接在 `Keil/EPD-nRF52.uvprojx` 中编译时只生成应用 HEX，需要再运行上述脚本。
+`build.bat` 的默认动作会生成完整 HEX；需要 OTA 包时显式运行 `build.bat ota`。
+Keil 应用工程 `EPD-nRF52.uvprojx` 的 Build/Rebuild 也会通过 After Make 自动生成
+`_build/nrf52811_xxaa-full.hex` 与 `_build/nrf52811_xxaa-ota.zip`，无需再运行上述脚本。
 
 Windows 下直接执行 `build.bat`（或 `build.bat build`）会在应用编译和测试通过后，生成
 `_build/nrf52811_xxaa-settings.hex` 与 `_build/nrf52811_xxaa-full.hex`。完整 HEX
 包含 SoftDevice、配套 8 KiB 保留区 Bootloader、Application 和两页 settings，可用于 SWD 全量烧录，
 并直接支持外置 Flash 分区读取和资源更新。
-该开发构建只使用 CRC 启动校验，也不生成 OTA ZIP；需要签名 OTA 时使用 `build.bat ota`。
+该开发构建只使用 CRC 启动校验；需要签名 OTA 时使用 `build.bat ota`，或直接用
+Keil 应用工程 Build（After Make 会自动生成 `_build/nrf52811_xxaa-ota.zip`）。
 两个构建流程均检查编译后 Bootloader 的布局描述符和 UICR 地址，拒绝缺少正确标识或布局不匹配的镜像；正式发布还核对签名公钥，开发构建不检查签名密钥。settings 的应用版本默认
 为 `0x1C`，可在构建前通过 `set BUILD_APPLICATION_VERSION=0x1D` 覆盖。
 
@@ -448,13 +496,12 @@ BIN 为原始备份，不能直接作为 ERS 上传；列表的包头校验不�
 
 ```mermaid
 flowchart TD
-    A[打开 Keil/EPD-nRF52.uvprojx] --> B[选择 flash_softdevice]
-    B --> C[Build 一次]
-    C --> D[Download SoftDevice]
-    D --> E[切换到 nRF52811_xxAA]
-    E --> F[Build 应用固件]
-    F --> G[Download 应用固件]
-    G --> H[打开 html/index.html 连接测试]
+    A[打开 Keil/flash_softdevice.uvprojx] --> B[Build 一次]
+    B --> C[Download SoftDevice]
+    C --> D[打开 Keil/EPD-nRF52.uvprojx]
+    D --> E[Build 应用固件]
+    E --> F[Download 应用固件]
+    F --> G[打开 html/index.html 连接测试]
 ```
 
 ### 2. 生成 OTA 包与保留的网页升级流程（待开放）
@@ -584,7 +631,8 @@ BLE 协议详情见 [docs/ble-protocol.md](docs/ble-protocol.md)。
 
 ### 2. `EPD-nRF52.uvprojx` 和 `DFU-nRF52.uvprojx` 分别是干什么的？
 
-- `Keil/EPD-nRF52.uvprojx`：应用固件工程，负责屏幕驱动、BLE 服务、图片传输、界面模式等主功能
+- `Keil/EPD-nRF52.uvprojx`：应用固件工程（单 Target `nRF52811_xxAA`），负责屏幕驱动、BLE 服务、图片传输、界面模式等主功能
+- `Keil/flash_softdevice.uvprojx`：SoftDevice 中转/烧录工程（单 Target，ARMCC5），Build 后复制官方 SoftDevice HEX
 - `Keil/DFU-nRF52.uvprojx`：Secure DFU Bootloader 工程，负责 OTA 升级链路
 
 ### 2.1 当前哪些内容是“已经支持”，哪些是“后续预留”？

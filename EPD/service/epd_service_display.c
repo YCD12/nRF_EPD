@@ -255,6 +255,10 @@ void epd_gui_update(void* p_event_data, uint16_t event_size) {
     bool refresh_succeeded = false;
     gui_data_t data;
     display_mode_t mode;
+    /* 刷新后处理用；提前声明，避免 goto release_gpio 跳过初始化（ARMCC #546）。 */
+    bool ble_disconnected;
+    bool clock_mode;
+    bool power_down_display;
 
     (void)event_size;
     if (p_epd == NULL) return;
@@ -432,7 +436,7 @@ finish_refresh:
     // ========================================================================
     // 如果刷新期间BLE断开,现在将EPD置于睡眠状态
     // (on_disconnect跳过了此操作以避免中断刷新)
-    bool ble_disconnected = (p_epd->conn_handle == BLE_CONN_HANDLE_INVALID);
+    ble_disconnected = (p_epd->conn_handle == BLE_CONN_HANDLE_INVALID);
     if (ble_disconnected) {
         NRF_LOG_INFO("[EPD]: Refresh complete, BLE disconnected - putting EPD to sleep\n");
     }
@@ -441,10 +445,10 @@ finish_refresh:
         NRF_LOG_ERROR("[EPD]: Critical battery (%d mV), shutting down\n", refresh_voltage_mv);
     }
 
-    bool clock_mode = epd_is_clock_mode(mode);
-    bool power_down_display = clock_mode || epd_is_todo_mode(mode) ||
-                              ble_disconnected || critical_battery ||
-                              !p_epd->gpio_connection_ref;
+    clock_mode = epd_is_clock_mode(mode);
+    power_down_display = clock_mode || epd_is_todo_mode(mode) ||
+                         ble_disconnected || critical_battery ||
+                         !p_epd->gpio_connection_ref;
     if (power_down_display && epd->drv->sleep) {
         NRF_LOG_INFO("[EPD]: Powering down display until next refresh\n");
         epd->drv->sleep(epd);

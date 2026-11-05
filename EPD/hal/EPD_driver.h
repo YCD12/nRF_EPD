@@ -80,10 +80,11 @@ void EPD_LED_BLINK(void);  // BLE 连接/断开、低电量保持时闪一次
 // VDD 电压（毫伏）
 /**
  * 电压读取与低电量检测：
- * - EPD_ReadVoltage()：直接读 ADC（mV）
- * - EPD_ReadVoltageAndCache()：读取并缓存，供后续低电量判断
+ * - EPD_ReadVoltage()：直接读 ADC（mV），0 表示超时/不可用
+ * - EPD_ReadVoltageAndCache()：兼容旧接口名，返回同一次 ADC 结果；
+ *   最近一次有效电压的缓存由服务层负责（驱动层不保留静态缓存）
  *
- * 电压缓存在每次屏幕刷新时更新，低电量判断基于最近一次刷新时的电压。
+ * 服务层在每次屏幕刷新/通知时读取并保存电压，低电量判断基于最近一次采样。
  */
 #define LOW_BATTERY_THRESHOLD_MV 2800      // 低电量阈值（mV）
 #define CRITICAL_BATTERY_SHUTDOWN_MV 2700  // 临界关机阈值（mV）

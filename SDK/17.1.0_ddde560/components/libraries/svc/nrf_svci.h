@@ -130,7 +130,7 @@ extern "C" {
                R12 containing the SVCI number */                        \
             __ASM __volatile                                            \
             (                                                           \
-                "  ldr r12, =%0       \n"                               \
+                "  ldr r12, =%c0      \n"                               \
                 "  svc %1             \n"                               \
                 "  bx lr              \n"                               \
                 "  .ltorg"                                              \
@@ -154,7 +154,7 @@ extern "C" {
                R12 containing the SVCI number */                        \
             __ASM __volatile                                            \
             (                                                           \
-                "  ldr.w r12, =%0     \n"                               \
+                "  ldr.w r12, =%c0    \n"                               \
                 "  svc %1             \n"                               \
                 "  bx lr              \n"                               \
                 "  .ltorg"                                              \

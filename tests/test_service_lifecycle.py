@@ -94,6 +94,11 @@ finish = 'static void finish_refresh(ble_epd_t *p_epd) {\n' + '''
     display_mode_t mode = p_epd->config.display_mode;
     bool critical_battery = false;
     bool refresh_succeeded = true;
+    /* 生产代码在 epd_gui_update() 顶部声明；抽取后的 finish_refresh
+     * 只有刷新收尾段，需要在这里补同样的局部变量。 */
+    bool ble_disconnected;
+    bool clock_mode;
+    bool power_down_display;
 ''' + source[start:end] + '\n}\n'
 pin = function((ROOT / 'EPD/hal/EPD_driver.c').read_text(encoding='utf-8'), 'pinMode')
 fixture = (ROOT / 'tests/service_lifecycle_fixture.c').read_text(encoding='utf-8')

@@ -29,6 +29,16 @@ static uint32_t EPD_LED_PIN = 0xFF;  // LED引脚(0xFF表示未使用)
 #define SPI_INSTANCE 0                                               /**< SPI 实例索引 */
 static const nrf_drv_spi_t spi = NRF_DRV_SPI_INSTANCE(SPI_INSTANCE); /**< SPI 实例 */
 
+/* EPD SPI 时钟：nRF52811 的 SPIM0/1 最高 8 MHz，而旧 nrf_drv_spi 默认是
+ * 4 MHz。800x480 BWR 全帧要写 2 层图像（约 96 KB），8 MHz 可把这段总线
+ * 时间从约 192 ms 降到约 96 ms（局部窗口按比例减少），Flash/RAM 不增加。
+ * UC8179 支持更高的 SCK，但写/读共用同一路 SPI，8 MHz 下仍需在真机上
+ * 确认排线信号完整性（尤其半双工读温度）。如需回退，在编译选项中定义
+ * -DEPD_SPI_FREQUENCY=NRF_DRV_SPI_FREQ_4M，不要直接改默认宏。 */
+#ifndef EPD_SPI_FREQUENCY
+#define EPD_SPI_FREQUENCY NRF_DRV_SPI_FREQ_8M
+#endif
+
 // 根据不同的芯片型号定义SPI寄存器访问方式
 #define HAL_SPI_INSTANCE spi.u.spi.p_reg
 
@@ -105,6 +115,7 @@ void EPD_GPIO_Init(void) {
     spi_config.sck_pin = EPD_SCLK_PIN;  // SPI时钟引脚
     spi_config.mosi_pin = EPD_MOSI_PIN;  // SPI数据输出引脚
     spi_config.ss_pin = EPD_CS_PIN;  // SPI片选引脚
+    spi_config.frequency = EPD_SPI_FREQUENCY;  // 默认 8 MHz（见文件上方说明）
     APP_ERROR_CHECK(nrf_drv_spi_init(&spi, &spi_config, NULL, NULL));
 
     // 配置可选的BS引脚
@@ -527,23 +538,16 @@ uint16_t EPD_ReadVoltage(void) {
     return (uint16_t)((value * 3600) / 1024);
 }
 
-// 缓存的电压值(单位:毫伏,在屏幕刷新时更新)
-static uint16_t m_cached_voltage = 3300;  // 默认为正常电压(3.3V = 3300mV)
-
+// 电压缓存由服务层（刷新/通知路径）负责，驱动层不再保留静态缓存：
+// ADC 失败时返回 0，避免用旧电压误判临界电量。
 /**
- * 读取电压并缓存
+ * 读取电压（兼容旧接口名）
  *
- * @return 电压值(单位:毫伏)
+ * @return 电压值(单位:毫伏)，0 表示 ADC 超时/无效
  *
- * 该函数在每次屏幕刷新时被调用,更新缓存的电压值
- *
- * 缓存电压值的好处:
- * 1. 避免频繁的ADC操作,减少功耗
- * 2. 低电量检测可以快速判断,无需等待ADC转换
- * 3. 电压值基于最近一次屏幕刷新,具有时效性
+ * 服务层在每次屏幕刷新时调用本接口并自行保存最近一次有效电压；
+ * 驱动层不缓存，保证 0 的"不可用"语义不会被旧值掩盖。
  */
 uint16_t EPD_ReadVoltageAndCache(void) {
-    uint16_t voltage = EPD_ReadVoltage();
-    if (voltage != 0U) m_cached_voltage = voltage;
-    return voltage;
+    return EPD_ReadVoltage();
 }

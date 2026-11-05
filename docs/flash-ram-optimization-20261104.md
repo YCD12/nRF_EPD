@@ -116,8 +116,15 @@ Jan-2025 覆盖层窗口），不绘制、不访问面板。`EPD_service.c` 在
 `flash_softdevice` Target 同步移除 `DEVELOP_IN_NRF52840` 并禁用 strerror。
 
 > 需要 RTT/SystemView 调试时，可临时恢复该 Target 的宏与源文件组，或改用
-> GCC `DEBUG_LAYOUT=1` 调试布局。由于本环境没有 Keil/ARMCC，未执行 Keil 编译
-> 验证；XML 已通过解析与一致性测试，GCC 使用相同的 C 源与宏组合可正常构建。
+> GCC `DEBUG_LAYOUT=1` 调试布局。
+>
+> **2026-11-05 补充（AC6 迁移后实测）**：该 Target 已改用 ARM Compiler 6.11 +
+> LTO（`Keil/EPD-nRF52-ac6.sct` + `Keil/ac6_gnu_symbols.c`），uVision 5.38
+> 实测 **0 errors / 0 warnings**，Code 52,704 B、RO-data 1,400 B、RW-data 112 B
+> （Flash 合计 54,216 B）。原因：ARMCC5 无法 LTO，同源镜像约 58.9 KiB，超出
+> 56 KiB 应用区 1,528 B；SoftDevice 中转/烧录已拆到独立单 Target 工程
+> `Keil/flash_softdevice.uvprojx`（ARMCC5，只链接占位镜像并复制官方 HEX）。
+> GCC 构建保持 55,916 B 不变。
 
 ## 3. 已修复的缺陷
 

@@ -331,3 +331,35 @@
   `4504DA0F…E75394DA`，`tests/test_application_build.py` 与
   `test_build_config_parity.py` 通过。
 
+
+## 10. Keil 应用 Target 迁移到 ARM Compiler 6.11 + LTO（2026-11-05）
+
+ARMCC5 无法链接 56 KiB 应用区的完整功能镜像（`-O3 -Ospace` 实测超出 1,528 B），
+应用 Target `nRF52811_xxAA` 已改用 ARM Compiler 6.11 + LTO，uVision 实测
+0 errors / 0 warnings，Flash 54,216 B（Code 52,704 + RO 1,400 + RW 112）。
+`flash_softdevice` 已拆到独立的单 Target 工程
+`Keil/flash_softdevice.uvprojx`（ARMCC5，只链接占位镜像并复制官方 SoftDevice
+HEX）；应用工程 `Keil/EPD-nRF52.uvprojx` 只保留 `nRF52811_xxAA`。两个 Target
+放在同一个工程时，旧 uVision 会话保存会把两个 Target 的文件列表合并回写，
+导致应用 Target 重复编译 `nrf_sdh*/startup`（L6235E/`_1.o`）并把
+`app_error_handler_keil.c` 交给 AC6 编译；拆分后双击应用工程直接 Build 即可。
+详见 [docs/epd-architecture-20261104.md](epd-architecture-20261104.md) 与
+`output/work-20261105/keil/fix-report.md`。
+
+为 AC6 引入的工程/源码配套（不改变 GCC 发布产物，BIN 仍 55,916 B）：
+
+- 新增 `Keil/EPD-nRF52-ac6.sct`：显式放置 `sdh_*_observers` / `pwr_mgmt_data`
+  section，不依赖 uVision target-dialog scatter。
+- 新增 `Keil/ac6_gnu_symbols.c`：把 SDK 需要的 GNU 链接符号别名到
+  `Image$$<region>$$Base/Limit`，避免 section 区域 padding 被迭代器当成 observer。
+- **SDK 兼容补丁**（仅 `%c` 内联汇编修饰符，语义不变）：
+  `components/libraries/svc/nrf_svci.h` 2 处、
+  `components/libraries/util/app_error_handler_gcc.c` 1 处。GCC 构建已验证
+  产物大小不变；后续升级 SDK 时需要重新应用这两处补丁。
+- `tests/test_build_config_parity.py` 增加 AC6 配置守护（uAC6/v6Lto/scatter/
+  符号文件、单 Target 拆分、After Make 后处理脚本，并确认 `flash_softdevice`
+  仍为 ARMCC5）。
+- 应用工程 After Make 新增 `tools/keil-postbuild.bat`：Build/Rebuild 后自动生成
+  `_build/nrf52811_xxaa-full.hex`、`_build/nrf52811_xxaa-ota.zip`、
+  `-settings.hex`、`-release.json`（与 `build.bat build/ota` 产物一致），
+  使用仓库自带 `nrfutil.exe`/`mergehex.exe` + Python。

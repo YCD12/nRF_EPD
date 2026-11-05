@@ -36,6 +36,13 @@ static void DrawTodo(Adafruit_GFX *gfx, const gui_data_t *data, const ui_compone
     char message[UI_TEXT_BYTES];
     const gui_font_id_t font = (gui_font_id_t)todo_items_font_slot();
     const gui_font_metrics_t *metrics = GUI_GetFontMetrics(font);
+    /* 以下布局变量提前声明并稍后赋值，避免 goto invalid 跳过初始化（ARMCC #546）。 */
+    int16_t row_height;
+    bool extended;
+    int16_t text_x;
+    int16_t first;
+    int16_t line;
+    bool two_lines;
     if (!ui_resource_text(c, 2, m_todo_ellipsis, sizeof(m_todo_ellipsis)))
         goto invalid;
     if (font == GUI_FONT_TODO &&
@@ -63,13 +70,14 @@ static void DrawTodo(Adafruit_GFX *gfx, const gui_data_t *data, const ui_compone
             s_render_valid = false;
         return;
     }
-    const int16_t row_height = c->h / todo_items_display_limit();
+    row_height = c->h / todo_items_display_limit();
     if (!metrics || row_height < metrics->max_char_height + s[UI_TODO_ROW_PADDING])
         goto invalid;
-    const bool extended = todo_items_extended_font() || (metrics && metrics->max_char_height > 16);
-    int16_t text_x = c->x + s[UI_TODO_TEXT_INSET];
-    int16_t first = s[UI_TODO_BASELINE], line = s[UI_TODO_LINE_STEP];
-    bool two_lines = false;
+    extended = todo_items_extended_font() || (metrics && metrics->max_char_height > 16);
+    text_x = c->x + s[UI_TODO_TEXT_INSET];
+    first = s[UI_TODO_BASELINE];
+    line = s[UI_TODO_LINE_STEP];
+    two_lines = false;
     if (extended) {
         if (!metrics || row_height < metrics->max_char_height + s[UI_TODO_ROW_PADDING])
             goto invalid;

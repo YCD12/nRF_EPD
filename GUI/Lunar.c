@@ -1,4 +1,4 @@
-﻿#include "Lunar.h"
+#include "Lunar.h"
 
 #include "calendar_resources.h"
 
@@ -206,7 +206,9 @@ static uint16_t SolarToInt(uint16_t y, uint8_t m, uint8_t d) {
 void LUNAR_SolarToLunar(struct Lunar_Date* lunar, uint16_t solar_year, uint8_t solar_month, uint8_t solar_date) {
     uint8_t i, lunarM, m, d, leap, dm;
     uint16_t year_index, lunarY, y, offset;
-    uint32_t solar_data, solar11, lunar_days;
+    uint32_t solar_data, solar11, lunar_days, table_value;
+    /* 以下范围变量提前声明，避免 goto invalid 跳过初始化（ARMCC #546）。 */
+    uint16_t year_base, year_min, year_max, year_count, calc_year;
 
     /* 步骤1: 参数有效性检查 */
     if (solar_month < 1 || solar_month > 12 || solar_date < 1 || solar_date > 31 ||
@@ -219,15 +221,14 @@ void LUNAR_SolarToLunar(struct Lunar_Date* lunar, uint16_t solar_year, uint8_t s
     }
 
     /* 步骤2: 计算年份范围 */
-    uint32_t table_value;
     if (!calendar_resource_u32(CAL_RES_SOLAR_NEW_YEAR, 0U, &table_value)) goto invalid;
-    uint16_t year_base = (uint16_t)table_value;
-    uint16_t year_min = calendar_resources_year_min();
-    uint16_t year_max = calendar_resources_year_max();
-    uint16_t year_count = (uint16_t)(year_max - year_base + 1U);
+    year_base = (uint16_t)table_value;
+    year_min = calendar_resources_year_min();
+    year_max = calendar_resources_year_max();
+    year_count = (uint16_t)(year_max - year_base + 1U);
 
     /* 步骤3: 年份范围限制处理 */
-    uint16_t calc_year = solar_year;
+    calc_year = solar_year;
     if (calc_year < year_min || calc_year > year_max) {
         /* 只保留 2025~2027 的精确数据，其余年份按 2025 年的农历数据显示 */
         calc_year = year_min;

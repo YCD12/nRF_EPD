@@ -206,6 +206,23 @@ bool epd_model_supported(uint8_t id);                  // 配置校验/网页回
     的实验：BIN 55,948 B（**+16 B**），并非预期的 −80~100 B；LTO 对原
     `static inline` 版本已做过调用点合并，故**保留 inline**（epd_panel.h 注释）。
     该负结果说明体积优化必须以真实 ARM 构建为准。
+- **后续性能/合并实测（2026-11-05）**：
+  - EPD SPI 默认 4 MHz → **8 MHz**（`EPD/hal/EPD_driver.c`，`NRF_DRV_SPI_DEFAULT_CONFIG`
+    默认值未覆盖；nRF52811 SPIM0/1 上限 8 MHz）。800x480 BWR 全帧 2 层约 96 KB，
+    总线时间约 192 ms → 96 ms；BIN 仍 **55,932 B（+0 B）**，RAM 不变。
+    UC8179 写/读共用同一路 SPI，8 MHz 的写+半双工读温度需真机确认信号完整性；
+    可用 `-DEPD_SPI_FREQUENCY=NRF_DRV_SPI_FREQ_4M` 回退，无需改代码。
+  - DrawTodo 双空态分支合并：实测 **+48 B**；`main.c` 看门狗复位相同分支合并：
+    实测 **+176 B**。两者均为 LTO 下“看起来更短”反而增大体积的典型，已回退，
+    不再作为体积优化项。
+- **ARMCC 告警清理（2026-11-05）**：Keil 构建的 8 条 warning 已全部消除——删除
+  `EPD_driver.c` 中只写不读的 `m_cached_voltage`（缓存由服务层负责）、把会被
+  `goto` 跳过的局部变量声明提前到首个 `goto` 之前（`epd_service_display.c`、
+  `Lunar.c`、`GUI.c`、`ui_render.h`）、对 `NRF_GPIOTE_INT_PORT_MASK` 显式
+  `(uint32_t)` 转换（`main.c`）。行为不变；用
+  `-Wjump-misses-init -Werror`（ARMCC #546 的 GCC 代理）检查通过。
+  最终 BIN **55,916 B**（−16 B，free 1,428 / 57,344），静态 RAM 9,444 B，
+  `HOST_OK`（含 `test_build_config_parity.py`）；Keil 侧仍需实际编译确认。
 
 ## 6. 已知折中与后续
 
@@ -223,7 +240,10 @@ bool epd_model_supported(uint8_t id);                  // 配置校验/网页回
    （2026-11-04，26/26/27/26/26 → 22/15/20/9/11 条，逐条用真实 ARM
    `-fsyntax-only -Werror` 验证；BIN 不变）。后续新增依赖时按“谁用谁 include”
    保持，不要复制整块列表。
-7. 本文档之前的历史优化文档（`docs/flash-ram-optimization-20261104.md`、
+7. EPD SPI 已默认 8 MHz（2026-11-05，见 §5 实测）：换板/换排线后若出现花屏、
+   温度读数异常或写失败，先用 `-DEPD_SPI_FREQUENCY=NRF_DRV_SPI_FREQ_4M` 回退，
+   再排查硬件，不要把频率直接改死。
+8. 本文档之前的历史优化文档（`docs/flash-ram-optimization-20261104.md`、
    `docs/upstream-reference-optimization-20261104.md` 等）中的 `EPD/EPD_service.c`、
    `EPD/EPD_driver.c` 等是当时平铺路径，仅作历史记录；当前路径以本文档 §2 为准。
 
@@ -274,9 +294,53 @@ bool epd_model_supported(uint8_t id);                  // 配置校验/网页回
     EPD 源文件/包含目录与 Makefile 集合一致（脚本对比 OK），XML 可解析，
     `test_build_config_parity.py` 通过；`Keil/DFU-nRF52.uvprojx` 不引用 EPD
     源文件，无需改。
+  - **Keil 工程组去重（2026-11-05）**：工作区工程曾被误加回
+    `nRF_SoftDevice`/`Startup` 组（两个 Target 各两份）以及应用 Target 的
+    `nRF_Log`/`nRF_Segger_RTT`/`SystemView` 组。重复的
+    `arm_startup_nrf52811.s` 会产生两个 `RESET` 段，而 uVision 生成的
+    `_build_nRF52/EPD-nRF52.sct` 使用 `*.o (RESET, +First)`，因此报
+    **L6235E: More than one section matches selector**。已删除重复组并把应用
+    Target 恢复为发布配置（87 → 77 个源文件，去掉 10 个日志/RTT/SystemView
+    文件）；两个 Target 不再有重复 FilePath，`test_build_config_parity.py`
+    通过。
+  - **Keil 应用 Target 迁移到 ARM Compiler 6.11 + LTO（2026-11-05）**：
+    组修复后单 Target 的 ARMCC5 `-O3 -Ospace` 镜像约 **58.9 KiB**，超出
+    56 KiB 应用区 **1,528 B**（O2/O1/O0、useXO、`--no_inline`、`--remove`
+    均未改善或更差）。改用本机 AC6 6.11 + LTO 并配套 scatter/符号文件后：
+    Code 52,704 B、RO-data 1,400 B、RW-data 112 B（合计 **54,216 B**，应用区
+    剩余约 3.1 KiB），**0 errors / 0 warnings**。
+  - AC6 迁移配套（勿删除/重命名）：
+    - `Keil/EPD-nRF52-ac6.sct`：不使用 `.ANY (+RO)`，显式放行 `.text*`/`.rodata*`，
+      再把 `sdh_*_observers` / `pwr_mgmt_data` 放入自动尺寸的独立区域；
+    - `Keil/ac6_gnu_symbols.c`：把 SDK 需要的 `__start_*`/`__stop_*`、
+      `__isr_vector`、`__data_start__` 别名到 `Image$$<region>$$Base/Limit`。
+      若直接按固定区域 limit 定义 `__stop_*`，区域 padding 会被 section 迭代器
+      当成 observer 并调用空 handler，必须保持别名方式；
+    - SDK 两处内联汇编改用 `%c` 修饰符以兼容 armclang：
+      `components/libraries/svc/nrf_svci.h` 与
+      `.../libraries/util/app_error_handler_gcc.c`；
+    - `Keil/flash_softdevice.uvprojx` 是独立单 Target 工程（ARMCC5），只链接
+      占位镜像并在 After Make 中复制官方 SoftDevice HEX，不参与应用镜像链接。
+  - **Keil 工程拆分为两个单 Target 工程（2026-11-05 后续）**：两个 Target 放在
+    同一个 `.uvprojx` 时，旧 uVision 会话保存工程会把两个 Target 的文件列表
+    合并回写（应用 Target 变成 94 文件、重复 `nrf_sdh*/startup`），导致
+    L6235E、`_1.o` 以及 AC6 误编译 `app_error_handler_keil.c`。现已拆为
+    `Keil/EPD-nRF52.uvprojx`（仅 `nRF52811_xxAA`）和
+    `Keil/flash_softdevice.uvprojx`（仅 `flash_softdevice`），各自双击后直接
+    Build 即可；`tests/test_build_config_parity.py` 增加单 Target 与重复
+    FilePath 守护。
+  - 应用工程 After Make 新增 `tools/keil-postbuild.bat`：Build/Rebuild 后自动
+    生成 `_build/nrf52811_xxaa-full.hex`、`_build/nrf52811_xxaa-ota.zip`、
+    `-settings.hex`、`-release.json`，与 `build.bat build/ota` 产物一致；
+    使用仓库自带 `tools/windows_tools/nrfutil.exe`/`mergehex.exe` + Python。
+  - 若 uVision 打开的是修复前的旧工程，退出/保存时会把旧组结构写回
+    `uvprojx`（本次已发生过一次）：修改后应关闭 Keil 再重新打开，或让
+    uVision 重新加载磁盘工程。
   - 其他：`tests/run_host_tests.sh`、Python 抽取脚本、`tools/resource_pack.py`
     已同步（HOST_OK）；`run_cppcheck.sh` 的 include/source 列表已更新到分层
     路径并移除过时 `DEVELOP_IN_NRF52840` 宏，`bash -n` 通过。
-- **未验证**：Keil/ARMCC 未实际编译（工程路径/include/源文件已同步，noinline
-  宏在 ARMCC 下为空）；真机未复测（纯重构，无行为改动，建议烧录后做一次
-  全刷/时钟局刷/传图冒烟）；`tests/test_application_build.py` 只覆盖 GCC 构建。
+- **验证状态**：Keil 应用 Target 已用 uVision 5.38 + ARM Compiler 6.11 实测编译
+  （0 errors / 0 warnings，Flash 54,216 B）；GCC `build.bat build` 通过
+  （BIN 55,916 B、HOST_OK、parity 测试通过）。真机未复测（纯工具链/工程配置
+  改动，无行为改动，建议烧录后做一次全刷/时钟局刷/传图冒烟）；
+  `tests/test_application_build.py` 只覆盖 GCC 构建。

@@ -59,7 +59,7 @@ void app_error_handler(ret_code_t error_code, uint32_t line_num, const uint8_t *
     "str r2, [sp, %2]               \n"
 
     /* prepare arguments and call function: app_error_fault_handler */
-    "ldr r0, =%4                    \n"
+    "ldr r0, =%c4                   \n"
     "mov r1, lr                     \n"
     "mov r2, sp                     \n"
     "bl  %5                         \n"
