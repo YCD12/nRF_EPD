@@ -1,12 +1,77 @@
+// 新旧网页及新版所有固件能力统一使用此分界，与设备端 APP_VERSION 同步。
+const NEW_WEB_MIN_FIRMWARE_VERSION = 0x21;
+const EpdFirmwarePolicy = Object.freeze({
+  newWebMinVersion: NEW_WEB_MIN_FIRMWARE_VERSION,
+  isNewFirmware(version) {
+    return Number.isInteger(version) && version >= NEW_WEB_MIN_FIRMWARE_VERSION;
+  },
+});
+globalThis.EpdFirmwarePolicy = EpdFirmwarePolicy;
+if (typeof window !== 'undefined') window.EpdFirmwarePolicy = EpdFirmwarePolicy;
+if (typeof module !== 'undefined' && module.exports) module.exports = EpdFirmwarePolicy;
+
 let bleDevice, gattServer;
 let epdService, epdCharacteristic;
-let startTime, msgIndex, appVersion;
+let startTime, appVersion;
 let canvas, ctx, textDecoder;
 let paintManager, cropManager;
+let gattWriteTail = Promise.resolve();
+let connectionGeneration = 0;
+let initWaiter = null;
+let initToken = 0;
+let modeWaiter = null;
+let modeToken = 0;
+let displayWaiter = null;
+let displayToken = 0;
+let lastDeviceConfig = null;
+let legacyConfigDirty = false;
+let configReadWaiter = null;
+let configReadToken = 0;
+let migrationExport = null;
+let imageLoadToken = 0;
+let imageAdjustmentFrame = null, imageAdjustmentTimer = null, imageAdjustmentPending = false;
+
+// An operation owns the complete request/ACK sequence, across individual GATT writes.
+const DeviceOperations = {
+  current: null,
+  begin(kind) {
+    if (this.current) throw new Error('设备操作进行中，请等待完成');
+    const operation = { kind, generation: connectionGeneration, characteristic: epdCharacteristic };
+    this.current = operation;
+    this.update();
+    return operation;
+  },
+  assert(operation) {
+    if (!operation || this.current !== operation || operation.generation !== connectionGeneration ||
+        operation.characteristic !== epdCharacteristic) throw new Error('设备操作已取消或连接已变化');
+  },
+  end(operation) {
+    if (this.current === operation) { this.current = null; this.update(); }
+  },
+  update() {
+    updateButtonStatus();
+    if (window.ExternalResourceInstaller?.controls) window.ExternalResourceInstaller.controls();
+  },
+};
+if (typeof window !== 'undefined') globalThis.DeviceOperations = window.DeviceOperations = DeviceOperations;
+
+async function runDeviceOperation(kind, action, parent = null) {
+  let operation;
+  try {
+    operation = parent || DeviceOperations.begin(kind);
+    DeviceOperations.assert(operation);
+    return await action(operation);
+  } catch (error) {
+    if (!operation || DeviceOperations.current === operation) addLog(error.message || String(error));
+    return false;
+  } finally {
+    if (!parent && operation) DeviceOperations.end(operation);
+  }
+}
 
 // APP版本号 (便于调试)
-const APP_VERSION = '2.0.6';
-const APP_BUILD_DATE = '2026-04-02';
+const APP_VERSION = '2.3.3';
+const APP_BUILD_DATE = '2026-10-17';
 const EPD_DEVICE_NAME_PREFIX = 'NRF_EPD';
 const SCAN_DURATION_MS = 5000;
 const LOG_CONSOLE_STORAGE_KEY = 'epd_log_to_console';
@@ -22,30 +87,31 @@ let lastWeekStartSent = null;
 let internalDisconnectInProgress = false;
 let internalDisconnectSuppressUntil = 0;
 const DFU_PAGE_HANDOFF_KEY = 'epd_dfu_page_handoff';
+const WEB_DFU_ENABLED = false;
+const FIRMWARE_UPGRADE_NOTICE = '固件升级开发中，暂未开放。';
+const LEGACY_PAGE_URL = 'legacy/index.html';
 
 const EpdCmd = {
   SET_PINS: 0x00,
   INIT: 0x01,
   CLEAR: 0x02,
-  SEND_CMD: 0x03,
-  SEND_DATA: 0x04,
-  REFRESH: 0x05,
-  SLEEP: 0x06,
+  REFRESH: 0x03,
+  SLEEP: 0x04,
 
   SET_TIME: 0x20,
   SET_WEEK_START: 0x21,
+  SET_MODE: 0x22,
   SYNC_TIME_SILENT: 0x23,
+  SET_ANNOTATIONS: 0x24,
 
-  WRITE_IMG: 0x30, // v1.6
-
-  // CRC Transfer commands (v1.9+)
-  WRITE_BLOCK: 0x31,
-  QUERY_STATUS: 0x32,
-  RESET_TRANSFER: 0x33,
+  WRITE_BLOCK: 0x30,
+  QUERY_STATUS: 0x31,
+  RESET_TRANSFER: 0x32,
 
   SET_CONFIG: 0x90,
   SYS_RESET: 0x91,
   SYS_SLEEP: 0x92,
+  GET_CONFIG: 0x93,
   CFG_ERASE: 0x99,
 };
 
@@ -87,6 +153,72 @@ function bytes2hex(data) {
     }, "");
 }
 
+async function readMigrationConfig(owner = null) {
+  if (appVersion < NEW_WEB_MIN_FIRMWARE_VERSION) {
+    if (legacyConfigDirty) throw new Error('旧固件配置已修改，请等待保存完成后断开重连，再导出备份');
+    return Uint8Array.from(lastDeviceConfig);
+  }
+  const waiter = {token: (++configReadToken & 255), generation: connectionGeneration};
+  waiter.promise = new Promise(resolve => { waiter.resolve = resolve; });
+  configReadWaiter = waiter;
+  try {
+    if (!await write(EpdCmd.GET_CONFIG, [waiter.token], true, true, true, owner)) throw new Error('配置读取请求失败');
+    const config = await withTimeout(waiter.promise, 30000, '配置读取确认超时');
+    if (!config) throw new Error('配置尚未成功保存，未生成迁移备份');
+    return config;
+  } finally {
+    if (configReadWaiter === waiter) configReadWaiter = null;
+  }
+}
+
+async function exportMigrationBundle() {
+  return runDeviceOperation('export', exportMigrationOperation);
+}
+
+async function exportMigrationOperation(owner) {
+  if (migrationExport) return false;
+  if (!epdCharacteristic || !gattServer || !gattServer.connected || !lastDeviceConfig) {
+    addLog('请先连接设备并等待配置读取完成');
+    return;
+  }
+  const operation = {generation: connectionGeneration, characteristic: epdCharacteristic};
+  migrationExport = operation;
+  const checkConnection = () => {
+    if (operation.generation !== connectionGeneration || operation.characteristic !== epdCharacteristic ||
+        !gattServer || !gattServer.connected) throw new Error('连接已变化，未生成迁移备份');
+  };
+  try {
+    await gattWriteTail;
+    checkConnection();
+    const config = await readMigrationConfig(owner);
+    checkConnection();
+    if (!window.CalendarAnnotations || !await window.CalendarAnnotations.loadFromDevice(owner))
+      throw new Error('标注读取失败，未生成迁移备份');
+    checkConnection();
+    const annotations = window.CalendarAnnotations.pack();
+    const bundle = {
+      format: 'EPD-MIG1',
+      exported_at: new Date().toISOString(),
+      epd_config_hex: bytes2hex(config),
+      calendar_annotations_hex: bytes2hex(annotations),
+    };
+    const url = URL.createObjectURL(new Blob([JSON.stringify(bundle, null, 2) + '\n'],
+                                              {type: 'application/json'}));
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `epd-migration-${Date.now()}.json`;
+    link.click();
+    setTimeout(() => URL.revokeObjectURL(url), 60000);
+    addLog(`已导出迁移备份：配置 ${config.length} B，标注 ${annotations.length} B`);
+    return true;
+  } catch (error) {
+    addLog(error.message);
+    return false;
+  } finally {
+    if (migrationExport === operation) migrationExport = null;
+  }
+}
+
 function intToHex(intIn) {
   let stringOut = ("0000" + intIn.toString(16)).substr(-4)
   return stringOut.substring(2, 4) + stringOut.substring(0, 2);
@@ -105,14 +237,42 @@ async function withTimeout(promise, timeoutMs, timeoutMessage) {
 }
 
 function resetVariables() {
+  DeviceOperations.current = null;
+  if (typeof BleTransfer !== 'undefined') BleTransfer.cancel();
+  if (window.ExternalResourceInstaller) window.ExternalResourceInstaller.disconnect();
+  if (configReadWaiter) configReadWaiter.resolve(null);
+  configReadWaiter = null;
+  if (initWaiter) initWaiter.resolve(false);
+  initWaiter = null;
+  if (modeWaiter) modeWaiter.resolve(false);
+  modeWaiter = null;
+  if (displayWaiter) displayWaiter.resolve(false);
+  displayWaiter = null;
+  if (window.CalendarAnnotations) {
+    window.CalendarAnnotations.cancelCommitWait();
+    if (window.CalendarAnnotations.cancelLoad) window.CalendarAnnotations.cancelLoad();
+  }
+  connectionGeneration++;
+  gattWriteTail = Promise.resolve();
   gattServer = null;
   epdService = null;
   epdCharacteristic = null;
-  msgIndex = 0;
+  appVersion = null;
+  lastDeviceConfig = null;
+  legacyConfigDirty = false;
+  const status = document.getElementById('status');
+  if (status?.parentElement) { status.parentElement.style.display = 'none'; status.operation = null; }
+  document.getElementById('mtusize').value = 20;
 }
 
 function formatVoltageDisplay(voltageMv) {
   return `${(voltageMv / 1000).toFixed(2)} V (${voltageMv} mV)`;
+}
+
+function updateFirmwareVersionDisplay(version = null) {
+  const firmwareVersion = document.getElementById('firmwareVersion');
+  if (!firmwareVersion) return;
+  firmwareVersion.innerText = typeof version === 'number' ? `0x${version.toString(16)}` : '未连接';
 }
 
 function updateBatteryVoltageDisplay(voltageMv = null, fallbackText = '未连接') {
@@ -142,100 +302,174 @@ function updateBatteryVoltageDisplay(voltageMv = null, fallbackText = '未连接
   }
 }
 
-async function write(cmd, data, withResponse = true) {
-  if (!epdCharacteristic) {
+function getWireCommand(cmd) {
+  if (!Number.isInteger(appVersion) || EpdFirmwarePolicy.isNewFirmware(appVersion)) return cmd;
+  // The same page boundary selects the original or current command IDs.
+  switch (cmd) {
+    case EpdCmd.REFRESH: return 0x05;
+    case EpdCmd.SLEEP: return 0x06;
+    case EpdCmd.WRITE_BLOCK: return 0x31;
+    case EpdCmd.QUERY_STATUS: return 0x32;
+    case EpdCmd.RESET_TRANSFER: return 0x33;
+    default: return cmd;
+  }
+}
+
+async function write(cmd, data, withResponse = true, logPayload = true, serialize = true, owner = null, rawPacket = false) {
+  const allowed = () => (!DeviceOperations.current || DeviceOperations.current === owner) &&
+    (!owner || (DeviceOperations.current === owner && owner.generation === connectionGeneration));
+  if (!allowed()) { addLog('设备操作进行中，请等待完成'); return false; }
+  if (window.ExternalResourceInstaller && window.ExternalResourceInstaller.busy() && cmd !== 0x26 && !owner) {
+    addLog('外置 Flash 正在更新，请等待完成');
+    return false;
+  }
+  if (migrationExport && cmd !== EpdCmd.GET_CONFIG &&
+      !(cmd === EpdCmd.SET_ANNOTATIONS && data && data[0] === 2)) {
+    addLog('正在导出迁移备份，请完成后再修改设备');
+    return false;
+  }
+  if (!epdCharacteristic || !gattServer || !gattServer.connected) {
     addLog("服务不可用，请检查蓝牙连接");
     return false;
   }
-  let payload = [cmd];
-  if (data) {
-    if (typeof data == 'string') data = hex2bytes(data);
-    if (data instanceof Uint8Array) data = Array.from(data);
-    payload.push(...data)
-  }
-  addLog(bytes2hex(payload), '⇑');
-  try {
-    if (withResponse)
-      await epdCharacteristic.writeValueWithResponse(Uint8Array.from(payload));
-    else
-      await epdCharacteristic.writeValueWithoutResponse(Uint8Array.from(payload));
-  } catch (e) {
-    console.error(e);
-    if (e.message) addLog("write: " + e.message);
-    return false;
-  }
-  return true;
-}
-
-async function writeImage(data, step = 'bw') {
-  const chunkSize = document.getElementById('mtusize').value - 2;
-  const interleavedCount = document.getElementById('interleavedcount').value;
-  const count = Math.round(data.length / chunkSize);
-  let chunkIdx = 0;
-  let noReplyCount = interleavedCount;
-
-  for (let i = 0; i < data.length; i += chunkSize) {
-    let currentTime = (new Date().getTime() - startTime) / 1000.0;
-    setStatus(`${step == 'bw' ? '黑白' : '颜色'}块: ${chunkIdx + 1}/${count + 1}, 总用时: ${currentTime}s`);
-    const payload = [
-      (step == 'bw' ? 0x0F : 0x00) | (i == 0 ? 0x00 : 0xF0),
-      ...data.slice(i, i + chunkSize),
-    ];
-    if (noReplyCount > 0) {
-      await write(EpdCmd.WRITE_IMG, payload, false);
-      noReplyCount--;
-    } else {
-      await write(EpdCmd.WRITE_IMG, payload, true);
-      noReplyCount = interleavedCount;
+  const confirmDisplay = !rawPacket && EpdFirmwarePolicy.isNewFirmware(appVersion) &&
+    (cmd === EpdCmd.CLEAR || cmd === EpdCmd.REFRESH);
+  if (!rawPacket && (cmd === EpdCmd.INIT || cmd === EpdCmd.SET_MODE || confirmDisplay)) serialize = true;
+  const characteristic = epdCharacteristic;
+  const generation = connectionGeneration;
+  const makePayload = value => {
+    if (typeof value === 'string') value = hex2bytes(value);
+    const wireCommand = rawPacket ? cmd : getWireCommand(cmd);
+    return value ? [wireCommand, ...value] : [wireCommand];
+  };
+  // Time synchronization supplies a factory so GATT queue waits do not age
+  // its timestamp. Other writes keep their payload snapshot from enqueue.
+  let payload = typeof data === 'function' ? null : makePayload(data);
+  const operationBody = async () => {
+    if (!allowed() || generation !== connectionGeneration || characteristic !== epdCharacteristic ||
+        !gattServer || !gattServer.connected) {
+      addLog("服务已变更，放弃过期的蓝牙写入");
+      return false;
     }
-    chunkIdx++;
+    if (payload === null) payload = makePayload(data());
+    let waiter = null;
+    let modeReply = null;
+    let displayReply = null;
+    if (!rawPacket && cmd === EpdCmd.INIT && EpdFirmwarePolicy.isNewFirmware(appVersion)) {
+      waiter = { token: (++initToken & 255), generation };
+      waiter.promise = new Promise(resolve => { waiter.resolve = resolve; });
+      initWaiter = waiter;
+      payload = [cmd, payload.length > 1 ? payload[1] : 0xff, waiter.token];
+    }
+    if (!rawPacket && cmd === EpdCmd.SET_MODE && EpdFirmwarePolicy.isNewFirmware(appVersion)) {
+      if (payload.length !== 9) return false;
+      modeReply = { token: (++modeToken & 255), generation, mode: payload[1] };
+      modeReply.promise = new Promise(resolve => { modeReply.resolve = resolve; });
+      modeWaiter = modeReply;
+      payload[2] = modeReply.token;
+    }
+    if (confirmDisplay) {
+      if (payload.length > 2) return false;
+      displayReply = { token: (++displayToken & 255), generation, command: cmd };
+      displayReply.promise = new Promise(resolve => { displayReply.resolve = resolve; });
+      displayWaiter = displayReply;
+      payload = [cmd, payload.length > 1 ? payload[1] : (cmd === EpdCmd.CLEAR ? 1 : 0), displayReply.token];
+    }
+    if (logPayload) addLog(bytes2hex(payload), '⇑');
+    // Legacy firmware has no confirmed readback. Do not export a stale cache
+    // after any command that may change it, even if its GATT result is lost.
+    const cachedMode = lastDeviceConfig ? lastDeviceConfig[11] : 0xff;
+    const entersPictureMode =
+      cmd === EpdCmd.CLEAR || cmd === EpdCmd.REFRESH ||
+      cmd === EpdCmd.WRITE_BLOCK;
+    if (appVersion < NEW_WEB_MIN_FIRMWARE_VERSION && lastDeviceConfig && (
+        rawPacket || cmd === EpdCmd.SET_CONFIG || cmd === EpdCmd.SET_PINS || cmd === EpdCmd.CFG_ERASE ||
+        (entersPictureMode && cachedMode !== 0) ||
+        (cmd === EpdCmd.INIT && payload.length > 1 && payload[1] !== 0xff && payload[1] !== lastDeviceConfig[7]) ||
+        (cmd === EpdCmd.SET_WEEK_START && payload[1] !== lastDeviceConfig[12]) ||
+        (cmd === EpdCmd.SET_MODE && payload[1] !== lastDeviceConfig[11]) ||
+        (cmd === EpdCmd.SET_TIME && payload.length > 6 && payload[6] !== lastDeviceConfig[11])))
+      legacyConfigDirty = true;
+    try {
+      if (withResponse)
+        await characteristic.writeValueWithResponse(Uint8Array.from(payload));
+      else
+        await characteristic.writeValueWithoutResponse(Uint8Array.from(payload));
+      if (waiter && !await withTimeout(waiter.promise, 30000, "屏幕初始化确认超时")) return false;
+      if (modeReply && !await withTimeout(modeReply.promise, 45000, "模式应用确认超时")) return false;
+      if (displayReply && !await withTimeout(displayReply.promise, 90000, "屏幕刷新确认超时")) return false;
+    } catch (e) {
+      console.error(e);
+      if (e.message) addLog("write: " + e.message);
+      return false;
+    } finally {
+      if (waiter && initWaiter === waiter) initWaiter = null;
+      if (modeReply && modeWaiter === modeReply) modeWaiter = null;
+      if (displayReply && displayWaiter === displayReply) displayWaiter = null;
+    }
+    return generation === connectionGeneration && characteristic === epdCharacteristic &&
+      !!gattServer && gattServer.connected;
+  };
+  const operation = serialize ? gattWriteTail.then(operationBody) : operationBody();
+  /* Keep the serialized queue alive after a failed write, while preserving
+   * the result for the caller that owns this operation.  Stream packets can
+   * explicitly bypass this queue and use a bounded burst. */
+  if (serialize) {
+    gattWriteTail = operation.catch(() => {});
   }
+  return operation;
 }
 
-// New CRC-verified image transfer with resume capability
-async function writeImageCRC(data, step = 'bw') {
+async function writeRawPacket(bytes, owner = null) {
+  if (!bytes || !bytes.length) return false;
+  return write(bytes[0], bytes.subarray(1), true, true, true, owner, true);
+}
+
+// CRC-verified image transfer; a failed sequential stream restarts its layer.
+async function writeImageCRC(data, step = 'bw', owner = null) {
   const stepName = step === 'bw' ? '黑白' : '颜色';
 
-  try {
-    await BleTransfer.sendImageWithResume(data, step, (sent, total, speedInfo) => {
-      if (speedInfo) {
-        setStatus(`${stepName}块(CRC): ${sent}/${total}, ${BleTransfer.getSpeedString()}, ${speedInfo.elapsed}s`);
-      } else {
-        setStatus(`${stepName}块(CRC): ${sent}/${total}`);
-      }
-    });
-    return true;
-  } catch (e) {
-    console.error('CRC transfer failed:', e);
-    addLog(`CRC传输失败: ${e.message}，回退到普通传输`);
-    // Fallback to legacy transfer
-    await writeImage(data, step);
-    return true;
-  }
+  await BleTransfer.sendImageWithResume(data, step, (sent, total, speedInfo) => {
+    if (owner) DeviceOperations.assert(owner);
+    if (speedInfo) {
+      setStatus(`${stepName}块(CRC): ${sent}/${total}, ${BleTransfer.getSpeedString()}, ${speedInfo.elapsed}s`);
+    } else {
+      setStatus(`${stepName}块(CRC): ${sent}/${total}`);
+    }
+  }, owner);
+  return true;
 }
 
 async function setDriver() {
   if (!confirm('确认设置驱动配置？此操作将重新初始化屏幕。')) return;
-  await write(EpdCmd.SET_PINS, document.getElementById("epdpins").value);
-  await write(EpdCmd.INIT, document.getElementById("epddriver").value);
-  addLog("驱动配置已设置");
+  return runDeviceOperation('control', async owner => {
+    const ok = await write(EpdCmd.SET_PINS, document.getElementById("epdpins").value, true, true, true, owner) &&
+      await write(EpdCmd.INIT, document.getElementById("epddriver").value, true, true, true, owner);
+    DeviceOperations.assert(owner);
+    addLog(ok ? "驱动配置已设置" : "驱动初始化失败，请检查连接和引脚配置");
+  });
 }
 
 // 辅助函数：获取星期第一天设置
 function getWeekStart() {
   const weekStartValue = document.getElementById('weekStart').value;
-  return weekStartValue !== null && weekStartValue !== '' ? parseInt(weekStartValue) : 1;
+  return weekStartValue !== null && weekStartValue !== '' ? parseInt(weekStartValue) : 0;
 }
 
 // 辅助函数：构建时间数据包
 function buildTimeData(mode = null) {
-  const timestamp = Math.floor(new Date().getTime() / 1000);
+  const now = new Date();
+  const offsetMinutes = -now.getTimezoneOffset();
+  const timezoneHours = Math.trunc(offsetMinutes / 60);
+  // The existing wire field stores whole hours. Carry the remaining minutes
+  // in the epoch so the device still receives the exact local wall clock.
+  const timestamp = Math.floor(now.getTime() / 1000) + (offsetMinutes - timezoneHours * 60) * 60;
   const payload = [
     (timestamp >> 24) & 0xFF,
     (timestamp >> 16) & 0xFF,
     (timestamp >> 8) & 0xFF,
     timestamp & 0xFF,
-    -(new Date().getTimezoneOffset() / 60)
+    timezoneHours
   ];
   if (mode !== null && mode !== undefined) payload.push(mode);
   return new Uint8Array(payload);
@@ -243,68 +477,131 @@ function buildTimeData(mode = null) {
 
 // 辅助函数：发送时间同步命令
 async function sendTimeCommand(mode, modeName) {
+  return runDeviceOperation('mode', owner => sendModeOperation(mode, modeName, owner));
+}
+
+async function sendModeOperation(mode, modeName, owner) {
+  if (!EpdFirmwarePolicy.isNewFirmware(appVersion)) {
+    addLog(`${modeName}需要固件 0x${NEW_WEB_MIN_FIRMWARE_VERSION.toString(16).toUpperCase()} 或更高，请使用对应网页`);
+    return false;
+  }
   const weekStart = getWeekStart();
   const weekDays = ['周日', '周一', '周二', '周三', '周四', '周五', '周六'];
-  let weekStartChanged = false;
-
-  // 仅在星期第一天变更时才发送，避免不必要的二次刷新。
-  if (lastWeekStartSent !== weekStart) {
-    const weekStartOk = await write(EpdCmd.SET_WEEK_START, new Uint8Array([weekStart]));
-    if (weekStartOk) {
-      lastWeekStartSent = weekStart;
-      weekStartChanged = true;
-    } else {
-      addLog("SET_WEEK_START发送失败，将在下次重试");
-    }
-  } else {
-    addLog(`星期第一天未变化(${weekDays[weekStart]})，跳过设置命令`);
-  }
-
-  // 发送时间数据
-  if (await write(EpdCmd.SET_TIME, buildTimeData(mode))) {
-    addLog(`${modeName}已启用！`);
-    addLog(weekStartChanged ? `星期第一天已设置为：${weekDays[weekStart]}` : `星期第一天保持为：${weekDays[weekStart]}`);
-    addLog("屏幕刷新完成前请不要操作。");
+  const payload = () => {
+    const bytes = new Uint8Array(8);
+    bytes[0] = mode;
+    bytes[2] = weekStart;
+    bytes.set(buildTimeData(), 3);
+    return bytes;
+  };
+  if (await write(EpdCmd.SET_MODE, payload, true, true, true, owner)) {
+    lastWeekStartSent = weekStart;
+    addLog(`${modeName}已由设备接受，星期第一天为${weekDays[weekStart]}。`);
+    addLog('设备正在刷新屏幕，无需断开蓝牙；请等待刷新完成。');
     return true;
   }
+  addLog(`${modeName}未被设备接受，请稍后重试。`);
   return false;
 }
 
-async function syncTimeOnConnect() {
-  if (appVersion < 0x21) {
+const EPD_MIN_DATA_LEN_FOR_FULL_PLANE = 110;
+
+function currentMtuValue() {
+  const mtu = parseInt(document.getElementById('mtusize').value, 10);
+  return Number.isFinite(mtu) ? mtu : 0;
+}
+
+async function waitForNegotiatedMtu(timeoutMs = 2000) {
+  if (currentMtuValue() >= EPD_MIN_DATA_LEN_FOR_FULL_PLANE) {
+    return true;
+  }
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    await new Promise(r => setTimeout(r, 100));
+    if (currentMtuValue() >= EPD_MIN_DATA_LEN_FOR_FULL_PLANE) {
+      return true;
+    }
+  }
+  return currentMtuValue() >= EPD_MIN_DATA_LEN_FOR_FULL_PLANE;
+}
+
+async function syncTimeOnConnect(owner = null) {
+  if (!EpdFirmwarePolicy.isNewFirmware(appVersion)) {
     addLog('当前固件不支持静默校时，已跳过自动时间同步');
     return false;
   }
 
-  const ok = await write(EpdCmd.SYNC_TIME_SILENT, buildTimeData());
+  const ok = await write(EpdCmd.SYNC_TIME_SILENT, () => buildTimeData(), true, true, true, owner);
   addLog(ok ? '已自动同步当前时间到设备' : '自动时间同步失败');
   return ok;
 }
 
-async function syncTime(mode) {
-  const modeName = mode === 1 ? '日历模式' : '时钟模式';
-  let confirmMsg = `确认切换到${modeName}？`;
-  if (mode === 2) {
-    confirmMsg += '\n\n⚠️ 警告：时钟模式会加速屏幕老化导致损坏！\n• 请勿长时间使用\n• 费电';
-  }
-  if (!confirm(confirmMsg)) return;
-
-  await sendTimeCommand(mode, modeName);
+function displayModeName(mode) {
+  if (mode === 1) return '日历模式';
+  if (mode === 3) return '全屏时钟';
+  if (mode === 4) return '待办事项+日历';
+  if (mode === 5) return '全屏待办';
+  return '时钟+日历';
 }
 
-// 老款时钟模式 (仅适用于UC8179 7.5寸)
-async function syncTimeLegacy() {
-  if (!confirm('确认切换到老款时钟模式？\n\n⚠️ 警告：时钟模式会加速屏幕老化导致损坏！\n• 请勿长时间使用\n• 此模式仅适用于UC8179 7.5寸屏幕\n• 费电')) return;
+async function syncTime(mode) {
+  const modeName = displayModeName(mode);
+  let confirmMsg = `确认切换到${modeName}？`;
+  if (mode === 2 || mode === 3) {
+    confirmMsg += '\n\n⚠️ 警告：分钟刷新会加速屏幕老化导致损坏！\n• 请勿长时间使用\n• 费电';
+  }
+  if (!confirm(confirmMsg)) return false;
 
-  await sendTimeCommand(3, '老款时钟模式');
+  return await sendTimeCommand(mode, modeName);
+}
+
+// 全屏时钟 (MODE_CLOCK=3，仅适用于 UC8179 7.5 寸)
+async function syncTimeLegacy() {
+  if (!confirm('确认切换到全屏时钟？\n\n⚠️ 警告：分钟刷新会加速屏幕老化导致损坏！\n• 请勿长时间使用\n• 此模式仅适用于UC8179 7.5寸屏幕\n• 费电')) return;
+
+  await sendTimeCommand(3, '全屏时钟');
 }
 
 async function clearScreen() {
   if (confirm('确认清除屏幕内容?')) {
-    await write(EpdCmd.CLEAR);
-    addLog("清屏指令已发送！");
-    addLog("屏幕刷新完成前请不要操作。");
+    return runDeviceOperation('control', async owner => {
+      if (!await write(EpdCmd.CLEAR, null, true, true, true, owner)) return false;
+      DeviceOperations.assert(owner);
+      addLog(EpdFirmwarePolicy.isNewFirmware(appVersion) ? '设备已确认清屏完成。' : '清屏指令已发送，请等待屏幕刷新完成。');
+    });
   }
+}
+
+async function restartDevice() {
+  return runDeviceOperation('restarting', async owner => {
+    if (!gattServer?.connected || !bleDevice?.gatt.connected)
+      throw new Error('请先连接设备再重启');
+    const device = bleDevice;
+    let disconnected = false, resolveDisconnect;
+    const disconnectedPromise = new Promise(resolve => { resolveDisconnect = resolve; });
+    const onDisconnect = () => { disconnected = true; resolveDisconnect(); };
+    device.addEventListener('gattserverdisconnected', onDisconnect);
+    try {
+      addLog('正在发送系统重启指令…');
+      const sent = await write(EpdCmd.SYS_RESET, null, true, true, true, owner);
+      if (!disconnected && owner.generation !== connectionGeneration) return false;
+      if (!disconnected) {
+        try { await withTimeout(disconnectedPromise, 5000, '等待重启断连超时'); }
+        catch (_) { /* GATT acceptance does not confirm that the MCU rebooted. */ }
+      }
+      if (device !== bleDevice || (owner.generation !== connectionGeneration &&
+          (gattServer?.connected || isConnecting || DeviceOperations.current))) return false;
+      const message = disconnected
+        ? '设备已断开，请稍后点击“重连”确认重启后的状态。'
+        : sent ? '系统重启指令已发送，尚未检测到断连，请稍后重连确认。'
+          : '系统重启指令发送失败，请检查蓝牙连接后重试。';
+      addLog(message);
+      showToast(message, 4200);
+      return sent || disconnected;
+    } finally {
+      device.removeEventListener('gattserverdisconnected', onDisconnect);
+    }
+  });
 }
 
 async function sendcmd() {
@@ -312,8 +609,9 @@ async function sendcmd() {
   if (cmdTXT == '') return;
   if (!confirm('确认发送命令？此操作可能影响设备状态。')) return;
   const bytes = hex2bytes(cmdTXT);
-  await write(bytes[0], bytes.length > 1 ? bytes.slice(1) : null);
-  addLog("命令已发送");
+  return runDeviceOperation('control', async owner => {
+    if (await writeRawPacket(bytes, owner)) addLog("命令已发送");
+  });
 }
 
 function convertUC8159(blackWhiteData, redWhiteData) {
@@ -344,23 +642,27 @@ function convertUC8159(blackWhiteData, redWhiteData) {
 }
 
 async function sendimg() {
+  return runDeviceOperation('image', sendImageOperation);
+}
+
+async function sendImageOperation(owner) {
   if (cropManager.isCropMode()) {
     alert("请先完成图片裁剪！发送已取消。");
     return;
   }
 
-  // Clear schedule selection indicator before sending
-  if (paintManager && paintManager.selectedScheduleCell) {
-    paintManager.cancelScheduleInput();
-  }
-
-  // Clear text selection indicator before sending
-  if (paintManager && paintManager.selectedEditingText) {
-    paintManager.deselectEditingText();
-  }
+  prepareCanvasExport();
 
   const canvasSize = document.getElementById('canvasSize').value;
   const ditherMode = document.getElementById('ditherMode').value;
+  if (ditherMode === 'sixColor' || ditherMode === 'fourColor') {
+    // 当前固件只有 UC8179 BWR（黑白红）驱动，六色/四色数据发下去必然错色；
+    // 预览与数组导出仍保留，方便给未来驱动使用。
+    const message = ditherMode === 'sixColor'
+      ? '当前固件不支持发送六色图片；可下载预览或导出数组。'
+      : '当前固件不支持发送四色图片；可下载预览或导出数组。';
+    addLog(message); showToast(message); return;
+  }
   const epdDriverSelect = document.getElementById('epddriver');
   const selectedOption = epdDriverSelect.options[epdDriverSelect.selectedIndex];
   const driverSize = selectedOption.getAttribute('data-size');
@@ -385,11 +687,13 @@ async function sendimg() {
     if (!confirm("警告：颜色模式和驱动不匹配，是否继续？")) return;
   }
 
-  startTime = new Date().getTime();
+  const operationStartedAt = new Date().getTime();
+  startTime = operationStartedAt;
   const status = document.getElementById("status");
+  status.operation = owner;
   status.parentElement.style.display = "block";
   const hideStatusBar = () => {
-    status.parentElement.style.display = "none";
+    if (owner.generation === connectionGeneration && status.operation === owner) status.parentElement.style.display = "none";
   };
 
   let imageData;
@@ -429,32 +733,50 @@ async function sendimg() {
 
   updateButtonStatus(true);
 
-  // Use CRC transfer for firmware version >= 0x20
-  const useCRC = (appVersion >= 0x20) && (typeof BleTransfer !== 'undefined');
-  const transferFn = useCRC ? writeImageCRC : writeImage;
-
-  if (useCRC) {
-    addLog("使用CRC校验传输模式");
+  const mtuReady = await waitForNegotiatedMtu();
+  DeviceOperations.assert(owner);
+  if (!mtuReady) {
+    addLog("尚未收到MTU，发送一次INIT用于协商（不作为常规传图步骤）");
+    if (!await write(EpdCmd.INIT, epdDriverSelect.value, true, true, true, owner)) {
+      addLog("屏幕初始化失败，取消发送");
+      updateButtonStatus();
+      hideStatusBar();
+      return;
+    }
+    if (!await waitForNegotiatedMtu()) {
+      addLog("MTU仍为默认20，取消发送以免超过512块上限导致花屏");
+      updateButtonStatus();
+      hideStatusBar();
+      return;
+    }
   }
 
+  if (typeof BleTransfer === 'undefined') {
+    addLog('CRC 传图模块未加载，请刷新网页后重试');
+    updateButtonStatus();
+    hideStatusBar();
+    return;
+  }
+  addLog("使用CRC校验传输模式");
+
+  const layers = [];
   if (ditherMode === 'fourColor') {
-    await transferFn(processedData, 'color');
+    layers.push([processedData, 'color']);
   } else if (ditherMode === 'threeColor') {
     const halfLength = Math.floor(processedData.length / 2);
     const blackWhiteData = processedData.slice(0, halfLength);
     const redWhiteData = processedData.slice(halfLength);
     if (epdDriverSelect.value === '08' || epdDriverSelect.value === '09') {
-      await transferFn(convertUC8159(blackWhiteData, redWhiteData), 'bw');
+      layers.push([convertUC8159(blackWhiteData, redWhiteData), 'bw']);
     } else {
-      await transferFn(blackWhiteData, 'bw');
-      await transferFn(redWhiteData, 'red');
+      layers.push([blackWhiteData, 'bw'], [redWhiteData, 'red']);
     }
   } else if (ditherMode === 'blackWhiteColor') {
     if (epdDriverSelect.value === '08' || epdDriverSelect.value === '09') {
       const emptyData = new Uint8Array(processedData.length).fill(0xFF);
-      await transferFn(convertUC8159(processedData, emptyData), 'bw');
+      layers.push([convertUC8159(processedData, emptyData), 'bw']);
     } else {
-      await transferFn(processedData, 'bw');
+      layers.push([processedData, 'bw']);
     }
   } else {
     addLog("当前固件不支持此颜色模式。");
@@ -463,7 +785,28 @@ async function sendimg() {
     return;
   }
 
-  const refreshOk = await write(EpdCmd.REFRESH);
+  const transferStartedAt = new Date().getTime();
+  try {
+    for (const [data, step] of layers) await writeImageCRC(data, step, owner);
+  } catch (e) {
+    if (DeviceOperations.current !== owner) return;
+    addLog(`传图失败: ${e.message || e}`);
+    updateButtonStatus();
+    hideStatusBar();
+    return;
+  }
+
+  DeviceOperations.assert(owner);
+  const transferFinishedAt = new Date().getTime();
+  const transferTime = ((transferFinishedAt - transferStartedAt) / 1000).toFixed(3);
+  const transferCompletion = `传图完成！传图耗时: ${transferTime}s，等待屏幕刷新…`;
+  addLog(transferCompletion);
+  setStatus(transferCompletion);
+  const confirmsRefresh = EpdFirmwarePolicy.isNewFirmware(appVersion);
+  const refreshStartedAt = new Date().getTime();
+  const refreshOk = await write(EpdCmd.REFRESH, null, true, true, true, owner);
+  const refreshFinishedAt = new Date().getTime();
+  DeviceOperations.assert(owner);
   updateButtonStatus();
   const isConnectedNow = !!(gattServer && gattServer.connected && bleDevice && bleDevice.gatt && bleDevice.gatt.connected);
   if (!refreshOk) {
@@ -478,10 +821,20 @@ async function sendimg() {
     return;
   }
 
-  const sendTime = (new Date().getTime() - startTime) / 1000.0;
-  addLog(`发送完成！耗时: ${sendTime}s`);
-  setStatus(`发送完成！耗时: ${sendTime}s`);
-  addLog("屏幕刷新完成前请不要操作。");
+  const refreshTime = ((refreshFinishedAt - refreshStartedAt) / 1000).toFixed(3);
+  const totalTime = ((refreshFinishedAt - operationStartedAt) / 1000).toFixed(3);
+  const completion = confirmsRefresh
+    ? `图片刷新完成！传图耗时: ${transferTime}s · 刷新耗时: ${refreshTime}s · 总耗时: ${totalTime}s`
+    : `图片发送完成！传图耗时: ${transferTime}s · 刷新指令已发送，屏幕刷新中。`;
+  addLog(completion);
+  setStatus(completion);
+  if (!confirmsRefresh) addLog("屏幕刷新完成前请不要操作。");
+  // 刷新确认后主动让面板进入睡眠以省电：命令无响应等待，失败只记录日志，
+  // 不改变本次图片发送已成功的结果。旧固件（无 0xAB 刷新确认）不发。
+  if (confirmsRefresh && isConnectedNow && DeviceOperations.current === owner) {
+    if (!await write(EpdCmd.SLEEP, null, false, false, true, owner))
+      addLog('面板睡眠指令发送失败，不影响本次图片发送结果。');
+  }
   if (!isConnectedNow) {
     const disconnectedTip = '图片已发送，设备连接已断开，请点击“重连”继续操作。';
     addLog(disconnectedTip);
@@ -498,6 +851,7 @@ function downloadDataArray() {
     return;
   }
 
+  prepareCanvasExport();
   const mode = document.getElementById('ditherMode').value;
   const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
   const processedData = processImageData(imageData, mode);
@@ -538,22 +892,42 @@ function downloadDataArray() {
 }
 
 function updateButtonStatus(forceDisabled = false) {
-  const connected = gattServer != null && gattServer.connected;
-  const status = forceDisabled ? 'disabled' : (connected ? null : 'disabled');
-  document.getElementById("reconnectbutton").disabled = (gattServer == null || gattServer.connected) ? 'disabled' : null;
-  document.getElementById("sendcmdbutton").disabled = status;
-  document.getElementById("calendarmodebutton").disabled = status;
-  document.getElementById("clockmodebutton").disabled = status;
-  document.getElementById("clearscreenbutton").disabled = status;
-  document.getElementById("sendimgbutton").disabled = status;
-  document.getElementById("setDriverbutton").disabled = status;
+  const connected = !!(gattServer != null && gattServer.connected);
+  const status = forceDisabled || DeviceOperations.current ? 'disabled' : (connected ? null : 'disabled');
+  const reconnect = document.getElementById('reconnectbutton');
+  if (reconnect) reconnect.disabled = !bleDevice || connected || isConnecting;
+  for (const id of ['sendcmdbutton', 'calendarmodebutton', 'clockmodebutton',
+                    'clearscreenbutton', 'restartbutton', 'sendimgbutton', 'setDriverbutton']) {
+    const button = document.getElementById(id);
+    if (button) button.disabled = !!status;
+  }
+  const clock = document.getElementById('legacyclockbutton');
+  if (clock) clock.disabled = !!status;
+  const dfu = document.getElementById('openDfuPageButton');
+  if (dfu) dfu.disabled = !WEB_DFU_ENABLED || !!(forceDisabled || isConnecting || DeviceOperations.current);
+  for (const button of document.querySelectorAll('[data-device-operation]')) button.disabled = !!status;
+  for (const id of ['todocalendarmodebutton', 'todofullmodebutton']) {
+    const todo = document.getElementById(id);
+    if (todo) todo.disabled = !!status || !EpdFirmwarePolicy.isNewFirmware(appVersion);
+  }
+  if (window.TodoCalendar?.controls) window.TodoCalendar.controls(forceDisabled);
+  if (window.ConsoleUI && typeof window.ConsoleUI.updateConnection === 'function') {
+    window.ConsoleUI.updateConnection({
+      connected,
+      connecting: isConnecting,
+      busy: !!(forceDisabled || DeviceOperations.current),
+      deviceName: bleDevice && bleDevice.name ? bleDevice.name : '',
+      operation: DeviceOperations.current ? DeviceOperations.current.kind : '',
+    });
+  }
 }
 
 function disconnect() {
   const isInternalRetryDisconnect = internalDisconnectInProgress || Date.now() < internalDisconnectSuppressUntil;
-  updateButtonStatus();
   resetVariables();
+  updateButtonStatus();
   updateBatteryVoltageDisplay(null, '未连接');
+  updateFirmwareVersionDisplay(null);
   if (!isInternalRetryDisconnect) {
     clearLogOnNextSuccessfulConnect = true;
     lastWeekStartSent = null;
@@ -561,37 +935,79 @@ function disconnect() {
   }
   document.getElementById("connectbutton").innerHTML = '连接';
 
-  // 隐藏老款时钟按钮
+  // 隐藏全屏时钟按钮
   const legacyBtn = document.getElementById('legacyclockbutton');
   if (legacyBtn) legacyBtn.style.display = 'none';
 }
 
 async function openDfuPage() {
+  if (!WEB_DFU_ENABLED) {
+    showToast(FIRMWARE_UPGRADE_NOTICE, 3600);
+    return false;
+  }
+  if (isConnecting || DeviceOperations.current || document.getElementById('openDfuPageButton')?.disabled) {
+    showToast('设备操作进行中，请等待完成后再进入固件升级。', 3600);
+    return false;
+  }
+  try {
+    return await navigateToDevicePage('dfu.html');
+  } catch (error) {
+    addLog(error.message || String(error));
+    showToast('蓝牙断开失败，请重试后再进入固件升级。', 3600);
+    return false;
+  }
+}
+
+function showLegacyFirmwareDialog(version) {
+  const dialog = document.getElementById('legacyFirmwareDialog');
+  document.getElementById('legacyFirmwareMessage').textContent =
+    `设备固件为 0x${version.toString(16)}，低于新版网页支持的 0x${NEW_WEB_MIN_FIRMWARE_VERSION.toString(16)}，请使用旧版网页连接设备。`;
+  dialog.returnValue = 'cancel';
+  return new Promise(resolve => {
+    dialog.addEventListener('close', () => resolve(dialog.returnValue), { once: true });
+    dialog.showModal();
+  });
+}
+
+async function navigateToDevicePage(page, device = bleDevice) {
+  if (page === 'dfu.html' && !WEB_DFU_ENABLED) {
+    showToast(FIRMWARE_UPGRADE_NOTICE, 3600);
+    return false;
+  }
+  if (page === LEGACY_PAGE_URL) {
+    if (device !== bleDevice) throw new Error('设备已变化，已取消页面跳转');
+    window.location.href = page;
+    return true;
+  }
   const handoff = {
     source: 'index',
     fromUrl: window.location.pathname,
     createdAt: Date.now(),
-    hadConnectedDevice: !!(bleDevice && bleDevice.gatt && bleDevice.gatt.connected),
-    deviceName: bleDevice && bleDevice.name ? bleDevice.name : '',
+    hadConnectedDevice: !!device?.gatt?.connected,
+    deviceName: device?.name || '',
     disconnectedBeforeNavigate: false
   };
 
   try {
-    if (bleDevice && bleDevice.gatt && bleDevice.gatt.connected) {
+    if (device?.gatt?.connected) {
       internalDisconnectInProgress = true;
       internalDisconnectSuppressUntil = Date.now() + 4000;
-      try {
-        bleDevice.gatt.disconnect();
-        handoff.disconnectedBeforeNavigate = true;
-      } catch (_) { }
+      device.gatt.disconnect();
+      if (device.gatt.connected) throw new Error('蓝牙尚未断开，已取消页面跳转，请重试');
+      handoff.disconnectedBeforeNavigate = true;
       await new Promise(resolve => setTimeout(resolve, 250));
     }
+    if (device !== bleDevice) throw new Error('设备已变化，已取消页面跳转');
+    if (gattServer || epdCharacteristic) disconnect();
+    if (page === 'dfu.html') {
+      try {
+        sessionStorage.setItem(DFU_PAGE_HANDOFF_KEY, JSON.stringify(handoff));
+      } catch (_) { }
+    }
+    if (page) window.location.href = page;
+    return true;
   } finally {
     internalDisconnectInProgress = false;
-    try {
-      sessionStorage.setItem(DFU_PAGE_HANDOFF_KEY, JSON.stringify(handoff));
-    } catch (_) { }
-    window.location.href = 'dfu.html';
   }
 }
 
@@ -792,7 +1208,7 @@ async function requestBleDevice() {
 
   const scanResult = await scanFilteredDevices();
   if (scanResult.status === 'unsupported') {
-    addLog(`当前浏览器不支持信号扫描排序，退回系统窗口并仅筛选 ${EPD_DEVICE_NAME_PREFIX} 设备`);
+    addLog(`使用系统蓝牙选择窗口，仅筛选 ${EPD_DEVICE_NAME_PREFIX} 设备（当前浏览器不支持按信号排序）`);
     return await navigator.bluetooth.requestDevice({
       optionalServices: ['62750001-d828-918d-fb46-b6c11c675aec'],
       filters: [{ namePrefix: EPD_DEVICE_NAME_PREFIX }]
@@ -856,8 +1272,47 @@ async function reConnect() {
   setTimeout(async function () { await connect(); }, 300);
 }
 
-function handleNotify(value, idx) {
+function handleNotify(value) {
   const data = new Uint8Array(value.buffer, value.byteOffset, value.byteLength);
+
+  if (window.ExternalResourceInstaller && window.ExternalResourceInstaller.notification(data)) return;
+
+  if (data.length === 17 && data[0] === 0xA9) {
+    if (configReadWaiter && configReadWaiter.generation === connectionGeneration &&
+        configReadWaiter.token === data[1]) {
+      const config = data[2] === 0 ? Uint8Array.from(data.slice(3)) : null;
+      if (config) lastDeviceConfig = Uint8Array.from(config);
+      if (config) applyDriverCodeFromConfig(config);
+      configReadWaiter.resolve(config);
+    }
+    return;
+  }
+
+  if (data.length >= 5 && data[0] === 0xA6) {
+    if (initWaiter && initWaiter.generation === connectionGeneration &&
+        initWaiter.token === data[1]) {
+      if (data[2] === 0) document.getElementById('mtusize').value = data[3] | (data[4] << 8);
+      initWaiter.resolve(data[2] === 0);
+    }
+    return;
+  }
+
+  if (data.length === 4 && data[0] === 0xAA) {
+    if (modeWaiter && modeWaiter.generation === connectionGeneration &&
+        modeWaiter.token === data[1] && modeWaiter.mode === data[3]) {
+      modeWaiter.resolve(data[2] === 0);
+    }
+    return;
+  }
+
+  if (data.length === 4 && data[0] === 0xAB) {
+    if (displayWaiter && displayWaiter.generation === connectionGeneration &&
+        displayWaiter.token === data[1] && displayWaiter.command === data[3]) {
+      if (data[2] !== 0) addLog(`设备刷新失败（状态 ${data[2]}），请检查屏幕或稍后重试`);
+      displayWaiter.resolve(data[2] === 0);
+    }
+    return;
+  }
 
   // Route CRC transfer responses to BleTransfer module
   if (data.length >= 1 && (data[0] === 0xA0 || data[0] === 0xA1)) {
@@ -866,15 +1321,73 @@ function handleNotify(value, idx) {
     }
     return;
   }
+  if (data.length >= 1 && data[0] === 0xA2 && window.CalendarAnnotations) {
+    window.CalendarAnnotations.handleNotification(value);
+    return;
+  }
+  if (data.length === 12 && data[0] === 0xA8) {
+    if (data[1] === 3 && window.CalendarAnnotations) {
+      window.CalendarAnnotations.handleNotification(value);
+    } else if (data[1] === 2) {
+      const revision = new DataView(data.buffer, data.byteOffset, data.byteLength).getUint32(4, true);
+      addLog(data[2] === 0 ? `配置已写入外置 Flash（revision ${revision}）` :
+             `配置写入外置 Flash 失败（状态 ${data[2]}）`);
+    }
+    return;
+  }
+  if (textDecoder == null) textDecoder = new TextDecoder();
+  const msg = textDecoder.decode(data);
 
-  if (idx == 0) {
+  // 固件可能在配置包前发送日志，也可能因为平台时序导致通知顺序变化。
+  // 先按协议前缀解析字符串通知，不再依赖“第 0 个通知就是配置”。
+  if (msg.startsWith('mtu=') && msg.length > 4) {
+    addLog(msg, '⇓');
+    const mtuSize = parseInt(msg.substring(4), 10);
+    if (Number.isFinite(mtuSize)) {
+      document.getElementById('mtusize').value = mtuSize;
+      addLog(`MTU 已更新为: ${mtuSize}`);
+    }
+    // 新固件 INIT 后发送 "mtu=<n> rle=1" 表示支持按块 RLE 压缩；旧固件只有
+    // "mtu=<n>"，保持原文传输。能力在每次传图层开始时由 BleTransfer 读取。
+    if (typeof BleTransfer !== 'undefined') BleTransfer.setRleSupport(msg.includes('rle=1'));
+    return;
+  }
+
+  if (msg.startsWith('v=') && msg.length > 2) {
+    const voltageMv = parseInt(msg.substring(2), 10);
+    if (Number.isFinite(voltageMv)) {
+      updateBatteryVoltageDisplay(voltageMv);
+      addLog(msg, '⇓');
+    }
+    return;
+  }
+
+  if (msg.startsWith('t=') && msg.length > 2) {
+    const t = parseInt(msg.substring(2), 10) + new Date().getTimezoneOffset() * 60;
+    addLog(`远端时间: ${new Date(t * 1000).toLocaleString()}`);
+    addLog(`本地时间: ${new Date().toLocaleString()}`);
+    return;
+  }
+
+  // 当前固件配置包固定为 epd_config_t 的 14 字节二进制数据。
+  if (data.length === 14) {
+    lastDeviceConfig = Uint8Array.from(data);
     addLog(`收到配置：${bytes2hex(data)}`);
     const epdpins = document.getElementById("epdpins");
     const epddriver = document.getElementById("epddriver");
     epdpins.value = bytes2hex(data.slice(0, 7));
     if (data.length > 10) epdpins.value += bytes2hex(data.slice(10, 11));
-    epddriver.value = bytes2hex(data.slice(7, 8));
-    updateDitcherOptions();
+    // 配置回读后纠正 debug 驱动下拉；未知型号保留当前选择，不再强行改写。
+    const driverSupported = applyDriverCodeFromConfig(data);
+    if (data.length > 12) {
+      const weekStartEl = document.getElementById('weekStart');
+      const weekStart = data[12];
+      if (weekStart < 7) {
+        if (weekStartEl) weekStartEl.value = String(weekStart);
+        lastWeekStartSent = weekStart;
+      }
+    }
+    if (driverSupported) updateDitcherOptions();
 
     // 解析并显示设备型号和尺寸
     const driverCode = bytes2hex(data.slice(7, 8));
@@ -902,41 +1415,24 @@ function handleNotify(value, idx) {
       addLog(`📐 屏幕尺寸: ${sizeInfo}`);
       addLog(`🎨 颜色模式: ${colorModeText}`);
 
-      // 检测是否为UC8179 7.5寸屏幕 (驱动码06或07)，显示老款时钟按钮
+      // 检测是否为UC8179 7.5寸屏幕 (驱动码06或07)，显示全屏时钟按钮
       const legacyClockBtn = document.getElementById('legacyclockbutton');
       if (legacyClockBtn) {
         if (driverCode === '06' || driverCode === '07') {
           legacyClockBtn.style.display = 'inline-block';
-          addLog('🕐 检测到UC8179，已启用老款时钟模式按钮');
+          addLog('🕐 检测到UC8179，已启用全屏时钟按钮');
         } else {
           legacyClockBtn.style.display = 'none';
         }
       }
     }
   } else {
-    if (textDecoder == null) textDecoder = new TextDecoder();
-    const msg = textDecoder.decode(data);
-    if (msg.startsWith('mtu=') && msg.length > 4) {
-      addLog(msg, '⇓');
-      const mtuSize = parseInt(msg.substring(4));
-      document.getElementById('mtusize').value = mtuSize;
-      addLog(`MTU 已更新为: ${mtuSize}`);
-    } else if (msg.startsWith('v=') && msg.length > 2) {
-      const voltageMv = parseInt(msg.substring(2), 10);
-      if (!Number.isNaN(voltageMv)) {
-        updateBatteryVoltageDisplay(voltageMv);
-      }
-    } else if (msg.startsWith('t=') && msg.length > 2) {
-      const t = parseInt(msg.substring(2)) + new Date().getTimezoneOffset() * 60;
-      addLog(`远端时间: ${new Date(t * 1000).toLocaleString()}`);
-      addLog(`本地时间: ${new Date().toLocaleString()}`);
-    } else {
-      addLog(msg, '⇓');
-    }
+    addLog(msg, '⇓');
   }
 }
 
 async function connect() {
+  let setupOperation = null;
   if (isConnecting) {
     addLog('连接流程进行中，请稍候...');
     return;
@@ -1063,47 +1559,82 @@ async function connect() {
       }
     }
 
+    const connectedCharacteristic = epdCharacteristic;
+    const generation = connectionGeneration;
+    setupOperation = DeviceOperations.begin('connecting');
+    const ensureConnected = () => {
+      if (generation !== connectionGeneration || targetDevice !== bleDevice ||
+          connectedCharacteristic !== epdCharacteristic || !gattServer || !gattServer.connected) {
+        throw new Error('连接初始化已中断，请重新连接设备');
+      }
+    };
     try {
       const versionCharacteristic = await epdService.getCharacteristic('62750003-d828-918d-fb46-b6c11c675aec');
       const versionData = await versionCharacteristic.readValue();
       appVersion = versionData.getUint8(0);
+      updateFirmwareVersionDisplay(appVersion);
       addLog(`固件版本: 0x${appVersion.toString(16)}`);
       addLog(`APP版本: v${APP_VERSION} (${APP_BUILD_DATE})`);
     } catch (e) {
-      console.error(e);
-      appVersion = 0x15;
+      throw new Error(`无法读取固件版本，请使用与设备固件匹配的网页：${e.message || e}`);
+    }
+    ensureConnected();
+    if (appVersion < NEW_WEB_MIN_FIRMWARE_VERSION) {
+      const action = await showLegacyFirmwareDialog(appVersion);
+      if (action === 'upgrade' && !WEB_DFU_ENABLED) showToast(FIRMWARE_UPGRADE_NOTICE, 3600);
+      const page = action === 'legacy' ? LEGACY_PAGE_URL : action === 'upgrade' && WEB_DFU_ENABLED ? 'dfu.html' : null;
+      await navigateToDevicePage(page, targetDevice);
+      if (!page) addLog('已取消连接，请使用旧版网页；固件升级功能开发中。');
+      return;
     }
 
-    if (appVersion < 0x16) {
-      const oldURL = "https://tsl0922.github.io/EPD-nRF5/v1.5";
-      alert("!!!注意!!!\n当前固件版本过低，可能无法正常使用部分功能，建议升级到最新版本。");
-      if (confirm('是否访问旧版本上位机？')) location.href = oldURL;
-      setTimeout(() => {
-        addLog(`如遇到问题，请联系购买商家，可访问旧版本上位机: ${oldURL}`);
-      }, 500);
+    // 在订阅通知前初始化传图模块：固件可能在 CCCD 启用/INIT 后立即推送
+    // "mtu=<n> rle=1"，而 init() 会复位 RLE 能力，不能晚于该通知执行。
+    if (typeof BleTransfer !== 'undefined') {
+      BleTransfer.init();
     }
 
     try {
-      await epdCharacteristic.startNotifications();
-      epdCharacteristic.addEventListener('characteristicvaluechanged', (event) => {
-        handleNotify(event.target.value, msgIndex++);
-      });
-      // 给系统一点时间完成监听器挂载
-      await new Promise(r => setTimeout(r, 200));
+      // 必须先挂监听器，再开启通知。固件会在 CCCD 写入完成时立即推送
+      // 配置/MTU/电压，否则首批通知可能在 startNotifications() 返回前丢失。
       updateBatteryVoltageDisplay(null, '等待上报');
+      epdCharacteristic.addEventListener('characteristicvaluechanged', (event) => {
+        if (generation === connectionGeneration && event.target === epdCharacteristic) {
+          handleNotify(event.target.value);
+        }
+      });
+      await epdCharacteristic.startNotifications();
+      ensureConnected();
+      if (window.ExternalResourceInstaller && EpdFirmwarePolicy.isNewFirmware(appVersion))
+        window.ExternalResourceInstaller.bind(epdCharacteristic);
+
+      // INIT 后固件会上报电压，并遵循协议连接初始化顺序。
+      if (!await write(EpdCmd.INIT, null, true, true, true, setupOperation)) {
+        throw new Error('连接后初始化失败：INIT 命令未完成');
+      }
     } catch (e) {
       console.error(e);
-      if (e.message) addLog("startNotifications: " + e.message);
+      throw e;
     }
 
-    const initOk = await write(EpdCmd.INIT);
-    if (initOk) {
-      await syncTimeOnConnect();
+    ensureConnected();
+    const timeSynced = await syncTimeOnConnect(setupOperation);
+    ensureConnected();
+    if (EpdFirmwarePolicy.isNewFirmware(appVersion) && !timeSynced) throw new Error('连接后自动时间同步失败');
+    if (await waitForNegotiatedMtu()) {
+      addLog(`传图MTU已就绪: ${currentMtuValue()}`);
+    } else {
+      addLog('尚未收到设备MTU，发图前会再等待一次');
     }
+    ensureConnected();
 
-    // Initialize CRC transfer module if available
-    if (typeof BleTransfer !== 'undefined') {
-      BleTransfer.init();
+    if (window.CalendarAnnotations && EpdFirmwarePolicy.isNewFirmware(appVersion)) {
+      await window.CalendarAnnotations.loadFromDevice(setupOperation);
+      ensureConnected();
+    }
+    if (window.ExternalResourceInstaller && EpdFirmwarePolicy.isNewFirmware(appVersion)) {
+      await window.ExternalResourceInstaller.refresh(setupOperation);
+      ensureConnected();
     }
 
     if (clearLogOnNextSuccessfulConnect) {
@@ -1118,8 +1649,19 @@ async function connect() {
 
     document.getElementById("connectbutton").innerHTML = '断开';
     updateButtonStatus();
+  } catch (e) {
+    addLog(`连接初始化失败: ${e.message || e}`);
+    if (targetDevice === bleDevice) {
+      if (targetDevice.gatt && targetDevice.gatt.connected) {
+        try { targetDevice.gatt.disconnect(); }
+        catch (error) { addLog(`断开蓝牙失败: ${error.message || error}`); }
+      }
+      if (gattServer || epdCharacteristic) disconnect();
+    }
   } finally {
     isConnecting = false;
+    if (setupOperation) DeviceOperations.end(setupOperation);
+    updateButtonStatus();
   }
 }
 
@@ -1174,6 +1716,18 @@ function setConsoleLogEnabled(enabled) {
 
 function addLog(logTXT, action = '') {
   const log = document.getElementById("log");
+  const message = String(logTXT == null ? '' : logTXT);
+  const level = /失败|超时|错误|异常|Error|failed|invalid/i.test(message) ? 'error'
+    : /警告|注意|电压过低|断开|disconnected|warn|warning/i.test(message) ? 'warn'
+    : /成功|完成|已连接|已保存|success|connected/i.test(message) ? 'success' : 'info';
+  if (!log) {
+    if (logToConsole) console[level === 'error' || level === 'warn' ? 'warn' : 'log']('[EPD]', message);
+    return;
+  }
+  if (level === 'error' && typeof log.closest === 'function') {
+    const details = log.closest('details');
+    if (details) details.open = true;
+  }
   // 只有用户当前停留在底部附近时才自动滚动，避免查看历史日志被强制拉回底部。
   const autoFollow = (log.scrollHeight - (log.scrollTop + log.clientHeight)) < 24;
   const now = new Date();
@@ -1183,7 +1737,7 @@ function addLog(logTXT, action = '') {
 
   const logEntry = document.createElement('div');
   const timeSpan = document.createElement('span');
-  logEntry.className = 'log-line';
+  logEntry.className = `log-line log-${level}`;
   timeSpan.className = 'time';
   timeSpan.textContent = time;
   logEntry.appendChild(timeSpan);
@@ -1194,13 +1748,13 @@ function addLog(logTXT, action = '') {
     actionSpan.innerHTML = action;
     logEntry.appendChild(actionSpan);
   }
-  logEntry.appendChild(document.createTextNode(logTXT));
+  logEntry.appendChild(document.createTextNode(message));
 
   log.appendChild(logEntry);
 
   if (logToConsole) {
-    const line = `${time}${action}${logTXT}`;
-    const isErr = /失败|超时|Error|异常|disconnected|断开|warn|warning/i.test(logTXT);
+    const line = `${time}${action}${message}`;
+    const isErr = level === 'error' || level === 'warn';
     if (isErr) {
       console.warn('[EPD]', line);
     } else {
@@ -1219,7 +1773,8 @@ function addLog(logTXT, action = '') {
 }
 
 function clearLog() {
-  document.getElementById("log").innerHTML = '';
+  const log = document.getElementById('log');
+  if (log) log.innerHTML = '';
 }
 
 function clearLogBeforeIndex(index) {
@@ -1237,6 +1792,24 @@ function fillCanvas(style) {
   ctx.fillRect(0, 0, canvas.width, canvas.height);
 }
 
+function prepareCanvasExport() {
+  flushImageAdjustments();
+  if (paintManager && typeof paintManager.prepareExport === 'function') paintManager.prepareExport();
+}
+
+function captureCanvasOrientation() {
+  return rotationQuarterTurns;
+}
+
+function restoreCanvasOrientation(turns) {
+  imageLoadToken++;
+  rotationQuarterTurns = Number.isInteger(turns) ? ((turns % 4) + 4) % 4 : 0;
+  const matched = canvasSizes.find(size => size.width === canvas.width && size.height === canvas.height);
+  const sizeSelect = document.getElementById('canvasSize');
+  if (matched && sizeSelect) sizeSelect.value = matched.name;
+  updateOrientationBadge();
+}
+
 function setCanvasTitle(title) {
   const canvasTitle = document.querySelector('.canvas-title');
   if (canvasTitle) {
@@ -1247,25 +1820,70 @@ function setCanvasTitle(title) {
 
 function updateImage() {
   const imageFile = document.getElementById('imageFile');
-  if (imageFile.files.length == 0) {
-    fillCanvas('white');
+  if (!imageFile || !canvas || !ctx) return;
+  flushImageAdjustments();
+  const token = ++imageLoadToken;
+  const clearInvalidCrop = () => {
+    if (!cropManager || !cropManager.isCropMode()) return;
+    cropManager.exitCropMode();
+    if (canvas.style) canvas.style.backgroundImage = '';
+    if (paintManager && typeof paintManager.redrawAll === 'function') paintManager.redrawAll();
+    else fillCanvas('white');
+  };
+  if (!imageFile.files || imageFile.files.length === 0) {
+    clearInvalidCrop();
     return;
   }
-
+  const file = imageFile.files[0];
+  if (window.ConsoleUI && typeof window.ConsoleUI.validateImageFile === 'function') {
+    const validationError = window.ConsoleUI.validateImageFile(file);
+    if (validationError) {
+      showToast(validationError, 4000);
+      addLog(validationError);
+      imageFile.value = '';
+      clearInvalidCrop();
+      if (typeof window.ConsoleUI.refreshImageFileName === 'function') window.ConsoleUI.refreshImageFileName();
+      return;
+    }
+  }
   const image = new Image();
+  let imageUrl;
+  const releaseImageUrl = () => {
+    if (imageUrl) { URL.revokeObjectURL(imageUrl); imageUrl = null; }
+  };
+  const reportImageError = () => {
+    releaseImageUrl();
+    if (token !== imageLoadToken) return;
+    imageFile.value = '';
+    clearInvalidCrop();
+    if (window.ConsoleUI && typeof window.ConsoleUI.refreshImageFileName === 'function') window.ConsoleUI.refreshImageFileName();
+    const message = '图片读取失败，请选择有效的 PNG、JPG、BMP 或 WebP 图片。';
+    showToast(message, 4000);
+    addLog(message);
+  };
   image.onload = function () {
-    URL.revokeObjectURL(this.src);
+    releaseImageUrl();
+    if (token !== imageLoadToken) return;
+    if (!image.width || !image.height) { reportImageError(); return; }
     if (image.width / image.height == canvas.width / canvas.height) {
-      if (cropManager.isCropMode()) cropManager.exitCropMode();
+      if (cropManager && cropManager.isCropMode()) cropManager.exitCropMode();
+      fillCanvas('white');
       ctx.drawImage(image, 0, 0, image.width, image.height, 0, 0, canvas.width, canvas.height);
+      if (paintManager) paintManager.captureBaseImage();
       convertDithering();
     } else {
-      alert(`图片宽高比例与画布不匹配，将进入裁剪模式。\n请放大图片后移动图片使其充满画布, 再点击"完成"按钮。`);
-      paintManager.setActiveTool(null, '');
-      cropManager.initializeCrop();
+      showToast('已进入裁剪模式：缩放、拖动图片使其填满画布，再点击“完成”。', 4800);
+      if (paintManager) paintManager.setActiveTool(null, '');
+      if (cropManager) cropManager.initializeCrop();
     }
   };
-  image.src = URL.createObjectURL(imageFile.files[0]);
+  image.onerror = reportImageError;
+  try {
+    imageUrl = URL.createObjectURL(file);
+    image.src = imageUrl;
+  } catch (_) {
+    reportImageError();
+  }
 }
 
 function updateOrientationBadge() {
@@ -1300,17 +1918,55 @@ function updateOrientationBadge() {
 function updateCanvasSize() {
   const selectedSizeName = document.getElementById('canvasSize').value;
   const selectedSize = canvasSizes.find(size => size.name === selectedSizeName);
+  if (!selectedSize) return;
+  flushImageAdjustments();
+  imageLoadToken++;
+  const wasCropping = cropManager?.isCropMode();
+  if (wasCropping) cropManager.exitCropMode();
+
+  const previousBase = document.createElement('canvas');
+  previousBase.width = canvas.width;
+  previousBase.height = canvas.height;
+  if (paintManager) paintManager.drawBaseImage(true);
+  previousBase.getContext('2d').drawImage(canvas, 0, 0);
 
   canvas.width = selectedSize.width;
   canvas.height = selectedSize.height;
-
-  updateImage();
-  // 尺寸变化后，重绘所有矢量元素（文字、线条等）
-  if (paintManager) {
-    paintManager.redrawAll();
-  }
   rotationQuarterTurns = 0;
+  fillCanvas('white');
+  ctx.drawImage(previousBase, 0, 0, canvas.width, canvas.height);
+
+  if (paintManager) {
+    paintManager.captureBaseImage();
+    if (typeof paintManager.resizeElements === 'function') {
+      paintManager.resizeElements(previousBase.width, previousBase.height, canvas.width, canvas.height);
+    }
+    if (typeof paintManager.fitScheduleToCanvas === 'function') paintManager.fitScheduleToCanvas(false);
+    convertDithering(false);
+    paintManager.saveToHistory();
+  }
+  if (wasCropping) updateImage();
   updateOrientationBadge();
+}
+
+// 配置回读后把 debug 驱动下拉纠正为固件实际型号（config[7] = model_id）。
+// 仅当列表中存在对应 option 时选中并记录日志；未知型号保留当前选择并警告。
+// 只在配置回读（14 字节配置通知 / GET_CONFIG 响应）后调用，不干扰用户手动选择。
+function applyDriverCodeFromConfig(config) {
+  if (!config || config.length < 8) return false;
+  const epddriver = document.getElementById('epddriver');
+  if (!epddriver) return false;
+  const driverCode = bytes2hex(Uint8Array.from([config[7]]));
+  const options = epddriver.options || [];
+  const supported = Array.prototype.some.call(options, option => option && option.value === driverCode);
+  if (!supported) {
+    addLog(`警告：设备型号 ${driverCode} 不在驱动列表中，保留当前驱动选择。`);
+    return false;
+  }
+  if (epddriver.value === driverCode) return true;
+  epddriver.value = driverCode;
+  addLog(`已按设备型号纠正驱动选择: ${driverCode}`);
+  return true;
 }
 
 function updateDitcherOptions() {
@@ -1330,10 +1986,13 @@ function applyCanvasTransform(transformType) {
     alert("请先完成图片裁剪！");
     return;
   }
+  flushImageAdjustments();
+  imageLoadToken++;
 
   const sourceCanvas = document.createElement('canvas');
   sourceCanvas.width = canvas.width;
   sourceCanvas.height = canvas.height;
+  if (paintManager) paintManager.drawBaseImage(true);
   sourceCanvas.getContext('2d').drawImage(canvas, 0, 0);
 
   const oldWidth = canvas.width;
@@ -1368,7 +2027,9 @@ function applyCanvasTransform(transformType) {
   }
 
   if (paintManager) {
+    paintManager.captureBaseImage();
     paintManager.transformElements(transformType, oldWidth, oldHeight, canvas.width, canvas.height);
+    convertDithering(false);
     paintManager.saveToHistory();
   }
 
@@ -1401,6 +2062,11 @@ function flipCanvas() {
 
 function clearCanvas() {
   if (confirm('清除画布内容?')) {
+    flushImageAdjustments();
+    imageLoadToken++;
+    const imageFile = document.getElementById('imageFile');
+    if (imageFile) imageFile.value = '';
+    if (window.ConsoleUI && typeof window.ConsoleUI.refreshImageFileName === 'function') window.ConsoleUI.refreshImageFileName();
     fillCanvas('white');
     paintManager.clearElements(); // Clear stored text positions and line segments
     paintManager.clearCanvasCache(); // Clear cached data from localStorage
@@ -1412,44 +2078,106 @@ function clearCanvas() {
   return false;
 }
 
-function convertDithering() {
-  paintManager.redrawTextElements();
-  paintManager.redrawLineSegments();
-  paintManager.redrawTodoItems();
-
-  const contrast = parseFloat(document.getElementById('ditherContrast').value);
-  const currentImageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
-  const imageData = new ImageData(
-    new Uint8ClampedArray(currentImageData.data),
-    currentImageData.width,
-    currentImageData.height
-  );
-
-  adjustContrast(imageData, contrast);
-
-  const alg = document.getElementById('ditherAlg').value;
-  const strength = parseFloat(document.getElementById('ditherStrength').value);
-  const mode = document.getElementById('ditherMode').value;
-  const processedData = processImageData(ditherImage(imageData, alg, strength, mode), mode);
-  const finalImageData = decodeProcessedData(processedData, canvas.width, canvas.height, mode);
-  ctx.putImageData(finalImageData, 0, 0);
-
-  paintManager.saveToHistory(); // Save dithered image to history
+function imageAdjustmentSettings() {
+  const number = (id, min, max, fallback) => {
+    const value = Number(document.getElementById(id)?.value);
+    return Number.isFinite(value) ? Math.max(min, Math.min(max, value)) : fallback;
+  };
+  return { algorithm: document.getElementById('ditherAlg').value,
+    strength: number('ditherStrength', 0, 5, 1), contrast: number('ditherContrast', 0.5, 2, 1.2),
+    mode: document.getElementById('ditherMode').value };
 }
 
-function applyDither() {
-  cropManager.finishCrop(() => convertDithering());
+function restoreImageAdjustments(settings) {
+  const values = { ditherAlg: settings.algorithm, ditherStrength: settings.strength,
+    ditherContrast: settings.contrast, ditherMode: settings.mode };
+  for (const [id, value] of Object.entries(values)) {
+    const node = document.getElementById(id);
+    if (node && value !== undefined) node.value = value;
+  }
+  syncImageAdjustmentControls();
+}
+
+function syncImageAdjustmentControls() {
+  const settings = imageAdjustmentSettings();
+  document.getElementById('ditherStrengthValue').textContent = settings.strength.toFixed(1);
+  document.getElementById('ditherContrastValue').textContent = settings.contrast.toFixed(1);
+  document.getElementById('ditherStrength').disabled = settings.algorithm === 'none';
+  const hint = document.getElementById('imageAdjustmentHint');
+  if (hint) hint.textContent = settings.mode === 'sixColor'
+    ? '六色模式支持预览和数组导出，当前固件不能发送。'
+    : '调整从原图重新计算；文字、画笔和课表保留。';
+}
+
+function renderImageAdjustments(original, settings) {
+  const image = new ImageData(new Uint8ClampedArray(original.data), original.width, original.height);
+  // Transparent source pixels have the same white backing as the canvas.
+  for (let i = 0; i < image.data.length; i += 4) {
+    const alpha = image.data[i + 3] / 255;
+    for (let channel = 0; channel < 3; channel++)
+      image.data[i + channel] = image.data[i + channel] * alpha + 255 * (1 - alpha);
+    image.data[i + 3] = 255;
+  }
+  adjustContrast(image, settings.contrast);
+  return ditherImage(image, settings.algorithm, settings.strength, settings.mode);
+}
+
+function convertDithering(saveHistory = true) {
+  // The source bitmap stays intact; vectors are composed after its preview.
+  const settings = imageAdjustmentSettings(), previous = paintManager.imageAdjustments;
+  const unchanged = previous && Object.keys(settings).every(key => settings[key] === previous[key]);
+  if (!unchanged || !paintManager.processedBaseImageData)
+    paintManager.processedBaseImageData = paintManager.baseImageData
+      ? renderImageAdjustments(paintManager.baseImageData, settings) : null;
+  paintManager.imageAdjustments = settings;
+  paintManager.workspaceRevision++;
+  paintManager.redrawAll();
+  if (saveHistory) paintManager.saveToHistory();
+}
+
+function flushImageAdjustments() {
+  if (imageAdjustmentFrame !== null) { cancelAnimationFrame(imageAdjustmentFrame); imageAdjustmentFrame = null; }
+  if (imageAdjustmentTimer !== null) { clearTimeout(imageAdjustmentTimer); imageAdjustmentTimer = null; }
+  if (!imageAdjustmentPending) return;
+  imageAdjustmentPending = false;
+  if (!cropManager?.isCropMode() && paintManager) convertDithering();
+}
+
+function applyDither(finishCrop = false) {
+  if (!canvas || !ctx || !paintManager || !cropManager) return;
+  syncImageAdjustmentControls();
+  if (!cropManager.isCropMode()) {
+    imageAdjustmentPending = false;
+    if (imageAdjustmentFrame !== null) { cancelAnimationFrame(imageAdjustmentFrame); imageAdjustmentFrame = null; }
+    if (imageAdjustmentTimer !== null) { clearTimeout(imageAdjustmentTimer); imageAdjustmentTimer = null; }
+    convertDithering();
+    return;
+  }
+  if (finishCrop) cropManager.finishCrop(() => convertDithering());
 }
 
 function initEventHandlers() {
-  document.getElementById("ditherStrength").addEventListener("input", (e) => {
-    document.getElementById("ditherStrengthValue").innerText = parseFloat(e.target.value).toFixed(1);
-    applyDither();
-  });
-  document.getElementById("ditherContrast").addEventListener("input", (e) => {
-    document.getElementById("ditherContrastValue").innerText = parseFloat(e.target.value).toFixed(1);
-    applyDither();
-  });
+  syncImageAdjustmentControls();
+  for (const id of ['ditherStrength', 'ditherContrast']) {
+    const input = document.getElementById(id);
+    input.addEventListener('input', () => {
+      syncImageAdjustmentControls();
+      if (cropManager.isCropMode()) return;
+      imageAdjustmentPending = true;
+      if (imageAdjustmentFrame === null) imageAdjustmentFrame = requestAnimationFrame(() => {
+        imageAdjustmentFrame = null;
+        if (!cropManager.isCropMode()) convertDithering(false);
+      });
+      if (imageAdjustmentTimer !== null) clearTimeout(imageAdjustmentTimer);
+      imageAdjustmentTimer = setTimeout(flushImageAdjustments, 300);
+    });
+    input.addEventListener('change', flushImageAdjustments);
+  }
+  document.addEventListener('pointerdown', event => {
+    if (!['ditherStrength', 'ditherContrast'].includes(event.target?.id)) flushImageAdjustments();
+  }, true);
+  document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') flushImageAdjustments(); });
+  window.addEventListener?.('pagehide', flushImageAdjustments);
 }
 
 function checkDebugMode() {
@@ -1458,14 +2186,20 @@ function checkDebugMode() {
   const debugMode = urlParams.get('debug');
 
   if (debugMode === 'true') {
-    document.body.classList.add('dark-mode');
-    link.innerHTML = '正常模式';
-    link.setAttribute('href', window.location.pathname);
+    document.body.classList.add('debug-mode');
+    if (link) {
+      link.innerHTML = '正常模式';
+      urlParams.delete('debug');
+      link.setAttribute('href', window.location.pathname + (urlParams.toString() ? '?' + urlParams.toString() : '') + (window.location.hash || ''));
+    }
     addLog("注意：开发模式功能已开启！不懂请不要随意修改，否则后果自负！");
   } else {
-    document.body.classList.remove('dark-mode');
-    link.innerHTML = '开发模式';
-    link.setAttribute('href', window.location.pathname + '?debug=true');
+    document.body.classList.remove('debug-mode');
+    if (link) {
+      link.innerHTML = '开发模式';
+      urlParams.set('debug', 'true');
+      link.setAttribute('href', window.location.pathname + '?' + urlParams.toString() + (window.location.hash || ''));
+    }
   }
 }
 
@@ -1485,7 +2219,10 @@ function updateFooterInfo() {
   }
 }
 
-document.body.onload = () => {
+let consoleInitialized = false;
+function initConsole() {
+  if (consoleInitialized) return;
+  consoleInitialized = true;
   textDecoder = null;
   canvas = document.getElementById('canvas');
   ctx = canvas.getContext("2d", { willReadFrequently: true });
@@ -1507,7 +2244,23 @@ document.body.onload = () => {
   updateOrientationBadge();
   updateBatteryVoltageDisplay();
   checkDebugMode();
+  if (window.CalendarAnnotations) {
+    window.CalendarAnnotations.init();
+  }
   if (typeof initDfuPanel === 'function') {
     initDfuPanel();
+  }
+  if (window.ConsoleUI && typeof window.ConsoleUI.init === 'function') {
+    window.ConsoleUI.init();
+  }
+}
+
+// main.js 提前提供版本策略；界面等其余 defer 脚本就绪后初始化。
+// Device controls must not wait for optional third-party requests to finish.
+if (typeof document !== 'undefined') {
+  if (document.readyState === 'loading' || document.readyState === 'interactive') {
+    document.addEventListener('DOMContentLoaded', initConsole, { once: true });
+  } else if (document.readyState === 'complete') {
+    initConsole();
   }
 }

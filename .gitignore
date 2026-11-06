@@ -1,11 +1,55 @@
-# Keil/uVision local settings
-Keil/*.uvoptx
-Keil/*.uvguix.*
+# Build output
+_build/
 
-# Keil generated logs and outputs
-Keil/_alog.txt
-Keil/Listings/
-Keil/_build_*/
-Keil/*_analysis.xlsx
-Keil/*_sort_by_flash.csv
-Keil/*_sort_by_ram.csv
+# Keil 本地编译输出与界面状态（uVision 生成，勿入库）
+/Keil/_build_nRF52/
+/Keil/Listings/
+/Keil/Objects/
+/Keil/*.uvguix.*
+
+# Windows GUI 模拟器本地构建产物（host gcc 生成，勿入库）
+/emulator.exe
+/*.o
+/GUI/*.o
+/EPD/*/*.o
+/tests/stubs/*.o
+/tools/test/*.o
+# 本地输入法/工具在仓库根目录留下的调试日志（非项目产物）
+/debug.log
+
+# Local review, build and browser-automation artifacts
+/output/
+/.playwright-cli/
+/uncommitted.patch
+__pycache__/
+*.pyc
+
+# 压缩包超过 Gitee 100MB 限制，不入库
+# tools/*.tar.bz2
+# tools/*.tar.gz
+
+# Build and Release Folders
+bin-debug/
+bin-release/
+[Oo]bj/
+/[Bb]in/
+
+# Other files and folders
+.settings/
+.vscode/
+
+# Executables
+*.swf
+*.air
+*.ipa
+*.apk
+
+# Project files, i.e. `.project`, `.actionScriptProperties` and `.flexProperties`
+# should NOT be excluded as they contain compiler settings and other important
+# information for Eclipse / Flash Builder.
+/Keil/_alog.txt
+/Keil/*.uvoptx
+/Keil/_build_softdevice_nRF52/
+/Keil/EPD-nRF52_analysis.xlsx
+/Keil/EPD-nRF52_sort_by_flash.csv
+/Keil/EPD-nRF52_sort_by_ram.csv

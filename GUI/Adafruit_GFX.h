@@ -7,6 +7,19 @@
 
 #include "u8g2_font.h"
 
+/* Firmware targets the unrotated UC8179 BWR panel. Host tools retain the
+ * general renderer unless they explicitly select the same specialization. */
+#ifndef GFX_FIXED_BWR_PANEL
+#define GFX_FIXED_BWR_PANEL 0
+#endif
+
+/* Shared page buffer for the streamed EPD renderer.
+ *
+ * 1,400 B supports a 14-row mono page or a 7-row three-colour page on
+ * the 800-pixel panel. Clock OLD data has its own small strip buffer.
+ */
+#define GFX_PAGE_BUFFER_SIZE 1400U
+
 // 颜色定义 - RGB565 格式 (16位：5位红色，6位绿色，5位蓝色)
 // Color definitions - RGB565 format (16-bit: 5-bit red, 6-bit green, 5-bit blue)
 #define GFX_BLACK 0x0000   // 黑色 | Black
@@ -68,6 +81,8 @@ typedef struct {
     uint8_t* color;           // color pixel buffer (3c only) 彩色像素缓冲区（仅用于3色显示器）
     uint16_t px, py, pw, ph;  // partial window offset and size 局部窗口偏移和大小
     int16_t page_height;      // height to be drawn in one page 单页绘制的高度
+    bool clip_enabled;
+    int16_t clip_left, clip_top, clip_right, clip_bottom;
     int16_t current_page;     // index of the current drawing page 当前绘制页的索引
     int16_t total_pages;      // total number of pages to be drawn 需要绘制的总页数
 } Adafruit_GFX;
@@ -92,6 +107,9 @@ void GFX_firstPage(Adafruit_GFX* gfx);
 bool GFX_nextPage(Adafruit_GFX* gfx, buffer_callback callback, void* user_data);
 // 结束绘图并释放资源 | End drawing and release resources
 void GFX_end(Adafruit_GFX* gfx);
+// 检查逻辑包围盒是否与当前渲染页有物理重叠 | Check if logical bounding box overlaps with current page
+bool GFX_isBoxInPage(Adafruit_GFX* gfx, int16_t x, int16_t y, int16_t w, int16_t h);
+
 
 // =============================================================================
 // DRAW API - 绘图接口
@@ -162,6 +180,12 @@ void GFX_drawBitmap(Adafruit_GFX* gfx, int16_t x, int16_t y, const uint8_t bitma
 void GFX_setCursor(Adafruit_GFX* gfx, int16_t x, int16_t y);
 // 设置当前字体 | Set current font
 void GFX_setFont(Adafruit_GFX* gfx, const uint8_t* font);
+// 设置外置字体源 | Set an external font source
+void GFX_setExternalFont(Adafruit_GFX* gfx, const u8g2_font_source_t* source);
+// 设置固定宽度缺字占位参数 | Set fixed-width missing-glyph placeholder metrics
+void GFX_setFontPlaceholder(Adafruit_GFX* gfx, const u8g2_font_placeholder_t* placeholder);
+// 选择仅占位符字体 | Select placeholder-only font mode
+void GFX_setMissingFont(Adafruit_GFX* gfx, const u8g2_font_placeholder_t* placeholder);
 // 设置字体模式（透明/不透明）| Set font mode (transparent/opaque)
 void GFX_setFontMode(Adafruit_GFX* gfx, uint8_t is_transparent);
 // 设置字体方向 | Set font direction
@@ -176,6 +200,10 @@ int8_t GFX_getFontDescent(Adafruit_GFX* gfx);
 int8_t GFX_getFontHeight(Adafruit_GFX* gfx);
 // 绘制单个字形 | Draw a single glyph
 int16_t GFX_drawGlyph(Adafruit_GFX* gfx, int16_t x, int16_t y, uint16_t e);
+// 查询当前字体是否包含字形 | Check whether current font contains a glyph
+bool GFX_hasGlyph(Adafruit_GFX* gfx, uint16_t e);
+// 获取字形水平步进（缺字时返回占位框步进）| Get glyph advance
+int16_t GFX_getGlyphAdvance(Adafruit_GFX* gfx, uint16_t e);
 // 绘制ASCII字符串 | Draw an ASCII string
 int16_t GFX_drawStr(Adafruit_GFX* gfx, int16_t x, int16_t y, const char* s);
 // 绘制UTF-8编码字符串（支持中文等多字节字符）| Draw UTF-8 encoded string (supports Chinese and other multi-byte characters)
@@ -190,5 +218,11 @@ size_t GFX_print(Adafruit_GFX* gfx, const char c);
 size_t GFX_write(Adafruit_GFX* gfx, const char* buffer, size_t size);
 // 格式化打印（类似printf）| Formatted print (similar to printf)
 size_t GFX_printf(Adafruit_GFX* gfx, const char* format, ...);
+size_t GFX_puts(Adafruit_GFX* gfx, const char* text);
+
+/* Returns the shared page buffer and its size in bytes.
+ * Use instead of declaring extern s_gfx_buffer[] in other translation units. */
+uint8_t *GFX_get_buffer(void);
+size_t   GFX_get_buffer_size(void);
 
 #endif  // _ADAFRUIT_GFX_H

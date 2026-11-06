@@ -78,6 +78,30 @@
     if (log) log.innerHTML = '';
   }
 
+  function exportLog() {
+    const log = getDfuLog();
+    const lines = log ? Array.from(log.children, entry => entry.textContent) : [];
+    if (!lines.length) {
+      showToast('暂无可导出的升级日志');
+      return;
+    }
+    const now = new Date();
+    const stamp = [now.getFullYear(), now.getMonth() + 1, now.getDate(),
+      now.getHours(), now.getMinutes(), now.getSeconds()]
+      .map(value => String(value).padStart(2, '0')).join('-');
+    const blob = new Blob(['\uFEFF' + lines.join('\r\n') + '\r\n'], { type: 'text/plain;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `epd-dfu-log-${stamp}.txt`;
+    link.hidden = true;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+    showToast('升级日志已导出');
+  }
+
   function getRuntimeState() {
     if (typeof window.getDfuPageState === 'function') {
       return window.getDfuPageState();
@@ -101,19 +125,23 @@
     const abandonBtn = document.getElementById('dfuAbandonSessionButton');
     const resetBtn = document.getElementById('dfuResetModeButton');
     const startBtn = document.getElementById('dfuStartButton');
+    const switchBtn = document.getElementById('dfuSwitchModeButton');
     if (!badge || !hint || !flowGuide || !abandonBtn || !resetBtn || !startBtn) return;
 
     abandonBtn.disabled = !!(state.busy || !state.hasPendingSession);
     startBtn.textContent = state.hasPendingSession ? '继续升级' : '选择设备并升级';
+    if (switchBtn) {
+      switchBtn.disabled = !!(state.busy || state.hasPendingSession);
+    }
 
     if (state.manualBootloaderEntryRequired) {
-      badge.textContent = '手动 DfuTarg';
+      badge.textContent = '分步升级流程';
       hint.textContent = state.hasPendingSession
-        ? '当前存在待继续的 DFU 会话。此时点击“继续升级”或“手动选择DFU设备并继续”都会直接进入 DfuTarg 选择。'
-        : '当前已切换到手动 DfuTarg 流程。请先让设备进入 DfuTarg，再点击“选择设备并升级”；如果想恢复默认 buttonless 流程，可点“恢复默认流程”。';
+        ? '当前存在待继续的 DFU 会话。请在“步骤 3”中点击“继续升级”或“手动选择 DFU 设备并继续”。'
+        : '当前推荐分步流程：请先在“步骤 2”选择并重启设备，等设备进入 DFU 模式后，在“步骤 3”选择 DfuTarg 升级。';
       flowGuide.textContent = state.hasPendingSession
-        ? '当前页面处于手动 DfuTarg 模式，且存在一个可恢复会话。不要再重新从应用设备开始；直接点“继续升级”或“手动选择DFU设备并继续”即可。'
-        : '当前页面处于手动 DfuTarg 模式。页面不会再先选应用设备，而是要求你先把设备切到 DfuTarg，再直接选择 DFU 设备继续升级。';
+        ? '当前处于分步升级模式，且有未完成的会话。请勿重新开始，直接在“步骤 3”点击“继续升级”即可。'
+        : '系统受浏览器安全规则限制无法自动重连；分步手动流程可确保每次弹窗都有合法的用户手势交互，避免被浏览器拦截。';
       resetBtn.disabled = !!(state.busy || state.hasPendingSession);
       return;
     }
@@ -163,6 +191,7 @@
   function bindPageActions() {
     const backBtn = document.getElementById('dfuBackButton');
     const clearBtn = document.getElementById('dfuClearLogButton');
+    const exportBtn = document.getElementById('exportLogButton');
     const abandonBtn = document.getElementById('dfuAbandonSessionButton');
     const resetModeBtn = document.getElementById('dfuResetModeButton');
     if (backBtn) {
@@ -185,6 +214,9 @@
     }
     if (clearBtn) {
       clearBtn.addEventListener('click', clearLog);
+    }
+    if (exportBtn) {
+      exportBtn.addEventListener('click', exportLog);
     }
     if (abandonBtn) {
       abandonBtn.addEventListener('click', () => {
@@ -237,6 +269,9 @@
   });
 
   window.addEventListener('load', () => {
+    if (window.ConsoleUI && typeof window.ConsoleUI.initTheme === 'function') {
+      window.ConsoleUI.initTheme();
+    }
     bindPageActions();
     applyHandoffNotice(loadHandoffState());
     if (typeof initDfuPanel === 'function') {

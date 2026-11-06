@@ -4,82 +4,170 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Nordic DFU 升级</title>
+  <meta name="theme-color" content="#2563eb">
+  <title>固件升级开发中 · EPD 控制台</title>
   <link rel="shortcut icon" type="image/png" href="favicon.png">
-  <link rel="stylesheet" href="css/main.css?v=20260402c">
+  <link rel="stylesheet" href="css/main.css?v=20261005d">
 </head>
 
 <body>
-  <div class="main dfu-page">
-    <div class="page-header">
+  <main class="main dfu-page">
+    <header class="page-header">
       <div>
-        <h1>Nordic DFU 升级</h1>
-        <div class="page-subtitle">独立升级页面，按 Nordic 官方 unbonded buttonless DFU 流程引导完成升级。</div>
+        <div class="page-kicker">EPD CONTROL</div>
+        <h1>固件升级</h1>
+        <p class="page-subtitle">固件升级开发中，暂未开放。</p>
+      </div>
+    </header>
+    <section class="section" aria-labelledby="dfuUnavailableHeading">
+      <h2 id="dfuUnavailableHeading">固件升级开发中，暂未开放</h2>
+      <p class="section-note">请返回主界面继续使用设备控制功能。</p>
+      <a id="dfuUnavailableBackLink" href="index.html">返回主界面</a>
+    </section>
+  </main>
+
+  <!-- Retain the upgrade workbench for a future release. -->
+  <main id="dfuDisabledWorkbench" class="main dfu-page" hidden inert aria-hidden="true">
+    <header class="page-header">
+      <div>
+        <div class="page-kicker">EPD CONTROL / NORDIC DFU</div>
+        <h1>固件升级</h1>
+        <p class="page-subtitle">选择固件、连接设备，按步骤完成蓝牙升级。</p>
       </div>
       <div class="page-actions">
+        <button id="themeToggle" type="button" class="secondary" aria-pressed="false">深色主题</button>
         <button id="dfuBackButton" type="button" class="secondary">返回主界面</button>
       </div>
-    </div>
+    </header>
 
-    <section class="section">
-      <h2>页面说明</h2>
+    <section class="section" aria-labelledby="dfuFlowHeading">
+      <div class="section-heading">
+        <div>
+          <h2 id="dfuFlowHeading">升级工作台</h2>
+          <p class="section-note">先执行环境自检，再准备 Nordic Secure DFU 固件包。</p>
+        </div>
+        <button id="dfuSelfCheckButton" type="button" class="secondary">环境自检</button>
+      </div>
       <div class="device-info">
-        <b>进入方式：</b><span id="dfuEntrySource" class="device-badge">检测中</span>
+        <b>当前流程</b><span id="dfuModeBadge" class="device-badge">默认流程</span>
       </div>
-      <div id="dfuEntryNotice" class="dfu-hint" style="margin-top:0.75rem;"></div>
-      <div id="dfuFlowGuide" class="dfu-hint">
-        页面跳转不会继承浏览器中的 GATT 连接，所以从主界面跳到本页后，升级阶段会重新选择应用设备；切到 Bootloader 后，如果浏览器尚未持有 DfuTarg 授权，页面会提示你再次确认。
-      </div>
-    </section>
+      <p id="dfuModeHint" class="dfu-hint"></p>
 
-    <section class="section">
-      <h2>升级流程</h2>
-      <div class="device-info">
-        <b>当前流程：</b><span id="dfuModeBadge" class="device-badge">默认流程</span>
+      <div class="dfu-steps-cards">
+        <article class="dfu-step-card" id="stepCardPkg" aria-labelledby="dfuPackageHeading">
+          <div class="step-badge step-pill">01</div>
+          <div class="step-body">
+            <h3 id="dfuPackageHeading">选择固件包</h3>
+            <p id="dfuPackageHint" class="step-desc">选择已打包的 Nordic Secure DFU 文件（.zip）。</p>
+            <div class="step-action">
+              <label class="field-label" for="dfuPackageFile">本地固件文件</label>
+              <input type="file" id="dfuPackageFile" accept=".zip" aria-describedby="dfuPackageHint">
+            </div>
+          </div>
+        </article>
+
+        <article class="dfu-step-card" id="stepCardSwitch" aria-labelledby="dfuSwitchHeading">
+          <div class="step-badge step-pill">02</div>
+          <div class="step-body">
+            <div class="dfu-step-heading">
+              <h3 id="dfuSwitchHeading">进入升级模式</h3>
+              <span class="device-badge">可选</span>
+            </div>
+            <p class="step-desc">连接正常运行的设备，将它重启到 DfuTarg。设备已处于 DfuTarg 时，可直接进入下一步。</p>
+            <div class="step-action">
+              <button id="dfuSwitchModeButton" type="button" class="secondary">连接并进入 DFU 模式</button>
+            </div>
+          </div>
+        </article>
+
+        <article class="dfu-step-card" id="stepCardUpgrade" aria-labelledby="dfuUpgradeHeading">
+          <div class="step-badge step-pill">03</div>
+          <div class="step-body">
+            <h3 id="dfuUpgradeHeading">连接设备并升级</h3>
+            <p class="step-desc">按弹窗选择升级目标（通常为 DfuTarg）。连接后自动传输固件；升级过程中请保持设备供电。</p>
+            <div class="step-action">
+              <button id="dfuStartButton" type="button" class="primary">选择设备并升级</button>
+              <button id="dfuManualPickButton" type="button" class="secondary" style="display:none;">手动选择 DFU 设备并继续</button>
+              <button id="dfuAbandonSessionButton" type="button" class="secondary" disabled>放弃当前会话</button>
+              <button id="dfuResetModeButton" type="button" class="secondary" disabled>恢复默认流程</button>
+            </div>
+          </div>
+        </article>
       </div>
-      <div id="dfuModeHint" class="dfu-hint" style="margin-top:0.75rem;"></div>
-      <div class="flex-container">
-        <div class="flex-group">
-          <input type="file" id="dfuPackageFile" accept=".zip">
-          <button id="dfuStartButton" type="button" class="primary">选择设备并升级</button>
-          <button id="dfuManualPickButton" type="button" class="secondary" style="display:none;">手动选择DFU设备并继续</button>
-          <button id="dfuAbandonSessionButton" type="button" class="secondary" disabled>放弃当前会话</button>
-          <button id="dfuResetModeButton" type="button" class="secondary" disabled>恢复默认流程</button>
-          <button id="dfuSelfCheckButton" type="button" class="secondary">环境自检</button>
+
+      <div class="dfu-status-panel" aria-label="升级状态">
+        <div id="dfuStatus" class="dfu-status" role="status" aria-live="polite" aria-atomic="true">未选择 DFU 固件包</div>
+        <div id="dfuPrecheck" class="dfu-precheck" style="display:none;"></div>
+        <div id="dfuRetryInfo" class="dfu-retry-info" style="display:none;"></div>
+        <div id="dfuProgressWrap" class="dfu-progress-wrap" style="display:none;" aria-label="固件传输进度">
+          <div id="dfuProgressBar" class="dfu-progress-bar"></div>
+          <div id="dfuProgressText" class="dfu-progress-text"></div>
         </div>
       </div>
-      <div class="dfu-hint">
-        建议顺序：1. 先点“环境自检”；2. 选择 Nordic nRF Secure DFU 固件包（.zip）；3. 点击“选择设备并升级”；4. 如页面提示，再选择 DfuTarg 继续。
-      </div>
-      <div id="dfuStatus" class="dfu-status">状态：未选择 DFU 固件包</div>
-      <div id="dfuPrecheck" class="dfu-precheck" style="display:none;"></div>
-      <div id="dfuRetryInfo" class="dfu-retry-info" style="display:none;"></div>
-      <div id="dfuProgressWrap" class="dfu-progress-wrap" style="display:none;">
-        <div id="dfuProgressBar" class="dfu-progress-bar"></div>
-        <div id="dfuProgressText" class="dfu-progress-text"></div>
-      </div>
+
+      <details class="help-details">
+        <summary>高级传输设置</summary>
+        <div class="dfu-options-group">
+          <label class="dfu-checkbox-label" for="dfuEnableAutoFind">
+            <input type="checkbox" id="dfuEnableAutoFind" aria-describedby="dfuAutoFindHint">
+            自动识别 DFU 设备
+          </label>
+          <p id="dfuAutoFindHint" class="dfu-hint">默认关闭。unbonded DFU 重启后 MAC 地址会改变，通常无法自动识别；关闭此项可在重启后立即弹出设备选择框。</p>
+          <div class="dfu-select-row">
+            <label for="dfuPrnValue">PRN 流控分片</label>
+            <select id="dfuPrnValue" aria-describedby="dfuPrnHint">
+              <option value="0">禁用（PRN = 0，PC / Chrome 高速传输）</option>
+              <option value="12" selected>12（默认，移动端推荐 / 高兼容）</option>
+              <option value="16">16</option>
+              <option value="32">32</option>
+            </select>
+          </div>
+          <p id="dfuPrnHint" class="dfu-hint">Packet Receipt Notification：控制设备确认接收数据的间隔。</p>
+        </div>
+      </details>
+
+      <details class="help-details">
+        <summary>连接与升级说明</summary>
+        <div class="device-info">
+          <b>进入方式</b><span id="dfuEntrySource" class="device-badge">检测中</span>
+        </div>
+        <p id="dfuEntryNotice" class="dfu-hint"></p>
+        <p id="dfuFlowGuide" class="dfu-hint">页面跳转不会继承浏览器中的 GATT 连接，所以从主界面跳到本页后，升级阶段会重新选择应用设备；切到 Bootloader 后，如果浏览器尚未持有 DfuTarg 授权，页面会提示你再次确认。</p>
+        <p class="dfu-hint">本页使用 Nordic 官方 unbonded buttonless DFU 流程。建议先执行“环境自检”，再选择固件包；设备已处于 DfuTarg 时可跳过步骤 2，直接连接并升级。</p>
+      </details>
     </section>
 
-    <section class="section">
-      <h2>升级日志</h2>
-      <div class="flex-container">
-        <div class="flex-group">
-          <button id="dfuClearLogButton" type="button" class="secondary">清空日志</button>
+    <section class="section" aria-labelledby="dfuLogHeading">
+      <div class="section-heading">
+        <div>
+          <h2 id="dfuLogHeading">升级日志</h2>
+          <p class="section-note">记录最近 200 条操作和传输信息，便于排查升级问题。</p>
+        </div>
+        <div class="log-toolbar">
+          <button id="exportLogButton" type="button" class="secondary">导出日志</button>
+          <button id="dfuClearLogButton" type="button" class="secondary" aria-controls="log">清空日志</button>
         </div>
       </div>
-      <div class="log-legend">
-        <span class="log-chip log-chip-info">信息</span>
-        <span class="log-chip log-chip-warn">提示</span>
-        <span class="log-chip log-chip-success">进度</span>
-        <span class="log-chip log-chip-error">异常</span>
-      </div>
-      <div class="log-container" id="log"></div>
+      <details class="help-details log-details" open>
+        <summary>查看运行记录</summary>
+        <div class="log-legend" aria-label="日志类型">
+          <span class="log-chip log-chip-info">信息</span>
+          <span class="log-chip log-chip-warn">提示</span>
+          <span class="log-chip log-chip-success">进度</span>
+          <span class="log-chip log-chip-error">异常</span>
+        </div>
+        <div class="log-container" id="log" role="region" aria-label="DFU 升级日志" tabindex="0"></div>
+      </details>
     </section>
-  </div>
+    <footer class="footer">
+      <div class="site-statistics" aria-label="网站访问统计">
+        <span id="busuanzi_container_site_pv" style="display:none;">本站总访问量 <strong id="busuanzi_value_site_pv">—</strong> 次</span>
+        <span id="busuanzi_container_site_uv" style="display:none;">访客人数 <strong id="busuanzi_value_site_uv">—</strong> 人</span>
+      </div>
+    </footer>
+  </main>
 
-  <div id="toast" class="toast-message" style="display:none;"></div>
-  <script type="text/javascript" src="js/dfu.js?v=20260402c"></script>
-  <script type="text/javascript" src="js/dfu_page.js?v=20260402c"></script>
+  <div id="toast" class="toast-message" style="display:none;" role="status" aria-live="polite"></div>
 </body>
 
 </html>

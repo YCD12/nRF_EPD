@@ -1,0 +1,27 @@
+; Keil ARM Compiler 6 scatter for the nRF52811 application target.
+; armclang defines __GNUC__, so the nRF5 SDK uses GNU section-set iteration and
+; references __start_/__stop_ boundary symbols plus __isr_vector/__data_start__.
+; The code region uses explicit RO patterns (not .ANY) so the observer sections
+; are claimed by the following auto-sized regions; ac6_gnu_symbols.c
+; aliases the GNU boundary symbols to Image$$<region>$$Base/Limit, which keeps
+; the iterator boundaries exact (padding is never counted as an observer).
+
+LR_IROM1 0x00019000 0x0000E000  {    ; load region: 56 KiB application slot
+  ER_IROM1 0x00019000 0x0000DF00  {
+   *.o (RESET, +First)
+   *(InRoot$$Sections)
+   *(.text)
+   *(.text.*)
+   *(.rodata)
+   *(.rodata.*)
+  }
+  ER_SDH_BLE   +0 { *(.sdh_ble_observers*) }
+  ER_SDH_SOC   +0 { *(.sdh_soc_observers*) }
+  ER_SDH_STATE +0 { *(.sdh_state_observers*) }
+  ER_SDH_STACK +0 { *(.sdh_stack_observers*) }
+  ER_SDH_REQ   +0 { *(.sdh_req_observers*) }
+  ER_PWR_MGMT  +0 { *(.pwr_mgmt_data*) }
+  RW_IRAM1 0x200022D8 0x00003D28  {
+   .ANY (+RW +ZI)
+  }
+}

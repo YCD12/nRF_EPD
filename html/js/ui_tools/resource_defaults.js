@@ -1,0 +1,54 @@
+(function (root) {
+  'use strict';
+  // Editable source data, not a serialized ERS project. All binary resources
+  // are constructed by resource_pack.js in the browser.
+  const calendar = {
+    year_min: 2025, year_max: 2027, holiday_year: 2026,
+    month_names: ['----', '正月', '二月', '三月', '四月', '五月', '六月', '七月', '八月', '九月', '十月', '冬月', '腊月'],
+    leap_names: [' ', '闰'],
+    date_names: ['----', '初一', '初二', '初三', '初四', '初五', '初六', '初七', '初八', '初九', '初十',
+      '十一', '十二', '十三', '十四', '十五', '十六', '十七', '十八', '十九', '二十',
+      '廿一', '廿二', '廿三', '廿四', '廿五', '廿六', '廿七', '廿八', '廿九', '三十'],
+    weekday_names: ['日', '一', '二', '三', '四', '五', '六'],
+    zodiac_names: ['猴', '鸡', '狗', '猪', '鼠', '牛', '虎', '兔', '龙', '蛇', '马', '羊'],
+    stem_names: ['庚', '辛', '壬', '癸', '甲', '乙', '丙', '丁', '戊', '己'],
+    branch_names: ['申', '酉', '戌', '亥', '子', '丑', '寅', '卯', '辰', '巳', '午', '未'],
+    jieqi_names: ['小寒', '大寒', '立春', '雨水', '惊蛰', '春分', '清明', '谷雨', '立夏', '小满', '芒种', '夏至',
+      '小暑', '大暑', '立秋', '处暑', '白露', '秋分', '寒露', '霜降', '立冬', '小雪', '大雪', '冬至'],
+    lunar_month_days: [2024, 0x0000096c, 0x0000d4ae, 0x0000149c, 0x00001a4c],
+    solar_new_year: [2024, 0x000fd04a, 0x000fd23d, 0x000fd451, 0x000fd646],
+    jieqi_year_bits: [0x0f, 0xef, 0xdb, 0xbe, 0xa6, 0x99, 0x9c, 0xa2, 0x98, 0x80, 0x00, 0x18],
+    jieqi_base_days: [6, 20, 4, 19, 6, 21, 5, 20, 6, 21, 6, 21, 7, 23, 8, 23, 8, 23, 8, 24, 8, 22, 7, 22],
+    solar_festivals: [[1, 1, '元旦节'], [2, 14, '情人节'], [3, 8, '妇女节'], [3, 12, '植树节'],
+      [4, 1, '愚人节'], [5, 1, '劳动节'], [5, 4, '青年节'], [6, 1, '儿童节'], [7, 1, '建党节'],
+      [8, 1, '建军节'], [9, 10, '教师节'], [10, 1, '国庆节'], [11, 1, '万圣节'], [12, 24, '平安夜'], [12, 25, '圣诞节']]
+      .map(([month, day, name]) => ({ month, day, name })),
+    lunar_festivals: [[1, 1, '春节'], [1, 15, '元宵节'], [2, 2, '龙抬头'], [5, 5, '端午节'], [7, 7, '七夕节'],
+      [7, 15, '中元节'], [8, 15, '中秋节'], [9, 9, '重阳节'], [10, 1, '寒衣节'], [12, 8, '腊八节'], [12, 30, '除夕']]
+      .map(([month, day, name]) => ({ month, day, name })),
+    holidays: [0x0101, 0x0102, 0x0103, 0x1104, 0x120e, 0x020f, 0x0210, 0x0211,
+      0x0212, 0x0213, 0x0214, 0x0215, 0x0216, 0x0217, 0x121c, 0x0404, 0x0405, 0x0406,
+      0x0501, 0x0502, 0x0503, 0x0504, 0x0505, 0x1509, 0x0613, 0x0614, 0x0615,
+      0x0919, 0x091a, 0x091b, 0x1914, 0x0a01, 0x0a02, 0x0a03, 0x0a04, 0x0a05, 0x0a06, 0x0a07, 0x1a0a]
+      .map(value => ({ month: value >> 8 & 15, day: value & 255, work: !!(value & 0x1000) })),
+    special_festival_names: ['除夕', '母亲节', '父亲节', '感恩节', '清明节']
+  };
+  const uiModel = typeof module !== 'undefined' && module.exports ? require('./ui_model.js') : root.EPDUIModel;
+  const layout = {
+    layout_version: 1, capacity_bytes: 524288, erase_sector_bytes: 4096,
+    external_data_copies: 1, external_firmware_slots: false,
+    partitions: [
+      [1, 1, 0x00000, 4096], [2, 2, 0x01000, 4096], [3, 3, 0x02000, 4096],
+      [4, 4, 0x03000, 4096], [5, 5, 0x04000, 16384], [6, 6, 0x08000, 65536],
+      [7, 7, 0x18000, 262144], [9, 9, 0x58000, 4096], [8, 8, 0x59000, 159744]
+    ].map(([id, type, offset, size_bytes]) => ({ id, type, offset, size_bytes }))
+  };
+  const clone = value => JSON.parse(JSON.stringify(value));
+  const api = {
+    calendar: () => clone(calendar), ui: () => uiModel.defaults(), layout: () => clone(layout),
+    config: () => Uint8Array.of(0x14, 0x13, 0x06, 0x05, 0x04, 0x03, 0x02, 0x07, 0xff, 0x12, 0x07, 0x02, 0x00, 0x00),
+    versions: () => ({ 1: 2, 2: 1, 3: 1, 5: 1, 6: 2, 7: 1, 9: 1 })
+  };
+  if (typeof module !== 'undefined' && module.exports) module.exports = api;
+  else root.EPDResourceDefaults = api;
+})(globalThis);

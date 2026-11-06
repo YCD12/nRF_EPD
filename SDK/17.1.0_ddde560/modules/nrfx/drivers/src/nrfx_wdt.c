@@ -96,10 +96,12 @@ nrfx_err_t nrfx_wdt_init(nrfx_wdt_config_t const * p_config,
 
     nrf_wdt_behaviour_set(p_config->behaviour);
 
-    uint64_t ticks = (p_config->reload_value * 32768ULL) / 1000;
-    NRFX_ASSERT(ticks <= UINT32_MAX);
+    /* 32768/1000 = 4096/125. Keep this in 32-bit so libgcc uldivmod is not linked.
+     * reload_value is milliseconds; 131072 ms * 4096 still fits in uint32. */
+    NRFX_ASSERT(p_config->reload_value <= 131072u);
+    uint32_t ticks = ((uint32_t)p_config->reload_value * 4096u) / 125u;
 
-    nrf_wdt_reload_value_set((uint32_t) ticks);
+    nrf_wdt_reload_value_set(ticks);
 
 #if !NRFX_CHECK(NRFX_WDT_CONFIG_NO_IRQ)
     NRFX_IRQ_PRIORITY_SET(WDT_IRQn, p_config->interrupt_priority);

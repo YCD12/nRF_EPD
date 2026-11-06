@@ -1,0 +1,1 @@
+#define BLE_CONN_CFG_TAG_DEFAULT 0

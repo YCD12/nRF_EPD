@@ -1,7 +1,10 @@
 class CropManager {
-  constructor(canvas, ctx) {
+  constructor(canvas, ctx, paintManager) {
     this.canvas = canvas;
     this.ctx = ctx;
+    this.paintManager = paintManager;
+    this.cropUrl = null;
+    this.cropToken = 0;
     this.backgroundZoom = 1;
     this.backgroundPanX = 0;
     this.backgroundPanY = 0;
@@ -34,6 +37,11 @@ class CropManager {
   }
 
   exitCropMode() {
+    this.cropToken++;
+    if (this.cropUrl) URL.revokeObjectURL(this.cropUrl);
+    this.cropUrl = null;
+    this.canvas.style.backgroundImage = '';
+    this.canvas.style.cursor = '';
     this.canvas.parentNode.classList.remove('crop-mode');
     setCanvasTitle("");
 
@@ -58,7 +66,8 @@ class CropManager {
     this.exitCropMode();
     this.resetStates();
 
-    this.canvas.style.backgroundImage = `url(${URL.createObjectURL(imageFile.files[0])})`;
+    this.cropUrl = URL.createObjectURL(imageFile.files[0]);
+    this.canvas.style.backgroundImage = `url(${this.cropUrl})`;
     this.canvas.style.backgroundSize = '100%';
     this.canvas.style.backgroundPosition = '';
     this.canvas.style.backgroundRepeat = 'no-repeat';
@@ -85,27 +94,38 @@ class CropManager {
 
   finishCrop(callback) {
     const imageFile = document.getElementById('imageFile');
-    if (imageFile.files.length == 0) return;
+    if (!this.isCropMode() || imageFile.files.length == 0) return;
 
     const image = new Image();
+    const token = this.cropToken;
+    const zoom = this.backgroundZoom;
+    const panX = this.backgroundPanX;
+    const panY = this.backgroundPanY;
+    const sourceUrl = URL.createObjectURL(imageFile.files[0]);
     image.onload = () => {
-      URL.revokeObjectURL(image.src);
+      URL.revokeObjectURL(sourceUrl);
+      if (token !== this.cropToken || !this.isCropMode()) return;
 
       const fieldsetRect = this.canvas.getBoundingClientRect();
-      const scale = (image.width / fieldsetRect.width) / this.backgroundZoom;
+      const scale = (image.width / fieldsetRect.width) / zoom;
 
-      const sx = -this.backgroundPanX * scale;
-      const sy = -this.backgroundPanY * scale;
+      const sx = -panX * scale;
+      const sy = -panY * scale;
       const sWidth = fieldsetRect.width * scale;
       const sHeight = fieldsetRect.height * scale;
 
       fillCanvas('white');
       this.ctx.drawImage(image, sx, sy, sWidth, sHeight, 0, 0, this.canvas.width, this.canvas.height);
+      if (this.paintManager) this.paintManager.captureBaseImage();
 
       this.exitCropMode();
       if (callback) callback();
     };
-    image.src = URL.createObjectURL(imageFile.files[0]);
+    image.onerror = () => {
+      URL.revokeObjectURL(sourceUrl);
+      if (token === this.cropToken) setCanvasTitle('图片裁剪失败，请重新选择图片。');
+    };
+    image.src = sourceUrl;
   }
 
   handleTouchStart(e) {

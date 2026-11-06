@@ -1,25 +1,50 @@
 <!doctype html>
-<html lang="en">
+<html lang="zh-CN">
 
 <head>
 	<meta charset="utf-8">
 	<meta name="viewport" content="width=device-width, initial-scale=1">
 	<title>墨水屏控制台</title>
 	<link rel="shortcut icon" type="image/png" href="favicon.png">
-	<link rel="stylesheet" href="css/main.css?v=20260402b">
+	<meta name="theme-color" content="#2563eb">
+	<link rel="stylesheet" href="css/main.css?v=20261025a">
 </head>
 
-<body>
-	<div class="main">
-		<h1>墨水屏控制台</h1>
-		<section class="section">
-			<h2>蓝牙连接</h2>
+<body class="workspace-shell">
+	<a class="skip-link" href="#deviceConnection">跳到设备连接</a>
+	<main class="main console-page">
+		<header class="page-header">
+			<div class="brand">
+				<div class="brand-mark" aria-hidden="true"><svg viewBox="0 0 32 32" fill="none"><rect x="5" y="6" width="22" height="17" rx="3" stroke="currentColor" stroke-width="2"/><path d="M10 12h12M10 17h7M12 27h8M16 23v4" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg></div>
+				<div><p class="page-kicker">EPD / WORKSPACE</p><h1>墨水屏控制台</h1><p class="page-subtitle">连接设备，让每一屏都恰到好处。</p></div>
+			</div>
+			<div class="device-info header-device-info" aria-label="设备信息" aria-live="polite">
+				<div class="device-metric"><span class="metric-label">设备电压</span><span id="batteryVoltage" class="metric-value">未连接</span><span id="batteryWarning" class="device-warning" style="display:none;"></span></div>
+				<div class="device-metric"><span class="metric-label">固件版本</span><span id="firmwareVersion" class="metric-value">未连接</span></div>
+			</div>
+			<div class="page-actions">
+				<span id="connectionBadge" class="connection-badge" data-state="disconnected" role="status"><span class="status-dot" aria-hidden="true"></span><span id="connectionLabel">未连接</span></span>
+				<button id="themeToggle" type="button" class="secondary" aria-pressed="false">深色外观</button>
+				<button id="openDfuPageButton" type="button" class="secondary" onclick="openDfuPage()" disabled title="固件升级开发中，暂未开放">固件升级（开发中）</button>
+			</div>
+		</header>
+		<nav id="workspaceNav" class="workspace-nav" aria-label="控制台导航">
+			<a class="active" href="#deviceConnection" aria-current="page">设备连接</a>
+			<a href="#imageWorkspace">图片工作台</a>
+			<a href="#todoWorkspace">待办事项</a>
+			<a href="#calendarWorkspace">日期标注</a>
+			<a href="#externalResources">设备资源</a>
+		</nav>
+		<div id="workspaceViewport" class="workspace-viewport" tabindex="-1" aria-label="功能内容">
+		<div id="deviceConnectionPanel" class="overview-grid" data-workspace-panel="deviceConnection">
+		<section id="deviceConnection" class="section connection-section" aria-labelledby="connectionHeading" tabindex="-1">
+			<div class="section-heading"><div><p class="section-kicker">01 / CONNECT</p><h2 id="connectionHeading">设备连接</h2></div></div>
+			<p id="connectionDetail" class="section-note">连接蓝牙设备后，自动同步时间并读取设备信息。</p>
 			<div class="flex-container">
 				<div class="flex-group">
-					<button id="connectbutton" type="button" class="primary" onclick="preConnect()">连接</button>
+					<button id="connectbutton" type="button" class="primary" onclick="preConnect()">连接设备</button>
 					<button id="reconnectbutton" type="button" class="secondary" onclick="reConnect()">重连</button>
 					<button id="deviceFilterToggle" type="button" class="secondary" onclick="toggleDeviceFilter()">不过滤设备</button>
-					<button type="button" class="secondary" onclick="clearLog()">清空日志</button>
 				</div>
 				<div class="flex-group right debug">
 					<label for="epddriver">驱动</label>
@@ -49,57 +74,52 @@
 					<button id="setDriverbutton" type="button" class="primary" onclick="setDriver()">确定</button>
 				</div>
 			</div>
-			<div class="log-container" id="log"></div>
-			<div class="device-info">
-				<b>设备电压：</b><span id="batteryVoltage" class="device-badge">未连接</span><span id="batteryWarning" class="device-warning" style="display:none;"></span>
-			</div>
+			<details class="help-details connection-log"><summary>连接日志与诊断</summary><div class="log-toolbar"><span class="dfu-hint">保留最近 200 条记录</span><div class="flex-group"><button id="exportLogButton" type="button" class="secondary">导出日志</button><button type="button" class="secondary" onclick="clearLog()">清空</button></div></div><div class="log-container" id="log" aria-label="蓝牙连接日志"></div></details>
 		</section>
-		<section class="section">
-			<h2>设备控制</h2>
+		<section id="deviceControls" class="section" aria-labelledby="controlsHeading">
+			<div class="section-heading"><div><p class="section-kicker">QUICK ACTIONS</p><h2 id="controlsHeading">设备控制</h2></div><span class="device-badge">时间同步</span></div>
+			<p class="section-note">选择显示模式，同时将本机时间同步到墨水屏。</p>
 			<div class="flex-container">
 				<div class="flex-group">
-					<label for="weekStart">星期第一天:</label>
+					<label for="weekStart">每周起始日</label>
 					<select id="weekStart">
-						<option value="1" selected>周一</option>
+						<option value="0" selected>周日</option>
+						<option value="1">周一</option>
 						<option value="2">周二</option>
 						<option value="3">周三</option>
 						<option value="4">周四</option>
 						<option value="5">周五</option>
 						<option value="6">周六</option>
-						<option value="0">周日</option>
 					</select>
 				</div>
-				<div class="flex-group">
+				<div class="flex-group mode-actions">
 					<button id="calendarmodebutton" type="button" class="primary" onclick="syncTime(1)">日历模式</button>
-					<button id="clockmodebutton" type="button" class="primary" onclick="syncTime(2)">时钟模式</button>
+					<button id="clockmodebutton" type="button" class="primary" onclick="syncTime(2)">时钟+日历</button>
+					<button id="todocalendarmodebutton" type="button" class="primary" onclick="syncTime(4)" disabled>待办事项+日历</button>
+					<button id="todofullmodebutton" type="button" class="primary" onclick="syncTime(5)" disabled>全屏待办</button>
 					<button id="legacyclockbutton" type="button" class="primary" onclick="syncTimeLegacy()"
-						style="display:none;">老款时钟</button>
+						style="display:none;">全屏时钟</button>
+				</div>
+				<div class="flex-group system-actions">
 					<button id="clearscreenbutton" type="button" class="secondary" onclick="clearScreen()">清除屏幕</button>
+					<button id="restartbutton" type="button" class="secondary" onclick="restartDevice()" disabled>系统重启</button>
 				</div>
 				<div class="flex-group right debug">
-					<input type="text" id="cmdTXT" value="">
+					<input type="text" id="cmdTXT" value="" aria-label="十六进制设备命令" placeholder="十六进制命令">
 					<button id="sendcmdbutton" type="button" class="primary" onclick="sendcmd()">发送命令</button>
 				</div>
 			</div>
 		</section>
-		<section class="section">
-			<h2>Nordic DFU 升级</h2>
-			<div class="flex-container">
-				<div class="flex-group">
-					<button id="openDfuPageButton" type="button" class="primary" onclick="openDfuPage()">进入 DFU 升级页</button>
-				</div>
-			</div>
-			<div class="dfu-hint">
-				DFU 升级已拆分到独立页面。进入升级页前，如果主界面当前已连接设备，页面会先主动断开该连接，再跳转到专用 DFU 页面执行升级流程。跳转后会重新选择应用设备或 DfuTarg，避免主功能连接状态和升级流程互相干扰。
-			</div>
-		</section>
-		<section class="section">
-			<h2>蓝牙传图</h2>
-			<div class="flex-container">
-				<input type="file" id="imageFile" accept=".png,.jpg,.bmp,.webp,.jpeg" onchange="updateImage()">
+		</div>
+		<section id="imageWorkspace" class="section image-section" data-workspace-panel="imageWorkspace" aria-labelledby="imageHeading" tabindex="-1" hidden>
+			<div class="section-heading"><div><p class="section-kicker">02 / IMAGE STUDIO</p><h2 id="imageHeading">图片工作台</h2></div><span class="device-badge">编辑 · 预览 · 发送</span></div>
+			<p class="section-note">导入图片、调整效果，也可以用画笔、文字和课表工具直接创作。</p>
+			<div id="imageDropZone" class="image-drop-zone">
+				<div class="upload-icon" aria-hidden="true">↥</div><div class="upload-copy"><label for="imageFile">选择图片，或拖放到这里</label><p>PNG / JPG / BMP / WebP · 比例不匹配时自动进入裁剪</p><p id="imageFileName" role="status">尚未选择图片</p></div>
+				<input type="file" id="imageFile" accept=".png,.jpg,.bmp,.webp,.jpeg" onchange="updateImage()" aria-label="选择要编辑的图片">
 			</div>
 			<div class="flex-container options">
-				<div class="flex-group debug">
+				<div class="flex-group">
 					<label for="canvasSize">画布尺寸:</label>
 					<select id="canvasSize" onchange="updateCanvasSize()">
 						<option value="1.54_152_152">1.54 (152x152)</option>
@@ -126,13 +146,13 @@
 						<option value="7.3E6">7.3E6 (480x800)</option>
 					</select>
 				</div>
-				<div class="flex-group debug">
+				<div class="flex-group">
 					<label for="ditherMode">颜色模式:</label>
 					<select id="ditherMode" onchange="applyDither()">
 						<option value="blackWhiteColor">双色(黑白)</option>
 						<option value="threeColor">三色(黑白红)</option>
-						<option value="fourColor">四色(黑白红黄)</option>
-						<option value="sixColor">六色(黑白红黄蓝绿)</option>
+						<option value="fourColor">四色(黑白红黄, 仅预览)</option>
+						<option value="sixColor">六色(黑白红黄蓝绿, 仅预览)</option>
 					</select>
 				</div>
 				<div class="flex-group">
@@ -156,16 +176,18 @@
 					<input type="range" min="0.5" max="2" step="0.1" value="1.2" id="ditherContrast">
 					<label id="ditherContrastValue">1.2</label>
 				</div>
+				<button id="resetImageAdjustmentsButton" type="button" class="secondary">重置效果</button>
 			</div>
+			<p id="imageAdjustmentHint" class="section-note">调整从原图重新计算；文字、画笔和课表保留。</p>
 			<div class="flex-container options">
 				<div class="flex-group debug">
 					<label for="mtusize">MTU:</label>
 					<input type="number" id="mtusize" value="20" min="0" max="255">
-					<label for="interleavedcount">确认间隔:</label>
-					<input type="number" id="interleavedcount" value="50" min="0" max="500">
+					<label for="interleavedcount">确认间隔(块):</label>
+					<input type="number" id="interleavedcount" value="20" min="1" max="100" title="每 N 块等待一次 GATT 确认（1-100，非法值回退 20）">
 				</div>
 			</div>
-			<div class="status-bar"><b>状态：</b><span id="status"></span></div>
+			<div class="status-bar" role="status" aria-live="polite"><b>传输状态：</b><span id="status"></span></div>
 			<div class="orientation-hint"><b>画面方向：</b><span id="orientationBadge">自动识别中...</span></div>
 			<div class="flex-container">
 				<div class="flex-group">
@@ -174,186 +196,285 @@
 					<button type="button" class="secondary" onclick="flipCanvas()">翻转(上下)</button>
 					<button type="button" class="secondary" onclick="clearCanvas()">清除画布</button>
 					<button type="button" class="secondary debug" onclick="downloadDataArray()">下载数组</button>
+					<button id="downloadPreviewButton" type="button" class="secondary">下载预览</button>
 					<button id="sendimgbutton" type="button" class="primary" onclick="sendimg()">发送图片</button>
 				</div>
 			</div>
 			<div class="canvas-container">
+				<div class="workspace-toolbar">
+					<div class="tool-buttons" role="group" aria-label="创作工具">
+						<button id="brush-mode" type="button" title="画笔" class="tool-button" aria-pressed="false"><span aria-hidden="true">✎</span>画笔</button>
+						<button id="eraser-mode" type="button" title="橡皮擦" class="tool-button" aria-pressed="false"><span aria-hidden="true">▱</span>橡皮擦</button>
+						<button id="text-mode" type="button" title="添加文字" class="tool-button" aria-pressed="false"><span aria-hidden="true">T</span>文字</button>
+						<button id="schedule-mode" type="button" title="课程表" class="tool-button" aria-pressed="false"><span aria-hidden="true">▦</span>课程表</button>
+					</div>
+					<div class="history-tools" role="group" aria-label="编辑历史">
+						<button id="undo-btn" type="button" title="撤销 (Ctrl+Z)" aria-label="撤销">↶</button>
+						<button id="redo-btn" type="button" title="重做 (Ctrl+Y)" aria-label="重做">↷</button>
+					</div>
+				</div>
+				<p id="paint-tool-hint" class="paint-tool-hint">选择工具开始创作，画布上的内容会在切换工具时保留。</p>
 				<div class="canvas-title"></div>
-				<canvas id="canvas" width="400" height="300"></canvas>
-				<div class="flex-container canvas-tools">
-					<div class="flex-group tool-buttons">
-						<button id="brush-mode" title="画笔" class="tool-button">✏️</button>
-						<button id="eraser-mode" title="橡皮擦" class="tool-button">🧽</button>
-						<button id="text-mode" title="添加文字" class="tool-button">T</button>
-						<button id="todo-mode" title="待办事项" class="tool-button">☐</button>
-						<button id="schedule-mode" title="课表" class="tool-button">📅</button>
-						<button id="undo-btn" title="撤销 (Ctrl+Z)" class="tool-button hide">↶</button>
-						<button id="redo-btn" title="重做 (Ctrl+Y)" class="tool-button hide">↷</button>
+				<canvas id="canvas" width="400" height="300" aria-label="墨水屏图片编辑画布"></canvas>
+				<p id="paint-tool-status" class="paint-tool-status" role="status" aria-live="polite"></p>
+				<div class="tool-panel brush-tools">
+					<div class="tool-panel-heading"><div><h3>画笔与橡皮擦</h3><p>在画布上拖动绘制，点击可画圆点。橡皮擦将经过的位置涂为白色。</p></div><span id="brush-preview" class="brush-preview" aria-hidden="true"></span></div>
+					<div class="tool-fields">
+						<div class="tool-field brush-color-field"><label for="brush-color">画笔颜色</label><select id="brush-color"><option value="#000000">黑色</option><option value="#FF0000">红色</option><option value="#FFFF00">黄色</option><option value="#00FF00">绿色</option><option value="#0000FF">蓝色</option><option value="#FFFFFF">白色</option></select></div>
+						<div class="tool-field brush-size-field"><label for="brush-size">画笔粗细 · px</label><input type="number" id="brush-size" value="2" min="1" max="100" step="1"></div>
+						<div class="tool-field eraser-size-field"><label for="eraser-size">橡皮擦大小 · px</label><input type="number" id="eraser-size" value="16" min="1" max="100" step="1"></div>
 					</div>
+					<div class="tool-presets" role="group" aria-label="快捷笔刷大小"><span>快捷大小</span><button type="button" data-brush-size="2">细 · 2</button><button type="button" data-brush-size="6">中 · 6</button><button type="button" data-brush-size="16">粗 · 16</button><button type="button" data-brush-size="32">宽 · 32</button></div>
 				</div>
-				<div class="flex-container canvas-tools">
-					<div class="flex-group brush-tools">
-						<label for="brush-color">颜色:</label>
-						<select id="brush-color">
-							<option value="#000000">黑色</option>
-							<option value="#FF0000">红色</option>
-							<option value="#FFFF00">黄色</option>
-							<option value="#00FF00">绿色</option>
-							<option value="#0000FF">蓝色</option>
-							<option value="#FFFFFF">白色</option>
-						</select>
-						<label for="brush-size">粗细:</label>
-						<input type="number" id="brush-size" value="2" min="1" max="100">
+				<div class="tool-panel text-tools">
+					<div class="tool-panel-heading"><div><h3>文字排版</h3><p>支持多行文字。添加后点击画布放置，拖动调整位置；点选已有文字可继续编辑。</p></div></div>
+					<div class="tool-compose">
+						<div class="tool-field tool-content"><label for="text-input">文字内容</label><textarea id="text-input" rows="3" placeholder="写一句话，也可以换行写一段内容"></textarea></div>
+						<div class="tool-fields">
+							<div class="tool-field"><label for="font-family">字体</label><select id="font-family"><option value="Microsoft YaHei">微软雅黑</option><option value="PingFang SC">苹方</option><option value="SimHei">黑体</option><option value="SimSun">宋体</option><option value="KaiTi">楷体</option><option value="sans-serif">默认字体</option><option value="monospace">等宽字体</option><option value="Arial">Arial</option><option value="Microsoft JhengHei">微软正黑体</option><option value="NSimSun">新宋体</option><option value="FangSong">仿宋</option><option value="YouYuan">幼圆</option><option value="LiSu">隶书</option><option value="STHeiti">华文黑体</option><option value="STXihei">华文细黑</option><option value="STKaiti">华文楷体</option><option value="STSong">华文宋体</option><option value="STFangsong">华文仿宋</option><option value="STZhongsong">华文中宋</option><option value="STHupo">华文琥珀</option><option value="STXinwei">华文新魏</option><option value="STLiti">华文隶书</option><option value="STXingkai">华文行楷</option><option value="FZShuTi">方正舒体</option><option value="FZYaoti">方正姚体</option><option value="Source Han Sans CN">思源黑体</option><option value="Source Han Serif SC">思源宋体</option><option value="WenQuanYi Micro Hei">文泉驿微米黑</option></select></div>
+							<div class="tool-field"><label for="font-size">字号 · px</label><input type="number" id="font-size" value="20" min="6" max="100"></div>
+							<div class="tool-field"><label for="text-color">文字颜色</label><select id="text-color"><option value="#000000">黑色</option><option value="#FF0000">红色</option><option value="#FFFF00">黄色</option><option value="#00FF00">绿色</option><option value="#0000FF">蓝色</option><option value="#FFFFFF">白色</option></select></div>
+							<div class="tool-field"><label for="text-align">对齐方式</label><select id="text-align"><option value="left">左对齐</option><option value="center">居中</option><option value="right">右对齐</option></select></div>
+							<div class="tool-field"><label for="text-line-height">行距</label><input type="number" id="text-line-height" value="1.35" min="1" max="3" step="0.05"></div>
+							<div class="tool-field"><span class="field-label">字形</span><div class="format-buttons"><button id="text-bold" type="button" title="粗体" aria-pressed="false"><b>B</b></button><button id="text-italic" type="button" title="斜体" aria-pressed="false"><i>I</i></button></div></div>
+						</div>
 					</div>
+					<div class="tool-actions"><button id="add-text-btn" type="button" class="primary">添加文字</button><button id="cancel-text-btn" type="button" class="secondary">取消选择</button><button id="delete-text-btn" type="button" class="danger" disabled>删除文字</button></div>
 				</div>
-				<div class="flex-container canvas-tools">
-					<div class="flex-group text-tools">
-						<label for="font-family">字体:</label>
-						<select id="font-family">
-							<option value="Arial">Arial</option>
-							<option value="sans-serif">Sans-serif</option>
-							<option value="monospace">Monospace</option>
-							<option value="SimSun">宋体</option>
-							<option value="SimHei">黑体</option>
-							<option value="Microsoft Yahei">微软雅黑</option>
-							<option value="Microsoft JhengHei">微软正黑体</option>
-							<option value="KaiTi">楷体</option>
-							<option value="NSimSun">新宋体</option>
-							<option value="FangSong">仿宋</option>
-							<option value="YouYuan">幼圆</option>
-							<option value="LiSu">隶书</option>
-							<option value="STHeiti">华文黑体</option>
-							<option value="STXihei">华文细黑</option>
-							<option value="STKaiti">华文楷体</option>
-							<option value="STSong">华文宋体</option>
-							<option value="STFangsong">华文仿宋</option>
-							<option value="STZhongsong">华文中宋</option>
-							<option value="STHupo">华文琥珀</option>
-							<option value="STXinwei">华文新魏</option>
-							<option value="STLiti">华文隶书</option>
-							<option value="STXingkai">华文行楷</option>
-							<option value="FZShuTi">方正舒体</option>
-							<option value="FZYaoti">方正姚体</option>
-							<option value="PingFang SC">苹方</option>
-							<option value="Source Han Sans CN">思源黑体</option>
-							<option value="Source Han Serif SC">思源宋体</option>
-							<option value="WenQuanYi Micro Hei">文泉驿微米黑</option>
-							</optgroup>
-						</select>
-						<label for="font-size">大小:</label>
-						<input type="number" id="font-size" value="16" min="1" max="100">
+				<div class="tool-panel schedule-tools">
+					<div class="tool-panel-heading"><div><h3>课程表</h3><p>先设置天数与节数，再点击画布单元格填写课程。长内容自动换行，表格适配当前画布。</p></div><span id="schedule-summary" class="device-badge">尚未生成</span></div>
+					<p id="schedule-status" class="field-hint" role="status" aria-live="polite"></p>
+					<div class="tool-fields schedule-config">
+						<div class="tool-field wide-field"><label for="schedule-title">课表标题</label><input type="text" id="schedule-title" value="本周课程表" maxlength="40" placeholder="可留空"></div>
+						<div class="tool-field"><label for="schedule-preset">常用布局</label><select id="schedule-preset"><option value="week">周一至周五</option><option value="full">完整一周</option><option value="custom">自定义</option></select></div>
+						<div class="tool-field"><label for="schedule-days">每周天数</label><input type="number" id="schedule-days" value="5" min="1" max="7"></div>
+						<div class="tool-field"><label for="schedule-classes">每天节数</label><input type="number" id="schedule-classes" value="6" min="1" max="12"></div>
+						<div class="tool-field"><label for="schedule-font-family">字体</label><select id="schedule-font-family"><option value="Microsoft YaHei">微软雅黑</option><option value="PingFang SC">苹方</option><option value="SimHei">黑体</option><option value="SimSun">宋体</option><option value="KaiTi">楷体</option><option value="sans-serif">默认字体</option><option value="monospace">等宽字体</option><option value="Arial">Arial</option><option value="Microsoft JhengHei">微软正黑体</option><option value="NSimSun">新宋体</option><option value="FangSong">仿宋</option><option value="YouYuan">幼圆</option><option value="LiSu">隶书</option><option value="STHeiti">华文黑体</option><option value="STXihei">华文细黑</option><option value="STKaiti">华文楷体</option><option value="STSong">华文宋体</option><option value="STFangsong">华文仿宋</option><option value="STZhongsong">华文中宋</option><option value="STHupo">华文琥珀</option><option value="STXinwei">华文新魏</option><option value="STLiti">华文隶书</option><option value="STXingkai">华文行楷</option><option value="FZShuTi">方正舒体</option><option value="FZYaoti">方正姚体</option><option value="Source Han Sans CN">思源黑体</option><option value="Source Han Serif SC">思源宋体</option><option value="WenQuanYi Micro Hei">文泉驿微米黑</option></select></div>
+						<div class="tool-field"><label for="schedule-font-size">字号 · px</label><input type="number" id="schedule-font-size" value="12" min="6" max="32"></div>
+						<div class="tool-field"><label for="schedule-color">文字颜色</label><select id="schedule-color"><option value="#000000">黑色</option><option value="#FF0000">红色</option><option value="#0000FF">蓝色</option></select></div>
 					</div>
-					<div class="flex-group text-tools">
-						<input type="text" id="text-input" placeholder="输入文字" style="width:150px">
-						<button id="text-bold" title="粗体">B</button>
-						<button id="text-italic" title="斜体">I</button>
-						<button id="add-text-btn" class="primary">添加文字</button>
+					<div class="tool-actions"><button id="create-schedule-btn" type="button" class="primary">生成 / 更新课表</button><button id="schedule-fit-btn" type="button" class="secondary">适配画布</button><button id="schedule-example-btn" type="button" class="secondary">填入示例</button><button id="schedule-clear-btn" type="button" class="secondary">清空课程</button><button id="schedule-remove-btn" type="button" class="danger" disabled>移除课表</button></div>
+					<div id="schedule-cell-editor" class="schedule-cell-editor" hidden>
+						<div class="tool-field"><label id="schedule-cell-label" for="schedule-input">编辑课程</label><textarea id="schedule-input" rows="3" placeholder="课程名称&#10;教室 / 教师"></textarea></div>
+						<div class="tool-actions"><button id="schedule-input-confirm-btn" type="button" class="primary">保存单元格</button><button id="schedule-input-cancel-btn" type="button" class="secondary">取消</button><button id="schedule-font-increase-btn" type="button" title="增大选中单元格字号">A+</button><button id="schedule-font-decrease-btn" type="button" title="减小选中单元格字号">A−</button></div>
 					</div>
-					<div class="flex-group todo-tools">
-						<label for="todo-font-family">字体:</label>
-						<select id="todo-font-family">
-							<option value="Arial">Arial</option>
-							<option value="sans-serif">Sans-serif</option>
-							<option value="monospace">Monospace</option>
-							<option value="SimSun">宋体</option>
-							<option value="SimHei">黑体</option>
-							<option value="Microsoft Yahei">微软雅黑</option>
-							<option value="Microsoft JhengHei">微软正黑体</option>
-							<option value="KaiTi">楷体</option>
-							<option value="NSimSun">新宋体</option>
-							<option value="FangSong">仿宋</option>
-							<option value="YouYuan">幼圆</option>
-							<option value="LiSu">隶书</option>
-							<option value="STHeiti">华文黑体</option>
-							<option value="STXihei">华文细黑</option>
-							<option value="STKaiti">华文楷体</option>
-							<option value="STSong">华文宋体</option>
-							<option value="STFangsong">华文仿宋</option>
-							<option value="STZhongsong">华文中宋</option>
-							<option value="STHupo">华文琥珀</option>
-							<option value="STXinwei">华文新魏</option>
-							<option value="STLiti">华文隶书</option>
-							<option value="STXingkai">华文行楷</option>
-							<option value="FZShuTi">方正舒体</option>
-							<option value="FZYaoti">方正姚体</option>
-							<option value="PingFang SC">苹方</option>
-							<option value="Source Han Sans CN">思源黑体</option>
-							<option value="Source Han Serif SC">思源宋体</option>
-							<option value="WenQuanYi Micro Hei">文泉驿微米黑</option>
-						</select>
-						<label for="todo-font-size">大小:</label>
-						<input type="number" id="todo-font-size" value="14" min="1" max="100" style="width:80px">
-					</div>
-					<div class="flex-group todo-tools">
-						<input type="text" id="todo-input" placeholder="输入待办项" style="width:150px">
-						<label for="todo-color">颜色:</label>
-						<select id="todo-color">
-							<option value="#000000">黑色</option>
-							<option value="#FF0000">红色</option>
-							<option value="#FFFF00">黄色</option>
-							<option value="#00FF00">绿色</option>
-							<option value="#0000FF">蓝色</option>
-							<option value="#FFFFFF">白色</option>
-						</select>
-						<button id="todo-bold" title="粗体">B</button>
-						<button id="todo-italic" title="斜体">I</button>
-						<button id="toggle-todo-delete-btn" title="切换删除按钮显示" class="primary">✕</button>
-						<button id="add-todo-btn" class="primary">添加待办项</button>
-					</div>
-					<div class="flex-group schedule-tools">
-						<label for="schedule-days">天数:</label>
-						<input type="number" id="schedule-days" value="5" min="1" max="7" style="width:60px">
-						<label for="schedule-classes">课程数:</label>
-						<input type="number" id="schedule-classes" value="6" min="1" max="12" style="width:60px">
-						<label for="schedule-font-family">字体:</label>
-						<select id="schedule-font-family" style="width:120px">
-							<option value="Arial">Arial</option>
-							<option value="sans-serif">Sans-serif</option>
-							<option value="monospace">Monospace</option>
-							<option value="SimSun">宋体</option>
-							<option value="SimHei" selected>黑体</option>
-							<option value="Microsoft Yahei">微软雅黑</option>
-							<option value="KaiTi">楷体</option>
-						</select>
-						<label for="schedule-font-size">大小:</label>
-						<input type="number" id="schedule-font-size" value="12" min="8" max="32" style="width:60px">
-						<button id="schedule-font-increase-btn" title="增大字体">A+</button>
-						<button id="schedule-font-decrease-btn" title="减小字体">A-</button>
-						<label for="schedule-color">颜色:</label>
-						<select id="schedule-color">
-							<option value="#000000">黑色</option>
-							<option value="#FF0000">红色</option>
-							<option value="#0000FF">蓝色</option>
-						</select>
-						<button id="toggle-schedule-cell-indicator-btn" title="切换单元格选中提示" class="primary">▭</button>
-						<button id="create-schedule-btn" class="primary">生成课表</button>
-					</div>
-					<div class="flex-group schedule-tools">
-						<label>位置/缩放:</label>
-						<button id="schedule-move-up-btn" title="上移">⇧</button>
-						<button id="schedule-move-down-btn" title="下移">⇩</button>
-						<button id="schedule-move-left-btn" title="左移">⇦</button>
-						<button id="schedule-move-right-btn" title="右移">⇨</button>
-						<button id="schedule-zoom-in-btn" title="放大">+</button>
-						<button id="schedule-zoom-out-btn" title="缩小">-</button>
-					</div>
-					<div class="flex-group schedule-tools">
-						<textarea id="schedule-input" placeholder="输入课程（支持换行）" rows="2" style="width:150px;resize:vertical"></textarea>
-						<button id="schedule-input-confirm-btn" class="primary">确定</button>
-						<button id="schedule-input-cancel-btn" class="secondary">取消</button>
-					</div>
-					<div class="flex-group crop-tools">
-						<button id="crop-zoom-in" title="放大" class="secondary">+</button>
-						<button id="crop-zoom-out" title="缩小" class="secondary">-</button>
-						<button id="crop-move-left" title="左移">⇦</button>
-						<button id="crop-move-up" title="上移">⇧</button>
-						<button id="crop-move-down" title="下移">⇩</button>
-						<button id="crop-move-right" title="右移">⇨</button>
-						<button class="primary" onclick="applyDither()">完成</button>
-					</div>
+					<details class="tool-details"><summary>批量填写课程</summary><p class="field-hint">从表格复制课程区域后粘贴：每行对应一节课，每列用 Tab 分隔，依次对应周一至周日。粘贴内容会更新对应单元格，其他课程保留。</p><div class="tool-field"><label for="schedule-bulk-input">课程表格内容</label><textarea id="schedule-bulk-input" rows="5" placeholder="语文&#9;数学&#9;英语&#9;物理&#9;体育&#10;数学&#9;英语&#9;语文&#9;化学&#9;美术" spellcheck="false"></textarea></div><div class="tool-actions"><button id="schedule-bulk-apply-btn" type="button" class="secondary">填入课表</button></div></details>
+					<details class="tool-details"><summary>位置与缩放</summary><div class="tool-actions" role="group" aria-label="课表位置和大小"><button id="schedule-move-up-btn" type="button" title="上移" aria-label="课表上移">↑</button><button id="schedule-move-down-btn" type="button" title="下移" aria-label="课表下移">↓</button><button id="schedule-move-left-btn" type="button" title="左移" aria-label="课表左移">←</button><button id="schedule-move-right-btn" type="button" title="右移" aria-label="课表右移">→</button><button id="schedule-zoom-in-btn" type="button">放大</button><button id="schedule-zoom-out-btn" type="button">缩小</button></div></details>
+				</div>
+				<div class="tool-panel crop-tools">
+					<div class="tool-panel-heading"><div><h3>图片裁剪</h3><p>拖动图片调整位置，用滚轮或双指缩放，填满画布后点击完成。</p></div></div>
+					<div class="tool-actions"><button id="crop-zoom-in" type="button" title="放大" class="secondary">放大</button><button id="crop-zoom-out" type="button" title="缩小" class="secondary">缩小</button><button id="crop-move-left" type="button" title="左移" aria-label="裁剪左移">←</button><button id="crop-move-up" type="button" title="上移" aria-label="裁剪上移">↑</button><button id="crop-move-down" type="button" title="下移" aria-label="裁剪下移">↓</button><button id="crop-move-right" type="button" title="右移" aria-label="裁剪右移">→</button><button type="button" class="primary" onclick="applyDither(true)">完成裁剪</button></div>
 				</div>
 			</div>
 		</section>
+		<section id="todoWorkspace" class="section" data-workspace-panel="todoWorkspace" aria-labelledby="todoCalendarHeading" tabindex="-1" hidden>
+			<div class="section-heading"><div><p class="section-kicker">TODO / WORKSPACE</p><h2 id="todoCalendarHeading">待办事项</h2></div><span id="todoCalendarCount" class="device-badge">0 / 32</span></div>
+			<p class="section-note">选择待办+日历或全屏待办。设置触发和截止时间，保存后设备离线也会自动更新；两种布局共用这份清单。</p>
+			<div class="todo-calendar-workbench">
+				<div class="todo-calendar-editor">
+					<form id="todoCalendarForm" class="todo-calendar-form">
+						<div class="field todo-calendar-text-field"><label for="todoCalendarText">事项内容</label><input id="todoCalendarText" type="text" placeholder="例如：完成本周报告" aria-describedby="todoCalendarTextHint"><span id="todoCalendarTextHint" class="field-hint" aria-live="polite">已用 0 / 64 字节 · 中文通常最多 21 字</span></div>
+						<div class="field"><label for="todoCalendarStart">触发时间</label><input id="todoCalendarStart" type="datetime-local" min="2000-01-01T00:00" max="2099-12-31T23:59:59" step="1"></div>
+						<div class="field"><label for="todoCalendarEnd">截止时间</label><input id="todoCalendarEnd" type="datetime-local" min="2000-01-01T00:00" max="2099-12-31T23:59:59" step="1"></div>
+						<div class="todo-calendar-flags"><label><input id="todoCalendarResident" type="checkbox"> 常驻显示</label><label><input id="todoCalendarCompleted" type="checkbox"> 已完成</label></div>
+						<div class="todo-calendar-edit-actions"><button id="todoCalendarSubmit" type="submit" class="primary">添加事项</button><button id="todoCalendarCancel" type="button" class="secondary" hidden>取消编辑</button></div>
+						<p class="field-hint todo-calendar-text-field">先添加或更新事项，再保存到设备。完成、删除和显示设置也需要保存后才会在屏幕上生效。</p>
+					</form>
+					<div class="todo-calendar-options">
+						<div class="field todo-calendar-layout-field"><label for="todoCalendarLayout">屏幕布局</label><select id="todoCalendarLayout" aria-describedby="todoCalendarLayoutHint"><option value="4" selected>待办+日历</option><option value="5">全屏待办</option></select><span id="todoCalendarLayoutHint" class="field-hint">连接新版设备后可启用所选布局。</span></div>
+						<div class="field"><label for="todoCalendarLimit">屏幕显示数量</label><input id="todoCalendarLimit" type="number" min="1" max="8" step="1" value="5"></div>
+						<div class="field"><label for="todoCalendarLeadMinutes">显示提前时间（分钟）</label><input id="todoCalendarLeadMinutes" type="number" min="0" max="1440" step="1" value="10" aria-describedby="todoCalendarTimingHint"></div>
+						<div class="field"><label for="todoCalendarRetainMinutes">过期保留时间（分钟）</label><input id="todoCalendarRetainMinutes" type="number" min="0" max="1440" step="1" value="5" aria-describedby="todoCalendarTimingHint"></div>
+						<span id="todoCalendarTimingHint" class="field-hint todo-calendar-size-hint">事项默认提前 10 分钟出现，触发后方框变红；截止后保留 5 分钟并加删除线，再自动隐藏。</span>
+						<div class="field"><label for="todoCalendarFontSize">待办字号</label><select id="todoCalendarFontSize" aria-describedby="todoCalendarFontSizeHint"><option value="9">9</option><option value="12" selected>12</option><option value="16">16</option><option value="20">20</option><option value="24">24</option><option value="32">32</option></select></div>
+						<fieldset class="todo-calendar-font-style"><legend>待办字形</legend><label><input id="todoCalendarFontBold" type="checkbox"> 加粗</label><label><input id="todoCalendarFontItalic" type="checkbox"> 斜体</label></fieldset>
+						<span id="todoCalendarFontSizeHint" class="field-hint todo-calendar-size-hint">当前字号最多显示 8 项。支持大字号、加粗及斜体。</span>
+						<div class="field todo-calendar-font-field"><label for="todoCalendarFontFamily">待办字体类型</label><select id="todoCalendarFontFamily" aria-describedby="todoCalendarFontHint"><option value="">设备默认</option></select><span id="todoCalendarFontHint" class="field-hint">字体列表复用图片文字工具。缺失字形由网页生成并保存到设备，离线也能显示。支持自定义字体、大字号、加粗及斜体。</span></div>
+					</div>
+					<p class="field-hint">常驻事项优先；定时事项按触发时间排序。超过显示数量的事项等待空位，前面的事项完成或过期后自动递补。已完成和已过期事项会保留在编辑列表，屏幕上隐藏。每项显示截止时间或常驻标记，长标题会换行或省略。</p>
+					<div class="todo-calendar-local-actions"><button id="todoCalendarImportPaint" type="button" class="secondary">导入旧版待办</button><button id="todoCalendarExport" type="button" class="secondary">导出备份</button><label class="todo-calendar-import-label" for="todoCalendarImport">导入备份<input id="todoCalendarImport" type="file" accept=".json,application/json"></label></div>
+					<p class="field-hint">旧版图片待办草稿仍保留。点击导入会追加到当前清单，长内容按字数限制拆分；容量不足时整批保留，不覆盖当前事项。</p>
+				</div>
+				<aside class="todo-calendar-preview" aria-labelledby="todoCalendarPreviewHeading">
+					<div class="annotation-preview-heading"><h3 id="todoCalendarPreviewHeading">显示预览</h3><span id="todoCalendarPreviewLayout">左待办 · 右日历</span></div>
+					<canvas id="todoCalendarResourceCanvas" width="800" height="480" class="todo-resource-canvas" aria-label="按当前显示资源绘制的设备预览"></canvas><div id="todoCalendarPreviewScreen" hidden class="todo-calendar-screen" data-layout="split"><div class="todo-calendar-preview-left"><div class="todo-calendar-preview-header"><strong id="todoCalendarPreviewTitle" class="todo-calendar-preview-title">TODO 0/0</strong><span id="todoCalendarPreviewTemperature" class="todo-calendar-preview-temperature" aria-label="设备温度未知"><span class="todo-calendar-temperature-value">—</span><span class="todo-calendar-temperature-unit">℃</span></span></div><div id="todoCalendarPreviewItems" class="todo-calendar-preview-items" data-font="12"></div></div><div id="todoCalendarPreviewCalendar" class="todo-calendar-preview-calendar" aria-label="日历预览"></div></div>
+					<p id="todoCalendarPreviewSummary" class="field-hint" aria-live="polite"></p>
+					<div class="todo-calendar-preview-controls"><label for="todoCalendarPreviewTime">模拟时间</label><input id="todoCalendarPreviewTime" type="datetime-local" step="1" min="2000-01-01T00:00" max="2099-12-31T23:59:59"><button id="todoCalendarPreviewNow" type="button" class="secondary">现在</button></div>
+					<p class="field-hint">留空使用当前时间。时间按网页所在时区设置；切换模式会同步设备时间。预览使用当前 UIR2 布局和设备字模，连接新版设备并发送布局资源后生效。缺失字模随待办保存到设备；温度未知时使用 25℃、电压使用 3.1V 示例。</p>
+				</aside>
+			</div>
+			<div id="todoCalendarList" class="todo-calendar-list" aria-label="编辑定时待办事项"></div>
+			<div class="todo-calendar-device-actions"><button id="todoCalendarRead" type="button" class="secondary" data-device-operation disabled>读取设备待办</button><button id="todoCalendarSave" type="button" class="primary" data-device-operation disabled>保存到设备</button><button id="todoCalendarActivate" type="button" class="secondary" data-device-operation disabled>启用待办+日历</button></div>
+			<p class="field-hint">先保存清单，再启用所选布局。布局选择只改变预览，启用后才切换设备。</p>
+			<p id="todoCalendarStatus" class="field-hint" role="status" aria-live="polite">草稿自动保存在此浏览器。读取设备或导入备份将替换当前草稿，保存到设备后生效。</p>
+		</section>
+		<section id="calendarWorkspace" class="section" data-workspace-panel="calendarWorkspace" aria-labelledby="calendarHeading" tabindex="-1" hidden>
+			<div class="section-heading"><div><p class="section-kicker">03 / CALENDAR</p><h2 id="calendarHeading">日期标注</h2></div><span id="calendarAnnotationCount" class="device-badge">0 / 64</span></div>
+			<p class="section-note">用红点提醒重要日期，或加上简短的文字。先在这里编辑，再保存到设备日历。</p>
+			<div class="annotation-workbench">
+				<div class="annotation-editor">
+					<div class="annotation-panel-heading"><h3 id="calendarAnnotationEditorTitle">新增标注</h3><p id="calendarAnnotationEditorNote">同一个日期只保留一条标注，再次添加会更新内容。</p></div>
+					<div class="annotation-form">
+						<div class="field"><label for="calendarAnnotationDate">标注日期</label><input id="calendarAnnotationDate" type="date" min="2000-01-01" max="2099-12-31"></div>
+						<div class="field label-field"><label for="calendarAnnotationLabel">短标签 <span class="label-optional">选填</span></label><input id="calendarAnnotationLabel" type="text" placeholder="留空仅显示红点" aria-describedby="calendarAnnotationLabelHint"><span id="calendarAnnotationLabelHint" class="field-hint" aria-live="polite">中文最多 3 字 · 已用 0 / 9 字节</span></div>
+						<div class="field"><label for="calendarAnnotationPosition">显示位置</label><select id="calendarAnnotationPosition"><option value="0" selected>日期下方</option><option value="1">右上角</option></select></div>
+						<div class="field"><label for="calendarAnnotationFontSize">标签字号</label><select id="calendarAnnotationFontSize"><option value="0" selected>跟随日历</option><option value="9">小号</option><option value="12">大号</option></select></div>
+						<div class="field"><label for="calendarAnnotationColor">文字颜色</label><select id="calendarAnnotationColor" aria-describedby="calendarAnnotationColorHint"><option value="0" selected>黑色</option><option value="1">白色</option><option value="2">红色</option></select><span id="calendarAnnotationColorHint" class="field-hint annotation-color-hint" role="status" aria-live="polite" hidden></span></div>
+					</div>
+					<div class="annotation-edit-actions"><button id="calendarAnnotationSubmit" type="button" class="primary" onclick="CalendarAnnotations.addOrUpdate()">添加标注</button><button id="calendarAnnotationCancel" type="button" class="secondary" onclick="CalendarAnnotations.cancelEdit()" hidden>取消编辑</button></div>
+				</div>
+				<canvas id="calendarAnnotationResourceCanvas" class="todo-resource-canvas" width="800" height="480" aria-label="按所选日期和当前资源模拟的日历画面"></canvas><aside hidden id="calendarAnnotationPreview" class="annotation-preview" data-position="below" data-color="black" data-font="follow" data-today="false" aria-labelledby="annotationPreviewHeading">
+					<div class="annotation-preview-heading"><h3 id="annotationPreviewHeading">显示示意</h3><span>单个日期</span></div>
+					<div class="annotation-day-card" aria-label="标注位置示意">
+						<div class="annotation-day-meta"><span id="calendarAnnotationPreviewMonth">选择日期</span><span id="calendarAnnotationPreviewWeekday"></span></div>
+						<div class="annotation-day-content"><strong id="calendarAnnotationPreviewDate" class="annotation-day-number">—</strong><div class="annotation-day-caption"><span id="calendarAnnotationPreviewLabel" class="annotation-preview-label" hidden></span><span id="calendarAnnotationPreviewLunar" class="annotation-preview-lunar">农历 / 节日</span></div></div>
+						<span id="calendarAnnotationPreviewDot" class="annotation-preview-dot" aria-label="红点标记"></span>
+					</div>
+					<p id="calendarAnnotationPreviewNote" class="annotation-preview-note">标签留空时，只显示红点。</p>
+					<p class="annotation-preview-caption">此处示意标注位置；实际排版以设备日历为准。</p>
+				</aside>
+			</div>
+			<p id="calendarAnnotationStatus" class="annotation-status" role="status" aria-live="polite"></p>
+			<div class="annotation-device-panel">
+				<div><h3>同步到设备</h3><p>添加或更新标注后，点击保存，让设备日历应用当前列表。</p></div>
+				<div class="annotation-device-actions"><button data-device-operation type="button" class="primary" onclick="CalendarAnnotations.save()">保存到设备</button><button data-device-operation type="button" class="secondary" onclick="CalendarAnnotations.loadFromDevice()">从设备读取</button></div>
+			</div>
+			<div class="annotation-list-heading"><h3>标注列表</h3><span id="calendarAnnotationsSummary">尚未添加标注</span></div>
+			<div class="table-scroll annotation-list" tabindex="0" role="region" aria-label="日期标注列表">
+				<table class="anno-table"><caption class="sr-only">已添加的日期标注</caption><thead><tr><th scope="col">日期</th><th scope="col">标注内容</th><th scope="col">显示设置</th><th scope="col">操作</th></tr></thead><tbody id="calendarAnnotationsList"></tbody></table>
+			</div>
+			<details class="help-details annotation-management"><summary>备份与管理</summary><p class="dfu-hint">升级旧设备前，可导出配置和日期标注作为迁移备份。</p><div class="annotation-management-actions"><button data-device-operation type="button" class="secondary" onclick="exportMigrationBundle()">导出迁移备份</button><button data-device-operation type="button" class="danger" onclick="CalendarAnnotations.clearDevice()">清除设备标注</button></div></details>
+			<details class="help-details annotation-rules"><summary>标注显示规则</summary><ul><li>短标签最多 9 个字节，通常可输入 3 个汉字或 9 个英文字母；缺失字模会在保存时由网页生成并写入设备。</li><li>标签显示在日期下方时，会替换该日的节日或农历文字，并显示红点；带有「休／班」标记的日期，红点改到左上角。</li><li>标签显示在右上角时，保留节日和农历；标签留空时仅显示红点。</li><li>当日日期下方为红色背景，请使用白色或黑色标签；红字会与背景重合。</li><li>英文字母使用小号字库；白色标签在白色背景上可能不明显。</li></ul><p class="dfu-hint">连接新版设备后自动读取标注，收到外置 Flash 写入确认后提示保存成功。</p></details>
+		</section>
+		<section id="externalResources" class="section" data-workspace-panel="externalResources" aria-labelledby="resourcesHeading" tabindex="-1" hidden>
+			<div class="section-heading"><div><p class="section-kicker">04 / RESOURCES</p><h2 id="resourcesHeading">设备资源</h2></div><span class="device-badge">日历 · 布局 · 字体</span></div>
+			<p class="section-note">进入此页优先恢复本地草稿；没有草稿时，浏览器生成默认资源并自动载入。可修改日历、布局或字模后重新生成，再通过蓝牙发送到设备。</p>
+			<div class="resource-generation-panel">
+				<div><h3>在浏览器中生成资源</h3><p class="resource-panel-note">包含分区表、日历、布局、字体、设备配置、日期标注和待办事项，共 7 个 ERS 文件。生成后自动载入下方待发送区。</p></div>
+				<div class="external-resource-actions">
+					<button id="resourceGenerateDefault" data-resource-editor-action type="button" class="secondary" onclick="ExternalResourceEditor.loadDefault()">生成默认资源</button>
+					<button id="resourceGenerate" data-resource-editor-action type="button" class="primary" onclick="ExternalResourceEditor.generate()">重新生成并载入</button>
+					<button id="resourceDownloadAll" data-resource-editor-action type="button" class="secondary" onclick="ExternalResourceEditor.downloadAll()">下载全部资源 ZIP</button>
+				</div>
+				<div id="resourceEditorStatus" class="external-resource-message" role="status" aria-live="polite">进入此页后自动准备资源，也可选择已有资源目录。</div>
+				<p id="resourceDirtyStatus" class="dfu-hint" role="status">资源准备中。</p>
+				<div class="resource-generation-progress"><progress id="resourceGenerationProgress" max="1" value="0" aria-label="资源生成进度"></progress><button id="resourceGenerationCancel" type="button" onclick="ExternalResourceEditor.cancel()" disabled>取消生成</button></div>
+			</div>
+			<div class="external-resource-actions">
+				<label for="externalResourceFolder" class="external-resource-picker">选择资源目录<input id="externalResourceFolder" class="picker-input" type="file" accept=".ers" multiple webkitdirectory directory aria-label="选择 ERS 资源目录"></label>
+				<button id="externalResourceInstall" type="button" class="primary" onclick="ExternalResourceInstaller.install()" disabled>发送资源到设备</button>
+				<button id="externalResourceRefresh" type="button" class="secondary" onclick="ExternalResourceInstaller.refresh()" disabled>读取分区</button>
+				<button id="externalResourceReadback" type="button" class="secondary" onclick="ExternalResourceInstaller.readback()" disabled>回读资源</button>
+				<button id="externalResourceSave" type="button" class="secondary" onclick="ExternalResourceInstaller.saveReadback()" disabled>保存到本地</button>
+				<button id="externalResourceOffline" type="button" class="secondary" onclick="ExternalResourceInstaller.runOffline()" disabled>应用并断开连接</button>
+			</div>
+			<p class="dfu-hint">空白设备安装完整资源；已有分区表的设备更新日历、布局和字体，保留已安装的设备配置、日期标注与待办事项；已删除或缺失的分区从待发送包恢复。</p>
+			<div class="checkbox-options"><label><input id="externalResourceAutoOffline" type="checkbox" checked> 更新完成后自动断开连接</label>
+			<label><input id="externalResourceForce" type="checkbox"> 强制重写未变化资源</label>
+			</div>
+			<p class="dfu-hint">保持蓝牙连接也可切换模式并刷新屏幕；资源写入期间暂停刷新。断开后时钟继续运行，蓝牙按原策略间歇广播。单张图片仍直接传入屏幕 RAM。</p>
+			<div id="externalResourceBundle" class="resource-panel resource-bundle-panel">
+				<div class="resource-panel-heading"><h3>待烧录资源包</h3><span class="resource-state">尚未选择</span></div>
+				<p class="resource-panel-note">选择资源目录，或在编辑器中生成资源包，即可查看包内版本与容量。</p>
+			</div>
+			<div class="resource-dashboard">
+				<div id="externalResourceUsage" class="resource-panel flash-panel">
+					<div class="resource-panel-heading"><h3>外置 Flash</h3><span class="resource-state">待获取</span></div>
+					<div class="flash-metrics">
+						<div class="flash-metric"><span class="metric-label">总容量</span><strong class="flash-metric-value">—</strong></div>
+						<div class="flash-metric"><span class="metric-label">资源占用</span><strong class="flash-metric-value">—</strong></div>
+						<div class="flash-metric"><span class="metric-label">资源分区余量</span><strong class="flash-metric-value">—</strong></div>
+					</div>
+					<p class="resource-panel-note">连接设备读取实际占用；载入资源包后可查看容量估算。</p>
+				</div>
+				<div id="deviceResourceVersions" class="resource-panel resource-versions-panel">
+					<div class="resource-panel-heading"><h3>设备资源版本</h3><span class="resource-state">等待连接</span></div>
+					<p class="resource-panel-note">连接后显示各模块版本和校验状态，并与待烧录资源包比较。</p>
+				</div>
+			</div>
+			<details class="help-details">
+                <summary>删除设备资源</summary>
+                <p id="externalResourceEraseHint" class="dfu-hint">连接设备并读取分区后，可删除指定分区或清空全部外置 Flash。</p>
+                <div class="external-resource-actions">
+                    <select id="externalResourceErasePartition" aria-label="要删除的分区" onchange="ExternalResourceInstaller.controls()" disabled><option value="">选择要删除的分区</option></select>
+                    <button id="externalResourceErase" type="button" class="danger" onclick="ExternalResourceInstaller.erase()" disabled>删除所选分区</button>
+                    <button id="externalResourceEraseAll" type="button" class="danger" onclick="ExternalResourceInstaller.erase(true)" disabled>清空全部外置 Flash</button>
+                </div>
+            </details>
+			<div id="externalResourceStatus" class="dfu-hint">连接设备后自动读取外置 Flash 分区状态。</div>
+			<progress id="externalResourceProgress" max="1" value="0" aria-label="设备资源传输进度"></progress>
+			<p id="externalResourceReadbackStatus" class="dfu-hint" role="status">完整回读设备资源后，可保存为 ZIP。</p>
+			<div class="external-resource-actions">
+				<button id="externalResourceSaveRecovery" type="button" class="secondary" onclick="ExternalResourceInstaller.saveRecovery()" disabled>保存恢复备份</button>
+				<button id="externalResourceRetry" type="button" class="secondary" onclick="ExternalResourceInstaller.retry()" disabled>重试未完成资源</button>
+			</div>
+			<p id="externalResourceRecoveryStatus" class="dfu-hint" role="status">发送前备份待更新的旧资源；中断后可在此查看各模块结果并重试。</p>
+			<details class="resource-editor" open>
+				<summary>编辑并生成设备资源</summary>
+				<p>日历与布局在网页内生成，无需重新编译固件。默认资源自动就绪后，可编辑 JSON 或导入自定义文件，再重新生成。布局预览显示组件位置。</p>
+				<div class="external-resource-actions">
+					<label class="external-resource-picker">导入资源工程<input id="resourceProjectImport" data-resource-editor-action class="picker-input" type="file" accept=".json" aria-label="导入 JSON 资源工程"></label>
+					<label class="external-resource-picker">导入日历数据<input id="resourceCalendarImport" data-resource-editor-action class="picker-input" type="file" accept=".json" aria-label="导入 calendar-data.json"></label>
+					<button data-resource-editor-action type="button" onclick="ExternalResourceEditor.exportProject()">导出完整工程</button>
+				</div>
+				<p class="dfu-hint">完整工程保存当前编辑内容、导入字体和设置，尚未写完的 JSON 也能备份；下载 ERS 或 ZIP 时会先生成并校验。</p>
+				<label for="resourceBuildRevision">资源版本（可选）</label>
+				<input id="resourceBuildRevision" data-resource-editor-action type="number" min="1" max="4294967295" step="1" placeholder="自动按模块更新">
+				<p class="dfu-hint">留空时仅为内容变化的模块增加版本；填写时为生成的全部资源使用指定版本。每次生成会更新生成时间。</p>
+				<label for="resourceCalendarSource">日历数据：节日、休班日期、文字与年份计算表</label>
+				<p class="dfu-hint">holidays 中 work=false 表示休假，true 表示补班。修改年份范围时须提供相应农历和节气计算表；默认数据覆盖 2025–2027，休班表为 2026 年。新增文字的缺失字模会由网页自动生成。</p>
+				<textarea id="resourceCalendarSource" data-resource-editor-action rows="12" spellcheck="false" aria-label="日历资源 JSON"></textarea>
+				<label for="resourceLayoutSource">布局与样式：文字模板、坐标、颜色、字体及控件参数（UIR2）</label>
+				<textarea id="resourceLayoutSource" data-resource-editor-action rows="12" spellcheck="false" aria-label="布局资源 JSON"></textarea>
+				<details><summary>迁移设备配置与日期标注（可选）</summary>
+					<p class="dfu-hint">支持与批处理脚本相同的 EPD-MIG1 备份。导入后配置与标注将包含在生成的资源中，用于初始化空白设备；已有设备仍保留当前配置与标注。</p>
+					<label class="external-resource-picker">导入迁移备份<input id="resourceMigrationImport" data-resource-editor-action class="picker-input" type="file" accept=".json" aria-label="导入 EPD-MIG1 迁移备份"></label>
+					<label for="resourceMigrationSource">迁移备份 JSON</label>
+					<textarea id="resourceMigrationSource" data-resource-editor-action rows="6" spellcheck="false" aria-label="迁移备份 JSON" placeholder="留空时保留当前资源包中的配置与标注"></textarea>
+				</details>
+				<div class="external-resource-actions">
+					<select id="resourcePreviewMode" aria-label="预览模式" onchange="ExternalResourceEditor.preview()"><option value="1">日历</option><option value="2">分屏时钟</option><option value="3">全屏时钟</option><option value="4">待办 + 日历</option><option value="5">全屏待办</option></select>
+					<button type="button" onclick="ExternalResourceEditor.preview()">预览布局</button>
+				</div>
+				<canvas id="resourceLayoutPreview" width="800" height="480" aria-label="设备布局示意"></canvas>
+				<details open><summary>字体与补字</summary>
+                    <label for="resourceFontPixelSize">界面字体像素字号（留空保留字库度量）</label><input id="resourceFontPixelSize" data-resource-editor-action type="number" min="8" max="43" placeholder="8–43；选定字体后重绘所选槽位">
+					<p class="dfu-hint">新增文字会自动补字。也可导入自己的字体，先看设备点阵效果，再生成资源。</p>
+					<div id="resourceFontDrop" class="resource-font-drop">
+						<label class="external-resource-picker">导入 TTF / OTF 字体<input id="resourceFontImport" data-resource-editor-action class="picker-input" type="file" accept=".ttf,.otf" aria-label="导入本地字体"></label>
+						<span id="resourceFontSourceInfo" class="dfu-hint">可将字体拖到这里；文件仅在浏览器内处理。</span>
+					</div>
+					<div class="resource-font-options">
+						<label>生成字体<select id="resourceFontFamily" data-resource-editor-action><option value="">保留原字模，自动选字体补字</option><option value="imported">已导入的 TTF / OTF</option><option value='"Microsoft YaHei", sans-serif'>系统：微软雅黑</option><option value='"SimSun", serif'>系统：宋体</option><option value='"Noto Sans CJK SC", sans-serif'>系统：思源黑体</option><option value="sans-serif">系统：默认无衬线</option><option value="serif">系统：默认衬线</option></select></label>
+						<label>作用范围<select id="resourceFontTarget" data-resource-editor-action><option value="both">小字和中字</option><option value="0">小字 WQY9</option><option value="1">中字 WQY12</option><option value="2">数字 HELVB18</option></select></label>
+						<label>生成方式<select id="resourceFontMode" data-resource-editor-action><option value="supplement">仅补充缺字</option><option value="redraw">用所选字体重绘整个槽位</option></select></label>
+					</div>
+					<p class="dfu-hint">仅补字会保留已有字形；重绘会更新该槽位所有字形。字号与设备槽位固定，超出尺寸会提示。系统字体按浏览器可用字体回退；导入字体会严格检查缺字。</p>
+					<label for="resourceExtraText">额外需要的文字（可选）</label>
+					<textarea id="resourceExtraText" data-resource-editor-action rows="3" spellcheck="false" placeholder="输入将来要使用的文字，也可导入 UTF-8 TXT"></textarea>
+					<div class="external-resource-actions"><label class="external-resource-picker">导入补字 TXT<input id="resourceExtraImport" data-resource-editor-action class="picker-input" type="file" accept=".txt,text/plain" aria-label="导入补字文本"></label><button data-resource-editor-action type="button" onclick="ExternalResourceEditor.previewFonts()">检查字体并预览点阵</button></div>
+					<details id="resourceFontIssues" hidden open><summary>字体检查未通过的字符</summary><p class="dfu-hint">缺字时请换用包含这些字符的字体；尺寸超限时可更换字体，或使用“仅补充缺字”保留已有字形。</p><pre id="resourceFontIssueDetails" class="resource-font-issues"></pre></details>
+					<canvas id="resourceFontPreview" width="800" height="160" aria-label="最终字模的像素预览"></canvas>
+					<p id="resourceFontPreviewInfo" class="dfu-hint" role="status">预览显示最终字模的 4 倍点阵，横线为基线。</p>
+					<canvas id="resourceFontPreviewSecond" width="800" height="160" aria-label="第二字体槽位的像素预览" hidden></canvas>
+					<p id="resourceFontPreviewSecondInfo" class="dfu-hint" role="status" hidden></p>
+				</details>
+				<details><summary>导入已有 u8g2 字模 BIN（高级）</summary>
+					<p class="dfu-hint">未选择时保留原字模。支持与槽位几何一致的 u8g2 .bin；已有标注和待办需要的字模会一并检查和补充。</p>
+					<label>小字 WQY9 <input id="resourceFont0" data-resource-editor-action type="file" accept=".bin"></label>
+					<label>中字 WQY12 <input id="resourceFont1" data-resource-editor-action type="file" accept=".bin"></label>
+					<label>数字 HELVB18 <input id="resourceFont2" data-resource-editor-action type="file" accept=".bin"></label>
+				</details>
+				<div class="resource-draft"><p id="resourceDraftStatus" class="dfu-hint" role="status">编辑内容及导入字体会自动保存为本地草稿；浏览器清理站点数据后会丢失。</p><div class="external-resource-actions"><button data-resource-editor-action type="button" onclick="ExternalResourceEditor.saveDraft()">保存草稿</button><button data-resource-editor-action type="button" onclick="ExternalResourceEditor.restoreDraft()">恢复草稿</button><button data-resource-editor-action type="button" onclick="ExternalResourceEditor.clearDraft()">清除草稿</button></div></div>
+				<button id="resourceDraftRecoveryExport" data-resource-editor-action type="button" hidden onclick="ExternalResourceEditor.exportProject(true)">导出保留的原草稿</button>
+				<div class="external-resource-actions">
+					<button data-resource-editor-action type="button" class="primary" onclick="ExternalResourceEditor.generate()">重新生成并载入</button>
+					<select id="resourceDownloadPart" aria-label="下载资源类型"><option value="5">日历</option><option value="6">布局</option><option value="7">字体</option><option value="1">分区表</option><option value="2">设备配置</option><option value="3">日期标注</option><option value="9">待办事项</option></select>
+					<button data-resource-editor-action type="button" onclick="ExternalResourceEditor.download()">下载单个 ERS</button>
+				</div>
+			</details>
+		</section>
+		</div>
 		<div class="footer">
 			<span class="copy" id="footerCopy">&copy;Source from tsl0922, modify by DYC 2025.</span>
 			<span class="copy" id="footerVersion"></span>
@@ -362,8 +483,12 @@
 				<a href="https://qm.qq.com/q/SQAYIKMOKQ">交流群</a>
 				<a href="?debug=true" id="debug-toggle">开发模式</a>
 			</span>
+			<div id="busuanzi_container_site_pv" style="display:none; width: 100%; margin-top: 4px; opacity: 0.8;">
+				本站总访问量 <span id="busuanzi_value_site_pv">--</span> 次 |
+				访客数 <span id="busuanzi_value_site_uv">--</span> 人
+			</div>
 		</div>
-	</div>
+	</main>
 	<div id="deviceSelectModal" class="device-modal" style="display:none;">
 		<div class="device-modal-content" role="dialog" aria-modal="true" aria-labelledby="deviceModalTitle">
 			<div class="device-modal-header">
@@ -377,12 +502,46 @@
 			</div>
 		</div>
 	</div>
-	<div id="toast" class="toast-message" style="display:none;"></div>
-	<script type="text/javascript" src="js/dithering.js?v=20260402b"></script>
-	<script type="text/javascript" src="js/paint.js?v=20260402b"></script>
-	<script type="text/javascript" src="js/crop.js?v=20260402b"></script>
-	<script type="text/javascript" src="js/ble_transfer.js?v=20260402b"></script>
-	<script type="text/javascript" src="js/main.js?v=20260402c"></script>
+	<dialog id="legacyFirmwareDialog" class="device-modal-content firmware-dialog" aria-labelledby="legacyFirmwareTitle" aria-describedby="legacyFirmwareMessage legacyFirmwareHint">
+		<h3 id="legacyFirmwareTitle">请使用旧版网页</h3>
+		<p id="legacyFirmwareMessage" class="device-modal-hint"></p>
+		<p id="legacyFirmwareHint" class="device-modal-hint">旧版网页可继续控制当前设备，进入后请重新连接。固件升级功能开发中，暂未开放。</p>
+		<form method="dialog" class="device-modal-actions">
+			<button type="submit" value="cancel" class="secondary">取消</button>
+			<button type="button" value="upgrade" class="secondary" disabled title="固件升级开发中，暂未开放">升级设备（开发中）</button>
+			<button type="submit" value="legacy" class="primary" autofocus>使用旧版网页</button>
+		</form>
+	</dialog>
+	<div id="toast" class="toast-message" role="status" aria-live="polite" style="display:none;"></div>
+	<script defer src="js/main.js?v=20261029a"></script>
+	<script defer src="js/dithering.js?v=20261013a"></script>
+	<script defer src="js/paint.js?v=20261013a"></script>
+	<script defer src="js/paint_schedule.js?v=20261005b"></script>
+	<script defer src="js/crop.js?v=20261005a"></script>
+	<script defer src="js/rle.js?v=20261104a"></script>
+	<script defer src="js/ble_transfer.js?v=20261026a"></script>
+	<script defer src="js/calendar_annotations.js?v=20261026b"></script>
+	<script defer src="js/resource_store.js?v=20261026a"></script>
+	<script defer src="js/resource_archive.js?v=20261004a"></script>
+	<script defer src="js/ui_tools/ui_data.js?v=20261017a"></script>
+	<script defer src="js/ui_tools/ui_model.js?v=20261017a"></script>
+	<script defer src="js/ui_tools/ui_preview.js?v=20261017a"></script>
+	<script defer src="js/resource_builder.js?v=20261017a"></script>
+	<script defer src="js/ui_tools/resource_defaults.js?v=20261017a"></script>
+	<script defer src="js/ui_tools/default_fonts.js?v=20261017b"></script>
+	<script defer src="js/ui_tools/font_store_tool.js?v=20261017b"></script>
+	<script defer src="js/ui_tools/resource_pack.js?v=20261017c"></script>
+	<script defer src="js/font_builder.js?v=20261017a"></script>
+	<script defer src="js/ui_tools/font_sources.js?v=20261011a"></script>
+	<script defer src="js/ui_tools/resource_project.js?v=20261017a"></script>
+	<script defer src="js/ui_tools/resource_draft.js?v=20261012a"></script>
+	<script defer src="js/font_sync.js?v=20261012a"></script>
+	<script defer src="js/todo_sync.js?v=20261005h"></script>
+	<script defer src="js/resource_installer.js?v=20261026a"></script>
+	<script defer src="js/todo_calendar.js?v=20261026b"></script>
+	<script defer src="js/resource_editor.js?v=20261017a"></script>
+	<script defer src="js/console_ui.js?v=20261017f"></script>
+	<script defer src="js/site_statistics.js?v=20261017g"></script>
 </body>
 
 </html>

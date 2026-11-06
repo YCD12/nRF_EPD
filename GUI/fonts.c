@@ -1,4 +1,7 @@
 #include "fonts.h"
+#include "font_geometry.h"
+
+#if GUI_INCLUDE_INTERNAL_FONTS
 
 /*
   Fontname: -wenquanyi-wenquanyi bitmap song-bold-r-normal--12-120-75-75-P-119-ISO10646-1
@@ -9,7 +12,7 @@
   BBX Build Mode: 0
 */
 // 文泉驿9号字体（农历专用），包含中文字符和符号
-const uint8_t u8g2_font_wqy9_t_lunar[4315] U8G2_FONT_SECTION("u8g2_font_wqy9_t_lunar") = 
+const uint8_t u8g2_font_wqy9_t_lunar[4315] U8G2_FONT_SECTION("u8g2_font_wqy9_t_lunar") =
   "\344\0\3\3\4\4\3\4\5\14\14\0\376\10\376\12\377\1h\2\332\4# \5\0\314\13!\10\222\306"
   "\213CQ\0\42\10\65\375\13\11\213\0#\22\227D\34%\211\344\242$\21I$\27%\211\4\0$\17"
   "\246\274+\31\345\60\33\316\16\23\232\10\0%\22\211D\235\211HB\222\14\313\305\211\210\42\222L\0&"
@@ -155,7 +158,7 @@ const uint8_t u8g2_font_wqy9_t_lunar[4315] U8G2_FONT_SECTION("u8g2_font_wqy9_t_l
   BBX Build Mode: 0
 */
 // 文泉驿12号字体（农历专用），包含中文字符和符号
-const uint8_t u8g2_font_wqy12_t_lunar[4830] U8G2_FONT_SECTION("u8g2_font_wqy12_t_lunar") = 
+const uint8_t u8g2_font_wqy12_t_lunar[4830] U8G2_FONT_SECTION("u8g2_font_wqy12_t_lunar") =
   "\216\0\4\3\5\5\3\4\6\20\20\0\376\13\375\14\374\0\0\0\0\0\253\60\16g\25S\231\221P\303"
   "o$\324\214\0\61\13f\25S\221\31!\322O\14\62\15g\25\323\250\220\241\221R\244W\7\63\21h"
   "\21\323(\221\221\23\223\222\241SF#R\2\64\25h\21\323\222\32\242\221\20Q!#!#q\20%"
@@ -309,26 +312,6 @@ const uint8_t u8g2_font_wqy12_t_lunar[4830] U8G2_FONT_SECTION("u8g2_font_wqy12_t
   "\222\220\225\20\221\223\20\221\223P'B(\62(#$#\62$\42B$!\42r \16\0";
 
 /*
-  Fontname: -Adobe-Helvetica-Bold-R-Normal--20-140-100-100-P-105-ISO10646-1
-  字体名称: Adobe Helvetica 粗体-正常--20-140-100-100-P-105-ISO10646-1
-  Copyright: Copyright (c) 1984, 1987 Adobe Systems Incorporated. All Rights Reserved. Copyright (c) 1988, 1991 Digital Equipment Corporation. All Rights Reserved.
-  Glyphs: 18/756
-  字形数: 18/756
-  BBX Build Mode: 0
-*/
-// Helvetica 14号粗体数字字体（仅包含数字和基本符号）
-const uint8_t u8g2_font_helvB14_tn[287] U8G2_FONT_SECTION("u8g2_font_helvB14_tn") = 
-  "\22\0\3\3\4\4\2\5\5\11\21\0\375\16\374\16\374\0\0\0\0\1\2 \5\0\306\12*\17g\343"
-  "\274\230$\42\251\315$\242X\4\0+\14\210\307=\261\332\341 \23\253\1,\11c\267\212\203\204\22\2"
-  "-\7\65R\213\207\0.\7\63\303\212\203\0/\17\345\302:M#\231\322H&\32\311\324\0\60\17\331"
-  "B\275\341i\262\346o\223\245\343\14\0\61\12\326C\275\321\341 \333\77\62\21\331B\255\332ef\33O"
-  "\207\265\32u\371p \63\23\331B\255\332e\64\231\211\207\324\62\331f\242\334J\0\64\25\331B\335)"
-  "\261f\223\214&#\321d\64\71\34\250\343\25\0\65\25\331B\215C\344\20\31\217O\207\310\210<\266\231"
-  "\16%\23\0\66\24\331B-\323!\62+OF\207\10\311\330h\232\334J\0\67\20\331B\215\7\362t"
-  "y:\236\216\247\343U\0\70\22\331B\255\332e\346\66\271\325&kn\223[\11\0\71\24\331B\255\332"
-  "edl\64Q\16\241\311\270\66\71\204L\0:\11\243C\213\203\34z\20\0\0\0\4\377\377\0";
-
-/*
   Fontname: -Adobe-Helvetica-Bold-R-Normal--25-180-100-100-P-138-ISO10646-1
   字体名称: Adobe Helvetica 粗体-正常--25-180-100-100-P-138-ISO10646-1
   Copyright: Copyright (c) 1984, 1987 Adobe Systems Incorporated. All Rights Reserved. Copyright (c) 1988, 1991 Digital Equipment Corporation. All Rights Reserved.
@@ -337,7 +320,7 @@ const uint8_t u8g2_font_helvB14_tn[287] U8G2_FONT_SECTION("u8g2_font_helvB14_tn"
   BBX Build Mode: 0
 */
 // Helvetica 18号粗体数字字体（仅包含数字和基本符号）
-const uint8_t u8g2_font_helvB18_tn[389] U8G2_FONT_SECTION("u8g2_font_helvB18_tn") = 
+const uint8_t u8g2_font_helvB18_tn[389] U8G2_FONT_SECTION("u8g2_font_helvB18_tn") =
   "\22\0\4\3\4\5\3\5\5\15\26\0\375\23\373\23\373\0\0\0\0\1h \5\0\30-*\17x\312"
   "\365\210\311HH\34\214\320\210h\1+\16\314\32\177\211\352\352\340\301\224\250\256\0,\12c\334.\34H"
   "HP\0-\6\67h\61|.\7\63\14/\34\10/\22\67\13qi$\245HJ#)ER\212\244"
@@ -351,3 +334,56 @@ const uint8_t u8g2_font_helvB18_tn[389] U8G2_FONT_SECTION("u8g2_font_helvB18_tn"
   "\14\215\14\315\214LY\35\304\14M\214y\66\61\64r\60d\3\71\37,\11\373\30\35\310\220P\20M"
   "\214yvDARq@S\61\71i\65ARr U\4:\12\343\14/\34\310C\36\10\0\0\0"
   "\4\377\377\0";
+
+#endif /* GUI_INCLUDE_INTERNAL_FONTS */
+
+#if GUI_USE_EXTERNAL_FONTS
+
+#include "font_store.h"
+
+#endif /* GUI_USE_EXTERNAL_FONTS */
+
+uint8_t GUI_ExternalFontsInit(void) {
+#if GUI_USE_EXTERNAL_FONTS
+    return font_store_init() == NRF_SUCCESS;
+#else
+    return 0U;
+#endif
+}
+
+const u8g2_font_source_t* GUI_GetExternalFont(gui_font_id_t font_id) {
+#if GUI_USE_EXTERNAL_FONTS
+    return font_store_get_source((font_store_slot_t)font_id);
+#else
+    (void)font_id;
+    return NULL;
+#endif
+}
+
+const gui_font_metrics_t* GUI_GetFontMetrics(gui_font_id_t font_id) {
+    if (font_id == GUI_FONT_TODO) {
+#if GUI_USE_EXTERNAL_FONTS
+        return font_store_todo_font_metrics();
+#else
+        font_id = GUI_FONT_WQY12;
+#endif
+    }
+    if ((unsigned)font_id >= 3U) {
+        return NULL;
+    }
+#if GUI_USE_EXTERNAL_FONTS
+    return font_store_font_metrics((font_store_slot_t)font_id);
+#else
+    return &font_slot_geometry[font_id];
+#endif
+}
+
+bool GUI_TodoFontMatches(uint8_t size, uint32_t key) {
+#if GUI_USE_EXTERNAL_FONTS
+    return GUI_GetExternalFont(GUI_FONT_TODO) != NULL &&
+        font_store_todo_font_size() == size && font_store_todo_font_key() == key;
+#else
+    (void)size; (void)key;
+    return true;
+#endif
+}

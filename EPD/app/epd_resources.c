@@ -1,0 +1,50 @@
+#include "epd_resources.h"
+#include "font_store.h"
+#include "fonts.h"
+#include "calendar_resources.h"
+#include "ui_resources.h"
+#include "resource_layout.h"
+
+/* Main publishes activation state; the scheduling timer only reads it. */
+static volatile bool m_ready;
+
+void epd_resources_invalidate(void)
+{
+    epd_resources_invalidate_partitions(UINT16_MAX);
+}
+
+void epd_resources_invalidate_partitions(uint16_t changed)
+{
+    if (changed & (1U << RS_PART_PARTITION_TABLE)) changed = UINT16_MAX;
+    m_ready = false;
+#if GUI_USE_EXTERNAL_FONTS
+    if (changed & (1U << RS_PART_FONTS)) font_store_invalidate();
+#endif
+    if (changed & (1U << RS_PART_CALENDAR_RESOURCES)) calendar_resources_invalidate();
+    if (changed & (1U << RS_PART_UI_RESOURCES)) ui_resources_invalidate();
+}
+
+rs_result_t epd_resources_reload(void)
+{
+    epd_resources_invalidate();
+    return epd_resources_apply();
+}
+
+rs_result_t epd_resources_apply(void)
+{
+    m_ready = false;
+    rs_result_t result = resource_store_mount();
+    if (result != RS_OK) return result;
+#if GUI_USE_EXTERNAL_FONTS
+    if (font_store_retry_init() != NRF_SUCCESS) return RS_INVALID;
+    for (unsigned slot = 0; slot < FONT_STORE_SLOT_COUNT; ++slot)
+        if (font_store_get_source((font_store_slot_t)slot) == NULL) return RS_NOT_FOUND;
+#elif !GUI_INCLUDE_INTERNAL_FONTS
+    return RS_NOT_FOUND;
+#endif
+    if (!calendar_resources_retry_init() || !ui_resources_retry_init()) return RS_INVALID;
+    m_ready = true;
+    return RS_OK;
+}
+
+bool epd_resources_ready(void) { return m_ready; }

@@ -10,19 +10,19 @@
   const DEFAULT_PACKET_SIZE = 20;
   const INITIAL_DFU_DISCOVERY_TIMEOUT_MS = 8000;
   const NEXT_STAGE_DISCOVERY_TIMEOUT_MS = 12000;
-  const DFU_REBOOT_SETTLE_MS = 1600;
+  const DFU_REBOOT_SETTLE_MS = 2000;
   const DFU_RESPONSE_TIMEOUT_MS = 10000;
-  const CONNECT_TIMEOUT_MS = 6000;
+  const CONNECT_TIMEOUT_MS = 5000;
   const SERVICE_TIMEOUT_MS = 6000;
   const CHARS_TIMEOUT_MS = 5000;
   const DFU_SERVICE_DISCOVERY_RETRY_MS = 900;
   const DFU_OBJECT_EXECUTE_SETTLE_MS = 180;
   const APP_FLASH_START_ADDR = 0x19000;
-  const APP_FLASH_SIZE_BYTES = 0x17000;
+  const APP_FLASH_SIZE_BYTES = 0xE000;
   // Approximate spare DFU cache space for the current flash layout.
   // This is only a heuristic for combo-package precheck and should be kept
   // aligned with the linker/bootloader layout when the project changes.
-  const DFU_APP_CACHE_ESTIMATE_BYTES = 0x10C00;
+  const DFU_APP_CACHE_ESTIMATE_BYTES = 0xE000;
   const AUTO_FIND_RETRY_INTERVAL_MS = 2500;
   const MANUAL_PICK_REQUIRED_ERROR = 'DFU_MANUAL_PICK_REQUIRED';
   const MANUAL_DFU_MODE_REQUIRED_ERROR = 'DFU_MANUAL_MODE_REQUIRED';
@@ -77,10 +77,11 @@
   };
 
   let dfuPackage = null;
+  let packageLoadGeneration = 0;
   let dfuBusy = false;
   let pendingManualSession = null;
   let packageVersionHint = null;
-  let manualBootloaderEntryRequired = false;
+  let manualBootloaderEntryRequired = true;
 
   function getDfuPageState() {
     return {
@@ -90,7 +91,18 @@
     };
   }
 
+  function getDfuOptions() {
+    const enableAutoFindEl = document.getElementById('dfuEnableAutoFind');
+    const prnValueEl = document.getElementById('dfuPrnValue');
+    return {
+      enableAutoFind: enableAutoFindEl ? !!enableAutoFindEl.checked : true,
+      prn: prnValueEl ? parseInt(prnValueEl.value, 10) : 0
+    };
+  }
+
   function notifyDfuPageStateChange() {
+    const fileEl = document.getElementById('dfuPackageFile');
+    if (fileEl) fileEl.disabled = !!(dfuBusy || pendingManualSession);
     if (typeof window.onDfuPageStateChange !== 'function') return;
     try {
       window.onDfuPageStateChange(getDfuPageState());
@@ -513,10 +525,9 @@
   }
 
   class LocalSecureDfu {
-    constructor(crc32Fn, bluetooth, delayMs = 0) {
+    constructor(crc32Fn, bluetooth, delayMs = 0, options = {}) {
       this.crc32 = crc32Fn;
       this.bluetooth = bluetooth || (navigator && navigator.bluetooth);
-      this.delay = delayMs;
       this.packetSize = DEFAULT_PACKET_SIZE;
       this.forceWriteWithResponse = false;
       this.notifyFns = {};
@@ -525,8 +536,15 @@
       this.listeners = { log: [], progress: [] };
       this.connectedDevice = null;
       this.disconnectHandler = null;
+      this.disconnectDevice = null;
+      this.connectionGeneration = 0;
       this.connectedControlChar = null;
       this.connectedButtonChar = null;
+      this.prn = options.prn !== undefined ? options.prn : 12;
+      this.delay = delayMs > 0 ? delayMs : (this.prn > 0 ? 10 : 15);
+      this.prnPacketCount = 0;
+      this.prnResolver = null;
+      this.prnQueue = [];
     }
 
     addEventListener(type, fn) {
@@ -561,12 +579,17 @@
       };
 
       let lastErr = null;
-      for (let attempt = 1; attempt <= 3; attempt++) {
+      const maxAttempts = 5;
+      for (let attempt = 1; attempt <= maxAttempts; attempt++) {
         try {
           const server = device.gatt.connected
             ? device.gatt
             : await withTimeout(device.gatt.connect(), CONNECT_TIMEOUT_MS, `GATT连接超时(${CONNECT_TIMEOUT_MS}ms)`);
           this.log('connected to gatt server');
+          
+          // 增加 300ms 延迟，给浏览器和设备一些时间稳定 GATT 服务列表并避免竞争
+          await this.delayPromise(300);
+
           const service = await withTimeout(
             server.getPrimaryService(serviceUUID),
             SERVICE_TIMEOUT_MS,
@@ -583,9 +606,10 @@
         } catch (err) {
           lastErr = err;
           safeDisconnect();
-          if (attempt < 3) {
-            this.log(`Bootloader 尚未稳定，等待后重试服务发现（第 ${attempt}/3 次）: ${getErrorMessage(err)}`);
-            await this.delayPromise(DFU_SERVICE_DISCOVERY_RETRY_MS);
+          if (attempt < maxAttempts) {
+            const retryDelay = 1000 + (attempt - 1) * 1000;
+            this.log(`连接或服务发现尚未稳定，等待后重试（第 ${attempt}/${maxAttempts} 次）: ${getErrorMessage(err)}`);
+            await this.delayPromise(retryDelay);
             continue;
           }
         }
@@ -625,6 +649,7 @@
       const start = Date.now();
       const lastTriedAt = new Map();
       this.log('正在自动查找 DFU 设备...');
+      this.log('提示: 若设备是 unbonded buttonless DFU，切换到 Bootloader 后 MAC 地址可能会变化。根据浏览器安全策略，网页必须再次通过设备选择框授权该新设备。若您以前升级时已选择过此 DfuTarg 并授权，浏览器才可自动识别。');
       while (Date.now() - start < timeoutMs) {
         const candidates = [];
         if (preferredDevice) candidates.push(preferredDevice);
@@ -655,6 +680,28 @@
         throw new Error('Unrecognised control characteristic response notification');
       }
       const operation = view.getUint8(1);
+
+      // CRC_GET notifications are PRNs. Object verification uses SELECT, whose
+      // distinct opcode cannot be confused with a delayed packet notification.
+      if (operation === OP.CALCULATE_CHECKSUM[0]) {
+        if (this.prnResolver) {
+          const resolver = this.prnResolver;
+          this.prnResolver = null;
+          const result = view.getUint8(2);
+          if (result === 0x01) {
+            resolver.resolve(view);
+          } else {
+            const err = (result === 0x0B)
+              ? `PRN Error: ${EXTENDED_ERROR_MSG[view.getUint8(3)] || 'Unknown extended error'}`
+              : `PRN Error: ${RESPONSE_MSG[result] || 'Unknown response error'}`;
+            resolver.reject(new Error(err));
+          }
+        } else if (this.prn > 0) {
+          this.prnQueue.push(view);
+        }
+        return;
+      }
+
       const target = this.notifyFns[operation];
       if (!target) return;
       const result = view.getUint8(2);
@@ -664,24 +711,25 @@
         const err = (result === 0x0B)
           ? `Error: ${EXTENDED_ERROR_MSG[view.getUint8(3)] || 'Unknown extended error'}`
           : `Error: ${RESPONSE_MSG[result] || 'Unknown response error'}`;
-        if (operation === OP.GET_MTU[0] && result === 0x02) {
-          this.log('Bootloader 未实现 MTU 查询，准备回退到 20 字节兼容分片');
-        } else {
-          this.log(`notify: ${err}`);
-        }
-        target.reject(new Error(err));
+        this.log(`notify: ${err}`);
+        const error = new Error(err);
+        error.dfuResult = result;
+        target.reject(error);
       }
       delete this.notifyFns[operation];
     };
 
     bindDisconnectHandler(device) {
       if (!device) return;
-      if (this.connectedDevice && this.disconnectHandler) {
+      if (this.disconnectDevice && this.disconnectHandler) {
         try {
-          this.connectedDevice.removeEventListener('gattserverdisconnected', this.disconnectHandler);
+          this.disconnectDevice.removeEventListener('gattserverdisconnected', this.disconnectHandler);
         } catch (_) { }
       }
-      this.disconnectHandler = () => {
+      this.connectionGeneration++;
+      const handler = () => {
+        if (this.disconnectHandler !== handler) return;
+        this.connectionGeneration++;
         const pending = this.notifyFns;
         this.notifyFns = {};
         for (const key of Object.keys(pending)) {
@@ -699,7 +747,9 @@
         this.connectedControlChar = null;
         this.connectedButtonChar = null;
       };
-      device.addEventListener('gattserverdisconnected', this.disconnectHandler);
+      this.disconnectHandler = handler;
+      this.disconnectDevice = device;
+      device.addEventListener('gattserverdisconnected', handler);
       this.connectedDevice = device;
     }
 
@@ -755,55 +805,52 @@
     async configureTransport() {
       try {
         const prnView = new DataView(new ArrayBuffer(4));
-        prnView.setUint32(0, 0, LITTLE_ENDIAN);
+        prnView.setUint32(0, this.prn, LITTLE_ENDIAN);
         await this.sendControl(OP.SET_PRN, prnView.buffer);
-        this.log('configured PRN=0');
+        this.log(`configured PRN=${this.prn}`);
       } catch (err) {
         this.log(`配置PRN失败，继续使用默认行为: ${getErrorMessage(err)}`);
       }
 
-      try {
-        const resp = await this.sendControl(OP.GET_MTU);
-        const mtu = resp.getUint16(0, LITTLE_ENDIAN);
-        const negotiated = Math.max(DEFAULT_PACKET_SIZE, Math.min(244, mtu - 3));
-        this.packetSize = negotiated;
-        this.log(`transport mtu=${mtu}, packet size=${this.packetSize}`);
-      } catch (err) {
-        this.packetSize = DEFAULT_PACKET_SIZE;
-        const msg = getErrorMessage(err);
-        if (/Opcode not supported/i.test(msg)) {
-          this.log(`设备未支持 MTU 查询，使用 ${DEFAULT_PACKET_SIZE} 字节兼容分片`);
-        } else {
-          this.log(`读取MTU失败，回退到${DEFAULT_PACKET_SIZE}字节分片: ${msg}`);
-        }
-      }
+      this.packetSize = DEFAULT_PACKET_SIZE;
+      this.log(`使用 ${DEFAULT_PACKET_SIZE} 字节兼容分片进行传输`);
     }
 
     sendOperation(characteristic, operation, buffer) {
       return new Promise((resolve, reject) => {
         let settled = false;
         let timeoutId = null;
+        let pending;
+        const generation = this.connectionGeneration;
+        const device = this.connectedDevice;
+        const sameConnection = () => this.connectionGeneration === generation &&
+          this.connectedDevice === device && (!device || device.gatt.connected);
         const finish = (fn, value) => {
           if (settled) return;
           settled = true;
           if (timeoutId) clearTimeout(timeoutId);
-          delete this.notifyFns[operation[0]];
+          if (this.notifyFns[operation[0]] === pending) delete this.notifyFns[operation[0]];
           fn(value);
         };
         const payload = new Uint8Array(operation.length + (buffer ? buffer.byteLength : 0));
         payload.set(operation);
         if (buffer) payload.set(new Uint8Array(buffer), operation.length);
-        this.notifyFns[operation[0]] = {
+        pending = {
           resolve: value => finish(resolve, value),
           reject: err => finish(reject, err)
         };
+        this.notifyFns[operation[0]] = pending;
         timeoutId = setTimeout(() => {
           finish(reject, new Error(`DFU response timeout (${DFU_RESPONSE_TIMEOUT_MS}ms)`));
         }, DFU_RESPONSE_TIMEOUT_MS);
         characteristic.writeValue(payload).catch(async (e) => {
+          if (settled) return;
           this.log(String(e));
           try {
+            if (!sameConnection()) throw new Error('DFU connection changed');
             await this.delayPromise(500);
+            if (settled) return;
+            if (!sameConnection()) throw new Error('DFU connection changed');
             await characteristic.writeValue(payload);
           } catch (retryErr) {
             finish(reject, retryErr);
@@ -824,25 +871,80 @@
     }
 
     async writePacket(packet) {
-      const canWriteWithoutResponse = !this.forceWriteWithResponse &&
-        this.packetChar.properties.writeWithoutResponse &&
-        typeof this.packetChar.writeValueWithoutResponse === 'function';
-      if (canWriteWithoutResponse) {
+      let attempts = 0;
+      const maxAttempts = 3;
+
+      while (attempts < maxAttempts) {
+        const canWriteWithoutResponse = !this.forceWriteWithResponse &&
+          this.packetChar.properties.writeWithoutResponse &&
+          typeof this.packetChar.writeValueWithoutResponse === 'function';
+
         try {
-          await this.packetChar.writeValueWithoutResponse(packet);
+          if (canWriteWithoutResponse) {
+            await this.packetChar.writeValueWithoutResponse(packet);
+          } else {
+            await this.packetChar.writeValue(packet);
+          }
           return;
         } catch (err) {
+          attempts++;
           const msg = getErrorMessage(err);
-          const canFallbackToWriteWithResponse = this.packetChar.properties.write &&
-            typeof this.packetChar.writeValue === 'function' &&
-            /NotSupportedError|GATT operation failed|unknown reason/i.test(msg);
-          if (!canFallbackToWriteWithResponse) throw err;
-          this.forceWriteWithResponse = true;
-          this.delay = Math.max(this.delay, 12);
-          this.log(`writeWithoutResponse 不稳定，切换到 writeValue 模式: ${msg}`);
+          
+          if (msg.includes('already in progress') && attempts < maxAttempts) {
+            this.log(`GATT 操作进行中，等待 50ms 并重试（第 ${attempts}/${maxAttempts} 次）...`);
+            await this.delayPromise(50);
+            continue;
+          }
+
+          if (canWriteWithoutResponse) {
+            const canFallbackToWriteWithResponse = this.packetChar.properties.write &&
+              typeof this.packetChar.writeValue === 'function' &&
+              /NotSupportedError|GATT operation failed|unknown reason/i.test(msg);
+            if (canFallbackToWriteWithResponse) {
+              this.forceWriteWithResponse = true;
+              this.delay = Math.max(this.delay, 12);
+              this.log(`writeWithoutResponse 不稳定，切换到 writeValue 模式: ${msg}`);
+              attempts = Math.max(0, attempts - 1);
+              continue;
+            }
+          }
+          throw err;
         }
       }
-      await this.packetChar.writeValue(packet);
+    }
+
+    waitForPrn() {
+      const PRN_TIMEOUT_MS = 4000;
+      if (this.prnQueue && this.prnQueue.length > 0) {
+        const view = this.prnQueue.shift();
+        const offset = view.getUint32(3, LITTLE_ENDIAN);
+        const crc = view.getUint32(7, LITTLE_ENDIAN);
+        this.log(`PRN received (from queue): offset=${offset}, crc=0x${(crc >>> 0).toString(16).toUpperCase()}`);
+        return Promise.resolve();
+      }
+
+      return new Promise((resolve, reject) => {
+        let timeoutId = setTimeout(() => {
+          this.prnResolver = null;
+          reject(new Error(`PRN response timeout (${PRN_TIMEOUT_MS}ms)`));
+        }, PRN_TIMEOUT_MS);
+
+        this.prnResolver = {
+          resolve: (view) => {
+            clearTimeout(timeoutId);
+            this.prnResolver = null;
+            const offset = view.getUint32(3, LITTLE_ENDIAN);
+            const crc = view.getUint32(7, LITTLE_ENDIAN);
+            this.log(`PRN received: offset=${offset}, crc=0x${(crc >>> 0).toString(16).toUpperCase()}`);
+            resolve();
+          },
+          reject: (err) => {
+            clearTimeout(timeoutId);
+            this.prnResolver = null;
+            reject(err);
+          }
+        };
+      });
     }
 
     async transferData(dataBuffer, offset, start = 0, objectName, totalBytes) {
@@ -863,28 +965,62 @@
         if (this.delay > 0) await this.delayPromise(this.delay);
         this.progress(objectName, totalBytes, offset + end);
         cursor = end;
+
+        if (this.prn > 0) {
+          this.prnPacketCount++;
+          if (this.prnPacketCount >= this.prn) {
+            this.prnPacketCount = 0;
+            this.log(`sent ${this.prn} packets, waiting for PRN...`);
+            try {
+              await this.waitForPrn();
+            } catch (prnErr) {
+              this.log(`PRN 等待异常，禁用后续 PRN 流控并回退到兼容模式: ${getErrorMessage(prnErr)}`);
+              this.prn = 0; // Disable PRN flow control for the remainder of this session to prevent further hangs
+              this.forceWriteWithResponse = true; // Force write with response for ultimate flow control!
+              this.delay = Math.max(this.delay, 10); // Maintain a safe pacing delay
+              if (this.packetSize > DEFAULT_PACKET_SIZE) {
+                this.packetSize = DEFAULT_PACKET_SIZE;
+              }
+            }
+          }
+        }
       }
     }
 
-    async transferObject(buffer, createType, maxSize, offset, objectName) {
+    async transferObject(buffer, createType, maxSize, offset, objectName, selectType) {
       const start = offset - (offset % maxSize);
       const end = Math.min(start + maxSize, buffer.byteLength);
       const view = new DataView(new ArrayBuffer(4));
       view.setUint32(0, end - start, LITTLE_ENDIAN);
       await this.sendControl(createType, view.buffer);
+      // CREATE rolls back received bytes to the last EXECUTE, not necessarily
+      // the page inferred from SELECT's received offset. Verify before writing.
+      const selected = await this.sendControl(selectType);
+      if (selected.getUint32(4, LITTLE_ENDIAN) !== start ||
+          !this.checkCrc(buffer.slice(0, start), selected.getInt32(8, LITTLE_ENDIAN))) {
+        throw new Error('DFU 已提交数据与固件不一致，无法安全续传');
+      }
+      this.prnPacketCount = 0; // Reset PRN counter for the new object
+      this.prnQueue = []; // Clear PRN queue for the new object
       await this.transferData(buffer.slice(start, end), start, 0, objectName, buffer.byteLength);
-      const response = await this.sendControl(OP.CALCULATE_CHECKSUM);
-      const crc = response.getInt32(4, LITTLE_ENDIAN);
-      const transferred = response.getUint32(0, LITTLE_ENDIAN);
+
+      // Let the BLE / GATT queue settle for 100ms after heavy traffic before requesting checksum
+      await this.delayPromise(100);
+
+      // SELECT returns the same received offset/CRC as CRC_GET in the SDK,
+      // with an opcode that cannot collide with asynchronous PRN messages.
+      const response = await this.sendControl(selectType);
+      const crc = response.getInt32(8, LITTLE_ENDIAN);
+      const transferred = response.getUint32(4, LITTLE_ENDIAN);
       const data = buffer.slice(0, transferred);
-      if (!this.checkCrc(data, crc)) {
+      if (transferred !== end || !this.checkCrc(data, crc)) {
         throw new Error('DFU object CRC校验失败');
       }
       this.log(`written ${transferred} bytes`);
       await this.sendControl(OP.EXECUTE);
       await this.delayPromise(Math.max(this.delay, DFU_OBJECT_EXECUTE_SETTLE_MS));
       if (end < buffer.byteLength) {
-        await this.transferObject(buffer, createType, maxSize, transferred, objectName);
+        await this.transferObject(buffer, createType, maxSize, transferred, objectName, selectType);
       } else {
         this.log('transfer complete');
       }
@@ -895,12 +1031,38 @@
       const maxSize = resp.getUint32(0, LITTLE_ENDIAN);
       const offset = resp.getUint32(4, LITTLE_ENDIAN);
       const crc = resp.getInt32(8, LITTLE_ENDIAN);
-      if (objectName === 'init' && offset === buffer.byteLength && this.checkCrc(buffer, crc)) {
-        this.log('init packet already available, skipping transfer');
-        return;
+      const isCommand = selectType === OP.SELECT_COMMAND;
+      if (!maxSize || !buffer.byteLength || (isCommand && buffer.byteLength > maxSize)) {
+        throw new Error('DFU object size 无效');
+      }
+      if (!isCommand && offset > buffer.byteLength) {
+        throw new Error('DFU offset 超出固件长度');
+      }
+      const prefixMatches = offset <= buffer.byteLength &&
+        this.checkCrc(buffer.slice(0, offset), crc);
+      let restartOffset = isCommand ? 0 : offset;
+      if (offset > 0 && prefixMatches &&
+          (offset === buffer.byteLength || (!isCommand && offset % maxSize === 0))) {
+        // SELECT reports received bytes, including a full object that was never
+        // executed. EXECUTE is also safe when that object was already committed.
+        this.log(`${objectName}: committing ${offset} received bytes`);
+        try {
+          await this.sendControl(OP.EXECUTE);
+        } catch (err) {
+          // At a non-final boundary the next object may have been CREATEd but
+          // received no bytes. The SDK rejects EXECUTE with 0x08 in that case;
+          // recreating it below is safe after checking the committed prefix.
+          if (isCommand || offset === buffer.byteLength || err.dfuResult !== 0x08) throw err;
+        }
+        await this.delayPromise(Math.max(this.delay, DFU_OBJECT_EXECUTE_SETTLE_MS));
+        if (offset === buffer.byteLength) return;
+      } else if (!isCommand && offset > 0 && offset % maxSize === 0) {
+        // A corrupt, fully received object still belongs to the preceding page.
+        // CREATE + SELECT below confirms that its committed prefix is intact.
+        restartOffset -= maxSize;
       }
       this.progress(objectName, buffer.byteLength, 0);
-      await this.transferObject(buffer, createType, maxSize, offset, objectName);
+      await this.transferObject(buffer, createType, maxSize, restartOffset, objectName, selectType);
     }
 
     async requestDevice(buttonLess, filters, uuids, pickerOptions) {
@@ -1023,7 +1185,7 @@
               device.gatt.disconnect();
             }
           } catch (_) { }
-          await this.delayPromise(DFU_SERVICE_DISCOVERY_RETRY_MS);
+          await this.delayPromise(2500);
           this.delay = 10;
           await this.update(device, initData, firmwareData);
           return;
@@ -1034,17 +1196,36 @@
   }
 
   async function loadPackageFromFile(file) {
-    if (!file) return;
+    // A resumable session owns its original image buffers until completed or
+    // abandoned. A new selection must never silently replace those images.
+    if (dfuBusy || pendingManualSession) return;
+    const generation = ++packageLoadGeneration;
+    dfuPackage = null;
+    packageVersionHint = null;
     setDfuProgress(null);
+    setDfuPrecheck('');
+    if (!file) {
+      setDfuStatus('未选择 DFU 固件包');
+      return;
+    }
     setDfuStatus('正在解析固件包...');
-    const pkg = new LocalDfuPackage(file);
-    await pkg.load();
-    dfuPackage = pkg;
-    const appImage = pkg.getAppImage();
-    const baseImage = pkg.getBaseImage();
-    updateVersionPrecheck(baseImage, appImage);
-    setDfuStatus(`固件包已就绪：${file.name}`);
-    emitLog(`固件包已加载: ${file.name}`);
+    try {
+      const pkg = new LocalDfuPackage(file);
+      await pkg.load();
+      if (generation !== packageLoadGeneration) return;
+      const appImage = pkg.getAppImage();
+      const baseImage = pkg.getBaseImage();
+      if (!appImage && !baseImage) throw new Error('固件包中未找到可升级镜像');
+      updateVersionPrecheck(baseImage, appImage);
+      dfuPackage = pkg;
+      setDfuStatus(`固件包已就绪：${file.name}`);
+      emitLog(`固件包已加载: ${file.name}`);
+    } catch (err) {
+      if (generation !== packageLoadGeneration) return;
+      const errMsg = getErrorMessage(err);
+      setDfuStatus(`固件包加载失败: ${errMsg}`, true);
+      emitLog(`固件包加载失败: ${errMsg}`);
+    }
   }
 
   async function updateOneImage(dfu, device, image) {
@@ -1183,10 +1364,45 @@
 
   async function resolveBootloaderAfterSwitch(dfu, preferredDevice) {
     await dfu.delayPromise(DFU_REBOOT_SETTLE_MS);
+
+    const opts = getDfuOptions();
+    if (!opts.enableAutoFind) {
+      emitLog('已配置关闭自动识别 DFU 设备，直接弹出设备选择框');
+      try {
+        return await requestValidatedBootloaderDevice(dfu);
+      } catch (err) {
+        if (isUserGestureError(err)) {
+          throw makeManualPickError('系统可能已经配对 DfuTarg，但当前网页尚未获得该设备授权，请点击“手动选择DFU设备并继续”并重新选择 DfuTarg');
+        }
+        if (isPickerCancelled(err)) {
+          const cancelled = new Error('已取消选择DFU设备，可点击“手动选择DFU设备并继续”重试');
+          cancelled.code = DFU_BOOTLOADER_PICK_CANCELLED_ERROR;
+          throw cancelled;
+        }
+        throw err;
+      }
+    }
+
+    // Optimize: Check if there are any authorized DfuTarg devices in the browser.
+    let hasAuthorizedDfu = false;
+    if (navigator.bluetooth && typeof navigator.bluetooth.getDevices === 'function') {
+      try {
+        const devices = await navigator.bluetooth.getDevices();
+        hasAuthorizedDfu = devices.some(dev => looksLikeBootloaderName(dev));
+      } catch (_) { }
+    }
+    const isPreferredLooksLikeBootloader = looksLikeBootloaderName(preferredDevice);
+
+    // Use a short timeout (3 seconds) if we don't have a pre-authorized DfuTarg,
+    // to give same-MAC devices a chance to reconnect without causing a long 8s hang.
+    const timeoutMs = (hasAuthorizedDfu || isPreferredLooksLikeBootloader)
+      ? INITIAL_DFU_DISCOVERY_TIMEOUT_MS // 8 seconds
+      : 3000; // 3 seconds
+
     const authorized = await tryResolveAuthorizedBootloaderDevice(
       dfu,
       preferredDevice,
-      INITIAL_DFU_DISCOVERY_TIMEOUT_MS,
+      timeoutMs,
       '切换到 DFU'
     );
     if (authorized) return authorized;
@@ -1207,6 +1423,17 @@
 
   async function resolveBootloaderForRemainingImages(dfu, preferredDevice, nextImage) {
     await dfu.delayPromise(DFU_REBOOT_SETTLE_MS);
+    const opts = getDfuOptions();
+    if (!opts.enableAutoFind) {
+      emitLog('已配置关闭自动识别 DFU 设备，直接弹出设备选择框');
+      try {
+        return await requestValidatedBootloaderDevice(dfu);
+      } catch (err) {
+        ensureManualPickVisible(`继续${nextImage.type}`);
+        pulseManualPickButton();
+        throw makeManualPickError(`设备已重启，请点击“手动选择DFU设备并继续”继续升级 ${nextImage.type}`);
+      }
+    }
     const authorized = await tryResolveAuthorizedBootloaderDevice(
       dfu,
       preferredDevice,
@@ -1280,7 +1507,7 @@
 
     const startBtn = document.getElementById('dfuStartButton');
     const manualBtn = document.getElementById('dfuManualPickButton');
-    const dfu = new LocalSecureDfu(makeCrc32());
+    const dfu = new LocalSecureDfu(makeCrc32(), null, 0, getDfuOptions());
     dfuBusy = true;
     notifyDfuPageStateChange();
     if (startBtn) startBtn.disabled = true;
@@ -1387,10 +1614,18 @@
         emitLog('DFU 已取消：用户关闭了设备选择窗口');
         if (typeof showToast === 'function') showToast('已取消设备选择');
       } else {
-        resetPendingDfuSession();
-        setDfuStatus(`DFU 失败: ${errMsg}`, true);
-        emitLog(`DFU 失败: ${errMsg}`);
-        if (typeof showToast === 'function') showToast(`DFU失败: ${errMsg}`, 3600);
+        if (pendingManualSession && !isPickerCancelled(err)) {
+          ensureManualPickVisible('DFU失败重试');
+          pulseManualPickButton();
+          setDfuStatus(`DFU 失败: ${errMsg}。可尝试点击“手动选择DFU设备并继续”重试`, false);
+          emitLog(`DFU 失败: ${errMsg}。保留会话，等待用户手动重试`);
+          if (typeof showToast === 'function') showToast(`DFU失败: ${errMsg}，可手动选择设备重试`, 3600);
+        } else {
+          resetPendingDfuSession();
+          setDfuStatus(`DFU 失败: ${errMsg}`, true);
+          emitLog(`DFU 失败: ${errMsg}`);
+          if (typeof showToast === 'function') showToast(`DFU失败: ${errMsg}`, 3600);
+        }
       }
     } finally {
       dfuBusy = false;
@@ -1431,10 +1666,18 @@
         setDfuStatus('已取消手动选择，可再次点击继续');
         emitLog('DFU 手动选择已取消，当前会话保留，可再次点击继续');
       } else {
-        resetPendingDfuSession();
-        setDfuStatus(`DFU 失败: ${errMsg}`, true);
-        emitLog(`DFU 失败: ${errMsg}`);
-        if (typeof showToast === 'function') showToast(`DFU失败: ${errMsg}`, 3600);
+        if (pendingManualSession && !isPickerCancelled(err)) {
+          ensureManualPickVisible('DFU失败重试');
+          pulseManualPickButton();
+          setDfuStatus(`DFU 失败: ${errMsg}。可尝试再次点击“手动选择DFU设备并继续”重试`, false);
+          emitLog(`DFU 失败: ${errMsg}。保留会话，等待用户手动再次重试`);
+          if (typeof showToast === 'function') showToast(`DFU失败: ${errMsg}，可再次手动选择设备重试`, 3600);
+        } else {
+          resetPendingDfuSession();
+          setDfuStatus(`DFU 失败: ${errMsg}`, true);
+          emitLog(`DFU 失败: ${errMsg}`);
+          if (typeof showToast === 'function') showToast(`DFU失败: ${errMsg}`, 3600);
+        }
       }
     } finally {
       dfuBusy = false;
@@ -1515,28 +1758,91 @@
     }
   }
 
+  async function triggerManualDfuModeSwitch() {
+    if (dfuBusy) {
+      setDfuStatus('DFU 正在执行，请稍候');
+      return;
+    }
+    const startBtn = document.getElementById('dfuStartButton');
+    const switchBtn = document.getElementById('dfuSwitchModeButton');
+    const manualBtn = document.getElementById('dfuManualPickButton');
+    const dfu = new LocalSecureDfu(makeCrc32(), null, 0, getDfuOptions());
+    
+    dfuBusy = true;
+    notifyDfuPageStateChange();
+    if (startBtn) startBtn.disabled = true;
+    if (switchBtn) switchBtn.disabled = true;
+    if (manualBtn) manualBtn.disabled = true;
+    
+    setDfuProgress(null);
+    setDfuRetryInfo('');
+    setManualPickVisible(false);
+    setPendingManualSession(null);
+
+    dfu.addEventListener('log', event => {
+      if (event && event.message) emitLog(event.message);
+    });
+
+    try {
+      setDfuStatus('请在弹窗中选择要切换的应用设备...');
+      emitLog('开始手动切换 DFU 模式：请选择要重启到 DfuTarg 的应用设备');
+      const device = await dfu.requestDevice(false, DFU_APP_FILTERS);
+      if (!device) {
+        throw new Error('未选择设备');
+      }
+      setDfuStatus('正在连接设备并发送 DFU 切换指令...');
+      emitLog(`已选择设备: ${device.name || 'Unknown Device'}，正在发送切换指令...`);
+      await dfu.switchToDfuModeOnly(device, {
+        service: DFU_SERVICE_UUID,
+        button: BUTTON_UUID,
+        control: CONTROL_UUID,
+        packet: PACKET_UUID
+      });
+      
+      setManualBootloaderEntryRequired(true);
+      setDfuStatus('手动切换 DFU 模式成功！', false);
+      emitLog('手动切换 DFU 指令发送成功！设备应已重启进入 DfuTarg。升级流程已自动切换为“手动进入 DFU 模式”流程，请直接点击“选择设备并升级”选择 DfuTarg 设备。');
+      if (typeof showToast === 'function') {
+        showToast('切换成功，请在设备重启后点击“选择设备并升级”', 4000);
+      }
+    } catch (err) {
+      const errMsg = getErrorMessage(err);
+      if (isPickerCancelled(err)) {
+        setDfuStatus('已取消设备选择');
+        emitLog('手动切换已取消：用户关闭了设备选择窗口');
+      } else {
+        setDfuStatus(`手动切换失败: ${errMsg}`, true);
+        emitLog(`手动切换失败: ${errMsg}`);
+      }
+    } finally {
+      dfuBusy = false;
+      notifyDfuPageStateChange();
+      if (startBtn) startBtn.disabled = false;
+      if (switchBtn) switchBtn.disabled = false;
+      if (manualBtn) manualBtn.disabled = !pendingManualSession;
+    }
+  }
+
   window.initDfuPanel = function () {
     const fileEl = document.getElementById('dfuPackageFile');
     const startBtn = document.getElementById('dfuStartButton');
     const manualBtn = document.getElementById('dfuManualPickButton');
     const selfCheckBtn = document.getElementById('dfuSelfCheckButton');
+    const switchBtn = document.getElementById('dfuSwitchModeButton');
     if (!fileEl || !startBtn || !manualBtn || !selfCheckBtn) return;
     if (startBtn.dataset.bound === '1') return;
 
     fileEl.addEventListener('change', async event => {
       const file = event.target && event.target.files ? event.target.files[0] : null;
-      try {
-        await loadPackageFromFile(file);
-      } catch (err) {
-        const errMsg = getErrorMessage(err);
-        setDfuStatus(`固件包加载失败: ${errMsg}`, true);
-        emitLog(`固件包加载失败: ${errMsg}`);
-      }
+      await loadPackageFromFile(file);
     });
 
     startBtn.addEventListener('click', startDfuUpgrade);
     manualBtn.addEventListener('click', continueWithManualPick);
     selfCheckBtn.addEventListener('click', runDfuSelfCheck);
+    if (switchBtn) {
+      switchBtn.addEventListener('click', triggerManualDfuModeSwitch);
+    }
     startBtn.dataset.bound = '1';
     setManualPickVisible(false);
     setDfuPrecheck('');

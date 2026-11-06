@@ -17,10 +17,12 @@
 
 #include <stdint.h>
 #include <string.h>
+#include <stdarg.h>
 
 #include "ble.h"
 #include "ble_advdata.h"
 #include "ble_advertising.h"
+#include "epd_advertising.h"
 #include "ble_conn_params.h"
 #include "ble_dfu.h"
 #include "ble_hci.h"
@@ -33,17 +35,29 @@
 #include "nrf_sdh_ble.h"
 #include "nrf_sdh_soc.h"
 #include "EPD_service.h"
+#include "fonts.h"
 #include "app_error.h"
 #include "app_scheduler.h"
 #include "app_timer.h"
+#include "app_util_platform.h"
 #include "main.h"
-#include "nrf_drv_gpiote.h"
+#include "epd_resources.h"
+#include "nrf_gpio.h"
+#include "nrf_gpiote.h"
 #include "nrf_drv_wdt.h"
 #include "nrf_log.h"
 #include "nrf_log_ctrl.h"
 #include "nrf_power.h"
 #include "nrf_pwr_mgmt.h"
 #include "nrf_log_default_backends.h"
+
+#if NRF_LOG_ENABLED
+#include "SEGGER_RTT.h"
+#endif
+
+#ifdef USE_SYSVIEW
+#include "SEGGER_SYSVIEW.h"
+#endif
 
 // clang-format off
 #define CENTRAL_LINK_COUNT              0                                               /**< Number of central links used by the application. When changing this number remember to adjust the RAM settings*/
@@ -53,14 +67,10 @@
 
 #define DEVICE_NAME                      "NRF_EPD"                                      /**< Name of device. Will be included in the advertising data. */
                                                                                         /**< 设备名称。将包含在广播数据中。 */
-#define APP_ADV_INTERVAL                 1600                                           /**< The advertising interval (in units of 0.625 ms. This value corresponds to 1 s). */
+#define APP_ADV_INTERVAL                 400                                           /**< The advertising interval (in units of 0.625 ms. This value corresponds to 1 s). */
                                                                                         /**< 广播间隔（以0.625毫秒为单位。此值对应1秒）。 */
 #define APP_ADV_TIMEOUT_IN_SECONDS       120                                            /**< The advertising timeout (in units of seconds). */
                                                                                         /**< 广播超时时间（以秒为单位）。 */
-#define APP_TIMER_PRESCALER              0                                              /**< Value of the RTC1 PRESCALER register. */
-                                                                                        /**< RTC1预分频器寄存器的值。 */
-#define APP_TIMER_OP_QUEUE_SIZE          4                                              /**< Size of timer operation queues. */
-                                                                                        /**< 定时器操作队列的大小。 */
 
 #define APP_BLE_CONN_CFG_TAG            1                                               /**< A tag identifying the SoftDevice BLE configuration. */
                                                                                         /**< 标识SoftDevice BLE配置的标签。 */
@@ -70,8 +80,8 @@
 
 #define MIN_CONN_INTERVAL                MSEC_TO_UNITS(7.5, UNIT_1_25_MS)               /**< Minimum connection interval (7.5 ms) */
                                                                                         /**< 最小连接间隔（7.5毫秒） */
-#define MAX_CONN_INTERVAL                MSEC_TO_UNITS(30, UNIT_1_25_MS)                /**< Maximum connection interval (30 ms). */
-                                                                                        /**< 最大连接间隔（30毫秒） */
+#define MAX_CONN_INTERVAL                MSEC_TO_UNITS(15, UNIT_1_25_MS)                /**< Maximum connection interval (15 ms). */
+                                                                                        /**< 最大连接间隔（15毫秒），降低整图传输的逐包调度等待 */
 #define SLAVE_LATENCY                    6                                              /**< Slave latency. */
                                                                                         /**< 从机延迟。 */
 #define CONN_SUP_TIMEOUT                 MSEC_TO_UNITS(4000, UNIT_10_MS)                /**< Connection supervisory timeout (~4000 ms). */
@@ -100,20 +110,30 @@ BLE_ADVERTISING_DEF(m_advertising);                                             
                                                                                         /**< 广播模块实例 */
 static uint16_t                          m_conn_handle = BLE_CONN_HANDLE_INVALID;       /**< Handle of the current connection. */
                                                                                         /**< 当前连接的句柄 */
-static ble_uuid_t                        m_adv_uuids[] = {{BLE_UUID_EPD_SVC, \
-                                                           EPD_SVC_UUID_TYPE}};         /**< Universally unique service identifier. */
+static const ble_uuid_t m_adv_uuid = {BLE_UUID_EPD_SVC, EPD_SVC_UUID_TYPE};         /**< Universally unique service identifier. */
                                                                                         /**< 通用唯一服务标识符 */
 
 BLE_EPD_DEF(m_epd);                                                                     /**< Structure to identify the EPD Service. */
+static volatile bool m_wakeup_armed;
                                                                                         /**< 用于标识EPD服务的结构体 */
 static uint32_t                          m_timestamp = 1735689600;                      /**< Current timestamp. */
                                                                                         /**< 当前时间戳，初始值为2025-01-01 00:00:00 UTC */
 APP_TIMER_DEF(m_clock_timer_id);                                                        /**< Clock timer. */
                                                                                         /**< 时钟定时器 */
 static nrf_drv_wdt_channel_id            m_wdt_channel_id;                              /**< 看门狗定时器通道ID */
-static uint32_t                          m_wdt_last_feed_time = 0;                      /**< 上次喂狗时间戳 */
 static uint32_t                          m_resetreas;                                   /**< 复位原因寄存器值 */
 // clang-format on
+
+/* RC 时钟补偿（ppm）：7 天慢约 180 秒，对应 -298；负值补快，正值减慢，0 不补偿。 */
+#define APP_CLOCK_CALIBRATION_PPM (-298)
+
+#if APP_CLOCK_CALIBRATION_PPM < -2000 || APP_CLOCK_CALIBRATION_PPM > 2000
+#error "APP_CLOCK_CALIBRATION_PPM must be between -2000 and 2000"
+#endif
+
+#define CLOCK_TICKS_PER_SECOND (APP_TIMER_CLOCK_FREQ / (APP_TIMER_CONFIG_RTC_FREQUENCY + 1U))
+
+uint32_t get_reset_reason(void) { return m_resetreas; }
 
 /**@brief Callback function for asserts in the SoftDevice.
  * SoftDevice中断言的回调函数
@@ -136,28 +156,79 @@ void assert_nrf_callback(uint16_t line_num, const uint8_t* p_file_name) {
     app_error_handler(DEAD_BEEF, line_num, p_file_name);
 }
 
-// return current timestamp
-// 返回当前时间戳
-uint32_t timestamp(void) { return m_timestamp; }
+static volatile uint32_t m_uptime_seconds = 1U;
+static bool m_clock_started;
+static uint32_t m_clock_last_ticks;
+static uint32_t m_clock_subsecond_ticks;
+static uint32_t m_uptime_subsecond_ticks;
+static uint32_t m_clock_calibration_remainder;
 
-// set the timestamp
-// 设置时间戳
-// 停止时钟定时器，更新时间戳，然后重新启动定时器
+/* Called with application interrupts masked. RTC1 is 24 bit: the 1 Hz timer
+ * keeps samples less than one wrap apart (1024 s at the default prescaler).
+ * Count elapsed ticks, including fractional seconds, rather than callbacks.
+ * Positive ppm means the oscillator runs fast; negative ppm means slow. */
+static void clock_update_locked(void) {
+    uint32_t ticks;
+    uint32_t elapsed;
+
+    if (!m_clock_started) return; /* Logging can read time before timers_init. */
+    ticks = app_timer_cnt_get();
+    elapsed = app_timer_cnt_diff_compute(ticks, m_clock_last_ticks);
+    m_clock_last_ticks = ticks;
+    /* elapsed * 1e6 / rate = elapsed + elapsed * (-ppm) / rate.
+     * Split the product by rate first: at +/-2000 ppm the signed partial
+     * product plus its carried remainder fits int32_t. No 64-bit divider. */
+    const int32_t rate = 1000000 + APP_CLOCK_CALIBRATION_PPM;
+    int32_t scaled = (int32_t)(elapsed % rate) * (-APP_CLOCK_CALIBRATION_PPM) +
+                     (int32_t)m_clock_calibration_remainder;
+    int32_t correction = (int32_t)(elapsed / rate) * (-APP_CLOCK_CALIBRATION_PPM) + scaled / rate;
+    int32_t remainder = scaled % rate;
+    if (remainder < 0) { /* Floor, rather than truncate, a negative correction. */
+        remainder += rate;
+        correction--;
+    }
+    elapsed = (uint32_t)((int32_t)elapsed + correction);
+    m_clock_calibration_remainder = (uint32_t)remainder;
+    m_clock_subsecond_ticks += elapsed;
+    m_timestamp += m_clock_subsecond_ticks / CLOCK_TICKS_PER_SECOND;
+    m_clock_subsecond_ticks %= CLOCK_TICKS_PER_SECOND;
+    m_uptime_subsecond_ticks += elapsed;
+    m_uptime_seconds += m_uptime_subsecond_ticks / CLOCK_TICKS_PER_SECOND;
+    m_uptime_subsecond_ticks %= CLOCK_TICKS_PER_SECOND;
+}
+
+uint32_t timestamp(void) {
+    uint32_t value;
+    CRITICAL_REGION_ENTER();
+    clock_update_locked();
+    value = m_timestamp;
+    CRITICAL_REGION_EXIT();
+    return value;
+}
+
+uint32_t app_uptime_seconds(void) {
+    uint32_t value;
+    CRITICAL_REGION_ENTER();
+    clock_update_locked();
+    value = m_uptime_seconds;
+    CRITICAL_REGION_EXIT();
+    return value;
+}
+
+/* Reset only wall-clock phase. Keep RTC and monotonic uptime running through
+ * syncs, so repeated syncs cannot postpone timeout/rate-limit accounting. */
 void set_timestamp(uint32_t timestamp) {
-    app_timer_stop(m_clock_timer_id);      // 停止时钟定时器
-    m_timestamp = timestamp;               // 更新时间戳
-    app_timer_start(m_clock_timer_id, CLOCK_TIMER_INTERVAL, NULL);  // 重新启动定时器
+    CRITICAL_REGION_ENTER();
+    clock_update_locked();
+    m_timestamp = timestamp;
+    m_clock_subsecond_ticks = 0U;
+    CRITICAL_REGION_EXIT();
 }
 
 // reload the wdt channel
 // 重新加载看门狗定时器通道（喂狗）
-// 每30秒喂一次狗，防止系统复位
 void app_feed_wdt(void) {
-    if (m_timestamp - m_wdt_last_feed_time >= 30) {  // 检查是否已过30秒
-        NRF_LOG_DEBUG("Feed WDT\n");
-        nrf_drv_wdt_channel_feed(m_wdt_channel_id);  // 喂狗
-        m_wdt_last_feed_time = m_timestamp;           // 更新上次喂狗时间
-    }
+    nrf_drv_wdt_channel_feed(m_wdt_channel_id);
 }
 
 /**@brief 无按钮DFU的SoftDevice处理器状态观察者
@@ -208,7 +279,7 @@ static void advertising_config_get(ble_adv_modes_config_t* p_config) {
 static void ble_dfu_evt_handler(ble_dfu_buttonless_evt_type_t event) {
     switch (event) {
         case BLE_DFU_EVT_BOOTLOADER_ENTER_PREPARE: {
-            NRF_LOG_INFO("Device is preparing to enter bootloader mode.");
+            NRF_LOG_INFO("Prep DFU");
             // 设备正在准备进入引导加载程序模式
 
             // Prevent device from advertising on disconnect.
@@ -228,24 +299,24 @@ static void ble_dfu_evt_handler(ble_dfu_buttonless_evt_type_t event) {
         }
 
         case BLE_DFU_EVT_BOOTLOADER_ENTER:
-            NRF_LOG_INFO("Device will enter bootloader mode.");
+            NRF_LOG_INFO("Enter DFU");
             // 设备将进入引导加载程序模式
             break;
 
         case BLE_DFU_EVT_BOOTLOADER_ENTER_FAILED:
-            NRF_LOG_ERROR("Request to enter bootloader mode failed asynchroneously.");
+            NRF_LOG_ERROR("DFU fail async");
             // 进入引导加载程序模式的请求异步失败
             APP_ERROR_CHECK(false);
             break;
 
         case BLE_DFU_EVT_RESPONSE_SEND_ERROR:
-            NRF_LOG_ERROR("Request to send a response to client failed.");
+            NRF_LOG_ERROR("Resp fail");
             // 向客户端发送响应的请求失败
             APP_ERROR_CHECK(false);
             break;
 
         default:
-            NRF_LOG_ERROR("Unknown event from ble_dfu_buttonless.");
+            NRF_LOG_ERROR("DFU unknown evt");
             // 来自ble_dfu_buttonless的未知事件
             break;
     }
@@ -253,24 +324,14 @@ static void ble_dfu_evt_handler(ble_dfu_buttonless_evt_type_t event) {
 
 /**@brief 时钟定时器超时处理函数
  *
- * @details 每秒调用一次，用于更新时间戳、处理低电量LED闪烁和EPD定时事件
+ * @details 每秒调用一次，用于更新时间戳和EPD定时事件
  *
  * @param[in] p_context 上下文指针（未使用）
  */
 static void clock_timer_timeout_handler(void* p_context) {
     UNUSED_PARAMETER(p_context);
 
-    m_timestamp++;  // 时间戳递增（每秒一次）
-
-    // Low battery LED blinking (every 2 seconds)
-    // Uses cached voltage from last screen refresh, no ADC operation here
-    // 低电量LED闪烁（每2秒一次）
-    // 使用上次屏幕刷新时缓存的电压值，此处不进行ADC操作
-    if (m_timestamp % 2 == 0 && EPD_IsLowBattery()) {  // 每2秒检查一次
-        EPD_LED_BLINK();  // 闪烁LED指示低电量
-    }
-
-    ble_epd_on_timer(&m_epd, m_timestamp, false);  // 通知EPD服务定时器事件
+    ble_epd_on_timer(&m_epd, timestamp(), false);
 }
 
 /**@brief Function for the Event Scheduler initialization.
@@ -302,9 +363,14 @@ static void timers_init(void) {
  * @details 启动时钟定时器，开始定期更新时间戳
  */
 static void application_timers_start(void) {
-    // Start application timers.
-    // 启动应用程序定时器
-    APP_ERROR_CHECK(app_timer_start(m_clock_timer_id, CLOCK_TIMER_INTERVAL, NULL));  // 启动时钟定时器
+    /* Keep this repeated timer active for the entire System ON session.
+     * With the SDK default APP_TIMER_KEEPS_RTC_ACTIVE=0, app_timer2 stops RTC1
+     * only when all timers are idle. Time sync must never stop this timer. */
+    CRITICAL_REGION_ENTER();
+    m_clock_last_ticks = app_timer_cnt_get();
+    APP_ERROR_CHECK(app_timer_start(m_clock_timer_id, CLOCK_TIMER_INTERVAL, NULL));
+    m_clock_started = true;
+    CRITICAL_REGION_EXIT();
 }
 
 /**@brief Function for putting the chip into sleep mode.
@@ -333,7 +399,6 @@ void sleep_mode_enter(void) {
 static void services_init(void) {
     // Initialize EPD Service.
     // 初始化EPD服务
-    memset(&m_epd, 0, sizeof(ble_epd_t));  // 清零EPD服务结构体
     APP_ERROR_CHECK(ble_epd_init(&m_epd));  // 初始化EPD服务
 
     // 初始化无按钮DFU服务
@@ -364,7 +429,18 @@ static void gap_params_init(void) {
                  addr.addr[2], addr.addr[1], addr.addr[0]);
 
     // 根据MAC地址后两位生成唯一设备名称，例如：NRF_EPD_1234
-    snprintf(device_name, 20, "%s_%02X%02X", DEVICE_NAME, addr.addr[1], addr.addr[0]);
+    {
+        static const char hex[] = "0123456789ABCDEF";
+        size_t len = strlen(DEVICE_NAME);
+
+        memcpy(device_name, DEVICE_NAME, len);
+        device_name[len++] = '_';
+        device_name[len++] = hex[addr.addr[1] >> 4];
+        device_name[len++] = hex[addr.addr[1] & 0x0F];
+        device_name[len++] = hex[addr.addr[0] >> 4];
+        device_name[len++] = hex[addr.addr[0] & 0x0F];
+        device_name[len] = '\0';
+    }
     APP_ERROR_CHECK(sd_ble_gap_device_name_set(&sec_mode, (const uint8_t*)device_name, strlen(device_name)));
 
     // 设置GAP连接参数
@@ -443,25 +519,38 @@ static void advertising_start(void) {
     APP_ERROR_CHECK(ble_advertising_start(&m_advertising, BLE_ADV_MODE_FAST));
 }
 
-/**@brief GPIO事件处理函数
+/* The wakeup pin is the only GPIOTE user in this firmware. Configure the
+ * low-power PIN_CNF SENSE bit and the GPIOTE PORT event directly instead of
+ * linking the generic nrfx GPIOTE driver, which costs roughly 1 KiB of flash
+ * and 92 B of .bss. The observable behavior is unchanged: a low-to-high edge
+ * on the wakeup pin ends the advertising-timeout wait and restarts
+ * advertising. Keep the priority identical to GPIOTE_CONFIG_IRQ_PRIORITY (6)
+ * so the interrupt stays valid next to the SoftDevice. */
+#define WAKEUP_GPIO_IRQ_PRIORITY 6U
+static uint8_t m_wakeup_pin = 0xFFU;
+
+static void gpiote_disable_wakeup(void) {
+    if (m_wakeup_pin != 0xFFU) {
+        nrf_gpio_cfg_sense_set(m_wakeup_pin, NRF_GPIO_PIN_NOSENSE);
+        m_wakeup_pin = 0xFFU;
+    }
+    nrf_gpiote_int_disable((uint32_t)NRF_GPIOTE_INT_PORT_MASK);  // 禁用 PORT 事件中断
+    nrf_gpiote_event_clear(NRF_GPIOTE_EVENTS_PORT);
+    NVIC_DisableIRQ(GPIOTE_IRQn);
+    NVIC_ClearPendingIRQ(GPIOTE_IRQn);
+    m_wakeup_armed = false;
+}
+
+/**@brief GPIO PORT 事件处理函数
  *
- * @details 当唤醒引脚检测到低到高电平变化时调用，用于从睡眠模式唤醒设备
- *
- * @param[in] pin    触发事件的引脚号
- * @param[in] action 触发的动作类型（低到高或高到低）
+ * @details 唤醒引脚检测到低到高电平变化时调用，结束广播超时等待并重新广播
  */
-void gpiote_evt_handler(nrf_drv_gpiote_pin_t pin, nrf_gpiote_polarity_t action) {
-    NRF_LOG_DEBUG("pin: %d, event: %d\n", pin, action);
-
-    // 禁用并清理GPIO中断
-    nrf_drv_gpiote_in_event_disable(pin);  // 禁用引脚事件
-    nrf_drv_gpiote_in_uninit(pin);         // 取消初始化引脚
-    nrf_drv_gpiote_uninit();               // 取消初始化GPIOTE模块
-
-    // blink LED on wakeup
-    // 唤醒时闪烁LED
-    EPD_LED_BLINK();
-
+void GPIOTE_IRQHandler(void) {
+    if (!nrf_gpiote_event_is_set(NRF_GPIOTE_EVENTS_PORT)) {
+        return;
+    }
+    nrf_gpiote_event_clear(NRF_GPIOTE_EVENTS_PORT);
+    gpiote_disable_wakeup();
     advertising_start();  // 开始广播
 }
 
@@ -471,13 +560,29 @@ void gpiote_evt_handler(nrf_drv_gpiote_pin_t pin, nrf_gpiote_polarity_t action) 
  *
  * @param[in] pin 要配置为唤醒引脚的GPIO引脚号
  */
-static void setup_wakeup_pin(nrf_drv_gpiote_pin_t pin) {
+static void setup_wakeup_pin(uint32_t pin) {
+    if (m_wakeup_armed) return;
     NRF_LOG_DEBUG("Setting up wakeup pin\n");
 
-    APP_ERROR_CHECK(nrf_drv_gpiote_init());  // 初始化GPIOTE模块
-    nrf_drv_gpiote_in_config_t config = GPIOTE_CONFIG_IN_SENSE_LOTOHI(false);  // 配置为低到高触发
-    APP_ERROR_CHECK(nrf_drv_gpiote_in_init(pin, &config, gpiote_evt_handler));  // 初始化引脚并设置处理函数
-    nrf_drv_gpiote_in_event_enable(pin, true);  // 启用引脚事件
+    nrf_gpio_cfg_input(pin, NRF_GPIO_PIN_NOPULL);
+    nrf_gpio_cfg_sense_set(pin, NRF_GPIO_PIN_SENSE_HIGH);  // 低到高触发
+    m_wakeup_pin = (uint8_t)pin;
+    m_wakeup_armed = true;
+    nrf_gpiote_event_clear(NRF_GPIOTE_EVENTS_PORT);
+    nrf_gpiote_int_enable((uint32_t)NRF_GPIOTE_INT_PORT_MASK);
+    NVIC_ClearPendingIRQ(GPIOTE_IRQn);
+    NVIC_SetPriority(GPIOTE_IRQn, WAKEUP_GPIO_IRQ_PRIORITY);
+    NVIC_EnableIRQ(GPIOTE_IRQn);
+}
+
+/* Main only, after the final response leaves the TX queue. Disconnect the
+ * central; the advertising module retains its normal restart/timeout policy. */
+static void disconnect_for_run(void)
+{
+    if (m_conn_handle != BLE_CONN_HANDLE_INVALID) {
+        uint32_t result = sd_ble_gap_disconnect(m_conn_handle, BLE_HCI_REMOTE_USER_TERMINATED_CONNECTION);
+        if (result != NRF_ERROR_INVALID_STATE) APP_ERROR_CHECK(result);
+    }
 }
 
 /**@brief Function for handling advertising events.
@@ -495,6 +600,10 @@ static void on_adv_evt(ble_adv_evt_t ble_adv_evt) {
             // 快速广播模式启动
             break;
         case BLE_ADV_EVT_IDLE:
+            if (!epd_resources_ready() && m_epd.config.display_mode != MODE_PICTURE) {
+                advertising_start(); /* Missing resources must remain repairable. */
+                break;
+            }
             // 广播超时（120秒后）
             NRF_LOG_INFO("advertising timeout\n");
             if (m_epd.config.wakeup_pin != 0xFF) {  // 如果配置了唤醒引脚
@@ -523,6 +632,15 @@ static void on_ble_evt(ble_evt_t* p_ble_evt) {
             // BLE连接建立事件
             NRF_LOG_INFO("CONNECTED\n");
             m_conn_handle = p_ble_evt->evt.gap_evt.conn_handle;  // 保存连接句柄
+            {
+                const ble_gap_conn_params_t* params =
+                    &p_ble_evt->evt.gap_evt.params.connected.conn_params;
+                NRF_LOG_INFO("[BLE] connected interval=%u.%02ums latency=%u timeout=%ums",
+                             params->max_conn_interval * 5U / 4U,
+                             (params->max_conn_interval & 0x03U) * 25U,
+                             params->slave_latency,
+                             params->conn_sup_timeout * 10U);
+            }
             break;
 
         case BLE_GAP_EVT_DISCONNECTED: {
@@ -532,6 +650,15 @@ static void on_ble_evt(ble_evt_t* p_ble_evt) {
             m_conn_handle = BLE_CONN_HANDLE_INVALID;  // 清除连接句柄
             break;
         }
+        case BLE_GAP_EVT_CONN_PARAM_UPDATE: {
+            const ble_gap_conn_params_t* params =
+                &p_ble_evt->evt.gap_evt.params.conn_param_update.conn_params;
+            NRF_LOG_INFO("[BLE] conn interval=%u.%02ums latency=%u timeout=%ums",
+                         params->max_conn_interval * 5U / 4U,
+                         (params->max_conn_interval & 0x03U) * 25U,
+                         params->slave_latency,
+                         params->conn_sup_timeout * 10U);
+        } break;
         case BLE_GAP_EVT_PHY_UPDATE_REQUEST: {
             // PHY更新请求事件（用于支持2M PHY等）
             NRF_LOG_DEBUG("PHY update request.");
@@ -541,13 +668,23 @@ static void on_ble_evt(ble_evt_t* p_ble_evt) {
             };
             APP_ERROR_CHECK(sd_ble_gap_phy_update(p_ble_evt->evt.gap_evt.conn_handle, &phys));
         } break;
+        case BLE_GAP_EVT_PHY_UPDATE: {
+            const ble_gap_evt_phy_update_t* phy = &p_ble_evt->evt.gap_evt.params.phy_update;
+            NRF_LOG_INFO("[BLE] PHY status=0x%02x tx=%u rx=%u",
+                         phy->status, phy->tx_phy, phy->rx_phy);
+        } break;
 
-        case BLE_GAP_EVT_SEC_PARAMS_REQUEST:
-            // Pairing not supported
-            // 不支持配对，拒绝配对请求
-            APP_ERROR_CHECK(
-                sd_ble_gap_sec_params_reply(m_conn_handle, BLE_GAP_SEC_STATUS_PAIRING_NOT_SUPP, NULL, NULL));
+        case BLE_GAP_EVT_SEC_PARAMS_REQUEST: {
+            /* Keep the existing unpaired protocol. Enabling Just Works on
+             * the shared command characteristic breaks existing browser
+             * initialization and does not authenticate a device owner. */
+            APP_ERROR_CHECK(sd_ble_gap_sec_params_reply(
+                p_ble_evt->evt.gap_evt.conn_handle,
+                BLE_GAP_SEC_STATUS_PAIRING_NOT_SUPP,
+                NULL,
+                NULL));
             break;
+        }
 
         case BLE_GATTS_EVT_SYS_ATTR_MISSING:
             // No system attributes have been stored.
@@ -635,6 +772,147 @@ void gatt_evt_handler(nrf_ble_gatt_t* p_gatt, nrf_ble_gatt_evt_t const* p_evt) {
                   p_gatt->att_mtu_desired_periph);
 }
 
+#if BLE_LOG_REDIRECT_ALL_NRF_LOG
+static void long_to_str(char **out, char *end, long val, int radix, int width, char pad, bool sign, bool upper) {
+    char buf[12];  // max 10 digits for 32-bit + sign + NUL
+    int len = 0;
+    unsigned long uval = val;
+    if (sign && val < 0) {
+        uval = -val;
+        if (*out < end) {
+            *(*out)++ = '-';
+        }
+    }
+    do {
+        int rem = uval % radix;
+        buf[len++] = (rem < 10) ? (rem + '0') : (rem - 10 + (upper ? 'A' : 'a'));
+        uval /= radix;
+    } while (uval > 0);
+    
+    while (len < width && *out < end) {
+        *(*out)++ = pad;
+        width--;
+    }
+    while (len > 0 && *out < end) {
+        *(*out)++ = buf[--len];
+    }
+}
+
+static int mini_vsnprintf(char *buf, size_t size, const char *format, va_list args) {
+    if (size == 0) return 0;
+    char *p = buf;
+    char *end = buf + size - 1;
+    const char *f = format;
+    
+    while (*f && p < end) {
+        if (*f != '%') {
+            *p++ = *f++;
+            continue;
+        }
+        f++; // Skip '%'
+        
+        char pad = ' ';
+        int width = 0;
+        if (*f == '0') {
+            pad = '0';
+            f++;
+        }
+        while (*f >= '0' && *f <= '9') {
+            width = width * 10 + (*f - '0');
+            f++;
+        }
+        
+        bool is_long = false;
+        if (*f == 'l') {
+            is_long = true;
+            f++;
+        }
+        
+        if (*f == 'd') {
+            long val = is_long ? va_arg(args, long) : va_arg(args, int);
+            long_to_str(&p, end, val, 10, width, pad, true, false);
+            f++;
+        } else if (*f == 'u') {
+            unsigned long val = is_long ? va_arg(args, unsigned long) : va_arg(args, unsigned int);
+            long_to_str(&p, end, val, 10, width, pad, false, false);
+            f++;
+        } else if (*f == 'x' || *f == 'X') {
+            unsigned long val = is_long ? va_arg(args, unsigned long) : va_arg(args, unsigned int);
+            long_to_str(&p, end, val, 16, width, pad, false, (*f == 'X'));
+            f++;
+        } else if (*f == 's') {
+            const char *s = va_arg(args, const char *);
+            if (!s) s = "(null)";
+            while (*s && p < end) {
+                *p++ = *s++;
+            }
+            f++;
+        } else if (*f == 'c') {
+            *p++ = (char)va_arg(args, int);
+            f++;
+        } else {
+            *p++ = *f++;
+        }
+    }
+    *p = '\0';
+    return p - buf;
+}
+
+/**@brief BLE log redirect function to send logs via EPD service notification.
+ */
+void ble_log(const char *format, ...) {
+    // Reentrance guard: ble_log calls sd_ble_gatts_hvx which must not
+    // be invoked recursively (e.g. NRF_LOG inside a BLE event handler
+    // that itself triggers another NRF_LOG).
+    static volatile bool in_ble_log = false;
+    if (in_ble_log) return;
+    if (m_epd.conn_handle == BLE_CONN_HANDLE_INVALID || !m_epd.is_notification_enabled) {
+        return;
+    }
+    in_ble_log = true;
+
+    char buf[80];
+    va_list args;
+    va_start(args, format);
+    int len = mini_vsnprintf(buf, sizeof(buf), format, args);
+    va_end(args);
+
+    if (len > 0) {
+        uint16_t send_len = (len < (int)sizeof(buf)) ? len : (sizeof(buf) - 1);
+        if (send_len > m_epd.max_data_len) {
+            send_len = m_epd.max_data_len;
+        }
+        ble_epd_string_send(&m_epd, (uint8_t*)buf, send_len);
+    }
+    in_ble_log = false;
+}
+
+void ble_log_hexdump(const void *p_data, uint16_t len) {
+    if (m_epd.conn_handle == BLE_CONN_HANDLE_INVALID || !m_epd.is_notification_enabled || p_data == NULL || len == 0) {
+        return;
+    }
+
+    char buf[64];
+    int offset = 0;
+    const uint8_t *data = (const uint8_t *)p_data;
+    for (uint16_t i = 0; i < len && offset < sizeof(buf) - 4; i++) {
+        uint8_t byte = data[i];
+        uint8_t high = byte >> 4;
+        uint8_t low = byte & 0x0F;
+        buf[offset++] = (high < 10) ? (high + '0') : (high - 10 + 'A');
+        buf[offset++] = (low < 10) ? (low + '0') : (low - 10 + 'A');
+        buf[offset++] = ' ';
+    }
+    if (offset > 0) {
+        uint16_t send_len = (offset < sizeof(buf)) ? offset : (sizeof(buf) - 1);
+        if (send_len > m_epd.max_data_len) {
+            send_len = m_epd.max_data_len;
+        }
+        ble_epd_string_send(&m_epd, (uint8_t*)buf, send_len);
+    }
+}
+#endif
+
 /**@brief Function for initializing the GATT library.
  * GATT库初始化函数
  *
@@ -651,28 +929,10 @@ void gatt_init(void) {
  * @details 配置广播数据包，包括设备名称、服务UUID和广播参数
  */
 static void advertising_init(void) {
-    // 使用新的广播接口
-    ble_advertising_init_t init;
-
-    memset(&init, 0, sizeof(init));
-
-    init.advdata.name_type = BLE_ADVDATA_FULL_NAME;  // 包含完整设备名称
-    init.advdata.include_appearance = false;         // 不包含外观
-    init.advdata.flags = BLE_GAP_ADV_FLAGS_LE_ONLY_LIMITED_DISC_MODE;  // 仅LE有限可发现模式
-
-    // 扫描响应数据：包含服务UUID
-    init.srdata.uuids_complete.uuid_cnt = sizeof(m_adv_uuids) / sizeof(m_adv_uuids[0]);
-    init.srdata.uuids_complete.p_uuids = m_adv_uuids;
-
-    // 广播配置
-    init.config.ble_adv_fast_enabled = true;                         // 启用快速广播
-    init.config.ble_adv_fast_interval = APP_ADV_INTERVAL;            // 广播间隔1秒
-    init.config.ble_adv_fast_timeout = APP_ADV_TIMEOUT_IN_SECONDS * 100;  // 广播超时120秒
-    init.evt_handler = on_adv_evt;  // 设置广播事件处理函数
-
-    APP_ERROR_CHECK(ble_advertising_init(&m_advertising, &init));
-
-    ble_advertising_conn_cfg_tag_set(&m_advertising, APP_BLE_CONN_CFG_TAG);  // 设置连接配置标签
+    APP_ERROR_CHECK(epd_advertising_init(&m_advertising, &m_adv_uuid,
+                                          APP_ADV_INTERVAL,
+                                          APP_ADV_TIMEOUT_IN_SECONDS * 100,
+                                          APP_BLE_CONN_CFG_TAG, on_adv_evt));
 }
 
 /**@brief Function for initializing the nrf log module.
@@ -683,6 +943,12 @@ static void advertising_init(void) {
 static void log_init(void) {
     APP_ERROR_CHECK(NRF_LOG_INIT(timestamp));  // 使用timestamp函数作为日志时间源
     NRF_LOG_DEFAULT_BACKENDS_INIT();  // 初始化默认日志后端（RTT等）
+#if NRF_LOG_ENABLED
+    /* This bypasses the Nordic formatter and proves that the RTT up-buffer is
+     * live immediately after a debug build boots. It is compiled out of the
+     * normal firmware, where NRF_LOG_ENABLED is 0. */
+    SEGGER_RTT_WriteString(0, "[RTT] logger backend initialized\r\n");
+#endif
 }
 
 /**@brief Function for initializing power management.
@@ -708,8 +974,20 @@ static void power_management_init(void) {
 static void idle_state_handle(void) {
     app_feed_wdt();  // 喂看门狗，防止系统复位
 
+#ifdef USE_SYSVIEW
+    (void)NRF_LOG_PROCESS();
+    // 裸机模式下，如果调用 nrf_pwr_mgmt_run() 进入 WFE 睡眠，CPU 时钟将被关断，
+    // 这会导致 Cortex-M 内核的 DWT 周期计数器停止计数，造成 SystemView 时间轴停滞。
+    // 因此在性能分析模式下我们跳过睡眠模式，保持 CPU 处于活动状态。
+    static uint32_t loop_count = 0;
+    if (++loop_count >= 1000000) {
+        loop_count = 0;
+        SEGGER_SYSVIEW_Mark(1); // 触发主循环空闲事件标记
+    }
+#else
     if (NRF_LOG_PROCESS() == false)  // 处理日志缓冲区，如果没有待处理的日志
         nrf_pwr_mgmt_run();          // 进入低功耗模式（等待事件唤醒）
+#endif
 }
 
 /**
@@ -754,17 +1032,36 @@ void wdt_event_handler(void) {
 int main(void) {
     log_init();  // 初始化日志系统
 
+#ifdef USE_SYSVIEW
+    SEGGER_SYSVIEW_Conf();
+    SEGGER_SYSVIEW_Start();
+    SEGGER_SYSVIEW_NameMarker(1, "Main Loop Idle");
+#endif
+
     // Save reset reason.
     // 保存复位原因
     m_resetreas = NRF_POWER->RESETREAS;  // 读取复位原因寄存器
-    NRF_POWER->RESETREAS |= NRF_POWER->RESETREAS;  // 清除复位原因标志
+    NRF_POWER->RESETREAS = m_resetreas;  // 清除复位原因标志
     NRF_LOG_DEBUG("== RESET REASON: %d ===\n", m_resetreas);
+
+    // 看门狗复位且仍低于临界电压：上次已刷过最后一帧并关机，不要再刷屏。
+    if (m_resetreas & NRF_POWER_RESETREAS_DOG_MASK) {
+        uint16_t voltage_mv = EPD_ReadVoltage();
+        if (voltage_mv != 0U && voltage_mv < CRITICAL_BATTERY_SHUTDOWN_MV) {
+            NRF_POWER->SYSTEMOFF = 1;
+            while (1); // 等待进入低功耗睡眠
+        }
+    }
 
     NRF_LOG_DEBUG("init..\n");
 
     // Configure WDT.
     // 配置看门狗定时器
-    // 看门狗用于在系统卡死时自动复位，超时时间约32秒
+    // 看门狗用于在系统卡死时自动复位。实际超时 60 秒：
+    // sdk_config.h 的 legacy WDT_CONFIG_RELOAD_VALUE=60000 会经
+    // integration/nrfx/legacy/apply_old_config.h 覆盖 NRFX_WDT_CONFIG_RELOAD_VALUE=10000，
+    // NRF_DRV_WDT_DEAFULT_CONFIG 最终取 60000 ms。修改超时只改 WDT_CONFIG_RELOAD_VALUE 一处，
+    // 并用 grep app_feed_wdt 审计最长喂狗间隔。
     nrf_drv_wdt_config_t config = NRF_DRV_WDT_DEAFULT_CONFIG;
     APP_ERROR_CHECK(nrf_drv_wdt_init(&config, wdt_event_handler));  // 初始化看门狗
     APP_ERROR_CHECK(nrf_drv_wdt_channel_alloc(&m_wdt_channel_id));  // 分配看门狗通道
@@ -779,6 +1076,10 @@ int main(void) {
     gatt_init();              // 初始化GATT（MTU交换等）
     ble_dfu_buttonless_async_svci_init();  // 初始化无按钮DFU的异步SVCI接口
     services_init();          // 初始化服务（EPD服务和DFU服务）
+    /* ble_epd_init() initializes external SPI Flash while loading config.
+     * Mount GUI resources only after that driver is ready, before the first
+     * boot display request and before advertising can connect. */
+    (void)epd_resources_reload();
     advertising_init();       // 初始化广播
     conn_params_init();       // 初始化连接参数
 
@@ -794,17 +1095,32 @@ int main(void) {
 
     // 根据复位原因决定显示内容
     if (m_resetreas & NRF_POWER_RESETREAS_DOG_MASK) {
-        // 如果是看门狗复位，显示日历模式
-        m_epd.config.display_mode = MODE_CALENDAR;
-        ble_epd_on_timer(&m_epd, 0, true);  // 触发EPD刷新
+        // 看门狗复位：保留当前显示模式(用户原本停留在哪个模式就回到哪个),
+        // 时间戳沿用 m_timestamp 默认值(2025-01-01)而不是 0,避免出现 1970 日期。
+        // 若需要同步,Web 端连接后会重新下发时间。
+        NRF_LOG_WARNING("[EPD]: Recovered from watchdog reset, redrawing with default time\n");
+        ble_epd_on_timer(&m_epd, timestamp(), true);
     } else {
         // 其他复位原因，使用正常时间戳
-        ble_epd_on_timer(&m_epd, m_timestamp, true);  // 触发EPD刷新
+        ble_epd_on_timer(&m_epd, timestamp(), true);  // 触发EPD刷新
     }
 
     // 主循环：永久执行事件调度和空闲处理
     for (;;) {
+        ble_epd_process(&m_epd);
         app_sched_execute();  // 执行调度队列中的事件
+        if (ble_epd_take_offline_request(&m_epd)) disconnect_for_run();
         idle_state_handle();  // 处理空闲状态（喂狗、日志处理、进入低功耗）
     }
 }
+
+#if !defined(NRF_STRERROR_ENABLED) || NRF_STRERROR_ENABLED == 0
+char const * nrf_strerror_get(uint32_t code) {
+    (void)code;
+    return "";
+}
+char const * nrf_strerror_find(uint32_t code) {
+    (void)code;
+    return NULL;
+}
+#endif

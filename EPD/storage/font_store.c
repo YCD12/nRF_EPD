@@ -1,0 +1,405 @@
+#include "font_store.h"
+
+#include <string.h>
+
+#include "main.h"
+#include "fm25q04b.h"
+#include "font_geometry.h"
+#include "resource_store.h"
+#include "resource_layout.h"
+
+#define FONT_PACK_MAGIC              0x314B5046UL /* FPK1 */
+#define FONT_PACK_VERSION            1U
+#define FONT_PACK_HEADER_SIZE        8U
+#define FONT_PACK_RECORD_SIZE        16U
+#define FONT_PACK_DIRECTORY_SIZE     (FONT_PACK_HEADER_SIZE + FONT_STORE_MAX_SLOTS * FONT_PACK_RECORD_SIZE)
+typedef struct {
+    uint32_t offset;
+    uint32_t length;
+    uint32_t crc32;
+} font_record_t;
+
+#define FONT_VALIDATE_CACHE_SIZE 251U
+
+typedef struct {
+    uint8_t bytes[23];
+} font_header_t;
+
+typedef struct {
+    uint32_t address;
+    uint32_t length;
+    uint32_t cache_base;
+    uint16_t cache_length;
+    bool cache_valid;
+    uint8_t cache[FONT_VALIDATE_CACHE_SIZE];
+} font_flash_reader_t;
+
+static bool validate_font_structure(font_store_slot_t slot, uint32_t address, uint32_t length);
+static bool validate_font_records(uint32_t address, uint32_t length,
+                                  uint16_t start_upper, uint16_t start_lower,
+                                  uint16_t start_unicode);
+static uint8_t m_ready;
+static uint32_t m_revision = 1U;
+static font_record_t m_records[FONT_STORE_MAX_SLOTS];
+static uint32_t m_todo_key;
+static uint8_t m_todo_size;
+static const u8g2_font_placeholder_t *m_todo_metrics;
+static u8g2_font_placeholder_t m_base_metrics[FONT_STORE_SLOT_COUNT],m_custom_metrics;
+
+static uint32_t m_data_base;
+static fm25q04b_region_t m_regions[FONT_STORE_MAX_SLOTS];
+static u8g2_font_source_t m_sources[FONT_STORE_MAX_SLOTS];
+
+static uint16_t get_u16(const uint8_t* p)
+{
+    return (uint16_t)p[0] | ((uint16_t)p[1] << 8);
+}
+
+static uint32_t get_u32(const uint8_t* p)
+{
+    return (uint32_t)p[0] |
+           ((uint32_t)p[1] << 8) |
+           ((uint32_t)p[2] << 16) |
+           ((uint32_t)p[3] << 24);
+}
+
+static bool slot_valid(font_store_slot_t slot)
+{
+    return slot < FONT_STORE_MAX_SLOTS;
+}
+
+static uint32_t record_address(const font_record_t* record)
+{
+    return m_data_base + record->offset;
+}
+
+static bool records_non_overlapping(const font_record_t* records)
+{
+    uint8_t i;
+    uint8_t j;
+
+    for (i = 0U; i < FONT_STORE_MAX_SLOTS; i++) {
+        if (records[i].length == 0U) {
+            continue;
+        }
+        for (j = (uint8_t)(i + 1U); j < FONT_STORE_MAX_SLOTS; j++) {
+            uint32_t i_end;
+            uint32_t j_end;
+
+            if (records[j].length == 0U) {
+                continue;
+            }
+            i_end = records[i].offset + records[i].length;
+            j_end = records[j].offset + records[j].length;
+            if (records[i].offset < j_end && records[j].offset < i_end) {
+                return false;
+            }
+        }
+    }
+    return true;
+}
+
+static void font_store_update_sources(void)
+{
+    uint8_t slot;
+
+    for (slot = 0U; slot < FONT_STORE_MAX_SLOTS; slot++) {
+        m_regions[slot].base_address = m_data_base + m_records[slot].offset;
+        m_regions[slot].length = m_records[slot].length;
+        m_sources[slot].data = NULL;
+        m_sources[slot].length = m_records[slot].length;
+        m_sources[slot].read = fm25q04b_read_region;
+        m_sources[slot].context = &m_regions[slot];
+        m_sources[slot].revision = m_revision;
+    }
+}
+
+static bool resource_font_pack_load(void)
+{
+    uint8_t raw[FONT_PACK_DIRECTORY_SIZE];
+    rs_partition_t partition;
+    rs_package_info_t package;
+
+    if (resource_store_find(RS_PART_FONTS, &partition) != RS_OK ||
+        resource_store_open_info(RS_PART_FONTS, &package) != RS_OK ||
+        package.length < FONT_PACK_HEADER_SIZE ||
+        resource_store_read(RS_PART_FONTS, 0U, raw, FONT_PACK_HEADER_SIZE) != RS_OK ||
+        get_u32(raw) != FONT_PACK_MAGIC || get_u16(&raw[4]) != FONT_PACK_VERSION ||
+        (get_u16(&raw[6]) != FONT_STORE_SLOT_COUNT && get_u16(&raw[6]) != FONT_STORE_MAX_SLOTS)) return false;
+
+    uint16_t count = get_u16(&raw[6]);
+    uint32_t directory_size = FONT_PACK_HEADER_SIZE + count * FONT_PACK_RECORD_SIZE;
+    if (package.length < directory_size ||
+        resource_store_read(RS_PART_FONTS, FONT_PACK_HEADER_SIZE, raw + FONT_PACK_HEADER_SIZE,
+                            directory_size - FONT_PACK_HEADER_SIZE) != RS_OK) return false;
+
+    memset(m_records, 0, sizeof(m_records));
+    m_todo_key = 0U; m_todo_size = 0U; m_todo_metrics = NULL;
+    for (uint8_t slot = 0U; slot < count; slot++) {
+        uint32_t base = FONT_PACK_HEADER_SIZE + slot * FONT_PACK_RECORD_SIZE;
+        font_record_t *record = &m_records[slot];
+        record->offset = get_u32(&raw[base]);
+        record->length = get_u32(&raw[base + 4U]);
+        record->crc32 = get_u32(&raw[base + 8U]);
+        uint32_t key = get_u32(&raw[base + 12U]);
+        if ((slot < FONT_STORE_SLOT_COUNT && key != 0U) ||
+            (slot == FONT_STORE_SLOT_TODO && ((record->length != 0U) != (key != 0U))) ||
+            (record->length == 0U && (record->offset != 0U || record->crc32 != 0U)) ||
+            (record->length != 0U &&
+             (record->offset < directory_size || record->offset >= package.length ||
+              record->length > package.length - record->offset))) {
+            memset(m_records, 0, sizeof(m_records));
+            return false;
+        }
+        if (slot == FONT_STORE_SLOT_TODO) m_todo_key = key;
+    }
+    if (!records_non_overlapping(m_records)) {
+        memset(m_records, 0, sizeof(m_records));
+        return false;
+    }
+    m_data_base = partition.offset + RS_HEADER_SIZE;
+    for (uint8_t slot = 0U; slot < count; slot++) {
+        font_record_t *record = &m_records[slot];
+        if (record->length == 0U) continue;
+        if (resource_crc32_flash(record_address(record), record->length, record->crc32) != RS_OK ||
+            !validate_font_structure((font_store_slot_t)slot,
+                                     record_address(record), record->length)) {
+            memset(m_records, 0, sizeof(m_records));
+            return false;
+        }
+    }
+    m_revision = package.revision;
+    return true;
+}
+
+static uint16_t header_word(const font_header_t* header, unsigned offset)
+{
+    return (uint16_t)((uint16_t)header->bytes[offset] << 8) | header->bytes[offset + 1U];
+}
+
+static bool read_font_header(uint32_t address, uint32_t length, font_header_t* header)
+{
+    return header != NULL && length >= sizeof(header->bytes) &&
+           fm25q04b_read(address, header->bytes, sizeof(header->bytes)) == NRF_SUCCESS;
+}
+
+static bool font_header_matches_slot(font_store_slot_t slot, uint32_t length,
+                                     const font_header_t* header)
+{
+    if (!slot_valid(slot) || header == NULL || header->bytes[0] == 0U ||
+        header->bytes[0] == 0xFFU) return false;
+    for (unsigned i = 2U; i <= 8U; i++) {
+        if (header->bytes[i] == 0U || header->bytes[i] > 8U) return false;
+    }
+    const uint8_t *p=header->bytes+9U;
+    if(!p[0] || p[0]>64U || !p[1] || p[1]>80U ||
+       (int8_t)p[2]<-32 || (int8_t)p[2]>32 || (int8_t)p[3]<-64 || (int8_t)p[3]>0 ||
+       (int8_t)p[4]<0 || p[4]>64U || (int8_t)p[5]<-64 || (int8_t)p[5]>0 ||
+       (int8_t)p[6]<0 || p[6]>80U || (int8_t)p[7]<-64 || (int8_t)p[7]>0 ||
+       (int8_t)p[4]-(int8_t)p[5]>100 || (int8_t)p[6]-(int8_t)p[7]>127) return false;
+    u8g2_font_placeholder_t *metrics=slot==FONT_STORE_SLOT_TODO?&m_custom_metrics:&m_base_metrics[slot];
+    memcpy(metrics,p,8U);metrics->advance=p[0]+1U;
+    if(slot==FONT_STORE_SLOT_TODO) {
+        m_todo_metrics=metrics;
+        for(unsigned i=0;i<TODO_FONT_SIZE_COUNT;i++) {
+            if(!memcmp(p,&todo_font_geometry[i],8U)) {m_todo_size=todo_font_sizes[i];metrics->advance=metrics->ascent+1;break;}
+        }
+        if(!m_todo_size) for(unsigned i=0;i<2;i++) {
+            if(!memcmp(p,&m_base_metrics[i],8U) || !memcmp(p,&font_slot_geometry[i],8U)) {m_todo_size=i==0?9:12;break;}
+        }
+    }
+    for (unsigned i = 17U; i <= 21U; i += 2U) {
+        if ((uint32_t)header_word(header, i) + 23U >= length) return false;
+    }
+    return true;
+}
+
+static bool validate_font_structure(font_store_slot_t slot, uint32_t address, uint32_t length)
+{
+    font_header_t header;
+
+    if (!read_font_header(address, length, &header) ||
+        !font_header_matches_slot(slot, length, &header)) {
+        return false;
+    }
+    return validate_font_records(address, length, header_word(&header, 17U),
+                                 header_word(&header, 19U), header_word(&header, 21U));
+}
+
+static bool font_reader_byte(font_flash_reader_t* reader, uint32_t offset,
+                             uint8_t* value)
+{
+    uint32_t base;
+    size_t read_length;
+
+    if (reader == NULL || value == NULL || offset >= reader->length) {
+        return false;
+    }
+    if (!reader->cache_valid || offset < reader->cache_base ||
+        offset >= reader->cache_base + reader->cache_length) {
+        base = (offset / FONT_VALIDATE_CACHE_SIZE) * FONT_VALIDATE_CACHE_SIZE;
+        read_length = FONT_VALIDATE_CACHE_SIZE;
+        if (read_length > (size_t)(reader->length - base)) {
+            read_length = (size_t)(reader->length - base);
+        }
+        if (fm25q04b_read(reader->address + base, reader->cache, read_length) != NRF_SUCCESS) {
+            reader->cache_valid = false;
+            return false;
+        }
+        reader->cache_base = base;
+        reader->cache_length = (uint16_t)read_length;
+        reader->cache_valid = true;
+    }
+    *value = reader->cache[offset - reader->cache_base];
+    return true;
+}
+
+static bool font_reader_u16(font_flash_reader_t* reader, uint32_t offset,
+                            uint16_t* value)
+{
+    uint8_t high;
+    uint8_t low;
+
+    if (!font_reader_byte(reader, offset, &high) ||
+        !font_reader_byte(reader, offset + 1U, &low) || value == NULL) {
+        return false;
+    }
+    *value = (uint16_t)(((uint16_t)high << 8) | low);
+    return true;
+}
+
+static bool validate_glyph_records(font_flash_reader_t* reader, uint32_t offset, bool unicode)
+{
+    uint32_t record_count = 0U;
+    while (record_count++ < reader->length) {
+        uint8_t first, second, size;
+        if (!font_reader_byte(reader, offset, &first) ||
+            !font_reader_byte(reader, offset + 1U, &second)) return false;
+        if (unicode) {
+            if (!(first | second)) return true;
+            if (!font_reader_byte(reader, offset + 2U, &size)) return false;
+        } else {
+            size = second;
+            if (!size) return true;
+        }
+        if (size < (unicode ? 3U : 2U) || size > reader->length - offset) return false;
+        offset += size;
+    }
+    return false;
+}
+
+static bool validate_font_records(uint32_t address, uint32_t length,
+                                  uint16_t start_upper, uint16_t start_lower,
+                                  uint16_t start_unicode)
+{
+    font_flash_reader_t reader;
+    uint32_t unicode_table;
+    uint16_t lookup_offset;
+    uint16_t first_codepoint;
+
+    memset(&reader, 0, sizeof(reader));
+    reader.address = address;
+    reader.length = length;
+
+    /* Offsets were bounded by font_header_matches_slot before this call. */
+    if (!validate_glyph_records(&reader, 23U, false) ||
+        !validate_glyph_records(&reader, 23U + start_upper, false) ||
+        !validate_glyph_records(&reader, 23U + start_lower, false)) {
+        return false;
+    }
+
+    unicode_table = 23U + start_unicode;
+    if (!font_reader_u16(&reader, unicode_table, &lookup_offset) ||
+        !font_reader_u16(&reader, unicode_table + 2U, &first_codepoint) ||
+        (uint32_t)unicode_table + lookup_offset >= length) {
+        return false;
+    }
+
+    /* The three generated slot resources use one Unicode block. Reject
+     * unsupported multi-block input explicitly rather than validating only
+     * the first block while the renderer can reach later blocks. */
+    if (first_codepoint == 0U) return true;
+    return first_codepoint == 0xFFFFU && lookup_offset == 4U &&
+           validate_glyph_records(&reader, unicode_table + lookup_offset, true);
+}
+
+ret_code_t font_store_init(void)
+{
+    fm25q04b_jedec_id_t id;
+
+    if (m_ready) {
+        return NRF_SUCCESS;
+    }
+    if (fm25q04b_init() != NRF_SUCCESS || fm25q04b_probe(&id) != NRF_SUCCESS) {
+        return NRF_ERROR_NOT_FOUND;
+    }
+    if (resource_store_mount() != RS_OK) {
+        return NRF_ERROR_NOT_FOUND;
+    }
+    memset(m_records, 0, sizeof(m_records));
+    (void)resource_font_pack_load();
+    m_ready = 1U;
+    font_store_update_sources();
+    return NRF_SUCCESS;
+}
+
+bool font_store_ready(void)
+{
+    return m_ready != 0U;
+}
+
+ret_code_t font_store_retry_init(void)
+{
+    /* Keep negative caching for ordinary consumers. Only activation retries
+     * a pack whose required sources were not loaded successfully. */
+    for (unsigned slot = 0U; slot < FONT_STORE_SLOT_COUNT; ++slot) {
+        if (font_store_get_source((font_store_slot_t)slot) == NULL) {
+            font_store_invalidate();
+            break;
+        }
+    }
+    return font_store_init();
+}
+
+const u8g2_font_source_t* font_store_get_source(font_store_slot_t slot)
+{
+    if (!m_ready || !slot_valid(slot) || m_records[slot].length == 0U) {
+        return NULL;
+    }
+    return &m_sources[slot];
+}
+
+uint8_t font_store_todo_font_size(void)
+{
+    return font_store_get_source(FONT_STORE_SLOT_TODO) != NULL ? m_todo_size : 0U;
+}
+
+uint32_t font_store_todo_font_key(void)
+{
+    return font_store_get_source(FONT_STORE_SLOT_TODO) != NULL ? m_todo_key : 0U;
+}
+
+const u8g2_font_placeholder_t *font_store_todo_font_metrics(void)
+{
+    return font_store_get_source(FONT_STORE_SLOT_TODO) != NULL ? m_todo_metrics : NULL;
+}
+
+const u8g2_font_placeholder_t *font_store_font_metrics(font_store_slot_t slot)
+{
+    return m_ready && slot<FONT_STORE_SLOT_COUNT ? &m_base_metrics[slot] : NULL;
+}
+
+void font_store_invalidate(void)
+{
+    m_ready = 0U;
+    m_revision = 1U;
+    m_data_base = 0U;
+    m_todo_key = 0U; m_todo_size = 0U; m_todo_metrics = NULL;
+    memset(m_records, 0, sizeof(m_records));
+    memset(m_regions, 0, sizeof(m_regions));
+    memset(m_sources, 0, sizeof(m_sources));
+}
+
+#if defined(FONT_STORE_HOST_TEST)
+void font_store_host_reset(void) { font_store_invalidate(); }
+#endif

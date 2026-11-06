@@ -38,7 +38,6 @@ POSSIBILITY OF SUCH DAMAGE.
 
 #include <stdarg.h>
 #include <stddef.h>
-#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -79,6 +78,11 @@ static void GFX_u8g2_draw_hv_line(u8g2_font_t* u8g2, int16_t x, int16_t y, int16
     // 通过u8g2成员指针反向获取Adafruit_GFX结构体指针
     // Get Adafruit_GFX struct pointer from u8g2 member pointer
     Adafruit_GFX* gfx = CONTAINER_OF(u8g2, Adafruit_GFX, u8g2);
+#if GFX_FIXED_FONT_DIRECTION_0
+    /* Missing-glyph boxes still need vertical edges. */
+    if (dir == 1U) GFX_drawFastVLine(gfx, x, y, len, color);
+    else GFX_drawFastHLine(gfx, x, y, len, color);
+#else
     switch (dir) {
         case 0:  // 向右画水平线 | Draw horizontal line to the right
             GFX_drawFastHLine(gfx, x, y, len, color);
@@ -93,6 +97,7 @@ static void GFX_u8g2_draw_hv_line(u8g2_font_t* u8g2, int16_t x, int16_t y, int16
             GFX_drawFastVLine(gfx, x, y - len + 1, len, color);
             break;
     }
+#endif
 }
 
 /**************************************************************************/
@@ -117,10 +122,14 @@ static void GFX_u8g2_draw_hv_line(u8g2_font_t* u8g2, int16_t x, int16_t y, int16
              then the buffer is cleared for the next page.
 */
 /**************************************************************************/
+uint8_t s_gfx_buffer[GFX_PAGE_BUFFER_SIZE];
+
+uint8_t *GFX_get_buffer(void)      { return s_gfx_buffer; }
+size_t   GFX_get_buffer_size(void) { return sizeof(s_gfx_buffer); }
+
 void GFX_begin(Adafruit_GFX* gfx, int16_t w, int16_t h, int16_t buffer_height) {
     // 清零整个GFX结构体 | Zero out the entire GFX structure
     memset(gfx, 0, sizeof(Adafruit_GFX));
-    memset(&gfx->u8g2, 0, sizeof(gfx->u8g2));
 
     // 设置屏幕尺寸 | Set screen dimensions
     gfx->WIDTH = gfx->_width = w;
@@ -129,9 +138,13 @@ void GFX_begin(Adafruit_GFX* gfx, int16_t w, int16_t h, int16_t buffer_height) {
     // 设置U8G2字体库的绘线回调函数 | Set U8G2 font library's line drawing callback
     gfx->u8g2.draw_hv_line = GFX_u8g2_draw_hv_line;
 
-    // 分配缓冲区：每行使用 (宽度+7)/8 字节（向上取整到字节边界）
-    // Allocate buffer: each row uses (width+7)/8 bytes (rounded up to byte boundary)
-    gfx->buffer = malloc(((gfx->WIDTH + 7) / 8) * buffer_height);
+    // 使用静态缓冲区，避免嵌入式目标依赖动态内存
+    // Use a static buffer so the embedded target does not depend on heap allocation.
+    int16_t max_height = sizeof(s_gfx_buffer) / ((gfx->WIDTH + 7) / 8);
+    if (buffer_height <= 0 || buffer_height > max_height) {
+        buffer_height = max_height;
+    }
+    gfx->buffer = s_gfx_buffer;
     gfx->page_height = buffer_height;
 
     // 计算总页数（向上取整）| Calculate total pages (rounded up)
@@ -205,13 +218,13 @@ void GFX_begin_4c(Adafruit_GFX* gfx, int16_t w, int16_t h, int16_t buffer_height
 
 /**************************************************************************/
 /**
- * @brief   结束绘图并释放分配的缓冲区内存
- *          End drawing and free allocated buffer memory
+ * @brief   结束绘图
+ *          End drawing
  * @param   gfx  图形上下文指针 | Graphics context pointer
  */
 /**************************************************************************/
 void GFX_end(Adafruit_GFX* gfx) {
-    if (gfx->buffer) free(gfx->buffer);
+    (void)gfx;
 }
 
 /**************************************************************************/
@@ -338,6 +351,7 @@ void GFX_setWindow(Adafruit_GFX* gfx, uint16_t x, uint16_t y, uint16_t w, uint16
     gfx->ph = MIN(h, gfx->_height - gfx->py);
 
     // 根据旋转角度转换坐标 | Transform coordinates based on rotation
+#if !GFX_FIXED_BWR_PANEL
     switch (gfx->rotation) {
         case GFX_ROTATE_0:
             // 无需转换 | No transformation needed
@@ -360,12 +374,14 @@ void GFX_setWindow(Adafruit_GFX* gfx, uint16_t x, uint16_t y, uint16_t w, uint16
             gfx->py = gfx->HEIGHT - gfx->py - gfx->ph;
             break;
     }
+#endif
 
     // 调整宽度和x坐标到8的倍数边界（电子纸控制器要求）
     // Align width and x to 8-pixel boundary (e-paper controller requirement)
     gfx->pw += gfx->px % 8;                          // 补偿x偏移 | Compensate for x offset
     if (gfx->pw % 8 > 0) gfx->pw += 8 - (gfx->pw % 8);  // 向上取整到8的倍数 | Round up to multiple of 8
     gfx->px -= gfx->px % 8;                          // 向下对齐到8的倍数 | Align down to multiple of 8
+    gfx->total_pages = (gfx->ph + gfx->page_height - 1) / gfx->page_height;
 }
 
 /**************************************************************************/
@@ -379,6 +395,7 @@ void GFX_setWindow(Adafruit_GFX* gfx, uint16_t x, uint16_t y, uint16_t w, uint16
  *          Uses static variables to cache last conversion result for performance
  */
 /**************************************************************************/
+#if !GFX_FIXED_BWR_PANEL
 static uint8_t color4(uint16_t color) {
     // 缓存上次转换结果 | Cache last conversion result
     static uint16_t _prev_color = GFX_BLACK;
@@ -440,6 +457,8 @@ static uint8_t color4(uint16_t color) {
     _prev_color4 = cv4;
     return cv4;
 }
+#endif
+
 /**************************************************************************/
 /*!
    @brief    Draw a pixel
@@ -466,10 +485,13 @@ static uint8_t color4(uint16_t color) {
 */
 /**************************************************************************/
 void GFX_drawPixel(Adafruit_GFX* gfx, int16_t x, int16_t y, uint16_t color) {
+    if (gfx->clip_enabled && (x < gfx->clip_left || x >= gfx->clip_right ||
+                             y < gfx->clip_top || y >= gfx->clip_bottom)) return;
     // 边界检查：确保坐标在屏幕范围内 | Boundary check: ensure coordinates are within screen
     if (x < 0 || x >= gfx->_width || y < 0 || y >= gfx->_height) return;
 
     // 根据旋转角度转换坐标到物理坐标 | Transform coordinates to physical based on rotation
+#if !GFX_FIXED_BWR_PANEL
     switch (gfx->rotation) {
         case GFX_ROTATE_0:
             // 无需转换 | No transformation needed
@@ -490,6 +512,7 @@ void GFX_drawPixel(Adafruit_GFX* gfx, int16_t x, int16_t y, uint16_t color) {
             y = gfx->HEIGHT - y - 1;
             break;
     }
+#endif
 
     // transpose partial window to 0,0
     // 将坐标转换到局部窗口的相对坐标 | Convert to relative coordinates within partial window
@@ -509,6 +532,7 @@ void GFX_drawPixel(Adafruit_GFX* gfx, int16_t x, int16_t y, uint16_t color) {
     if (y < 0 || y >= gfx->page_height) return;
 
     // 根据颜色模式写入像素数据 | Write pixel data based on color mode
+#if !GFX_FIXED_BWR_PANEL
     if (gfx->color == gfx->buffer) {  // 4c 四色模式
         // 四色模式：每像素2位，每字节存储4个像素
         // 4-color mode: 2 bits per pixel, 4 pixels per byte
@@ -530,28 +554,21 @@ void GFX_drawPixel(Adafruit_GFX* gfx, int16_t x, int16_t y, uint16_t color) {
                 gfx->buffer[i] = (gfx->buffer[i] & 0xFC) | pv;
                 break;
         }
-    } else if (gfx->color != NULL) {  // 3c 三色模式
-        // 三色模式：使用两个独立的缓冲区
-        // - buffer: 黑白信息（1=白，0=黑）
-        // - color: 彩色信息（0=彩色，1=非彩色）
-        // 3-color mode: uses two separate buffers
-        // - buffer: black/white info (1=white, 0=black)
-        // - color: color info (0=colored, 1=not colored)
+    } else
+#endif
+    {
         uint16_t i = x / 8 + y * (gfx->pw / 8);
-        gfx->buffer[i] |= 0x80 >> (x & 7);  // 默认设为白色 | Default to white
-        gfx->color[i] |= 0x80 >> (x & 7);   // 默认设为非彩色 | Default to not colored
-        if (color == GFX_BLACK)
-            gfx->buffer[i] &= ~(0x80 >> (x & 7));  // 黑色：清除buffer位 | Black: clear buffer bit
-        else if (color != GFX_WHITE)
-            gfx->color[i] &= ~(0x80 >> (x & 7));   // 彩色：清除color位 | Colored: clear color bit
-    } else {
-        // 单色模式：每像素1位，每字节存储8个像素
-        // Monochrome mode: 1 bit per pixel, 8 pixels per byte
-        uint16_t i = x / 8 + y * (gfx->pw / 8);
-        if (color == GFX_WHITE)
-            gfx->buffer[i] |= 0x80 >> (x & 7);   // 白色：设置位为1 | White: set bit to 1
-        else
-            gfx->buffer[i] &= ~(0x80 >> (x & 7));  // 黑色：设置位为0 | Black: set bit to 0
+        uint8_t mask = 0x80U >> (x & 7);
+        uint8_t *plane = gfx->buffer;
+        if (gfx->color != NULL) {
+            /* BWR starts white in both planes; clear only the selected ink. */
+            gfx->buffer[i] |= mask;
+            gfx->color[i] |= mask;
+            if (color != GFX_BLACK) plane = gfx->color;
+        }
+        /* Mono maps every non-white color to black; BWR uses the plane above. */
+        if (color == GFX_WHITE) plane[i] |= mask;
+        else plane[i] &= (uint8_t)~mask;
     }
 }
 
@@ -707,8 +724,7 @@ void GFX_drawDottedLine(Adafruit_GFX* gfx, int16_t x0, int16_t y0, int16_t x1, i
 */
 /**************************************************************************/
 void GFX_drawFastVLine(Adafruit_GFX* gfx, int16_t x, int16_t y, int16_t h, uint16_t color) {
-    // 通过调用通用直线函数实现 | Implemented by calling generic line function
-    GFX_drawLine(gfx, x, y, x, y + h - 1, color);
+    for (int16_t i = 0; i < h; ++i) GFX_drawPixel(gfx, x, y + i, color);
 }
 
 /**************************************************************************/
@@ -722,8 +738,7 @@ void GFX_drawFastVLine(Adafruit_GFX* gfx, int16_t x, int16_t y, int16_t h, uint1
 */
 /**************************************************************************/
 void GFX_drawFastHLine(Adafruit_GFX* gfx, int16_t x, int16_t y, int16_t w, uint16_t color) {
-    // 通过调用通用直线函数实现 | Implemented by calling generic line function
-    GFX_drawLine(gfx, x, y, x + w - 1, y, color);
+    for (int16_t i = 0; i < w; ++i) GFX_drawPixel(gfx, x + i, y, color);
 }
 
 /**************************************************************************/
@@ -761,12 +776,15 @@ void GFX_fillScreen(Adafruit_GFX* gfx, uint16_t color) {
     // 计算单页缓冲区大小（字节数）| Calculate page buffer size in bytes
     uint32_t size = ((gfx->WIDTH + 7) / 8) * gfx->page_height;
 
+#if !GFX_FIXED_BWR_PANEL
     if (gfx->color == gfx->buffer) {        // 4c 四色模式
         // 四色模式：每字节4个像素，用转换后的颜色值复制填充整个字节
         // 4-color mode: 4 pixels per byte, replicate converted color to fill entire byte
         uint8_t pv = color4(color) * 0x55;  // 0b01010101 将2位颜色值扩展到8位
         memset(gfx->buffer, pv, size * 2);  // 两倍大小（包含黑白和彩色数据）
-    } else {
+    } else
+#endif
+    {
         // 单色或三色模式 | Mono or 3-color mode
         // 填充黑白缓冲区 | Fill black/white buffer
         memset(gfx->buffer, color == GFX_WHITE ? 0xFF : 0x00, size);
@@ -791,39 +809,12 @@ void GFX_fillScreen(Adafruit_GFX* gfx, uint16_t color) {
 */
 /**************************************************************************/
 void GFX_drawCircle(Adafruit_GFX* gfx, int16_t x0, int16_t y0, int16_t r, uint16_t color) {
-    int16_t f = 1 - r;      // 决策参数 | Decision parameter
-    int16_t ddF_x = 1;      // x方向增量 | Delta for x direction
-    int16_t ddF_y = -2 * r; // y方向增量 | Delta for y direction
-    int16_t x = 0;
-    int16_t y = r;
-
     // 绘制圆的4个基本点（上下左右）| Draw 4 cardinal points
     GFX_drawPixel(gfx, x0, y0 + r, color);  // 底部 | Bottom
     GFX_drawPixel(gfx, x0, y0 - r, color);  // 顶部 | Top
     GFX_drawPixel(gfx, x0 + r, y0, color);  // 右侧 | Right
     GFX_drawPixel(gfx, x0 - r, y0, color);  // 左侧 | Left
-
-    // 利用8对称性绘制圆 | Draw circle using 8-fold symmetry
-    while (x < y) {
-        if (f >= 0) {
-            y--;
-            ddF_y += 2;
-            f += ddF_y;
-        }
-        x++;
-        ddF_x += 2;
-        f += ddF_x;
-
-        // 绘制8个对称点 | Draw 8 symmetric points
-        GFX_drawPixel(gfx, x0 + x, y0 + y, color);  // 第4象限 | Quadrant 4
-        GFX_drawPixel(gfx, x0 - x, y0 + y, color);  // 第3象限 | Quadrant 3
-        GFX_drawPixel(gfx, x0 + x, y0 - y, color);  // 第1象限 | Quadrant 1
-        GFX_drawPixel(gfx, x0 - x, y0 - y, color);  // 第2象限 | Quadrant 2
-        GFX_drawPixel(gfx, x0 + y, y0 + x, color);  // 第4象限（反射）| Quadrant 4 (reflected)
-        GFX_drawPixel(gfx, x0 - y, y0 + x, color);  // 第3象限（反射）| Quadrant 3 (reflected)
-        GFX_drawPixel(gfx, x0 + y, y0 - x, color);  // 第1象限（反射）| Quadrant 1 (reflected)
-        GFX_drawPixel(gfx, x0 - y, y0 - x, color);  // 第2象限（反射）| Quadrant 2 (reflected)
-    }
+    GFX_drawCircleHelper(gfx, x0, y0, r, 0x0f, color);
 }
 
 /**************************************************************************/
@@ -897,7 +888,7 @@ void GFX_fillCircle(Adafruit_GFX* gfx, int16_t x0, int16_t y0, int16_t r, uint16
     @param  color    16-bit 5-6-5 Color to fill with
 */
 /**************************************************************************/
-void GFX_fillCircleHelper(Adafruit_GFX* gfx, int16_t x0, int16_t y0, int16_t r, uint8_t corners, int16_t delta,
+void GFX_fillCircleHelper(Adafruit_GFX* gfx, int16_t x0, int16_t y0, int16_t r, uint8_t cornername, int16_t delta,
                           uint16_t color) {
     int16_t f = 1 - r;
     int16_t ddF_x = 1;
@@ -921,12 +912,12 @@ void GFX_fillCircleHelper(Adafruit_GFX* gfx, int16_t x0, int16_t y0, int16_t r, 
         // These checks avoid double-drawing certain lines, important
         // for the SSD1306 library which has an INVERT drawing mode.
         if (x < (y + 1)) {
-            if (corners & 1) GFX_drawFastVLine(gfx, x0 + x, y0 - y, 2 * y + delta, color);
-            if (corners & 2) GFX_drawFastVLine(gfx, x0 - x, y0 - y, 2 * y + delta, color);
+            if (cornername & 1) GFX_drawFastVLine(gfx, x0 + x, y0 - y, 2 * y + delta, color);
+            if (cornername & 2) GFX_drawFastVLine(gfx, x0 - x, y0 - y, 2 * y + delta, color);
         }
         if (y != py) {
-            if (corners & 1) GFX_drawFastVLine(gfx, x0 + py, y0 - px, 2 * px + delta, color);
-            if (corners & 2) GFX_drawFastVLine(gfx, x0 - py, y0 - px, 2 * px + delta, color);
+            if (cornername & 1) GFX_drawFastVLine(gfx, x0 + py, y0 - px, 2 * px + delta, color);
+            if (cornername & 2) GFX_drawFastVLine(gfx, x0 - py, y0 - px, 2 * px + delta, color);
             py = y;
         }
         px = x;
@@ -961,19 +952,20 @@ void GFX_drawRect(Adafruit_GFX* gfx, int16_t x, int16_t y, int16_t w, int16_t h,
     @param    color 16-bit 5-6-5 Color to draw with
 */
 /**************************************************************************/
-void GFX_drawRoundRect(Adafruit_GFX* gfx, int16_t x, int16_t y, int16_t w, int16_t h, int16_t r, uint16_t color) {
+void GFX_drawRoundRect(Adafruit_GFX* gfx, int16_t x0, int16_t y0, int16_t w, int16_t h, int16_t radius,
+                       uint16_t color) {
     int16_t max_radius = ((w < h) ? w : h) / 2;  // 1/2 minor axis
-    if (r > max_radius) r = max_radius;
+    if (radius > max_radius) radius = max_radius;
     // smarter version
-    GFX_drawFastHLine(gfx, x + r, y, w - 2 * r, color);          // Top
-    GFX_drawFastHLine(gfx, x + r, y + h - 1, w - 2 * r, color);  // Bottom
-    GFX_drawFastVLine(gfx, x, y + r, h - 2 * r, color);          // Left
-    GFX_drawFastVLine(gfx, x + w - 1, y + r, h - 2 * r, color);  // Right
+    GFX_drawFastHLine(gfx, x0 + radius, y0, w - 2 * radius, color);          // Top
+    GFX_drawFastHLine(gfx, x0 + radius, y0 + h - 1, w - 2 * radius, color);  // Bottom
+    GFX_drawFastVLine(gfx, x0, y0 + radius, h - 2 * radius, color);          // Left
+    GFX_drawFastVLine(gfx, x0 + w - 1, y0 + radius, h - 2 * radius, color);  // Right
     // draw four corners
-    GFX_drawCircleHelper(gfx, x + r, y + r, r, 1, color);
-    GFX_drawCircleHelper(gfx, x + w - r - 1, y + r, r, 2, color);
-    GFX_drawCircleHelper(gfx, x + w - r - 1, y + h - r - 1, r, 4, color);
-    GFX_drawCircleHelper(gfx, x + r, y + h - r - 1, r, 8, color);
+    GFX_drawCircleHelper(gfx, x0 + radius, y0 + radius, radius, 1, color);
+    GFX_drawCircleHelper(gfx, x0 + w - radius - 1, y0 + radius, radius, 2, color);
+    GFX_drawCircleHelper(gfx, x0 + w - radius - 1, y0 + h - radius - 1, radius, 4, color);
+    GFX_drawCircleHelper(gfx, x0 + radius, y0 + h - radius - 1, radius, 8, color);
 }
 
 /**************************************************************************/
@@ -987,14 +979,15 @@ void GFX_drawRoundRect(Adafruit_GFX* gfx, int16_t x, int16_t y, int16_t w, int16
     @param    color 16-bit 5-6-5 Color to draw/fill with
 */
 /**************************************************************************/
-void GFX_fillRoundRect(Adafruit_GFX* gfx, int16_t x, int16_t y, int16_t w, int16_t h, int16_t r, uint16_t color) {
+void GFX_fillRoundRect(Adafruit_GFX* gfx, int16_t x0, int16_t y0, int16_t w, int16_t h, int16_t radius,
+                       uint16_t color) {
     int16_t max_radius = ((w < h) ? w : h) / 2;  // 1/2 minor axis
-    if (r > max_radius) r = max_radius;
+    if (radius > max_radius) radius = max_radius;
     // smarter version
-    GFX_fillRect(gfx, x + r, y, w - 2 * r, h, color);
+    GFX_fillRect(gfx, x0 + radius, y0, w - 2 * radius, h, color);
     // draw four corners
-    GFX_fillCircleHelper(gfx, x + w - r - 1, y + r, r, 1, h - 2 * r - 1, color);
-    GFX_fillCircleHelper(gfx, x + r, y + r, r, 2, h - 2 * r - 1, color);
+    GFX_fillCircleHelper(gfx, x0 + w - radius - 1, y0 + radius, radius, 1, h - 2 * radius - 1, color);
+    GFX_fillCircleHelper(gfx, x0 + radius, y0 + radius, radius, 2, h - 2 * radius - 1, color);
 }
 
 /**************************************************************************/
@@ -1197,6 +1190,18 @@ void GFX_setCursor(Adafruit_GFX* gfx, int16_t x, int16_t y) {
 /**************************************************************************/
 void GFX_setFont(Adafruit_GFX* gfx, const uint8_t* font) { u8g2_SetFont(&gfx->u8g2, font); }
 
+void GFX_setExternalFont(Adafruit_GFX* gfx, const u8g2_font_source_t* source) {
+    u8g2_SetExternalFont(&gfx->u8g2, source);
+}
+
+void GFX_setFontPlaceholder(Adafruit_GFX* gfx, const u8g2_font_placeholder_t* placeholder) {
+    u8g2_SetPlaceholder(&gfx->u8g2, placeholder);
+}
+
+void GFX_setMissingFont(Adafruit_GFX* gfx, const u8g2_font_placeholder_t* placeholder) {
+    u8g2_SetMissingFont(&gfx->u8g2, placeholder);
+}
+
 /**************************************************************************/
 /**
  * @brief   设置字体渲染模式
@@ -1277,6 +1282,20 @@ int16_t GFX_drawGlyph(Adafruit_GFX* gfx, int16_t x, int16_t y, uint16_t e) {
     return u8g2_DrawGlyph(&gfx->u8g2, x, y, e);
 }
 
+bool GFX_hasGlyph(Adafruit_GFX* gfx, uint16_t e) {
+    return u8g2_IsGlyph(&gfx->u8g2, e) != 0U;
+}
+
+int16_t GFX_getGlyphAdvance(Adafruit_GFX* gfx, uint16_t e) {
+    if (GFX_hasGlyph(gfx, e)) {
+        return u8g2_GetGlyphWidth(&gfx->u8g2, e);
+    }
+    if (e == (uint16_t)' ') {
+        return 0;
+    }
+    return gfx->u8g2.placeholder_enabled ? gfx->u8g2.placeholder.advance : 0;
+}
+
 /**************************************************************************/
 /**
  * @brief   绘制ASCII字符串
@@ -1330,18 +1349,20 @@ static uint16_t utf8_next(Adafruit_GFX* gfx, uint8_t b) {
 }
 
 int16_t GFX_drawUTF8(Adafruit_GFX* gfx, int16_t x, int16_t y, const char* str) {
-    uint16_t e;
-    int16_t delta, sum;
+    int16_t sum;
 
     gfx->utf8_state = 0;
     sum = 0;
     for (;;) {
-        e = utf8_next(gfx, (uint8_t)*str);
+        uint16_t e = utf8_next(gfx, (uint8_t)*str);
         if (e == 0x0ffff) break;
         str++;
         if (e != 0x0fffe) {
-            delta = u8g2_DrawGlyph(&gfx->u8g2, x, y, e);
+            int16_t delta = u8g2_DrawGlyph(&gfx->u8g2, x, y, e);
 
+#if GFX_FIXED_FONT_DIRECTION_0
+            x += delta;
+#else
             switch (gfx->u8g2.font_decode.dir) {
                 case 0:
                     x += delta;
@@ -1356,6 +1377,7 @@ int16_t GFX_drawUTF8(Adafruit_GFX* gfx, int16_t x, int16_t y, const char* str) {
                     y -= delta;
                     break;
             }
+#endif
 
             sum += delta;
         }
@@ -1364,60 +1386,163 @@ int16_t GFX_drawUTF8(Adafruit_GFX* gfx, int16_t x, int16_t y, const char* str) {
 }
 
 int16_t GFX_getUTF8Width(Adafruit_GFX* gfx, const char* str) {
-    uint16_t e;
     int16_t dx, w;
+    int8_t glyph_advance;
+    bool have_last_real_glyph = false;
+    int8_t last_real_advance = 0;
+    int8_t last_real_width = 0;
+    int8_t last_real_x_offset = 0;
 
     gfx->u8g2.font_decode.glyph_width = 0;
     gfx->utf8_state = 0;
     w = 0;
     dx = 0;
     for (;;) {
-        e = utf8_next(gfx, (uint8_t)*str);
+        uint16_t e = utf8_next(gfx, (uint8_t)*str);
         if (e == 0x0ffff) break;
         str++;
         if (e != 0x0fffe) {
-            dx = u8g2_GetGlyphWidth(&gfx->u8g2, e);
-            w += dx;
+            bool real_glyph = u8g2_GetGlyphWidthIfPresent(
+                &gfx->u8g2, e, &glyph_advance) != 0U;
+            if (real_glyph) {
+                have_last_real_glyph = true;
+                last_real_advance = glyph_advance;
+                last_real_width = gfx->u8g2.font_decode.glyph_width;
+                last_real_x_offset = gfx->u8g2.glyph_x_offset;
+                dx = glyph_advance;
+                w += dx;
+            } else if (e == (uint16_t)' ') {
+                dx = 0;
+            } else if (gfx->u8g2.placeholder_enabled) {
+                dx = gfx->u8g2.placeholder.advance;
+                w += dx;
+            } else {
+                dx = 0;
+            }
         }
     }
     /* adjust the last glyph, check for issue #16: do not adjust if width is 0 */
-    if (gfx->u8g2.font_decode.glyph_width != 0) {
-        w -= dx;
-        w += gfx->u8g2.font_decode.glyph_width; /* the real pixel width of the glyph, sideeffect of GetGlyphWidth */
+    if (have_last_real_glyph && last_real_width != 0) {
+        w -= last_real_advance;
+        w += last_real_width; /* the real pixel width of the last real glyph */
         /* issue #46: we have to add the x offset also */
-        w += gfx->u8g2.glyph_x_offset; /* this value is set as a side effect of u8g2_GetGlyphWidth() */
+        w += last_real_x_offset; /* side effect of GetGlyphWidth() for that glyph */
     }
 
     return w;
+}
+
+static size_t gfx_append_char(char* out, size_t out_size, size_t pos, char c) {
+    if (out_size > 0 && pos < out_size - 1) out[pos] = c;
+    return pos + 1;
+}
+
+static size_t gfx_append_str(char* out, size_t out_size, size_t pos, const char* str) {
+    if (str == NULL) str = "";
+    while (*str != '\0') pos = gfx_append_char(out, out_size, pos, *str++);
+    return pos;
+}
+
+static size_t gfx_append_uint(char* out, size_t out_size, size_t pos, uint32_t value,
+                              uint8_t base, bool upper, bool zero_pad, uint8_t width) {
+    char digits[11];
+    uint8_t length = 0;
+
+    do {
+        uint8_t digit = (uint8_t)(value % base);
+        digits[length++] = (digit < 10) ? (char)('0' + digit) :
+            (char)((upper ? 'A' : 'a') + digit - 10);
+        value /= base;
+    } while (value != 0 && length < sizeof(digits));
+
+    while (length < width) {
+        pos = gfx_append_char(out, out_size, pos, zero_pad ? '0' : ' ');
+        width--;
+    }
+    while (length > 0) pos = gfx_append_char(out, out_size, pos, digits[--length]);
+    return pos;
+}
+
+static size_t gfx_vformat(char* out, size_t out_size, const char* format, va_list args) {
+    size_t pos = 0;
+
+    while (*format != '\0') {
+        bool zero_pad = false;
+        uint8_t width = 0;
+        char spec;
+
+        if (*format != '%') {
+            pos = gfx_append_char(out, out_size, pos, *format++);
+            continue;
+        }
+
+        format++;
+        if (*format == '%') {
+            pos = gfx_append_char(out, out_size, pos, *format++);
+            continue;
+        }
+        if (*format == '0') {
+            zero_pad = true;
+            format++;
+        }
+        while (*format >= '0' && *format <= '9') {
+            width = (uint8_t)(width * 10 + (*format - '0'));
+            format++;
+        }
+        while (*format == 'l' || *format == 'h' || *format == 'z') format++;
+
+        spec = *format++;
+        switch (spec) {
+            case 'd':
+            case 'i': {
+                int value = va_arg(args, int);
+                if (value < 0) {
+                    pos = gfx_append_char(out, out_size, pos, '-');
+                    value = -value;
+                }
+                pos = gfx_append_uint(out, out_size, pos, (uint32_t)value, 10, false,
+                                      zero_pad, width);
+                break;
+            }
+            case 'u':
+                pos = gfx_append_uint(out, out_size, pos, va_arg(args, unsigned int), 10,
+                                      false, zero_pad, width);
+                break;
+            case 'x':
+                pos = gfx_append_uint(out, out_size, pos, va_arg(args, unsigned int), 16,
+                                      false, zero_pad, width);
+                break;
+            case 'X':
+                pos = gfx_append_uint(out, out_size, pos, va_arg(args, unsigned int), 16,
+                                      true, zero_pad, width);
+                break;
+            case 's':
+                pos = gfx_append_str(out, out_size, pos, va_arg(args, const char*));
+                break;
+            case 'c':
+                pos = gfx_append_char(out, out_size, pos, (char)va_arg(args, int));
+                break;
+            default:
+                pos = gfx_append_char(out, out_size, pos, spec);
+                break;
+        }
+    }
+
+    if (out_size > 0) out[(pos < out_size) ? pos : (out_size - 1)] = '\0';
+    return pos;
 }
 
 int16_t GFX_getUTF8Widthf(Adafruit_GFX* gfx, const char* format, ...) {
-    char buf[64] = {0};
-    char* str = buf;
-    size_t len;
+    char buf[96];
     va_list va;
 
     va_start(va, format);
-    len = vsnprintf(buf, sizeof(buf), format, va);
+    (void)gfx_vformat(buf, sizeof(buf), format, va);
     va_end(va);
-
-    if (len > sizeof(buf) - 1) {
-        str = malloc(len + 1);
-        if (str == NULL) return 0;
-        va_start(va, format);
-        vsnprintf(str, len + 1, format, va);
-        va_end(va);
-    }
-
-    int16_t w = GFX_getUTF8Width(gfx, str);
-
-    if (str != buf) free(str);
-
-    return w;
+    return GFX_getUTF8Width(gfx, buf);
 }
 
 size_t GFX_print(Adafruit_GFX* gfx, const char c) {
-    int16_t delta;
     uint16_t e = utf8_next(gfx, (uint8_t)c);
     if (e == '\n') {
         gfx->tx = 0;
@@ -1425,7 +1550,10 @@ size_t GFX_print(Adafruit_GFX* gfx, const char c) {
     } else if (e == '\r') {
         gfx->tx = 0;
     } else if (e < 0x0fffe) {
-        delta = u8g2_DrawGlyph(&gfx->u8g2, gfx->tx, gfx->ty, e);
+        int16_t delta = u8g2_DrawGlyph(&gfx->u8g2, gfx->tx, gfx->ty, e);
+#if GFX_FIXED_FONT_DIRECTION_0
+        gfx->tx += delta;
+#else
         switch (gfx->u8g2.font_decode.dir) {
             case 0:
                 gfx->tx += delta;
@@ -1440,6 +1568,7 @@ size_t GFX_print(Adafruit_GFX* gfx, const char c) {
                 gfx->ty -= delta;
                 break;
         }
+#endif
     }
     return 1;
 }
@@ -1453,26 +1582,19 @@ size_t GFX_write(Adafruit_GFX* gfx, const char* buffer, size_t size) {
     return cnt;
 }
 
+size_t GFX_puts(Adafruit_GFX* gfx, const char* text) {
+    return GFX_write(gfx, text, strlen(text));
+}
+
 size_t GFX_printf(Adafruit_GFX* gfx, const char* format, ...) {
     va_list va;
-    char tmp[64] = {0};
-    char* buf = tmp;
+    char buf[96];
     size_t len;
 
     va_start(va, format);
-    len = vsnprintf(tmp, sizeof(tmp), format, va);
+    len = gfx_vformat(buf, sizeof(buf), format, va);
     va_end(va);
 
-    if (len > sizeof(tmp) - 1) {
-        buf = malloc(len + 1);
-        if (buf == NULL) return 0;
-        va_start(va, format);
-        vsnprintf(buf, len + 1, format, va);
-        va_end(va);
-    }
-
-    len = GFX_write(gfx, buf, len);
-    if (buf != tmp) free(buf);
-
-    return len;
+    if (len >= sizeof(buf)) len = sizeof(buf) - 1;
+    return GFX_write(gfx, buf, len);
 }
