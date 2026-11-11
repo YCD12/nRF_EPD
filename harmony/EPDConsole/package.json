@@ -1,0 +1,15 @@
+{
+  "name": "epdconsole",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "type": "commonjs",
+  "dependencies": {
+    "@ohos/hvigor": "^5.2.2",
+    "@ohos/hvigor-ohos-plugin": "^5.2.2"
+  }
+}
