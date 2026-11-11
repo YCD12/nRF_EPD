@@ -1,0 +1,103 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+<link rel="stylesheet" href="css/main.css">
+<style>
+html,body{margin:0;padding:0;background:#fff;font-family:system-ui,sans-serif;}
+#topbar{position:sticky;top:0;z-index:20;display:flex;gap:8px;padding:8px;background:#fff;border-bottom:1px solid #e5e5e5;}
+#topbar button{flex:1;height:40px;border:0;border-radius:8px;font-size:15px;}
+#done-btn{background:#2563eb;color:#fff;}
+#cancel-btn{background:#888;color:#fff;}
+.canvas-container{padding:8px;}
+#canvas{width:100%;height:auto;background:#fff;display:block;touch-action:none;}
+.toolbar-row{display:flex;flex-wrap:wrap;gap:6px;align-items:center;padding:6px 8px;border-top:1px solid #eee;}
+.toolbar-row label{font-size:12px;color:#666;}
+.toolbar-row select,.toolbar-row input,.toolbar-row textarea{font-size:13px;padding:4px;}
+.toolbar-row button{min-width:38px;height:34px;border:1px solid #ddd;border-radius:6px;background:#f7f7f7;}
+.hide{display:none;}
+</style>
+</head>
+<body>
+<div id="topbar"><button id="done-btn">完成</button><button id="cancel-btn">取消</button></div>
+<div class="canvas-container"><canvas id="canvas" width="800" height="480"></canvas></div>
+<div class="toolbar-row" id="bg-tools">
+  <label>背景透明度</label>
+  <input id="bg-opacity" type="range" min="0" max="100" value="100" style="flex:1">
+  <span id="bg-opacity-value" style="font-size:12px;min-width:36px">100%</span>
+</div>
+<div class="toolbar-row" id="tool-buttons">
+  <button id="brush-mode" title="画笔">✏️</button>
+  <button id="eraser-mode" title="橡皮擦">🧽</button>
+  <button id="text-mode" title="添加文字">T</button>
+  <button id="todo-mode" title="待办事项">☐</button>
+  <button id="schedule-mode" title="课表">📅</button>
+  <button id="undo-btn" title="撤销">↶</button>
+  <button id="redo-btn" title="重做">↷</button>
+</div>
+<div class="toolbar-row" id="brush-tools">
+  <label>颜色</label>
+  <select id="brush-color"><option value="#000000">黑色</option><option value="#FF0000">红色</option><option value="#FFFF00">黄色</option><option value="#00FF00">绿色</option><option value="#0000FF">蓝色</option><option value="#FFFFFF">白色</option></select>
+  <label>粗细</label><input id="brush-size" type="number" value="2" min="1" max="100">
+</div>
+<div class="toolbar-row" id="text-tools">
+  <label>字体</label>
+  <select id="font-family">
+    <option value="Arial">Arial</option><option value="sans-serif">Sans-serif</option><option value="monospace">Monospace</option>
+    <option value="SimSun">宋体</option><option value="SimHei">黑体</option><option value="Microsoft Yahei">微软雅黑</option>
+    <option value="KaiTi">楷体</option><option value="FangSong">仿宋</option><option value="PingFang SC">苹方</option>
+    <option value="Source Han Sans CN">思源黑体</option><option value="Source Han Serif SC">思源宋体</option>
+  </select>
+  <label>大小</label><input id="font-size" type="number" value="16" min="1" max="100">
+  <input id="text-input" type="text" placeholder="输入文字" style="width:130px">
+  <button id="text-bold">B</button><button id="text-italic">I</button>
+  <button id="add-text-btn">添加文字</button>
+</div>
+<div class="toolbar-row" id="todo-tools">
+  <label>字体</label>
+  <select id="todo-font-family"><option value="Arial">Arial</option><option value="sans-serif">Sans-serif</option><option value="SimSun">宋体</option><option value="SimHei" selected>黑体</option><option value="Microsoft Yahei">微软雅黑</option></select>
+  <label>大小</label><input id="todo-font-size" type="number" value="14" min="1" max="100">
+  <input id="todo-input" type="text" placeholder="输入待办项" style="width:130px">
+  <select id="todo-color"><option value="#000000">黑色</option><option value="#FF0000">红色</option><option value="#FFFF00">黄色</option><option value="#00FF00">绿色</option><option value="#0000FF">蓝色</option><option value="#FFFFFF">白色</option></select>
+  <button id="todo-bold">B</button><button id="todo-italic">I</button>
+  <button id="toggle-todo-delete-btn">✕</button>
+  <button id="add-todo-btn">添加待办项</button>
+</div>
+<div class="toolbar-row" id="schedule-tools">
+  <label>天数</label><input id="schedule-days" type="number" value="5" min="1" max="7">
+  <label>课程数</label><input id="schedule-classes" type="number" value="6" min="1" max="12">
+  <select id="schedule-font-family"><option value="Arial">Arial</option><option value="sans-serif">Sans-serif</option><option value="SimSun">宋体</option><option value="SimHei" selected>黑体</option><option value="Microsoft Yahei">微软雅黑</option></select>
+  <input id="schedule-font-size" type="number" value="12" min="8" max="32">
+  <button id="schedule-font-increase-btn">A+</button><button id="schedule-font-decrease-btn">A-</button>
+  <select id="schedule-color"><option value="#000000">黑色</option><option value="#FF0000">红色</option><option value="#0000FF">蓝色</option></select>
+  <button id="toggle-schedule-cell-indicator-btn">▭</button>
+  <button id="create-schedule-btn">生成课表</button>
+  <button id="schedule-move-up-btn">⇧</button><button id="schedule-move-down-btn">⇩</button>
+  <button id="schedule-move-left-btn">⇦</button><button id="schedule-move-right-btn">⇨</button>
+  <button id="schedule-zoom-in-btn">+</button><button id="schedule-zoom-out-btn">-</button>
+  <textarea id="schedule-input" rows="2" style="width:120px"></textarea>
+  <button id="schedule-input-confirm-btn">确定</button><button id="schedule-input-cancel-btn">取消</button>
+</div>
+<script>
+(function () {
+  try {
+    if (window.localStorage) { return; }
+  } catch (e) {
+  }
+  var mem = {};
+  Object.defineProperty(window, 'localStorage', {
+    configurable: true,
+    value: {
+      getItem: function (k) { return Object.prototype.hasOwnProperty.call(mem, k) ? mem[k] : null; },
+      setItem: function (k, v) { mem[k] = String(v); },
+      removeItem: function (k) { delete mem[k]; },
+      clear: function () { mem = {}; }
+    }
+  });
+})();
+</script>
+<script src="js/paint.js"></script>
+<script src="js/adapter.js"></script>
+</body>
+</html>

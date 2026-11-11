@@ -1,0 +1,13 @@
+{
+  "modelVersion": "5.0.0",
+  "name": "epdconsole",
+  "version": "1.0.0",
+  "description": "EPD console for HarmonyOS",
+  "main": "",
+  "author": "",
+  "license": "",
+  "dependencies": {},
+  "devDependencies": {
+    "@ohos/hvigor-ohos-plugin": "5.2.2"
+  }
+}

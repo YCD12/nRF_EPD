@@ -1,0 +1,13 @@
+node_modules/
+oh_modules/
+.hvigor/
+build/
+entry/build/
+*.hap
+*.hsp
+*.app
+local.properties
+signing/
+.idea/
+.DS_Store
+!build.bat

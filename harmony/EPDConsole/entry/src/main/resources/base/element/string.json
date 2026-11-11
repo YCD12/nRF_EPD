@@ -1,0 +1,8 @@
+{
+  "string": [
+    { "name": "module_desc", "value": "墨水屏控制台" },
+    { "name": "EntryAbility_desc", "value": "墨水屏控制台主界面" },
+    { "name": "EntryAbility_label", "value": "墨水屏控制台" },
+    { "name": "permission_bluetooth_reason", "value": "用于连接并控制电子墨水屏设备" }
+  ]
+}

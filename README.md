@@ -1,5 +1,7 @@
 # nRF_EPD
 
+鸿蒙控制台 App 的源码、构建和兼容性说明见 [harmony/EPDConsole](harmony/EPDConsole/README.md)。当前 App 已验证旧版 0x20 设备，与本仓库新版固件的协议适配尚未完成。
+
 面向 `nRF52811` 电子价签与墨水屏设备的开源项目，重点适配盒马 / 阿里系 `nRF52811` 价签，并围绕当前工程提供完整的固件、网页控制台、DFU 和调试工具链。
 
 项目基于 [tsl0922/EPD-nRF5](https://github.com/tsl0922/EPD-nRF5) 持续扩展，当前仓库已经包含：
